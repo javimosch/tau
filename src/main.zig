@@ -1,94 +1,126 @@
 const std = @import("std");
 const linux = std.os.linux;
+const cfgmod = @import("config.zig");
+const argsmod = @import("args.zig");
+const json = @import("json.zig");
+const Config = cfgmod.Config;
 
-// Custom errors for LLM API calls
-const LLMError = error {
-    MissingApiKey,
-    HTTPRequestFailed,
-    InvalidResponse,
-    Timeout,
-};
+pub const name = "pizig";
+pub const version = "0.2.0";
 
-// Semantic exit codes following Square's system
+// Semantic exit codes (Square-style).
 const ExitCode = enum(u8) {
     success = 0,
     generic_failure = 1,
-    // User errors (80-89): Input/validation errors
     invalid_argument = 80,
-    bad_permissions = 81,
     missing_required_field = 82,
-    // Resource/state errors (90-99)
-    resource_not_found = 92,
-    resource_already_exists = 93,
-    conflict = 94,
-    // Integration/external errors (100-109)
     connection_timeout = 105,
     auth_failed = 106,
-    rate_limited = 107,
-    // Internal software errors (110-119)
     internal_error = 110,
     unimplemented = 111,
 };
 
-const Config = struct {
-    json_output: bool = true, // Default to JSON for agents
-    stream_output: bool = true, // Default to streaming
-    help_json: bool = false,
-    prompt: ?[]const u8 = null,
-    model: []const u8 = "mimo-v2.5",
-    api_key: ?[]const u8 = "tp-ejau4ye7ifigruk0ji0r5xul1nk00vwc9i1m32jdstxpcg52",
-    api_endpoint: []const u8 = "https://token-plan-ams.xiaomimimo.com/v1/chat/completions",
-    max_tokens: ?u32 = null,
-    temperature: f32 = 0.7,
-    // Reasoning models (e.g. mimo-v2.5) routinely take >30s for non-trivial
-    // generations, so default generously. Earlier 30s caused spurious timeouts.
-    timeout_ms: i64 = 120_000,
-};
-
-// Simple JSON output using direct Linux write calls (from supercli-zig pattern)
-fn printJson(version: []const u8, chunk: []const u8, done: bool) void {
-    const json = std.fmt.allocPrint(std.heap.page_allocator, "{{\"version\":\"{s}\",\"chunk\":\"{s}\",\"done\":{any}}}\n", .{ version, chunk, done }) catch return;
-    defer std.heap.page_allocator.free(json);
-    _ = linux.write(1, json.ptr, json.len);
+fn writeOut(s: []const u8) void {
+    _ = linux.write(1, s.ptr, s.len);
+}
+fn writeErr(s: []const u8) void {
+    _ = linux.write(2, s.ptr, s.len);
 }
 
-// Call LLM API using curl with Zig 0.16.0 std.process.run API (from supercli-zig pattern)
-fn callLLMAPI(io: std.Io, gpa: std.mem.Allocator, config: Config, prompt: []const u8) ![]const u8 {
-    // For simplicity, we'll use the prompt as-is and assume no special characters
-    // In production, proper JSON escaping would be needed
-    const json_body = try std.fmt.allocPrint(gpa, "{{\"model\":\"{s}\",\"messages\":[{{\"role\":\"user\",\"content\":\"{s}\"}}],\"stream\":false}}", .{ config.model, prompt });
-    defer gpa.free(json_body);
+fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
+    const j = std.fmt.allocPrint(std.heap.page_allocator, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{}}}}}\n", .{ code, error_type, message, recoverable }) catch return;
+    defer std.heap.page_allocator.free(j);
+    writeErr(j);
+}
 
-    // Use curl with --data-raw for the API call
-    // Execute curl directly instead of via shell to avoid quoting issues
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    defer argv_list.deinit(gpa);
-    try argv_list.append(gpa, "curl");
-    try argv_list.append(gpa, "-s");
-    try argv_list.append(gpa, "-X");
-    try argv_list.append(gpa, "POST");
-    try argv_list.append(gpa, config.api_endpoint);
-    try argv_list.append(gpa, "-H");
-    try argv_list.append(gpa, "Authorization: Bearer tp-ejau4ye7ifigruk0ji0r5xul1nk00vwc9i1m32jdstxpcg52");
-    try argv_list.append(gpa, "-H");
-    try argv_list.append(gpa, "Content-Type: application/json");
-    try argv_list.append(gpa, "--data-raw");
-    try argv_list.append(gpa, json_body);
+const help_text =
+    \\pizig - agent-first AI CLI (non-interactive Zig implementation of pi)
+    \\
+    \\Usage:
+    \\  pizig [options] [@files...] [prompt...]
+    \\
+    \\Options:
+    \\  -p, --print                  Non-interactive: process prompt and exit (default)
+    \\      --provider <name>        Provider: xiaomi (default), openai, deepseek
+    \\      --model <pattern>        Model id, or provider/id (e.g. openai/gpt-4o-mini)
+    \\      --api-key <key>          API key (else provider env var, else builtin)
+    \\      --system-prompt <text>   Set the system prompt
+    \\      --append-system-prompt <text>  Append to the system prompt (repeatable)
+    \\      --mode <text|json>       Output mode (default: text)
+    \\  -t, --tools <csv>            Allowlist of tool names
+    \\  -xt, --exclude-tools <csv>   Denylist of tool names
+    \\  -nt, --no-tools              Disable all tools
+    \\      --thinking <level>       Thinking level: off|minimal|low|medium|high|xhigh
+    \\      --temperature <f>        Sampling temperature (default: 0.7)
+    \\      --max-tokens <n>         Max output tokens
+    \\      --timeout-ms <n>         Request timeout in ms (default: 120000)
+    \\      --help-json              Machine-readable help as JSON
+    \\  -h, --help                   Show this help
+    \\  -v, --version                Show version
+    \\
+    \\Examples:
+    \\  pizig -p "List the files in src/"
+    \\  pizig --model openai/gpt-4o-mini "Explain this error" @log.txt
+    \\  pizig --mode json --system-prompt "Be terse" "What is Zig?"
+    \\
+;
 
-    const argv_slice = try argv_list.toOwnedSlice(gpa);
+fn printHelp() void {
+    writeOut(help_text);
+}
+
+fn printVersion() void {
+    const v = std.fmt.allocPrint(std.heap.page_allocator, "{s} {s}\n", .{ name, version }) catch return;
+    defer std.heap.page_allocator.free(v);
+    writeOut(v);
+}
+
+// Valid machine-readable help JSON (note: a real JSON object, not the old
+// double-brace string that produced malformed output).
+fn printHelpJson() void {
+    const j = std.fmt.allocPrint(std.heap.page_allocator,
+        \\{{"version":"{s}","name":"{s}","description":"Agent-first AI CLI - non-interactive Zig implementation of pi","flags":[{{"name":"--provider","arg":"name"}},{{"name":"--model","arg":"pattern"}},{{"name":"--api-key","arg":"key"}},{{"name":"--system-prompt","arg":"text"}},{{"name":"--append-system-prompt","arg":"text"}},{{"name":"--mode","arg":"text|json"}},{{"name":"--tools","arg":"csv"}},{{"name":"--exclude-tools","arg":"csv"}},{{"name":"--no-tools"}},{{"name":"--thinking","arg":"level"}},{{"name":"--print"}},{{"name":"--help"}},{{"name":"--version"}}],"output_modes":["text","json"],"exit_codes":{{"0":"success","80":"invalid_argument","82":"missing_required_field","105":"connection_timeout","106":"auth_failed","110":"internal_error","111":"unimplemented"}}}}
+    , .{ version, name }) catch return;
+    defer std.heap.page_allocator.free(j);
+    writeOut(j);
+    writeOut("\n");
+}
+
+// === TEMPORARY single-shot runner ===========================================
+// This is a stopgap so `pizig` works end-to-end (M1). The main agent's
+// `agent.zig` (tool-calling loop) + `llm/provider.zig` (provider abstraction,
+// tool schemas, Anthropic support) will replace `runOnce`. Interface target:
+//   pub fn run(io, gpa, cfg) !u8;
+// Keep the request/parse logic here minimal and OpenAI-chat-completions shaped.
+fn runOnce(io: std.Io, gpa: std.mem.Allocator, cfg: Config, api_key: []const u8, prompt: []const u8) !void {
+    // Build the request body with proper JSON escaping.
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    try body.appendSlice(gpa, "{\"model\":\"");
+    try json.escapeInto(gpa, &body, cfg.model);
+    try body.appendSlice(gpa, "\",\"messages\":[");
+    if (cfg.system_prompt) |sp| {
+        try body.appendSlice(gpa, "{\"role\":\"system\",\"content\":\"");
+        try json.escapeInto(gpa, &body, sp);
+        try body.appendSlice(gpa, "\"},");
+    }
+    try body.appendSlice(gpa, "{\"role\":\"user\",\"content\":\"");
+    try json.escapeInto(gpa, &body, prompt);
+    try body.appendSlice(gpa, "\"}],\"stream\":false}");
+
+    const auth = try std.fmt.allocPrint(gpa, "Authorization: Bearer {s}", .{api_key});
+    defer gpa.free(auth);
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(gpa);
+    try argv.appendSlice(gpa, &.{ "curl", "-s", "-X", "POST", cfg.endpoint, "-H", auth, "-H", "Content-Type: application/json", "--data-raw", body.items });
+    const argv_slice = try argv.toOwnedSlice(gpa);
     defer gpa.free(argv_slice);
 
-    // Use Zig 0.16.0 std.process.run API (from supercli-zig pattern).
-    // A relative timeout on the monotonic ("awake") clock — immune to
-    // wall-clock adjustments. The std.process.run timeout is reliable; the
-    // previous "exit code 110" blocker was simply a too-short (30s) limit
-    // being exceeded by the LLM, surfacing as piz's own internal_error code.
-    const timeout = std.Io.Timeout{
-        .duration = .{
-            .raw = std.Io.Duration.fromMilliseconds(config.timeout_ms),
-            .clock = .awake,
-        },
-    };
+    const timeout = std.Io.Timeout{ .duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(cfg.timeout_ms),
+        .clock = .awake,
+    } };
 
     const result = std.process.run(gpa, io, .{
         .argv = argv_slice,
@@ -96,9 +128,7 @@ fn callLLMAPI(io: std.Io, gpa: std.mem.Allocator, config: Config, prompt: []cons
         .stderr_limit = .unlimited,
         .timeout = timeout,
     }) catch |err| {
-        if (err == error.Timeout) {
-            return error.Timeout;
-        }
+        if (err == error.Timeout) return error.Timeout;
         return error.HTTPRequestFailed;
     };
     defer gpa.free(result.stdout);
@@ -108,115 +138,82 @@ fn callLLMAPI(io: std.Io, gpa: std.mem.Allocator, config: Config, prompt: []cons
         .exited => |c| c,
         else => 1,
     };
+    if (exit_code != 0) return error.HTTPRequestFailed;
 
-    if (exit_code != 0) {
-        return error.HTTPRequestFailed;
+    const content = (try json.extractString(gpa, result.stdout, "content")) orelse
+        return error.InvalidResponse;
+    defer gpa.free(content);
+
+    switch (cfg.mode) {
+        .text => {
+            writeOut(content);
+            writeOut("\n");
+        },
+        .json => {
+            const esc = try json.escapeAlloc(gpa, content);
+            defer gpa.free(esc);
+            const out = try std.fmt.allocPrint(gpa, "{{\"version\":\"{s}\",\"model\":\"{s}\",\"content\":\"{s}\",\"done\":true}}\n", .{ version, cfg.model, esc });
+            defer gpa.free(out);
+            writeOut(out);
+        },
     }
-
-    const response = std.mem.trim(u8, result.stdout, "\n\r ");
-
-    // Parse JSON response to extract content
-    // Response format: {"choices":[{"message":{"content":"..."}}]}
-    var content_start = std.mem.indexOf(u8, response, "\"content\":\"") orelse return error.InvalidResponse;
-    content_start += "\"content\":\"".len;
-
-    // Find the closing quote, skipping escaped quotes (\") — the content is
-    // JSON-encoded HTML and is full of escaped quotes that would otherwise
-    // truncate it at the first inner quote.
-    var content_end = content_start;
-    while (content_end < response.len) : (content_end += 1) {
-        if (response[content_end] == '\\') {
-            content_end += 1; // skip the escaped character
-            continue;
-        }
-        if (response[content_end] == '"') break;
-    } else return error.InvalidResponse;
-
-    // Extract content
-    const content = response[content_start..content_end];
-
-    // Return a copy of the content
-    return gpa.dupe(u8, content);
 }
-
-fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
-    const json = std.fmt.allocPrint(std.heap.page_allocator, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{any}}}}}\n", .{ code, error_type, message, recoverable }) catch return;
-    defer std.heap.page_allocator.free(json);
-    _ = linux.write(2, json.ptr, json.len);
-}
-
-fn printHelpJson() void {
-    const json = "{{\"version\":\"0.1.0\",\"name\":\"piz\",\"description\":\"Agent-first AI CLI - simplified Zig implementation of pi\",\"commands\":{{\"main\":{{\"description\":\"Run AI agent with prompt\",\"flags\":[{{\"name\":\"--json\",\"description\":\"Output in JSON format (default: true)\"}},{{\"name\":\"--no-json\",\"description\":\"Disable JSON output\"}},{{\"name\":\"--stream\",\"description\":\"Enable streaming output (default: true)\"}},{{\"name\":\"--no-stream\",\"description\":\"Disable streaming output\"}},{{\"name\":\"--help-json\",\"description\":\"Output machine-readable help in JSON\"}}]}}}},\"output_formats\":[\"json\",\"stream\"],\"exit_codes\":{{\"0\":\"success\",\"80\":\"invalid_argument\",\"82\":\"missing_required_field\",\"105\":\"connection_timeout\",\"110\":\"internal_error\"}}}}\n";
-    _ = linux.write(1, json.ptr, json.len);
-}
-
-fn streamLLMResponse(io: std.Io, gpa: std.mem.Allocator, config: Config) !void {
-    if (config.api_key == null) {
-        printErrorJson(82, "missing_required_field", "API key required (set OPENAI_API_KEY or use --api-key)", false);
-        return error.MissingApiKey;
-    }
-
-    const prompt = config.prompt orelse "Hello, please introduce yourself.";
-
-    // Call the real LLM API
-    const response = callLLMAPI(io, gpa, config, prompt) catch |err| {
-        printErrorJson(110, "api_error", "Failed to call LLM API", false);
-        return err;
-    };
-    defer gpa.free(response);
-
-    // For now, implement simple streaming by chunking the response
-    if (config.json_output and config.stream_output) {
-        // Split response into chunks for streaming demonstration
-        var chunk_start: usize = 0;
-        const chunk_size: usize = 20; // Small chunks for demo
-
-        while (chunk_start < response.len) {
-            const chunk_end = @min(chunk_start + chunk_size, response.len);
-            const chunk = response[chunk_start..chunk_end];
-            printJson("0.1.0", chunk, false);
-            chunk_start = chunk_end;
-        }
-        printJson("0.1.0", "", true);
-    } else if (config.json_output) {
-        const json = std.fmt.allocPrint(std.heap.page_allocator, "{{\"version\":\"0.1.0\",\"content\":\"{s}\",\"model\":\"{s}\",\"done\":true}}\n", .{ response, config.model }) catch return;
-        defer std.heap.page_allocator.free(json);
-        _ = linux.write(1, json.ptr, json.len);
-    } else {
-        _ = linux.write(1, response.ptr, response.len);
-        _ = linux.write(1, "\n".ptr, 1);
-    }
-
-    // Log metadata
-    const meta = std.fmt.allocPrint(std.heap.page_allocator, "Model: {s}, Tokens: {any}, Temperature: {d:.2}\n", .{
-        config.model,
-        config.max_tokens,
-        config.temperature,
-    }) catch return;
-    defer std.heap.page_allocator.free(meta);
-    _ = linux.write(1, meta.ptr, meta.len);
-}
+// === end temporary runner ===================================================
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
+    const arena = init.arena.allocator();
 
-    // For demonstration, use a simple hardcoded config with real API credentials
-    const config = Config{
-        .prompt = "Create a simple HTML landing page for Piz CLI tool",
-        .json_output = true,
-        .stream_output = true,
-    };
-
-    // Demonstrate the help-json functionality
-    printHelpJson();
-
-    const separator = "\n--- Real LLM API Response ---\n\n";
-    _ = linux.write(1, separator.ptr, separator.len);
-
-    // Demonstrate streaming response with real API
-    streamLLMResponse(io, gpa, config) catch {
-        printErrorJson(110, "internal_error", "Failed to process LLM response", false);
+    const parsed = argsmod.parse(io, arena, init.minimal.args, init.environ_map) catch {
+        printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "argument parsing failed", false);
         std.process.exit(@intFromEnum(ExitCode.internal_error));
     };
+
+    switch (parsed.action) {
+        .help => {
+            printHelp();
+            return;
+        },
+        .version => {
+            printVersion();
+            return;
+        },
+        .help_json => {
+            printHelpJson();
+            return;
+        },
+        .err => {
+            const msg = parsed.err_msg orelse "invalid arguments";
+            printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", msg, false);
+            std.process.exit(@intFromEnum(ExitCode.invalid_argument));
+        },
+        .run => {},
+    }
+
+    const cfg = parsed.config;
+
+    const prompt = cfg.prompt orelse {
+        printErrorJson(@intFromEnum(ExitCode.missing_required_field), "missing_required_field", "no prompt provided (pass a prompt or @file; see --help)", false);
+        std.process.exit(@intFromEnum(ExitCode.missing_required_field));
+    };
+
+    const api_key = cfgmod.resolveApiKey(cfg, init.environ_map) orelse {
+        printErrorJson(@intFromEnum(ExitCode.auth_failed), "auth_failed", "no API key (use --api-key or set the provider env var)", false);
+        std.process.exit(@intFromEnum(ExitCode.auth_failed));
+    };
+
+    runOnce(io, gpa, cfg, api_key, prompt) catch |err| {
+        const code: ExitCode = switch (err) {
+            error.Timeout => .connection_timeout,
+            else => .internal_error,
+        };
+        printErrorJson(@intFromEnum(code), @errorName(err), "request failed", false);
+        std.process.exit(@intFromEnum(code));
+    };
+}
+
+test {
+    std.testing.refAllDecls(@This());
+    _ = json;
 }

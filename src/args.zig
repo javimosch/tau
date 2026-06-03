@@ -1,0 +1,197 @@
+const std = @import("std");
+const cfgmod = @import("config.zig");
+const Config = cfgmod.Config;
+
+pub const Action = enum { run, help, version, help_json, err };
+
+pub const Parsed = struct {
+    action: Action = .run,
+    config: Config = .{},
+    err_msg: ?[]const u8 = null,
+};
+
+fn val(argv: []const []const u8, i: *usize) ?[]const u8 {
+    if (i.* + 1 >= argv.len) return null;
+    i.* += 1;
+    return argv[i.*];
+}
+
+fn splitCsv(arena: std.mem.Allocator, s: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, s, ',');
+    while (it.next()) |part| {
+        const t = std.mem.trim(u8, part, " \t");
+        if (t.len > 0) try out.append(arena, t);
+    }
+    return out.toOwnedSlice(arena);
+}
+
+fn eq(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+/// Parse argv into an Action + Config. All retained strings are allocated in
+/// `arena` (freed automatically at process exit, so no leak bookkeeping). `io`
+/// is used to read `@file` arguments.
+pub fn parse(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    args: std.process.Args,
+    env: *std.process.Environ.Map,
+) !Parsed {
+    var it = try std.process.Args.Iterator.initAllocator(args, arena);
+    _ = it.next(); // skip argv[0]
+
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
+    const argv = argv_list.items;
+
+    var cfg: Config = .{};
+    var provider_opt: ?[]const u8 = null;
+    var model_opt: ?[]const u8 = null;
+    var api_key_opt: ?[]const u8 = null;
+    var sys_parts: std.ArrayList([]const u8) = .empty;
+    var msg_parts: std.ArrayList([]const u8) = .empty;
+    var file_parts: std.ArrayList([]const u8) = .empty;
+
+    var i: usize = 0;
+    while (i < argv.len) : (i += 1) {
+        const a = argv[i];
+
+        if (eq(a, "-h") or eq(a, "--help")) return .{ .action = .help };
+        if (eq(a, "-v") or eq(a, "--version")) return .{ .action = .version };
+        if (eq(a, "--help-json")) return .{ .action = .help_json };
+        if (eq(a, "-p") or eq(a, "--print")) continue; // always non-interactive
+        if (eq(a, "--no-tools") or eq(a, "-nt")) {
+            cfg.no_tools = true;
+            continue;
+        }
+
+        if (eq(a, "--provider")) {
+            provider_opt = val(argv, &i) orelse return missing(arena, a);
+            continue;
+        }
+        if (eq(a, "--model")) {
+            model_opt = val(argv, &i) orelse return missing(arena, a);
+            continue;
+        }
+        if (eq(a, "--api-key")) {
+            api_key_opt = val(argv, &i) orelse return missing(arena, a);
+            continue;
+        }
+        if (eq(a, "--system-prompt")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            sys_parts.clearRetainingCapacity();
+            try sys_parts.append(arena, v);
+            continue;
+        }
+        if (eq(a, "--append-system-prompt")) {
+            try sys_parts.append(arena, val(argv, &i) orelse return missing(arena, a));
+            continue;
+        }
+        if (eq(a, "--mode")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            if (eq(v, "text")) {
+                cfg.mode = .text;
+            } else if (eq(v, "json")) {
+                cfg.mode = .json;
+            } else {
+                return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
+            }
+            continue;
+        }
+        if (eq(a, "--tools") or eq(a, "-t")) {
+            cfg.tools_allow = try splitCsv(arena, val(argv, &i) orelse return missing(arena, a));
+            continue;
+        }
+        if (eq(a, "--exclude-tools") or eq(a, "-xt")) {
+            cfg.tools_deny = try splitCsv(arena, val(argv, &i) orelse return missing(arena, a));
+            continue;
+        }
+        if (eq(a, "--thinking")) {
+            cfg.thinking = val(argv, &i) orelse return missing(arena, a);
+            continue;
+        }
+        if (eq(a, "--temperature")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            cfg.temperature = std.fmt.parseFloat(f32, v) catch
+                return errResult(arena, "invalid --temperature: {s}", .{v});
+            continue;
+        }
+        if (eq(a, "--max-tokens")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            cfg.max_tokens = std.fmt.parseInt(u32, v, 10) catch
+                return errResult(arena, "invalid --max-tokens: {s}", .{v});
+            continue;
+        }
+        if (eq(a, "--timeout-ms")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            cfg.timeout_ms = std.fmt.parseInt(i64, v, 10) catch
+                return errResult(arena, "invalid --timeout-ms: {s}", .{v});
+            continue;
+        }
+
+        if (a.len > 0 and a[0] == '@') {
+            try file_parts.append(arena, a[1..]);
+            continue;
+        }
+        if (a.len > 1 and a[0] == '-') {
+            return errResult(arena, "unknown option: {s}", .{a});
+        }
+        try msg_parts.append(arena, a); // positional message part
+    }
+
+    // Resolve provider / model / endpoint. Support `--model provider/id`.
+    if (model_opt) |m| {
+        if (std.mem.indexOfScalar(u8, m, '/')) |slash| {
+            if (provider_opt == null) provider_opt = m[0..slash];
+            model_opt = m[slash + 1 ..];
+        }
+    }
+    const prov_name = provider_opt orelse cfg.provider;
+    const p = cfgmod.findProvider(prov_name) orelse
+        return errResult(arena, "unknown provider: {s}", .{prov_name});
+    cfg.provider = p.name;
+    cfg.endpoint = p.endpoint;
+    cfg.model = model_opt orelse p.default_model;
+    cfg.api_key = api_key_opt;
+
+    // Build the system prompt (parts joined by newlines).
+    if (sys_parts.items.len > 0) {
+        var sb: std.ArrayList(u8) = .empty;
+        for (sys_parts.items, 0..) |s, idx| {
+            if (idx != 0) try sb.append(arena, '\n');
+            try sb.appendSlice(arena, s);
+        }
+        cfg.system_prompt = try sb.toOwnedSlice(arena);
+    }
+
+    // Build the user prompt: @file contents first, then positional message.
+    var pb: std.ArrayList(u8) = .empty;
+    for (file_parts.items) |fp| {
+        const content = std.Io.Dir.cwd().readFileAlloc(io, fp, arena, .unlimited) catch
+            return errResult(arena, "cannot read file @{s}", .{fp});
+        try pb.appendSlice(arena, "Contents of ");
+        try pb.appendSlice(arena, fp);
+        try pb.appendSlice(arena, ":\n");
+        try pb.appendSlice(arena, content);
+        try pb.appendSlice(arena, "\n\n");
+    }
+    for (msg_parts.items, 0..) |m, idx| {
+        if (idx != 0) try pb.append(arena, ' ');
+        try pb.appendSlice(arena, m);
+    }
+    if (pb.items.len > 0) cfg.prompt = try pb.toOwnedSlice(arena);
+
+    _ = env; // env-key resolution happens later via config.resolveApiKey
+    return .{ .action = .run, .config = cfg };
+}
+
+fn missing(arena: std.mem.Allocator, flag: []const u8) Parsed {
+    return errResult(arena, "missing value for {s}", .{flag}) catch
+        .{ .action = .err, .err_msg = "missing value" };
+}
+
+fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytype) !Parsed {
+    return .{ .action = .err, .err_msg = try std.fmt.allocPrint(arena, fmt, fmtargs) };
+}
