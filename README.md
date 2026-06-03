@@ -12,6 +12,7 @@ single-shot (`-p`) command surface while skipping the interactive TUI.
 | CLI argument parsing | ✅ done |
 | Provider abstraction (xiaomi / openai / deepseek) | ✅ done |
 | Output modes `text` / `json` | ✅ done |
+| Streaming (`--stream`, real SSE token-by-token) | ✅ done |
 | `@file` inclusion, system prompt | ✅ done |
 | Proper JSON request escaping + response decoding | ✅ done |
 | Semantic exit codes | ✅ done |
@@ -56,7 +57,8 @@ Common options (see `pizig --help` for the full list):
 | `--api-key <key>` | API key (else provider env var, else builtin) |
 | `--system-prompt <text>` | Set the system prompt |
 | `--append-system-prompt <text>` | Append to the system prompt (repeatable) |
-| `--mode <text\|json>` | Output mode (default: `text`) |
+| `--mode <text\|json>` | Output mode (default: `json`) |
+| `--stream` | Stream the response token-by-token (chat, no tools) |
 | `-t, --tools <csv>` | Tool allowlist |
 | `-xt, --exclude-tools <csv>` | Tool denylist |
 | `-nt, --no-tools` | Disable all tools |
@@ -86,8 +88,12 @@ All current providers speak the OpenAI chat-completions wire format.
 
 ## Output
 
-- `--mode text` (default): assistant text on stdout.
-- `--mode json`: one object: `{"version","model","content","done":true}`.
+- `--mode json` (default): one object: `{"version","model","content","done":true}`.
+- `--mode text`: assistant text on stdout.
+- `--stream` (real SSE, token-by-token):
+  - text mode → raw token deltas as they arrive.
+  - json mode → NDJSON `{"chunk":..,"done":false}` lines, then `{"model":..,"done":true}`.
+  - Streaming is a pure chat turn (no tools).
 - Errors go to stderr as `{"err":{"code","type","message","recoverable"}}`.
 
 ## Exit codes (semantic)
