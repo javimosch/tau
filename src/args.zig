@@ -194,8 +194,13 @@ pub fn parse(
         return errResult(arena, "unknown provider: {s}", .{prov_name});
     cfg.provider = p.name;
     cfg.endpoint = p.endpoint;
-    cfg.model = model_opt orelse p.default_model;
-    cfg.api_key = api_key_opt;
+    // Model precedence: --model > config-file model (if non-default) > provider default.
+    if (model_opt) |m| {
+        cfg.model = m;
+    } else if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
+        cfg.model = p.default_model;
+    } // else keep base.model (config-file supplied a custom model)
+    if (api_key_opt) |k| cfg.api_key = k; // else keep base.api_key (config-file)
 
     // Context window precedence: --context-window > config-file value (if it set
     // a non-default) > provider/model table default. Wrong values only shift WHEN
