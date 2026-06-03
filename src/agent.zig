@@ -110,7 +110,7 @@ pub fn run(
 
     // --- Agentic loop ---
     var iteration: u32 = 0;
-    const max_iterations: u32 = if (goal_active) cfg.goal_max_iterations else 10;
+    const max_iterations: u32 = if (goal_active) cfg.goal_max_iterations else cfg.max_iterations;
     var tokens_out: u64 = if (stored_goal) |g| g.tokens_used else 0;
     var exit_code: u8 = 110; // cap exceeded unless we break out cleanly
     var goal_done = false;

@@ -39,6 +39,9 @@ pub const Config = struct {
     // Reasoning models routinely take >30s; default generously (the old 30s
     // limit was the real cause of the "exit 110" blocker).
     timeout_ms: i64 = 120_000,
+    /// Max iterations of the (non-goal) agentic tool loop. Raise for long
+    /// autonomous tool workflows (e.g. multi-exchange a2a coordination).
+    max_iterations: u32 = 10,
 
     // --- Session management ---
     /// Named session; persists conversation + goal to ~/.config/tau/sessions/<name>.json.

@@ -115,6 +115,12 @@ pub fn parse(
                 return errResult(arena, "invalid --goal-max-iterations: {s}", .{v});
             continue;
         }
+        if (eq(a, "--max-iterations")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            cfg.max_iterations = std.fmt.parseInt(u32, v, 10) catch
+                return errResult(arena, "invalid --max-iterations: {s}", .{v});
+            continue;
+        }
 
         if (eq(a, "--provider")) {
             provider_opt = val(argv, &i) orelse return missing(arena, a);

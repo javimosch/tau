@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# a2a-spawn — CLI-agnostic launcher for an a2a peer agent.
+#
+# Knows how to invoke claude, opencode, pi, or tau non-interactively with a kit
+# prompt. Hides the per-CLI flag differences:
+#
+#   - claude   : --append-system-prompt "$KIT"     -p "Begin."
+#   - opencode : (kit embedded in message body)    run "$KIT\n\nBegin."
+#   - pi       : --append-system-prompt "$KIT"     -p "Begin."
+#   - tau      : --append-system-prompt "$KIT"     -p "Begin."
+#
+# Usage:
+#   a2a-spawn --cli claude   --id alice  [--model haiku]   [--log FILE]   --kit-file FILE
+#   a2a-spawn --cli opencode --id bob    [--model anthropic/claude-haiku-4-5] --kit-file FILE
+#   a2a-spawn --cli pi       --id carol  [--provider google] [--model …]   --kit-file FILE
+#   a2a-spawn --cli tau      --id dave  [--provider xiaomi] [--model …]   --kit-file FILE
+#
+# Writes the spawned PID to stdout. Send SIGTERM to that PID to stop the agent.
+# Reads the kit prompt from --kit-file (recommended; avoids shell-escape bugs).
+set -u
+
+CLI=""
+ID=""
+MODEL=""
+PROVIDER=""
+PROJECT=""
+LOG=""
+KIT_FILE=""
+usage() {
+    cat <<EOF
+a2a-spawn — CLI-agnostic launcher for an a2a peer agent.
+
+Usage:
+  a2a-spawn --cli claude|opencode|pi|tau --id NAME [options]
+
+Required:
+  --cli TYPE     Agentic CLI to launch (claude, opencode, pi, tau)
+  --id NAME      Agent identifier on the a2a bus
+  --kit-file FILE  Path to the kit prompt file
+
+Options:
+  --model NAME   Model to use (e.g. haiku, anthropic/claude-haiku-4-5)
+  --provider     Provider for pi/tau CLI (e.g. google, openai, xiaomi)
+  --project NAME Set A2A_PROJECT for the spawned agent (default: basename($PWD))
+  --log FILE     Log file (default: /tmp/a2a-<id>.log)
+
+Outputs the spawned PID to stdout.
+EOF
+    exit 0
+}
+
+EXTRA_ARGS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage;;
+        --cli)        CLI="$2";        shift 2;;
+        --id)         ID="$2";         shift 2;;
+        --model)      MODEL="$2";        shift 2;;
+        --provider)   PROVIDER="$2";   shift 2;;
+        --project)    PROJECT="$2";    shift 2;;
+        --log)        LOG="$2";        shift 2;;
+        --kit-file)   KIT_FILE="$2";   shift 2;;
+        --)           shift; EXTRA_ARGS+=("$@"); break;;
+        *)            echo "a2a-spawn: unknown arg $1" >&2; exit 2;;
+    esac
+done
+
+[ -z "$CLI" ]      && { echo "a2a-spawn: --cli required (claude|opencode|pi)" >&2; exit 2; }
+[ -z "$ID" ]       && { echo "a2a-spawn: --id required" >&2; exit 2; }
+[ -z "$KIT_FILE" ] && { echo "a2a-spawn: --kit-file required" >&2; exit 2; }
+[ -r "$KIT_FILE" ] || { echo "a2a-spawn: cannot read kit file $KIT_FILE" >&2; exit 2; }
+
+if [ -z "$LOG" ]; then
+    LOG="/tmp/a2a-$ID.log"
+fi
+KIT="$(cat "$KIT_FILE")"
+
+# Resolve opencode (the user's `opencode` alias goes through tmux which needs
+# a real terminal). Fall back to the real binary if present.
+resolve_opencode() {
+    if [ -x "$HOME/.opencode/bin/opencode" ]; then
+        echo "$HOME/.opencode/bin/opencode"
+    elif command -v opencode-bin >/dev/null 2>&1; then
+        command -v opencode-bin
+    else
+        # last resort: use whatever `opencode` resolves to
+        command -v opencode 2>/dev/null || echo "opencode"
+    fi
+}
+
+# Use nohup + disown so the spawned process survives the parent shell exit.
+_spawn_bg() {
+    # "$@" is the command to run; stdout/stderr already redirected.
+    # Use inline env var so the export is scoped only to the spawned process.
+    if [ -n "$PROJECT" ]; then
+        A2A_PROJECT="$PROJECT" nohup "$@" > "$LOG" 2>&1 &
+    else
+        nohup "$@" > "$LOG" 2>&1 &
+    fi
+    local PID=$!
+    disown "$PID" 2>/dev/null || true
+    echo "$PID"
+}
+
+case "$CLI" in
+    claude)
+        FLAGS=(--max-turns 50)
+        [ -n "$MODEL" ] && FLAGS+=(--model "$MODEL")
+        # root cannot use --allow-dangerously-skip-permissions (claude blocks it).
+        # Instead, use --permission-mode auto + --allowedTools for root.
+        if [ "$(id -u)" -eq 0 ]; then
+            FLAGS+=(--permission-mode auto --allowedTools "Bash,Read,Edit,Write,Ls,Glob")
+        else
+            FLAGS+=(--allow-dangerously-skip-permissions)
+        fi
+        CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS=1 \
+        _spawn_bg "$HOME/.local/bin/claude" \
+            -p "Begin." \
+            "${FLAGS[@]}" \
+            --append-system-prompt-file "$KIT_FILE"
+        ;;
+    opencode)
+        OPENCODE="$(resolve_opencode)"
+        FLAGS=(run --dangerously-skip-permissions)
+        [ -n "$MODEL" ] && FLAGS+=(-m "$MODEL")
+        # opencode has no --append-system-prompt; embed kit in the message.
+        # We pass everything as one positional argument so shell quoting is safe.
+        MSG="$KIT
+
+---
+Begin."
+        _spawn_bg "$OPENCODE" "${FLAGS[@]}" "$MSG"
+        ;;
+    pi)
+        FLAGS=(-p)
+        [ -n "$MODEL" ]    && FLAGS+=(--model "$MODEL")
+        [ -n "$PROVIDER" ] && FLAGS+=(--provider "$PROVIDER")
+        _spawn_bg pi "${FLAGS[@]}" \
+            --append-system-prompt "$KIT" \
+            "Begin."
+        ;;
+    tau)
+        # Resolve tau binary (check local build first, then PATH)
+        if [ -x "./zig-out/bin/tau" ]; then
+            TAU_BIN="./zig-out/bin/tau"
+        elif command -v tau >/dev/null 2>&1; then
+            TAU_BIN="tau"
+        else
+            echo "a2a-spawn: tau binary not found (expected ./zig-out/bin/tau or tau in PATH)" >&2
+            exit 2
+        fi
+        # --max-iterations raised: multi-exchange a2a coordination needs many
+        # send/recv tool turns (the default 10 stalls long debates).
+        FLAGS=(-p --no-stream --tools bash --max-iterations 40)
+        [ -n "$MODEL" ]    && FLAGS+=(--model "$MODEL")
+        [ -n "$PROVIDER" ] && FLAGS+=(--provider "$PROVIDER")
+        _spawn_bg "$TAU_BIN" "${FLAGS[@]}" \
+            --append-system-prompt "$KIT" \
+            "Begin."
+        ;;
+    *)
+        echo "a2a-spawn: unknown CLI '$CLI' (expected claude|opencode|pi|tau)" >&2
+        exit 2
+        ;;
+esac
