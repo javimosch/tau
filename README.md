@@ -18,6 +18,10 @@ single-shot (`-p`) command surface while skipping the interactive TUI.
 | Semantic exit codes | ✅ done |
 | Built-in tools (read/write/edit/bash/ls/grep/find) | ✅ done |
 | **Tool-calling loop** (schemas sent + tool execution) | ✅ done |
+| Config file (`~/.config/pizig/config.json`) | ✅ done |
+| Session persistence (`--session <name>`) | ✅ done |
+| Goal mode (`/goal` + status/pause/resume/clear/complete) | ✅ done |
+| Auto context compaction (LLM summarization at threshold) | ✅ done |
 
 Single-shot chat (text and json) works end-to-end against the configured
 provider, and the agentic tool-calling loop is functional: tool JSON-Schemas are
@@ -105,8 +109,42 @@ All current providers speak the OpenAI chat-completions wire format.
 | `82` | missing required field (e.g. no prompt) |
 | `105` | connection timeout |
 | `106` | auth failed (no API key) |
-| `110` | internal error |
+| `110` | internal error (e.g. goal cap reached without completion) |
 | `111` | unimplemented |
+
+## Sessions, goal mode & context
+
+**Config file** — `~/.config/pizig/config.json` (optional) sets defaults for any
+field; CLI flags override it. Example:
+```json
+{ "provider": "openai", "auto_compact": true, "compact_threshold": 0.5 }
+```
+
+**Sessions** — `--session <name>` persists the conversation (and any goal) to
+`~/.config/pizig/sessions/<name>.json`, so later invocations continue with full
+history:
+```bash
+pizig --session work1 "Remember: the build uses zig 0.16"
+pizig --session work1 "What zig version?"   # -> 0.16 (recalled from history)
+```
+
+**Goal mode** — a prompt beginning with `/goal` makes pizig work autonomously
+(tool loop) until the objective is audited-complete (the model ends with
+`<GOAL_MET>`); it nudges itself to continue otherwise, bounded by
+`--goal-max-iterations` (default 50). Goal state lives in the session.
+```bash
+pizig --session w "/goal add a --version flag and verify it builds"
+pizig --session w "/goal status"     # objective, status, continues, tokens_used
+pizig --session w "/goal pause|resume|clear|complete"
+pizig --session w "/goal --tokens 250K <obj>"   # soft output-token budget
+```
+
+**Auto context compaction** — before each model call in the loop, if the
+estimated context exceeds `--compact-threshold` (default 0.5) of the model
+context window (`--context-window`, default per-provider / 256k), older history
+is replaced by a single LLM-generated summary (preserving task, decisions, file
+paths, errors), keeping the system message and the recent tail verbatim. Disable
+with `--no-compact`.
 
 ## Testing
 
