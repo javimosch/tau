@@ -45,9 +45,9 @@ pub fn execBash(io: std.Io, gpa: std.mem.Allocator, command: []const u8, timeout
             .exit_code = 1,
         };
     };
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
-
+    // NOTE: ownership of result.stdout/stderr transfers to ToolResult — do NOT
+    // free them here; doing so returns dangling pointers. The caller owns the
+    // buffers for the lifetime of the ToolResult.
     const exit_code: u8 = switch (result.term) {
         .exited => |c| c,
         else => 1,

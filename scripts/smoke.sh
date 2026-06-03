@@ -83,10 +83,28 @@ if [ "$NET" = 1 ]; then
   contains "@file content reaches model" "$out" "ZQ-91"
   rm -f "$tmp"
 
-  # Tool-calling test — enable once agent.zig actually executes tools.
-  # out=$("$BIN" --tools bash "Run the shell command: echo TOOLS_WORK"); rc=$?
-  # ok "bash tool exit" "$rc" 0
-  # contains "bash tool executed" "$out" "TOOLS_WORK"
+  # Tool-calling: bash round-trip (model calls bash -> we execute -> model answers)
+  out=$("$BIN" --tools bash "Use the bash tool to run: echo TOOLS_WORK_91"); rc=$?
+  ok "bash tool exit" "$rc" 0
+  contains "bash tool executed end-to-end" "$out" "TOOLS_WORK_91"
+
+  # Tool-calling: read round-trip
+  tf="$(mktemp)"; printf 'SMOKE_FILE_MARKER_77' > "$tf"
+  out=$("$BIN" --tools read "Use the read tool to read $tf and quote its contents."); rc=$?
+  ok "read tool exit" "$rc" 0
+  contains "read tool returned file contents" "$out" "SMOKE_FILE_MARKER_77"
+  rm -f "$tf"
+
+  # Tool-calling: write round-trip (verify the side effect on disk)
+  wf="$(mktemp -u)"
+  out=$("$BIN" --tools write "Use the write tool to create $wf containing exactly: WRITE_MARKER_55"); rc=$?
+  ok "write tool exit" "$rc" 0
+  if [ -f "$wf" ] && grep -q "WRITE_MARKER_55" "$wf"; then
+    printf 'PASS  write tool created file on disk\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  write tool did not create expected file\n'; fail=$((fail + 1))
+  fi
+  rm -f "$wf"
 else
   echo "(skipping network tests; pass --net to enable)"
 fi

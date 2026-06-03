@@ -5,6 +5,13 @@ const linux = std.os.linux;
 pub const Message = struct {
     role: []const u8,
     content: []const u8,
+    /// Required by the API on `tool` role messages: the id of the tool_call
+    /// this message answers. Serialized only when present.
+    tool_call_id: ?[]const u8 = null,
+    /// On an `assistant` message that triggered tools, the tool_calls it made.
+    /// Echoing these back lets the model see it already called the tool (so it
+    /// produces a final answer instead of re-calling). Serialized when present.
+    tool_calls: ?[]const ToolCall = null,
 };
 
 pub const ToolCall = struct {
@@ -16,6 +23,11 @@ pub const ToolCall = struct {
 pub const Response = struct {
     content: []const u8,
     tool_calls: []ToolCall,
+};
+
+pub const ToolInfo = struct {
+    name: []const u8,
+    description: []const u8,
 };
 
 pub const Provider = struct {
@@ -56,11 +68,148 @@ pub fn findProvider(name: []const u8) ?*const Provider {
     return null;
 }
 
+/// Extract tool_calls from OpenAI response JSON
+fn extractToolCalls(gpa: std.mem.Allocator, response: []const u8) ![]ToolCall {
+    var tool_calls = std.ArrayList(ToolCall).empty;
+    defer tool_calls.deinit(gpa);
+
+    // Look for "tool_calls":[...] pattern
+    const tool_calls_start = std.mem.indexOf(u8, response, "\"tool_calls\":[") orelse return &.{};
+
+    var pos = tool_calls_start + "\"tool_calls\":[".len;
+    var depth: usize = 0;
+    var in_string = false;
+    var escape_next = false;
+
+    // Scan to the END OF THE ARRAY (the matching ']'), tracking object-brace
+    // depth so nested '{' '}' and string contents don't terminate us early.
+    // (Breaking at the first object's '}' would drop that closing brace and
+    // also miss any 2nd..Nth tool call.)
+    const array_start = pos;
+    var found_end = false;
+    while (pos < response.len) : (pos += 1) {
+        const c = response[pos];
+
+        if (escape_next) {
+            escape_next = false;
+            continue;
+        }
+
+        if (c == '\\') {
+            escape_next = true;
+            continue;
+        }
+
+        if (c == '"') {
+            in_string = !in_string;
+            continue;
+        }
+
+        if (!in_string) {
+            if (c == '{') depth += 1;
+            if (c == '}') depth -= 1;
+            if (c == ']' and depth == 0) {
+                found_end = true;
+                break;
+            }
+        }
+    }
+
+    if (!found_end) return &.{};
+
+    // Spans the full content between '[' and ']' (all tool-call objects).
+    const tool_calls_json = response[array_start..pos];
+
+    // Parse each tool call object
+    var call_start: ?usize = null;
+    var call_depth: usize = 0;
+    var call_in_string = false;
+    var call_escape_next = false;
+
+    for (tool_calls_json, 0..) |c, i| {
+        if (call_escape_next) {
+            call_escape_next = false;
+            continue;
+        }
+
+        if (c == '\\') {
+            call_escape_next = true;
+            continue;
+        }
+
+        if (c == '"') {
+            call_in_string = !call_in_string;
+            continue;
+        }
+
+        if (!call_in_string) {
+            if (c == '{') {
+                if (call_start == null) call_start = i;
+                call_depth += 1;
+            }
+            if (c == '}') {
+                call_depth -= 1;
+                if (call_depth == 0 and call_start != null) {
+                    const call_json = tool_calls_json[call_start.?..i+1];
+                    // Parse this tool call
+                    if (try parseToolCall(gpa, call_json)) |tc| {
+                        try tool_calls.append(gpa, tc);
+                    }
+                    call_start = null;
+                }
+            }
+        }
+    }
+
+    return try tool_calls.toOwnedSlice(gpa);
+}
+
+/// Parse a single tool call from JSON
+fn parseToolCall(gpa: std.mem.Allocator, call_json: []const u8) !?ToolCall {
+    const id = (try jsonmod.extractString(gpa, call_json, "id")) orelse return null;
+    defer gpa.free(id);
+
+    // Extract function.name
+    const func_start = std.mem.indexOf(u8, call_json, "\"function\":{") orelse return null;
+    const func_json = call_json[func_start..];
+    const name = (try jsonmod.extractString(gpa, func_json, "name")) orelse return null;
+    defer gpa.free(name);
+
+    // Extract function.arguments
+    const arguments = (try jsonmod.extractString(gpa, func_json, "arguments")) orelse return null;
+
+    return ToolCall{
+        .id = try gpa.dupe(u8, id),
+        .name = try gpa.dupe(u8, name),
+        .arguments = arguments,
+    };
+}
+
+/// JSON Schema `parameters` object for a built-in tool. Property names MUST
+/// match what agent.buildToolArgs() reads, or the model will supply argument
+/// names the executor can't find. Unknown tools fall back to no parameters.
+fn toolParamsJson(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "bash"))
+        return "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"the shell command to run\"}},\"required\":[\"command\"]}";
+    if (std.mem.eql(u8, name, "read"))
+        return "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"path to the file to read\"}},\"required\":[\"path\"]}";
+    if (std.mem.eql(u8, name, "write"))
+        return "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"file path to write\"},\"content\":{\"type\":\"string\",\"description\":\"content to write\"}},\"required\":[\"path\",\"content\"]}";
+    if (std.mem.eql(u8, name, "edit"))
+        return "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_string\":{\"type\":\"string\"},\"new_string\":{\"type\":\"string\"}},\"required\":[\"path\",\"old_string\",\"new_string\"]}";
+    if (std.mem.eql(u8, name, "ls"))
+        return "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"directory to list\"}},\"required\":[\"path\"]}";
+    if (std.mem.eql(u8, name, "grep"))
+        return "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"regex/text to search\"},\"path\":{\"type\":\"string\",\"description\":\"file or dir to search\"}},\"required\":[\"pattern\",\"path\"]}";
+    if (std.mem.eql(u8, name, "find"))
+        return "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"name/glob to find\"},\"path\":{\"type\":\"string\",\"description\":\"directory to search in\"}},\"required\":[\"pattern\",\"path\"]}";
+    return "{\"type\":\"object\",\"properties\":{}}";
+}
+
 /// Complete an LLM request with optional tool schema.
 /// Returns Response with content and any tool_calls from the LLM.
 pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
-                messages: []const Message, tools_json: ?[]const u8) !Response {
-    _ = tools_json; // TODO: implement tool schema in request
+                messages: []const Message, tools: ?[]const ToolInfo) !Response {
 
     // Build request body with proper JSON escaping
     var body: std.ArrayList(u8) = .empty;
@@ -76,10 +225,50 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
         try jsonmod.escapeInto(gpa, &body, msg.role);
         try body.appendSlice(gpa, "\",\"content\":\"");
         try jsonmod.escapeInto(gpa, &body, msg.content);
-        try body.appendSlice(gpa, "\"}");
+        try body.appendSlice(gpa, "\"");
+        if (msg.tool_call_id) |tcid| {
+            try body.appendSlice(gpa, ",\"tool_call_id\":\"");
+            try jsonmod.escapeInto(gpa, &body, tcid);
+            try body.appendSlice(gpa, "\"");
+        }
+        if (msg.tool_calls) |tcs| {
+            try body.appendSlice(gpa, ",\"tool_calls\":[");
+            for (tcs, 0..) |tc, j| {
+                if (j > 0) try body.appendSlice(gpa, ",");
+                try body.appendSlice(gpa, "{\"id\":\"");
+                try jsonmod.escapeInto(gpa, &body, tc.id);
+                try body.appendSlice(gpa, "\",\"type\":\"function\",\"function\":{\"name\":\"");
+                try jsonmod.escapeInto(gpa, &body, tc.name);
+                try body.appendSlice(gpa, "\",\"arguments\":\"");
+                try jsonmod.escapeInto(gpa, &body, tc.arguments);
+                try body.appendSlice(gpa, "\"}}");
+            }
+            try body.appendSlice(gpa, "]");
+        }
+        try body.appendSlice(gpa, "}");
     }
 
-    try body.appendSlice(gpa, "],\"stream\":false}");
+    try body.appendSlice(gpa, "],\"stream\":false");
+
+    // Add tool schema if tools are provided
+    if (tools) |t| {
+        if (t.len > 0) {
+            try body.appendSlice(gpa, ",\"tools\":[");
+            for (t, 0..) |tool, i| {
+                if (i > 0) try body.appendSlice(gpa, ",");
+                try body.appendSlice(gpa, "{\"type\":\"function\",\"function\":{\"name\":\"");
+                try jsonmod.escapeInto(gpa, &body, tool.name);
+                try body.appendSlice(gpa, "\",\"description\":\"");
+                try jsonmod.escapeInto(gpa, &body, tool.description);
+                try body.appendSlice(gpa, "\",\"parameters\":");
+                try body.appendSlice(gpa, toolParamsJson(tool.name));
+                try body.appendSlice(gpa, "}}");
+            }
+            try body.appendSlice(gpa, "]");
+        }
+    }
+
+    try body.appendSlice(gpa, "}");
 
     const api_key = cfg.api_key orelse return error.AuthFailed;
     const auth = try std.fmt.allocPrint(gpa, "Authorization: Bearer {s}", .{api_key});
@@ -114,11 +303,18 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     };
     if (exit_code != 0) return error.HTTPRequestFailed;
 
-    const content = (try jsonmod.extractString(gpa, result.stdout, "content")) orelse
-        return error.InvalidResponse;
+    // Parse tool_calls first: on a tool-call turn the model returns
+    // "content":null, which is valid (not an error).
+    const tool_calls = try extractToolCalls(gpa, result.stdout);
 
-    // TODO: Parse tool_calls from response
-    const tool_calls: []ToolCall = &.{};
+    const content = (try jsonmod.extractString(gpa, result.stdout, "content")) orelse blk: {
+        // No string content. Fine if this is a tool-call turn. Otherwise, if
+        // the envelope carries an error object, surface it as a failure.
+        if (tool_calls.len == 0 and std.mem.indexOf(u8, result.stdout, "\"error\"") != null) {
+            return error.HTTPRequestFailed;
+        }
+        break :blk try gpa.dupe(u8, "");
+    };
 
     return Response{
         .content = content,

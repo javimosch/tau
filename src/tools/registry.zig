@@ -5,18 +5,19 @@ pub const ToolResult = bashmod.ToolResult;
 
 pub const Tool = struct {
     name: []const u8,
+    description: []const u8,
     execute: *const fn (io: std.Io, gpa: std.mem.Allocator, args: []const []const u8, timeout_ms: i64) error{ MissingArgument, HTTPRequestFailed, Timeout, OutOfMemory }!ToolResult,
 };
 
 // Tool registry
 const tools = [_]Tool{
-    .{ .name = "bash", .execute = &executeBash },
-    .{ .name = "ls", .execute = &executeLs },
-    .{ .name = "read", .execute = &executeRead },
-    .{ .name = "write", .execute = &executeWrite },
-    .{ .name = "edit", .execute = &executeEdit },
-    .{ .name = "grep", .execute = &executeGrep },
-    .{ .name = "find", .execute = &executeFind },
+    .{ .name = "bash", .description = "Execute a bash shell command", .execute = &executeBash },
+    .{ .name = "ls", .description = "List files in a directory", .execute = &executeLs },
+    .{ .name = "read", .description = "Read the contents of a file", .execute = &executeRead },
+    .{ .name = "write", .description = "Write content to a file (overwrites if exists)", .execute = &executeWrite },
+    .{ .name = "edit", .description = "Edit a file by replacing text (sed-based)", .execute = &executeEdit },
+    .{ .name = "grep", .description = "Search for a pattern in files", .execute = &executeGrep },
+    .{ .name = "find", .description = "Find files by name or pattern", .execute = &executeFind },
 };
 
 /// Get tool by name
