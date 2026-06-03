@@ -77,6 +77,30 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env_map: *std.proce
 
         // If no tool calls, we're done
         if (response.tool_calls.len == 0) {
+            // Output reasoning if thinking mode is enabled
+            if (cfg.thinking) {
+                if (response.reasoning_content) |rc| {
+                    switch (cfg.mode) {
+                        .text => {
+                            const linux = std.os.linux;
+                            const prefix = "[THINKING] ";
+                            _ = linux.write(1, prefix.ptr, prefix.len);
+                            _ = linux.write(1, rc.ptr, rc.len);
+                            _ = linux.write(1, "\n".ptr, 1);
+                        },
+                        .json => {
+                            const json_mod = @import("json.zig");
+                            const esc = try json_mod.escapeAlloc(gpa, rc);
+                            defer gpa.free(esc);
+                            const out = try std.fmt.allocPrint(gpa, "{{\"reasoning\":\"{s}\",\"done\":false}}\n", .{esc});
+                            defer gpa.free(out);
+                            const linux = std.os.linux;
+                            _ = linux.write(1, out.ptr, out.len);
+                        },
+                    }
+                }
+            }
+
             // Output the final response
             switch (cfg.mode) {
                 .text => {
@@ -113,6 +137,13 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env_map: *std.proce
                 continue;
             };
 
+            if (cfg.debug) {
+                const linux = std.os.linux;
+                const debug_input = try std.fmt.allocPrint(gpa, "[DEBUG] Tool: {s}, Args: {s}\n", .{ tool_call.name, tool_call.arguments });
+                defer gpa.free(debug_input);
+                _ = linux.write(2, debug_input.ptr, debug_input.len);
+            }
+
             // Parse arguments using json.zig helpers
             const args = try buildToolArgs(gpa, tool_call.name, tool_call.arguments);
             defer {
@@ -132,6 +163,18 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env_map: *std.proce
                 });
                 continue;
             };
+
+            if (cfg.debug) {
+                const linux = std.os.linux;
+                const debug_output = try std.fmt.allocPrint(gpa, "[DEBUG] Tool result (success={}): {s}\n", .{ tool_result.success, tool_result.stdout });
+                defer gpa.free(debug_output);
+                _ = linux.write(2, debug_output.ptr, debug_output.len);
+                if (!tool_result.success and tool_result.stderr.len > 0) {
+                    const debug_err = try std.fmt.allocPrint(gpa, "[DEBUG] Tool stderr: {s}\n", .{tool_result.stderr});
+                    defer gpa.free(debug_err);
+                    _ = linux.write(2, debug_err.ptr, debug_err.len);
+                }
+            }
 
             // Append tool result as tool role message
             const result_msg = if (tool_result.success)

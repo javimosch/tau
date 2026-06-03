@@ -23,6 +23,7 @@ pub const ToolCall = struct {
 pub const Response = struct {
     content: []const u8,
     tool_calls: []ToolCall,
+    reasoning_content: ?[]const u8 = null,
 };
 
 pub const ToolInfo = struct {
@@ -303,6 +304,13 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     };
     if (exit_code != 0) return error.HTTPRequestFailed;
 
+    // Log raw response if debug mode is enabled
+    if (cfg.debug) {
+        const debug_raw = try std.fmt.allocPrint(gpa, "[DEBUG] Raw API response: {s}\n", .{result.stdout});
+        defer gpa.free(debug_raw);
+        _ = linux.write(2, debug_raw.ptr, debug_raw.len);
+    }
+
     // Parse tool_calls first: on a tool-call turn the model returns
     // "content":null, which is valid (not an error).
     const tool_calls = try extractToolCalls(gpa, result.stdout);
@@ -316,9 +324,13 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
         break :blk try gpa.dupe(u8, "");
     };
 
+    // Extract reasoning_content if available (thinking chunks)
+    const reasoning_content = try jsonmod.extractString(gpa, result.stdout, "reasoning_content");
+
     return Response{
         .content = content,
         .tool_calls = tool_calls,
+        .reasoning_content = reasoning_content,
     };
 }
 
@@ -328,6 +340,22 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
 /// before `content` is `_`, not `"`), so reasoning deltas are skipped.
 fn extractDeltaContent(json: []const u8) ?[]const u8 {
     const needle = "\"content\":\"";
+    const at = std.mem.indexOf(u8, json, needle) orelse return null;
+    const start = at + needle.len;
+    var end = start;
+    while (end < json.len) : (end += 1) {
+        if (json[end] == '\\') {
+            end += 1;
+            continue;
+        }
+        if (json[end] == '"') break;
+    } else return null;
+    return json[start..end];
+}
+
+/// Return the JSON-escaped slice of `delta.reasoning_content` within an SSE chunk.
+fn extractDeltaReasoning(json: []const u8) ?[]const u8 {
+    const needle = "\"reasoning_content\":\"";
     const at = std.mem.indexOf(u8, json, needle) orelse return null;
     const start = at + needle.len;
     var end = start;
@@ -389,6 +417,13 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
     while (true) {
         const line = (r.takeDelimiter('\n') catch break) orelse break;
         if (line.len == 0) continue;
+
+        if (cfg.debug) {
+            const debug_line = try std.fmt.allocPrint(gpa, "[DEBUG] SSE line: {s}\n", .{line});
+            defer gpa.free(debug_line);
+            _ = linux.write(2, debug_line.ptr, debug_line.len);
+        }
+
         if (!std.mem.startsWith(u8, line, "data:")) {
             // Non-SSE line before any data: likely an error envelope.
             if (!saw_data and std.mem.indexOf(u8, line, "\"error\"") != null) {
@@ -401,6 +436,29 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
         var data = line["data:".len..];
         if (data.len > 0 and data[0] == ' ') data = data[1..];
         if (std.mem.eql(u8, data, "[DONE]")) break;
+
+        // Extract reasoning_content first if thinking mode is enabled
+        if (cfg.thinking) {
+            if (extractDeltaReasoning(data)) |reasoning_esc| {
+                if (reasoning_esc.len > 0) {
+                    switch (cfg.mode) {
+                        .text => {
+                            const txt = try jsonmod.unescapeAlloc(gpa, reasoning_esc);
+                            defer gpa.free(txt);
+                            const prefix = "[THINKING] ";
+                            _ = linux.write(1, prefix.ptr, prefix.len);
+                            _ = linux.write(1, txt.ptr, txt.len);
+                            _ = linux.write(1, "\n".ptr, 1);
+                        },
+                        .json => {
+                            const out_line = try std.fmt.allocPrint(gpa, "{{\"reasoning\":\"{s}\",\"done\":false}}\n", .{reasoning_esc});
+                            defer gpa.free(out_line);
+                            _ = linux.write(1, out_line.ptr, out_line.len);
+                        },
+                    }
+                }
+            }
+        }
 
         const esc = extractDeltaContent(data) orelse continue;
         if (esc.len == 0) continue;

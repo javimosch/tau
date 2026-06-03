@@ -117,7 +117,11 @@ pub fn parse(
             continue;
         }
         if (eq(a, "--thinking")) {
-            cfg.thinking = val(argv, &i) orelse return missing(arena, a);
+            cfg.thinking = true;
+            continue;
+        }
+        if (eq(a, "--debug")) {
+            cfg.debug = true;
             continue;
         }
         if (eq(a, "--temperature")) {

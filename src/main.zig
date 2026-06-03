@@ -48,11 +48,12 @@ const help_text =
     \\      --system-prompt <text>   Set the system prompt
     \\      --append-system-prompt <text>  Append to the system prompt (repeatable)
     \\      --mode <text|json>       Output mode (default: json)
-    \\      --stream                 Stream the response token-by-token (chat, no tools)
+    \\      --no-stream              Disable streaming (streaming is default)
     \\  -t, --tools <csv>            Allowlist of tool names
     \\  -xt, --exclude-tools <csv>   Denylist of tool names
     \\  -nt, --no-tools              Disable all tools
-    \\      --thinking <level>       Thinking level: off|minimal|low|medium|high|xhigh
+    \\      --thinking               Enable thinking chunks (show model reasoning)
+    \\      --debug                  Show perf stats and tool calls (input+output)
     \\      --temperature <f>        Sampling temperature (default: 0.7)
     \\      --max-tokens <n>         Max output tokens
     \\      --timeout-ms <n>         Request timeout in ms (default: 120000)
@@ -63,7 +64,7 @@ const help_text =
     \\Examples:
     \\  pizig "List the files in src/"
     \\  pizig --model openai/gpt-4o-mini "Explain this error" @log.txt
-    \\  pizig --mode text --system-prompt "Be terse" "What is Zig?"
+    \\  pizig --mode text --no-stream --system-prompt "Be terse" "What is Zig?"
     \\
 ;
 
@@ -81,7 +82,7 @@ fn printVersion() void {
 // double-brace string that produced malformed output).
 fn printHelpJson() void {
     const j = std.fmt.allocPrint(std.heap.page_allocator,
-        \\{{"version":"{s}","name":"{s}","description":"Agent-first AI CLI - non-interactive Zig implementation of pi","flags":[{{"name":"--provider","arg":"name"}},{{"name":"--model","arg":"pattern"}},{{"name":"--api-key","arg":"key"}},{{"name":"--system-prompt","arg":"text"}},{{"name":"--append-system-prompt","arg":"text"}},{{"name":"--mode","arg":"text|json"}},{{"name":"--stream"}},{{"name":"--tools","arg":"csv"}},{{"name":"--exclude-tools","arg":"csv"}},{{"name":"--no-tools"}},{{"name":"--thinking","arg":"level"}},{{"name":"--print"}},{{"name":"--help"}},{{"name":"--version"}}],"output_modes":["json"],"exit_codes":{{"0":"success","80":"invalid_argument","82":"missing_required_field","105":"connection_timeout","106":"auth_failed","110":"internal_error","111":"unimplemented"}}}}
+        \\{{"version":"{s}","name":"{s}","description":"Agent-first AI CLI - non-interactive Zig implementation of pi","flags":[{{"name":"--provider","arg":"name"}},{{"name":"--model","arg":"pattern"}},{{"name":"--api-key","arg":"key"}},{{"name":"--system-prompt","arg":"text"}},{{"name":"--append-system-prompt","arg":"text"}},{{"name":"--mode","arg":"text|json"}},{{"name":"--no-stream"}},{{"name":"--tools","arg":"csv"}},{{"name":"--exclude-tools","arg":"csv"}},{{"name":"--no-tools"}},{{"name":"--thinking"}},{{"name":"--debug"}},{{"name":"--temperature","arg":"f"}},{{"name":"--print"}},{{"name":"--help"}},{{"name":"--version"}}],"output_modes":["json"],"defaults":{{"mode":"json","stream":true}},"exit_codes":{{"0":"success","80":"invalid_argument","82":"missing_required_field","105":"connection_timeout","106":"auth_failed","110":"internal_error","111":"unimplemented"}}}}
     , .{ version, name }) catch return;
     defer std.heap.page_allocator.free(j);
     writeOut(j);

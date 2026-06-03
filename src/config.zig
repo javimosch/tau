@@ -20,13 +20,16 @@ pub const Config = struct {
     /// no tools (tool_call assembly is not streamed). text mode streams raw
     /// deltas; json mode streams NDJSON {"chunk":..,"done":false} then a final
     /// {"done":true}.
-    stream: bool = false,
+    stream: bool = true,
     no_tools: bool = false,
     /// Allowlist of tool names (null = all built-ins enabled). Owned elsewhere.
     tools_allow: ?[]const []const u8 = null,
     /// Denylist of tool names. Owned elsewhere.
     tools_deny: ?[]const []const u8 = null,
-    thinking: ?[]const u8 = null,
+    /// Enable thinking chunks in output (shows model reasoning)
+    thinking: bool = false,
+    /// Debug mode: show perf stats and tool calls (input+output)
+    debug: bool = false,
     temperature: f32 = 0.7,
     max_tokens: ?u32 = null,
     // Reasoning models routinely take >30s; default generously (the old 30s
