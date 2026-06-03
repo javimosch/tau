@@ -23,14 +23,14 @@ const FileConfig = struct {
     goal_max_continues: ?u32 = null,
 };
 
-/// Build the config-file path: <HOME>/.config/pizig/config.json. Returns null if
+/// Build the config-file path: <HOME>/.config/tau/config.json. Returns null if
 /// HOME is unset.
 pub fn path(arena: std.mem.Allocator, env: *std.process.Environ.Map) ?[]u8 {
     const home = env.get("HOME") orelse return null;
-    return std.fmt.allocPrint(arena, "{s}/.config/pizig/config.json", .{home}) catch null;
+    return std.fmt.allocPrint(arena, "{s}/.config/tau/config.json", .{home}) catch null;
 }
 
-/// Load ~/.config/pizig/config.json into a base Config. Missing file / bad JSON /
+/// Load ~/.config/tau/config.json into a base Config. Missing file / bad JSON /
 /// no HOME all degrade gracefully to defaults (never errors — config file is
 /// optional). The returned Config is meant to be passed to args.parse as `base`
 /// so CLI flags override it.

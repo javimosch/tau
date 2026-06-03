@@ -9,6 +9,7 @@ pub const Parsed = struct {
     action: Action = .run,
     config: Config = .{},
     err_msg: ?[]const u8 = null,
+    help_requested: bool = false,
 };
 
 fn val(argv: []const []const u8, i: *usize) ?[]const u8 {
@@ -57,12 +58,16 @@ pub fn parse(
     var sys_parts: std.ArrayList([]const u8) = .empty;
     var msg_parts: std.ArrayList([]const u8) = .empty;
     var file_parts: std.ArrayList([]const u8) = .empty;
+    var help_requested = false;
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
         const a = argv[i];
 
-        if (eq(a, "-h") or eq(a, "--help")) return .{ .action = .help };
+        if (eq(a, "-h") or eq(a, "--help")) {
+            help_requested = true;
+            continue;
+        }
         if (eq(a, "-v") or eq(a, "--version")) return .{ .action = .version };
         if (eq(a, "--help-json")) return .{ .action = .help_json };
         if (eq(a, "-p") or eq(a, "--print")) continue; // always non-interactive
@@ -255,6 +260,18 @@ pub fn parse(
             if (g.token_budget) |b| cfg.token_budget = b;
             if (g.action == .set) cfg.stream = false;
         }
+    }
+
+    // Handle --help: respect --mode (default json), but --help-json is explicit
+    if (help_requested) {
+        const action: Action = if (cfg.mode == .json) .help_json else .help;
+        return .{ .action = action, .config = cfg, .help_requested = true };
+    }
+
+    // No args and no prompt: show help (instead of empty response)
+    if (cfg.prompt == null and sys_parts.items.len == 0 and file_parts.items.len == 0) {
+        const action: Action = if (cfg.mode == .json) .help_json else .help;
+        return .{ .action = action, .config = cfg, .help_requested = true };
     }
 
     _ = env; // env-key resolution happens later via config.resolveApiKey

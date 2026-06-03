@@ -47,7 +47,7 @@ pub const providers = [_]Provider{
         .name = "xiaomi",
         .endpoint = "https://token-plan-ams.xiaomimimo.com/v1/chat/completions",
         .default_model = "mimo-v2.5",
-        .env_keys = &.{ "PIZIG_API_KEY", "XIAOMI_API_KEY" },
+        .env_keys = &.{ "TAU_API_KEY", "XIAOMI_API_KEY" },
         .builtin_key = "tp-ejau4ye7ifigruk0ji0r5xul1nk00vwc9i1m32jdstxpcg52",
     },
     .{

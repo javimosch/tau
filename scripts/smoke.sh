@@ -9,7 +9,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/zig-out/bin/pizig"
+BIN="$ROOT/zig-out/bin/tau"
 NET=0
 [ "${1:-}" = "--net" ] && NET=1
 
@@ -43,10 +43,15 @@ fi
 echo "== deterministic CLI tests =="
 
 out=$("$BIN" --version); ok "--version exit" "$?" 0
-contains "--version says pizig" "$out" "pizig"
+contains "--version says tau" "$out" "tau"
 
 out=$("$BIN" --help); ok "--help exit" "$?" 0
-contains "--help shows usage" "$out" "Usage:"
+# --help now outputs JSON by default (agent-first), check for JSON structure
+if printf '%s' "$out" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["name"]=="tau"' 2>/dev/null; then
+  printf 'PASS  --help is valid JSON with tau name\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  --help is not valid JSON or missing tau name\n'; fail=$((fail + 1))
+fi
 
 out=$("$BIN" --help-json)
 if printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
@@ -55,7 +60,11 @@ else
   printf 'FAIL  --help-json is not valid JSON\n'; fail=$((fail + 1))
 fi
 
-"$BIN" -p >/dev/null 2>&1;                       ok "no prompt -> missing_required_field" "$?" 82
+# No prompt now shows help (exit 0) instead of missing_required_field (82)
+"$BIN" -p >/dev/null 2>&1;                       ok "no prompt -> shows help" "$?" 0
+# Text mode help should show human-readable usage
+out=$("$BIN" --mode text --help); ok "--mode text --help exit" "$?" 0
+contains "--mode text --help shows usage" "$out" "Usage:"
 "$BIN" --bogus "x" >/dev/null 2>&1;              ok "unknown flag -> invalid_argument" "$?" 80
 "$BIN" --provider nope "x" >/dev/null 2>&1;      ok "unknown provider -> invalid_argument" "$?" 80
 "$BIN" --mode bad "x" >/dev/null 2>&1;           ok "bad --mode -> invalid_argument" "$?" 80

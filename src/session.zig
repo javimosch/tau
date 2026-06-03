@@ -34,13 +34,13 @@ fn validName(name: []const u8) bool {
     return !std.mem.eql(u8, name, "..") and !std.mem.eql(u8, name, ".");
 }
 
-/// <HOME>/.config/pizig/sessions
+/// <HOME>/.config/tau/sessions
 pub fn sessionsDir(a: std.mem.Allocator, env: *std.process.Environ.Map) ?[]u8 {
     const home = env.get("HOME") orelse return null;
-    return std.fmt.allocPrint(a, "{s}/.config/pizig/sessions", .{home}) catch null;
+    return std.fmt.allocPrint(a, "{s}/.config/tau/sessions", .{home}) catch null;
 }
 
-/// <HOME>/.config/pizig/sessions/<name>.json (null if HOME unset or bad name).
+/// <HOME>/.config/tau/sessions/<name>.json (null if HOME unset or bad name).
 pub fn path(a: std.mem.Allocator, env: *std.process.Environ.Map, name: []const u8) ?[]u8 {
     if (!validName(name)) return null;
     const dir = sessionsDir(a, env) orelse return null;
@@ -57,7 +57,7 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map,
     });
 }
 
-/// Persist a session (creates ~/.config/pizig/sessions as needed).
+/// Persist a session (creates ~/.config/tau/sessions as needed).
 pub fn save(io: std.Io, gpa: std.mem.Allocator, env: *std.process.Environ.Map, state: SessionState) !void {
     const dir = sessionsDir(gpa, env) orelse return error.NoHome;
     defer gpa.free(dir);

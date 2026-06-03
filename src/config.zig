@@ -41,7 +41,7 @@ pub const Config = struct {
     timeout_ms: i64 = 120_000,
 
     // --- Session management ---
-    /// Named session; persists conversation + goal to ~/.config/pizig/sessions/<name>.json.
+    /// Named session; persists conversation + goal to ~/.config/tau/sessions/<name>.json.
     /// null = stateless single-shot (legacy behavior).
     session: ?[]const u8 = null,
 

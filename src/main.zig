@@ -6,7 +6,7 @@ const json = @import("json.zig");
 const agent = @import("agent.zig");
 const Config = cfgmod.Config;
 
-pub const name = "pizig";
+pub const name = "tau";
 pub const version = "0.2.0";
 
 // Semantic exit codes (Square-style).
@@ -35,10 +35,10 @@ fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recover
 }
 
 const help_text =
-    \\pizig - agent-first AI CLI (non-interactive Zig implementation of pi)
+    \\tau - agent-first AI CLI (non-interactive Zig implementation of pi)
     \\
     \\Usage:
-    \\  pizig [options] [@files...] [prompt...]
+    \\  tau [options] [@files...] [prompt...]
     \\
     \\Options:
     \\  -p, --print                  Non-interactive: process prompt and exit (default)
@@ -57,7 +57,7 @@ const help_text =
     \\      --temperature <f>        Sampling temperature (default: 0.7)
     \\      --max-tokens <n>         Max output tokens
     \\      --timeout-ms <n>         Request timeout in ms (default: 120000)
-    \\      --session <name>         Persist conversation + goal to ~/.config/pizig/sessions/<name>.json
+    \\      --session <name>         Persist conversation + goal to ~/.config/tau/sessions/<name>.json
     \\      --context-window <n>     Model context window in tokens (default: per-provider)
     \\      --compact-threshold <f>  Auto-compact above this fraction of the window (default: 0.5)
     \\      --compact-keep-recent <n>  Tokens of recent history kept verbatim (default: 20000)
@@ -73,11 +73,11 @@ const help_text =
     \\  /goal status|pause|resume|clear|complete   Manage the session's goal (needs --session)
     \\
     \\Examples:
-    \\  pizig "List the files in src/"
-    \\  pizig --model openai/gpt-4o-mini "Explain this error" @log.txt
-    \\  pizig --session work1 "Remember: the build uses zig 0.16"
-    \\  pizig --session work1 "/goal add a --version flag and verify it builds"
-    \\  pizig --session work1 "/goal status"
+    \\  tau "List the files in src/"
+    \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
+    \\  tau --session work1 "Remember: the build uses zig 0.16"
+    \\  tau --session work1 "/goal add a --version flag and verify it builds"
+    \\  tau --session work1 "/goal status"
     \\
 ;
 
@@ -107,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
 
-    // Config-file defaults (~/.config/pizig/config.json); CLI flags override these.
+    // Config-file defaults (~/.config/tau/config.json); CLI flags override these.
     const base_cfg: Config = @import("configfile.zig").load(io, arena, init.environ_map);
 
     const parsed = argsmod.parse(io, arena, init.minimal.args, init.environ_map, base_cfg) catch {
