@@ -38,6 +38,7 @@ pub fn parse(
     arena: std.mem.Allocator,
     args: std.process.Args,
     env: *std.process.Environ.Map,
+    base: Config,
 ) !Parsed {
     var it = try std.process.Args.Iterator.initAllocator(args, arena);
     _ = it.next(); // skip argv[0]
@@ -46,10 +47,12 @@ pub fn parse(
     while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
     const argv = argv_list.items;
 
-    var cfg: Config = .{};
+    // Start from `base` (config-file defaults). CLI flags below override it.
+    var cfg: Config = base;
     var provider_opt: ?[]const u8 = null;
     var model_opt: ?[]const u8 = null;
     var api_key_opt: ?[]const u8 = null;
+    var ctx_window_opt: ?u32 = null;
     var sys_parts: std.ArrayList([]const u8) = .empty;
     var msg_parts: std.ArrayList([]const u8) = .empty;
     var file_parts: std.ArrayList([]const u8) = .empty;
@@ -72,6 +75,32 @@ pub fn parse(
         }
         if (eq(a, "--no-tools") or eq(a, "-nt")) {
             cfg.no_tools = true;
+            continue;
+        }
+        if (eq(a, "--session")) {
+            cfg.session = val(argv, &i) orelse return missing(arena, a);
+            continue;
+        }
+        if (eq(a, "--context-window")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            ctx_window_opt = std.fmt.parseInt(u32, v, 10) catch
+                return errResult(arena, "invalid --context-window: {s}", .{v});
+            continue;
+        }
+        if (eq(a, "--compact-threshold")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            cfg.compact_threshold = std.fmt.parseFloat(f32, v) catch
+                return errResult(arena, "invalid --compact-threshold: {s}", .{v});
+            continue;
+        }
+        if (eq(a, "--no-compact")) {
+            cfg.auto_compact = false;
+            continue;
+        }
+        if (eq(a, "--goal-max-iterations")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            cfg.goal_max_iterations = std.fmt.parseInt(u32, v, 10) catch
+                return errResult(arena, "invalid --goal-max-iterations: {s}", .{v});
             continue;
         }
 
@@ -167,6 +196,15 @@ pub fn parse(
     cfg.endpoint = p.endpoint;
     cfg.model = model_opt orelse p.default_model;
     cfg.api_key = api_key_opt;
+
+    // Context window precedence: --context-window > config-file value (if it set
+    // a non-default) > provider/model table default. Wrong values only shift WHEN
+    // compaction triggers, never correctness.
+    if (ctx_window_opt) |cw| {
+        cfg.context_window = cw;
+    } else if (base.context_window == 256_000) {
+        cfg.context_window = p.context_window;
+    } // else keep base (config-file supplied a custom window)
 
     // Build the system prompt (parts joined by newlines).
     if (sys_parts.items.len > 0) {

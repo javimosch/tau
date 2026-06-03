@@ -94,7 +94,10 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
 
-    const parsed = argsmod.parse(io, arena, init.minimal.args, init.environ_map) catch {
+    // Config-file defaults (Phase 2 wires src/configfile.zig here); CLI overrides.
+    const base_cfg: Config = .{};
+
+    const parsed = argsmod.parse(io, arena, init.minimal.args, init.environ_map, base_cfg) catch {
         printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "argument parsing failed", false);
         std.process.exit(@intFromEnum(ExitCode.internal_error));
     };

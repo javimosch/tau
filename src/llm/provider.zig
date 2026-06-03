@@ -37,6 +37,8 @@ pub const Provider = struct {
     default_model: []const u8,
     env_keys: []const []const u8 = &.{},
     builtin_key: ?[]const u8 = null,
+    /// Model context window in tokens (used for the compaction threshold).
+    context_window: u32 = 256_000,
 };
 
 // Provider table (moved from config.zig as requested)
@@ -53,12 +55,14 @@ pub const providers = [_]Provider{
         .endpoint = "https://api.openai.com/v1/chat/completions",
         .default_model = "gpt-4o-mini",
         .env_keys = &.{"OPENAI_API_KEY"},
+        .context_window = 128_000,
     },
     .{
         .name = "deepseek",
         .endpoint = "https://api.deepseek.com/v1/chat/completions",
         .default_model = "deepseek-chat",
         .env_keys = &.{"DEEPSEEK_API_KEY"},
+        .context_window = 65_536,
     },
 };
 
