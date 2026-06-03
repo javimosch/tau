@@ -83,6 +83,23 @@ if [ "$NET" = 1 ]; then
   contains "@file content reaches model" "$out" "ZQ-91"
   rm -f "$tmp"
 
+  # Streaming: text mode round-trip
+  out=$("$BIN" --stream --mode text "Reply with exactly: STREAM_OK_42"); rc=$?
+  ok "stream text exit" "$rc" 0
+  contains "stream text returns marker" "$out" "STREAM_OK_42"
+
+  # Streaming: json mode emits valid NDJSON with a final done line
+  out=$("$BIN" --stream --mode json "Say hello in two words"); rc=$?
+  ok "stream json exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json
+lines=[l for l in sys.stdin if l.strip()]
+assert all(json.loads(l) for l in lines)
+assert json.loads(lines[-1]).get("done") is True' 2>/dev/null; then
+    printf 'PASS  stream json is valid NDJSON ending in done\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  stream json malformed\n'; fail=$((fail + 1))
+  fi
+
   # Tool-calling: bash round-trip (model calls bash -> we execute -> model answers)
   out=$("$BIN" --tools bash "Use the bash tool to run: echo TOOLS_WORK_91"); rc=$?
   ok "bash tool exit" "$rc" 0

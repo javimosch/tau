@@ -62,6 +62,14 @@ pub fn parse(
         if (eq(a, "-v") or eq(a, "--version")) return .{ .action = .version };
         if (eq(a, "--help-json")) return .{ .action = .help_json };
         if (eq(a, "-p") or eq(a, "--print")) continue; // always non-interactive
+        if (eq(a, "--stream")) {
+            cfg.stream = true;
+            continue;
+        }
+        if (eq(a, "--no-stream")) {
+            cfg.stream = false;
+            continue;
+        }
         if (eq(a, "--no-tools") or eq(a, "-nt")) {
             cfg.no_tools = true;
             continue;

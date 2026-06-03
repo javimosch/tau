@@ -15,7 +15,12 @@ pub const Config = struct {
     api_key: ?[]const u8 = null,
     prompt: ?[]const u8 = null,
     system_prompt: ?[]const u8 = null,
-    mode: OutputMode = .text,
+    mode: OutputMode = .json,
+    /// Stream the response token-by-token (SSE). Implies a pure chat turn with
+    /// no tools (tool_call assembly is not streamed). text mode streams raw
+    /// deltas; json mode streams NDJSON {"chunk":..,"done":false} then a final
+    /// {"done":true}.
+    stream: bool = false,
     no_tools: bool = false,
     /// Allowlist of tool names (null = all built-ins enabled). Owned elsewhere.
     tools_allow: ?[]const []const u8 = null,

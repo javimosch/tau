@@ -321,3 +321,112 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
         .tool_calls = tool_calls,
     };
 }
+
+/// Return the JSON-escaped slice of `delta.content` within an SSE chunk (the
+/// chars between the quotes), or null if the field is absent or null. The
+/// `"content":"` needle never matches inside `"reasoning_content":"` (the byte
+/// before `content` is `_`, not `"`), so reasoning deltas are skipped.
+fn extractDeltaContent(json: []const u8) ?[]const u8 {
+    const needle = "\"content\":\"";
+    const at = std.mem.indexOf(u8, json, needle) orelse return null;
+    const start = at + needle.len;
+    var end = start;
+    while (end < json.len) : (end += 1) {
+        if (json[end] == '\\') {
+            end += 1;
+            continue;
+        }
+        if (json[end] == '"') break;
+    } else return null;
+    return json[start..end];
+}
+
+/// Streaming completion: sends `"stream":true`, spawns `curl -N`, parses the
+/// SSE `data:` events, and writes content deltas to stdout incrementally per
+/// cfg.mode. A pure chat turn (no tools — tool_call assembly is not streamed).
+/// text mode: raw token deltas. json mode: NDJSON `{"chunk":..,"done":false}`
+/// lines, then a final `{"model":..,"done":true}`.
+pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages: []const Message) !void {
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    try body.appendSlice(gpa, "{\"model\":\"");
+    try jsonmod.escapeInto(gpa, &body, cfg.model);
+    try body.appendSlice(gpa, "\",\"messages\":[");
+    for (messages, 0..) |msg, i| {
+        if (i > 0) try body.appendSlice(gpa, ",");
+        try body.appendSlice(gpa, "{\"role\":\"");
+        try jsonmod.escapeInto(gpa, &body, msg.role);
+        try body.appendSlice(gpa, "\",\"content\":\"");
+        try jsonmod.escapeInto(gpa, &body, msg.content);
+        try body.appendSlice(gpa, "\"}");
+    }
+    try body.appendSlice(gpa, "],\"stream\":true}");
+
+    const api_key = cfg.api_key orelse return error.AuthFailed;
+    const auth = try std.fmt.allocPrint(gpa, "Authorization: Bearer {s}", .{api_key});
+    defer gpa.free(auth);
+
+    const argv = &[_][]const u8{
+        "curl",          "-s",                          "-N", "-X", "POST", cfg.endpoint,
+        "-H",            auth,                          "-H", "Content-Type: application/json",
+        "--data-raw", body.items,
+    };
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+    defer child.kill(io);
+
+    const out = child.stdout.?;
+    var rbuf: [16384]u8 = undefined;
+    var fr = out.readerStreaming(io, &rbuf);
+    const r = &fr.interface;
+
+    var saw_data = false;
+    while (true) {
+        const line = (r.takeDelimiter('\n') catch break) orelse break;
+        if (line.len == 0) continue;
+        if (!std.mem.startsWith(u8, line, "data:")) {
+            // Non-SSE line before any data: likely an error envelope.
+            if (!saw_data and std.mem.indexOf(u8, line, "\"error\"") != null) {
+                _ = child.wait(io) catch {};
+                return error.HTTPRequestFailed;
+            }
+            continue;
+        }
+        saw_data = true;
+        var data = line["data:".len..];
+        if (data.len > 0 and data[0] == ' ') data = data[1..];
+        if (std.mem.eql(u8, data, "[DONE]")) break;
+
+        const esc = extractDeltaContent(data) orelse continue;
+        if (esc.len == 0) continue;
+        switch (cfg.mode) {
+            .text => {
+                const txt = try jsonmod.unescapeAlloc(gpa, esc);
+                defer gpa.free(txt);
+                _ = linux.write(1, txt.ptr, txt.len);
+            },
+            .json => {
+                // esc is already valid JSON-escaped text; embed it directly.
+                const out_line = try std.fmt.allocPrint(gpa, "{{\"chunk\":\"{s}\",\"done\":false}}\n", .{esc});
+                defer gpa.free(out_line);
+                _ = linux.write(1, out_line.ptr, out_line.len);
+            },
+        }
+    }
+
+    _ = child.wait(io) catch {};
+
+    switch (cfg.mode) {
+        .text => _ = linux.write(1, "\n".ptr, 1),
+        .json => {
+            const done = try std.fmt.allocPrint(gpa, "{{\"model\":\"{s}\",\"done\":true}}\n", .{cfg.model});
+            defer gpa.free(done);
+            _ = linux.write(1, done.ptr, done.len);
+        },
+    }
+}

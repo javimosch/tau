@@ -32,6 +32,13 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env_map: *std.proce
         .content = prompt_dupe,
     });
 
+    // Streaming path: a pure chat turn, no tools (tool_call assembly is not
+    // streamed). completeStream writes output incrementally per cfg.mode.
+    if (cfg.stream) {
+        try provider_mod.completeStream(io, gpa, cfg_with_key, messages.items);
+        return 0;
+    }
+
     // Get enabled tools
     const enabled_tools = try registry_mod.getEnabledTools(gpa, cfg.tools_allow, cfg.tools_deny);
     defer gpa.free(enabled_tools);
