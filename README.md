@@ -15,13 +15,15 @@ single-shot (`-p`) command surface while skipping the interactive TUI.
 | `@file` inclusion, system prompt | ✅ done |
 | Proper JSON request escaping + response decoding | ✅ done |
 | Semantic exit codes | ✅ done |
-| Built-in tools (read/write/edit/bash/ls/grep/find) | ⚙️ scaffolded |
-| **Tool-calling loop** (schemas sent + tool execution) | 🚧 in progress |
+| Built-in tools (read/write/edit/bash/ls/grep/find) | ✅ done |
+| **Tool-calling loop** (schemas sent + tool execution) | ✅ done |
 
 Single-shot chat (text and json) works end-to-end against the configured
-provider. The agentic tool-calling loop is scaffolded (tool files + registry +
-loop), but tool schemas are not yet sent to the model and tool execution is a
-placeholder — that is the active next milestone.
+provider, and the agentic tool-calling loop is functional: tool JSON-Schemas are
+sent to the model, `tool_calls` are parsed, the matching built-in tool is
+executed, and the result is fed back until the model produces a final answer.
+All 7 tools (bash/read/ls/grep/write/edit/find) are verified end-to-end against
+mimo-v2.5 via `scripts/smoke.sh --net` (23/23).
 
 > Historical note: an earlier "URGENT: std.process.run fails (exit 110)" blocker
 > was a **misdiagnosis**. `std.process.run` works correctly in Zig 0.16.0; the
