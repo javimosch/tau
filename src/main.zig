@@ -3,6 +3,7 @@ const linux = std.os.linux;
 const cfgmod = @import("config.zig");
 const argsmod = @import("args.zig");
 const json = @import("json.zig");
+const agent = @import("agent.zig");
 const Config = cfgmod.Config;
 
 pub const name = "pizig";
@@ -86,80 +87,6 @@ fn printHelpJson() void {
     writeOut("\n");
 }
 
-// === TEMPORARY single-shot runner ===========================================
-// This is a stopgap so `pizig` works end-to-end (M1). The main agent's
-// `agent.zig` (tool-calling loop) + `llm/provider.zig` (provider abstraction,
-// tool schemas, Anthropic support) will replace `runOnce`. Interface target:
-//   pub fn run(io, gpa, cfg) !u8;
-// Keep the request/parse logic here minimal and OpenAI-chat-completions shaped.
-fn runOnce(io: std.Io, gpa: std.mem.Allocator, cfg: Config, api_key: []const u8, prompt: []const u8) !void {
-    // Build the request body with proper JSON escaping.
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(gpa);
-    try body.appendSlice(gpa, "{\"model\":\"");
-    try json.escapeInto(gpa, &body, cfg.model);
-    try body.appendSlice(gpa, "\",\"messages\":[");
-    if (cfg.system_prompt) |sp| {
-        try body.appendSlice(gpa, "{\"role\":\"system\",\"content\":\"");
-        try json.escapeInto(gpa, &body, sp);
-        try body.appendSlice(gpa, "\"},");
-    }
-    try body.appendSlice(gpa, "{\"role\":\"user\",\"content\":\"");
-    try json.escapeInto(gpa, &body, prompt);
-    try body.appendSlice(gpa, "\"}],\"stream\":false}");
-
-    const auth = try std.fmt.allocPrint(gpa, "Authorization: Bearer {s}", .{api_key});
-    defer gpa.free(auth);
-
-    var argv: std.ArrayList([]const u8) = .empty;
-    defer argv.deinit(gpa);
-    try argv.appendSlice(gpa, &.{ "curl", "-s", "-X", "POST", cfg.endpoint, "-H", auth, "-H", "Content-Type: application/json", "--data-raw", body.items });
-    const argv_slice = try argv.toOwnedSlice(gpa);
-    defer gpa.free(argv_slice);
-
-    const timeout = std.Io.Timeout{ .duration = .{
-        .raw = std.Io.Duration.fromMilliseconds(cfg.timeout_ms),
-        .clock = .awake,
-    } };
-
-    const result = std.process.run(gpa, io, .{
-        .argv = argv_slice,
-        .stdout_limit = .unlimited,
-        .stderr_limit = .unlimited,
-        .timeout = timeout,
-    }) catch |err| {
-        if (err == error.Timeout) return error.Timeout;
-        return error.HTTPRequestFailed;
-    };
-    defer gpa.free(result.stdout);
-    defer gpa.free(result.stderr);
-
-    const exit_code: u8 = switch (result.term) {
-        .exited => |c| c,
-        else => 1,
-    };
-    if (exit_code != 0) return error.HTTPRequestFailed;
-
-    const content = (try json.extractString(gpa, result.stdout, "content")) orelse
-        return error.InvalidResponse;
-    defer gpa.free(content);
-
-    switch (cfg.mode) {
-        .text => {
-            writeOut(content);
-            writeOut("\n");
-        },
-        .json => {
-            const esc = try json.escapeAlloc(gpa, content);
-            defer gpa.free(esc);
-            const out = try std.fmt.allocPrint(gpa, "{{\"version\":\"{s}\",\"model\":\"{s}\",\"content\":\"{s}\",\"done\":true}}\n", .{ version, cfg.model, esc });
-            defer gpa.free(out);
-            writeOut(out);
-        },
-    }
-}
-// === end temporary runner ===================================================
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -193,17 +120,8 @@ pub fn main(init: std.process.Init) !void {
 
     const cfg = parsed.config;
 
-    const prompt = cfg.prompt orelse {
-        printErrorJson(@intFromEnum(ExitCode.missing_required_field), "missing_required_field", "no prompt provided (pass a prompt or @file; see --help)", false);
-        std.process.exit(@intFromEnum(ExitCode.missing_required_field));
-    };
-
-    const api_key = cfgmod.resolveApiKey(cfg, init.environ_map) orelse {
-        printErrorJson(@intFromEnum(ExitCode.auth_failed), "auth_failed", "no API key (use --api-key or set the provider env var)", false);
-        std.process.exit(@intFromEnum(ExitCode.auth_failed));
-    };
-
-    runOnce(io, gpa, cfg, api_key, prompt) catch |err| {
+    // Run the agent (replaces temporary runOnce)
+    const exit_code = agent.run(io, gpa, cfg, init.environ_map) catch |err| {
         const code: ExitCode = switch (err) {
             error.Timeout => .connection_timeout,
             else => .internal_error,
@@ -211,6 +129,7 @@ pub fn main(init: std.process.Init) !void {
         printErrorJson(@intFromEnum(code), @errorName(err), "request failed", false);
         std.process.exit(@intFromEnum(code));
     };
+    std.process.exit(exit_code);
 }
 
 test {

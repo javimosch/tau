@@ -14,6 +14,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Add llm module for provider abstraction
+    const llm_module = b.createModule(.{
+        .root_source_file = b.path("src/llm/provider.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("llm", llm_module);
+
+    // Add tools module
+    const tools_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/registry.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("tools", tools_module);
+
     b.installArtifact(exe);
 
     // zig build run — run directly

@@ -1,53 +1,17 @@
 const std = @import("std");
+const provider_mod = @import("llm/provider.zig");
 
 pub const OutputMode = enum { text, json };
 
-pub const Provider = struct {
-    name: []const u8,
-    endpoint: []const u8,
-    default_model: []const u8,
-    env_keys: []const []const u8 = &.{},
-    builtin_key: ?[]const u8 = null,
-};
-
-// STOPGAP provider table (M1). The main agent's llm/provider.zig may supersede
-// or extend this (e.g. Anthropic's /v1/messages schema). It lives here so the
-// argument parser can resolve `--provider` to an endpoint without yet depending
-// on the provider module. All entries below speak the OpenAI
-// /v1/chat/completions wire format.
-pub const providers = [_]Provider{
-    .{
-        .name = "xiaomi",
-        .endpoint = "https://token-plan-ams.xiaomimimo.com/v1/chat/completions",
-        .default_model = "mimo-v2.5",
-        .env_keys = &.{ "PIZIG_API_KEY", "XIAOMI_API_KEY" },
-        .builtin_key = "tp-ejau4ye7ifigruk0ji0r5xul1nk00vwc9i1m32jdstxpcg52",
-    },
-    .{
-        .name = "openai",
-        .endpoint = "https://api.openai.com/v1/chat/completions",
-        .default_model = "gpt-4o-mini",
-        .env_keys = &.{"OPENAI_API_KEY"},
-    },
-    .{
-        .name = "deepseek",
-        .endpoint = "https://api.deepseek.com/v1/chat/completions",
-        .default_model = "deepseek-chat",
-        .env_keys = &.{"DEEPSEEK_API_KEY"},
-    },
-};
-
-pub fn findProvider(name: []const u8) ?*const Provider {
-    for (&providers) |*p| {
-        if (std.mem.eql(u8, p.name, name)) return p;
-    }
-    return null;
-}
+// Re-export provider table from llm/provider.zig
+pub const Provider = provider_mod.Provider;
+pub const providers = provider_mod.providers;
+pub const findProvider = provider_mod.findProvider;
 
 pub const Config = struct {
-    provider: []const u8 = providers[0].name,
-    endpoint: []const u8 = providers[0].endpoint,
-    model: []const u8 = providers[0].default_model,
+    provider: []const u8 = provider_mod.providers[0].name,
+    endpoint: []const u8 = provider_mod.providers[0].endpoint,
+    model: []const u8 = provider_mod.providers[0].default_model,
     api_key: ?[]const u8 = null,
     prompt: ?[]const u8 = null,
     system_prompt: ?[]const u8 = null,
