@@ -1,169 +1,130 @@
-# Piz - Agent-First AI CLI
+# pizig — agent-first AI CLI
 
-A simplified Zig implementation of [pi](https://github.com/earendil-works/pi), designed specifically for AI agents rather than human interactive use.
+A non-interactive Zig reimplementation of [pi](https://github.com/earendil-works/pi),
+built for AI agents rather than human interactive use. It mirrors pi's
+single-shot (`-p`) command surface while skipping the interactive TUI.
 
-## Current Status
+## Status
 
-✅ **Successfully integrated with pi/opencode xiaomi-custom provider:**
-- **Provider**: Xiaomi Custom (Token-plan-ams)
-- **Model**: `mimo-v2.5` (1M context, supports text/image/pdf)
-- **Base URL**: `https://token-plan-ams.xiaomimimo.com/v1`
-- **API Key**: Configured from pi/opencode auth
-- **Status**: ✅ Real API calls working successfully
+| Capability | State |
+|---|---|
+| Rebrand `piz` → `pizig` (binary, help, version) | ✅ done |
+| CLI argument parsing | ✅ done |
+| Provider abstraction (xiaomi / openai / deepseek) | ✅ done |
+| Output modes `text` / `json` | ✅ done |
+| `@file` inclusion, system prompt | ✅ done |
+| Proper JSON request escaping + response decoding | ✅ done |
+| Semantic exit codes | ✅ done |
+| Built-in tools (read/write/edit/bash/ls/grep/find) | ⚙️ scaffolded |
+| **Tool-calling loop** (schemas sent + tool execution) | 🚧 in progress |
 
-✅ **Zig 0.16.0 Compatibility Resolved:**
-- Updated to use `std.process.Init` main signature
-- Implemented `std.process.run` for HTTP calls via curl
-- Used direct Linux system calls (`linux.write`) for output (following supercli-zig pattern)
-- Updated build.zig to use new `root_module` API
-- All Zig 0.16.0 API changes successfully addressed
+Single-shot chat (text and json) works end-to-end against the configured
+provider. The agentic tool-calling loop is scaffolded (tool files + registry +
+loop), but tool schemas are not yet sent to the model and tool execution is a
+placeholder — that is the active next milestone.
 
-## Key Differences from Pi
+> Historical note: an earlier "URGENT: std.process.run fails (exit 110)" blocker
+> was a **misdiagnosis**. `std.process.run` works correctly in Zig 0.16.0; the
+> failure was a 30s request timeout being exceeded by a ~34s reasoning-model
+> generation, surfacing as the tool's own `internal_error` (110). Fixed by a
+> 120s default `timeout_ms`. See `docs/roadmap.md`.
 
-- **No interactive TUI**: Piz is designed for programmatic use, not human interaction
-- **JSON output by default**: Structured, parseable output for agents
-- **Streaming enabled by default**: Real-time feedback for long operations
-- **Semantic exit codes**: Follows Square's system (0, 80-99 user errors, 100-119 software errors)
-- **Self-describing**: `--help-json` provides machine-readable schema
-- **No retry logic**: Agents handle retry strategies
-
-## Agent-Friendly Design Principles
-
-Piz follows the principles outlined in [AGENTS_FRIENDLY_TOOLS.md](../superlandings/docs/AGENTS_FRIENDLY_TOOLS.md):
-
-1. **Machine-Friendly Escape Hatches**: All commands support non-interactive execution
-2. **Output as API Contracts**: Versioned JSON schemas with stable structure
-3. **Semantic Exit Codes**: Actionable information for agent decision-making
-4. **Structured Output**: Multiple formats (JSON, plain) with consistent flags
-5. **Real-Time Feedback**: Progress on stderr, data on stdout
-
-## Current Implementation
-
-The current implementation demonstrates:
-
-- ✅ Semantic exit codes (0, 80-89, 90-99, 100-109, 110-119)
-- ✅ JSON output by default with versioning
-- ✅ Streaming JSON responses (chunked output)
-- ✅ Self-describing `--help-json` schema
-- ✅ Agent-friendly error format
-- ✅ Simplified LLM provider interface
-- ⚠️ Manual JSON serialization (for Zig 0.16.0 compatibility)
-- ⚠️ Mock LLM responses (demonstration only)
-
-## Building and Running
+## Build
 
 ```bash
-# Build the executable
-cd /home/jarancibia/ai/system/piz
-zig build-exe src/main.zig -O ReleaseFast
-
-# Run the demo
-./main
+zig build                 # produces zig-out/bin/pizig
+zig build test            # unit tests (json escaping, etc.)
 ```
 
-## Example Output
+Requires Zig 0.16.0 and `curl` on PATH.
+
+## Usage
+
+```
+pizig [options] [@files...] [prompt...]
+```
+
+Common options (see `pizig --help` for the full list):
+
+| Flag | Meaning |
+|---|---|
+| `-p, --print` | Non-interactive (default; always on) |
+| `--provider <name>` | `xiaomi` (default), `openai`, `deepseek` |
+| `--model <pattern>` | Model id, or `provider/id` (e.g. `openai/gpt-4o-mini`) |
+| `--api-key <key>` | API key (else provider env var, else builtin) |
+| `--system-prompt <text>` | Set the system prompt |
+| `--append-system-prompt <text>` | Append to the system prompt (repeatable) |
+| `--mode <text\|json>` | Output mode (default: `text`) |
+| `-t, --tools <csv>` | Tool allowlist |
+| `-xt, --exclude-tools <csv>` | Tool denylist |
+| `-nt, --no-tools` | Disable all tools |
+| `--timeout-ms <n>` | Request timeout (default: 120000) |
+| `--help-json` | Machine-readable help as JSON |
+| `-h, --help` / `-v, --version` | Help / version |
+
+### Examples
 
 ```bash
-$ ./main
-{"version":"0.1.0","name":"piz","description":"Agent-first AI CLI..."}
-{"version":"0.1.0","chunk":"This is a demonstrat","done":false}
-{"version":"0.1.0","chunk":"ion that Piz is conf","done":false}
-...
-{"version":"0.1.0","chunk":"","done":true}
-Model: mimo-v2.5, Tokens: null, Temperature: 0.70
+pizig -p "List the files in src/"
+pizig --model openai/gpt-4o-mini "Explain this error" @log.txt
+pizig --mode json --system-prompt "Be terse" "What is Zig?"
 ```
 
-## Successful API Test
+## Providers & API keys
 
-The xiaomi-custom provider credentials have been tested successfully via curl:
+Key resolution order: `--api-key` → provider env var → provider builtin key.
+
+| Provider | Endpoint | Env var(s) | Default model |
+|---|---|---|---|
+| `xiaomi` (default) | `…xiaomimimo.com/v1/chat/completions` | `PIZIG_API_KEY`, `XIAOMI_API_KEY` | `mimo-v2.5` |
+| `openai` | `api.openai.com/v1/chat/completions` | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| `deepseek` | `api.deepseek.com/v1/chat/completions` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+
+All current providers speak the OpenAI chat-completions wire format.
+
+## Output
+
+- `--mode text` (default): assistant text on stdout.
+- `--mode json`: one object: `{"version","model","content","done":true}`.
+- Errors go to stderr as `{"err":{"code","type","message","recoverable"}}`.
+
+## Exit codes (semantic)
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `80` | invalid argument |
+| `82` | missing required field (e.g. no prompt) |
+| `105` | connection timeout |
+| `106` | auth failed (no API key) |
+| `110` | internal error |
+| `111` | unimplemented |
+
+## Testing
 
 ```bash
-curl -s -X POST https://token-plan-ams.xiaomimimo.com/v1/chat/completions \
-  -H 'Authorization: Bearer tp-ejau4ye7ifigruk0ji0r5xul1nk00vwc9i1m32jdstxpcg52' \
-  -H 'Content-Type: application/json' \
-  --data-raw '{"model":"mimo-v2.5","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
+scripts/smoke.sh          # deterministic offline CLI tests
+scripts/smoke.sh --net    # also run real LLM calls (needs network + key)
 ```
 
-**Response**: Successfully returns responses from mimo-v2.5 model with 1M context window, confirming the integration credentials are correct.
+## Layout
 
-## Exit Codes
-
-- `0`: Success
-- `80-89`: User errors (invalid arguments, bad permissions, missing fields)
-- `90-99`: Resource/state errors (not found, already exists, conflicts)
-- `100-109`: Integration/external errors (API down, timeout, auth failed)
-- `110-119`: Internal software errors (bugs, panics)
-
-## Design Philosophy
-
-Piz is designed for **agents, not humans**. Every design decision prioritizes:
-
-- **Deterministic behavior**: Same input → same output structure
-- **Parseable output**: JSON schemas that agents can rely on
-- **Clear error signals**: Semantic exit codes for decision-making
-- **No hidden state**: No interactive prompts, no implicit retries
-- **Composability**: Can be piped with other tools
-
-## Comparison with Pi
-
-| Feature | Pi | Piz |
-|---------|----|-----|
-| Interface | Interactive TUI | CLI only |
-| Default output | Human-readable | JSON |
-| Streaming | Optional | Default |
-| Exit codes | Generic | Semantic |
-| Target user | Humans + agents | Agents |
-| Language | TypeScript | Zig |
-| Size | Large monorepo | Single binary |
-
-## Smoke Test Results
-
-✅ **LLM API Integration**: Successfully tested with xiaomi-custom provider (mimo-v2.5)
-- Direct curl calls to the API work perfectly
-- Real responses received and parsed correctly
-- Example landing page generated: `~/ai/systems/landing-test/piz-landing/index.html`
-
-⚠️ **Zig std.process.run Issue**: Currently experiencing issues with Zig 0.16.0's std.process.run API
-- Direct curl calls via shell work perfectly
-- Zig's std.process.run execution fails silently (exit code 110)
-- Likely due to API changes or environment configuration
-- **Workaround**: Use direct curl calls or investigate std.process.run further
-
-**Test Command Used**:
-```bash
-curl -s -X POST https://token-plan-ams.xiaomimimo.com/v1/chat/completions \
-  -H 'Authorization: Bearer tp-ejau4ye7ifigruk0ji0r5xul1nk00vwc9i1m32jdstxpcg52' \
-  -H 'Content-Type: application/json' \
-  --data-raw '{"model":"mimo-v2.5","messages":[{"role":"user","content":"Create a simple HTML landing page for Piz CLI tool"}],"stream":false}'
+```
+src/
+  main.zig            entry: parse args -> Config -> agent.run
+  args.zig            CLI argument parser
+  config.zig          Config + API-key resolution (re-exports provider table)
+  json.zig            JSON escape/unescape + field extraction
+  llm/provider.zig    Message/Response + complete() (provider table, wire calls)
+  tools/              read/write/edit/bash/ls/grep/find + registry
+  agent.zig           agentic tool-calling loop
+docs/
+  roadmap.md          roadmap + status
+  pizig-plan.md       multi-agent build plan / work split
+scripts/smoke.sh      end-to-end test harness
 ```
 
-**Result**: Successfully generated a modern, responsive landing page showcasing Piz CLI features.
+## Design
 
-## Future Work
-
-- [ ] **URGENT**: Fix Zig 0.16.0 std.process.run execution issues
-- [ ] Implement proper JSON serialization using std.json instead of simple string formatting
-- [ ] Implement streaming API responses (SSE parsing) for real-time streaming
-- [ ] Add support for multiple LLM providers
-- [ ] Implement proper command-line argument parsing
-- [ ] Implement tool calling functionality
-- [ ] Add state management
-- [ ] Add schema validation
-- [ ] Implement stdin prompt reading
-- [ ] Add more semantic error types
-- [ ] Add stdout/stderr separation (currently using linux.write directly)
-- [ ] Fix memory leak warnings by using arena allocator for temporary allocations
-
-## Technical Notes
-
-### Zig 0.16.0 Compatibility (RESOLVED)
-
-All Zig 0.16.0 API compatibility issues have been successfully resolved by following patterns from [supercli-zig](https://github.com/javimosch/supercli):
-
-1. **Main Function Signature**: Updated to use `std.process.Init` instead of `pub fn main() !void`
-2. **Process Execution**: Uses `std.process.run()` with `std.Io` and timeout configuration
-3. **I/O Operations**: Uses direct Linux system calls (`linux.write`) for stdout/stderr output
-4. **Build System**: Updated build.zig to use new `root_module` API with `b.path()`
-5. **Allocator Access**: Uses `init.gpa` and `init.io` from the init parameter
-
-These changes ensure full compatibility with Zig 0.16.0 while maintaining the agent-first design principles.
+pizig targets **agents, not humans**: deterministic structured output,
+semantic exit codes, no interactive prompts, no hidden retries, pipe-friendly.
