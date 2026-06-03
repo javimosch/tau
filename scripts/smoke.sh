@@ -131,6 +131,92 @@ assert json.loads(lines[-1]).get("done") is True' 2>/dev/null; then
     printf 'FAIL  write tool did not create expected file\n'; fail=$((fail + 1))
   fi
   rm -f "$wf"
+
+  # ── Session smoke test ──────────────────────────────────────────────────────
+  echo "== session tests =="
+  SESS="smoke-session-$$"
+  sess_file="$HOME/.config/tau/sessions/${SESS}.json"
+
+  out=$("$BIN" --session "$SESS" --no-tools --no-stream -p "My secret number is 42"); rc=$?
+  ok "session: first turn exit" "$rc" 0
+
+  out=$("$BIN" --session "$SESS" --no-tools --no-stream -p "What is my secret number?"); rc=$?
+  ok "session: second turn exit" "$rc" 0
+  contains "session: model recalls secret number" "$out" "42"
+
+  # Verify session file was written and has 4 messages (2 turns × user+assistant)
+  if python3 - "$sess_file" <<'PYEOF' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert len(d["messages"]) == 4, f"expected 4 messages, got {len(d['messages'])}"
+PYEOF
+  then
+    printf 'PASS  session: file has 4 messages\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  session: unexpected message count\n'; fail=$((fail + 1))
+  fi
+
+  rm -f "$sess_file"
+
+  # ── Auto-compaction smoke test ───────────────────────────────────────────────
+  # Strategy: seed a session with fat messages (--no-compact), then on the next
+  # call use --compact-keep-recent 50 with a tiny --context-window so that:
+  #   shouldCompact: est_tokens > context_window × compact_threshold  (fires)
+  #   compact():     tail_start > head+1                              (does work)
+  # Result: session shrinks and first msg contains "[Earlier conversation summary]"
+  echo "== compaction tests =="
+  CSESS="smoke-compact-$$"
+  csess_file="$HOME/.config/tau/sessions/${CSESS}.json"
+
+  # Seed 3 turns with long messages (~200 chars each) — total ~300 tokens
+  LONG_MSG="$(python3 -c "print('Tell me something interesting about space exploration. ' * 4, end='')")"
+  for i in 1 2 3; do
+    "$BIN" --session "$CSESS" --no-tools --no-stream --no-compact -p "$LONG_MSG" > /dev/null
+  done
+
+  # Verify seeding worked: 6 messages, enough tokens to exceed threshold
+  seed_ok=$(python3 - "$csess_file" <<'PYEOF' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1]))
+msgs = d["messages"]
+total_chars = sum(len(m["content"]) for m in msgs)
+est_tokens = total_chars // 4
+# shouldCompact: est_tokens > 200 * 0.5 = 100
+assert len(msgs) >= 6, f"expected >=6 messages, got {len(msgs)}"
+assert est_tokens > 100, f"expected est_tokens>100, got {est_tokens}"
+print(f"seeded: {len(msgs)} msgs, {est_tokens} tokens")
+PYEOF
+  )
+  if [ -n "$seed_ok" ]; then
+    printf 'PASS  compaction seed: %s\n' "$seed_ok"; pass=$((pass + 1))
+  else
+    printf 'FAIL  compaction seed: session not fat enough\n'; fail=$((fail + 1))
+  fi
+
+  # Trigger compaction: context_window=200, threshold=0.5 → fire at >100 tokens
+  # compact_keep_recent=50 → tiny tail, forces middle span to be summarized
+  out=$("$BIN" --session "$CSESS" --no-tools --no-stream \
+    --context-window 200 --compact-threshold 0.5 --compact-keep-recent 50 \
+    -p "Summarize what we discussed so far."); rc=$?
+  ok "compaction: trigger turn exit" "$rc" 0
+
+  # Verify: session shrank and contains the summary sentinel
+  if python3 - "$csess_file" <<'PYEOF' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1]))
+msgs = d["messages"]
+assert len(msgs) < 6, f"expected <6 messages after compaction, got {len(msgs)}"
+has_summary = any("[Earlier conversation summary]" in m["content"] for m in msgs)
+assert has_summary, "no compaction summary found in messages"
+print(f"compacted: {len(msgs)} msgs, summary present")
+PYEOF
+  then
+    printf 'PASS  compaction: session shrank with summary sentinel\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  compaction: session not compacted or summary missing\n'; fail=$((fail + 1))
+  fi
+
+  rm -f "$csess_file"
 else
   echo "(skipping network tests; pass --net to enable)"
 fi
