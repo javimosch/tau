@@ -57,14 +57,27 @@ const help_text =
     \\      --temperature <f>        Sampling temperature (default: 0.7)
     \\      --max-tokens <n>         Max output tokens
     \\      --timeout-ms <n>         Request timeout in ms (default: 120000)
+    \\      --session <name>         Persist conversation + goal to ~/.config/pizig/sessions/<name>.json
+    \\      --context-window <n>     Model context window in tokens (default: per-provider)
+    \\      --compact-threshold <f>  Auto-compact above this fraction of the window (default: 0.5)
+    \\      --compact-keep-recent <n>  Tokens of recent history kept verbatim (default: 20000)
+    \\      --no-compact             Disable automatic context compaction
+    \\      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
     \\      --help-json              Machine-readable help as JSON
     \\  -h, --help                   Show this help
     \\  -v, --version                Show version
     \\
+    \\Goal mode (in the prompt):
+    \\  /goal <objective>            Work autonomously until the objective is audited-complete
+    \\  /goal [--tokens N] <obj>     ...with a soft output-token budget (e.g. 250K)
+    \\  /goal status|pause|resume|clear|complete   Manage the session's goal (needs --session)
+    \\
     \\Examples:
     \\  pizig "List the files in src/"
     \\  pizig --model openai/gpt-4o-mini "Explain this error" @log.txt
-    \\  pizig --mode text --no-stream --system-prompt "Be terse" "What is Zig?"
+    \\  pizig --session work1 "Remember: the build uses zig 0.16"
+    \\  pizig --session work1 "/goal add a --version flag and verify it builds"
+    \\  pizig --session work1 "/goal status"
     \\
 ;
 
@@ -82,7 +95,7 @@ fn printVersion() void {
 // double-brace string that produced malformed output).
 fn printHelpJson() void {
     const j = std.fmt.allocPrint(std.heap.page_allocator,
-        \\{{"version":"{s}","name":"{s}","description":"Agent-first AI CLI - non-interactive Zig implementation of pi","flags":[{{"name":"--provider","arg":"name"}},{{"name":"--model","arg":"pattern"}},{{"name":"--api-key","arg":"key"}},{{"name":"--system-prompt","arg":"text"}},{{"name":"--append-system-prompt","arg":"text"}},{{"name":"--mode","arg":"text|json"}},{{"name":"--no-stream"}},{{"name":"--tools","arg":"csv"}},{{"name":"--exclude-tools","arg":"csv"}},{{"name":"--no-tools"}},{{"name":"--thinking"}},{{"name":"--debug"}},{{"name":"--temperature","arg":"f"}},{{"name":"--print"}},{{"name":"--help"}},{{"name":"--version"}}],"output_modes":["json"],"defaults":{{"mode":"json","stream":true}},"exit_codes":{{"0":"success","80":"invalid_argument","82":"missing_required_field","105":"connection_timeout","106":"auth_failed","110":"internal_error","111":"unimplemented"}}}}
+        \\{{"version":"{s}","name":"{s}","description":"Agent-first AI CLI - non-interactive Zig implementation of pi","flags":[{{"name":"--provider","arg":"name"}},{{"name":"--model","arg":"pattern"}},{{"name":"--api-key","arg":"key"}},{{"name":"--system-prompt","arg":"text"}},{{"name":"--append-system-prompt","arg":"text"}},{{"name":"--mode","arg":"text|json"}},{{"name":"--no-stream"}},{{"name":"--tools","arg":"csv"}},{{"name":"--exclude-tools","arg":"csv"}},{{"name":"--no-tools"}},{{"name":"--thinking"}},{{"name":"--debug"}},{{"name":"--temperature","arg":"f"}},{{"name":"--session","arg":"name"}},{{"name":"--context-window","arg":"n"}},{{"name":"--compact-threshold","arg":"f"}},{{"name":"--compact-keep-recent","arg":"n"}},{{"name":"--no-compact"}},{{"name":"--goal-max-iterations","arg":"n"}},{{"name":"--print"}},{{"name":"--help"}},{{"name":"--version"}}],"goal_commands":["/goal <objective>","/goal status","/goal pause","/goal resume","/goal clear","/goal complete"],"output_modes":["json"],"defaults":{{"mode":"json","stream":true,"auto_compact":true}},"exit_codes":{{"0":"success","80":"invalid_argument","82":"missing_required_field","105":"connection_timeout","106":"auth_failed","110":"internal_error","111":"unimplemented"}}}}
     , .{ version, name }) catch return;
     defer std.heap.page_allocator.free(j);
     writeOut(j);
@@ -126,7 +139,7 @@ pub fn main(init: std.process.Init) !void {
     const cfg = parsed.config;
 
     // Run the agent (replaces temporary runOnce)
-    const exit_code = agent.run(io, gpa, cfg, init.environ_map) catch |err| {
+    const exit_code = agent.run(io, gpa, arena, cfg, init.environ_map) catch |err| {
         const code: ExitCode = switch (err) {
             error.Timeout => .connection_timeout,
             else => .internal_error,
@@ -140,4 +153,7 @@ pub fn main(init: std.process.Init) !void {
 test {
     std.testing.refAllDecls(@This());
     _ = json;
+    _ = @import("goal.zig");
+    _ = @import("context.zig");
+    _ = @import("session.zig");
 }

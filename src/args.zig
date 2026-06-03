@@ -1,5 +1,6 @@
 const std = @import("std");
 const cfgmod = @import("config.zig");
+const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
 pub const Action = enum { run, help, version, help_json, err };
@@ -95,6 +96,12 @@ pub fn parse(
         }
         if (eq(a, "--no-compact")) {
             cfg.auto_compact = false;
+            continue;
+        }
+        if (eq(a, "--compact-keep-recent")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            cfg.compact_keep_recent_tokens = std.fmt.parseInt(u32, v, 10) catch
+                return errResult(arena, "invalid --compact-keep-recent: {s}", .{v});
             continue;
         }
         if (eq(a, "--goal-max-iterations")) {
@@ -237,6 +244,18 @@ pub fn parse(
         try pb.appendSlice(arena, m);
     }
     if (pb.items.len > 0) cfg.prompt = try pb.toOwnedSlice(arena);
+
+    // /goal detection: a prompt beginning with "/goal" sets goal mode. .set also
+    // forces non-streaming (goal needs the tool loop). Objective is arena-owned
+    // (a slice of cfg.prompt). Subcommands carry no objective.
+    if (cfg.prompt) |pr| {
+        if (goalmod.parse(pr)) |g| {
+            cfg.goal_action = g.action;
+            cfg.goal = g.objective;
+            if (g.token_budget) |b| cfg.token_budget = b;
+            if (g.action == .set) cfg.stream = false;
+        }
+    }
 
     _ = env; // env-key resolution happens later via config.resolveApiKey
     return .{ .action = .run, .config = cfg };
