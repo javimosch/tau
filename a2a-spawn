@@ -152,7 +152,10 @@ Begin."
         fi
         # --max-iterations raised: multi-exchange a2a coordination needs many
         # send/recv tool turns (the default 10 stalls long debates).
-        FLAGS=(-p --no-stream --tools bash --max-iterations 40)
+        # --timeout-ms raised: reasoning models are slow generating large outputs
+        # (e.g. code files) over a big context; the 120s default times out.
+        # --tools defaults to bash; override with --tau-tools for richer agents.
+        FLAGS=(-p --no-stream --tools "${TAU_TOOLS:-bash}" --max-iterations 40 --timeout-ms 300000)
         [ -n "$MODEL" ]    && FLAGS+=(--model "$MODEL")
         [ -n "$PROVIDER" ] && FLAGS+=(--provider "$PROVIDER")
         _spawn_bg "$TAU_BIN" "${FLAGS[@]}" \
