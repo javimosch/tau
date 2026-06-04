@@ -62,7 +62,7 @@ const help_text =
     \\      --compact-threshold <f>  Auto-compact above this fraction of the window (default: 0.5)
     \\      --compact-keep-recent <n>  Tokens of recent history kept verbatim (default: 20000)
     \\      --no-compact             Disable automatic context compaction
-    \\      --max-iterations <n>     Tool-loop cap, normal mode (default: 10)
+    \\      --max-iterations <n>     Tool-loop runaway backstop (default: 100; forces a final answer)
     \\      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
     \\      --help-json              Machine-readable help as JSON
     \\  -h, --help                   Show this help

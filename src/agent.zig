@@ -208,6 +208,17 @@ pub fn run(
         }
     }
 
+    // If the (non-goal) loop hit the cap while still calling tools, force one
+    // final tool-free completion so there is always an answer (matches ACP).
+    if (exit_code == 110 and !goal_active) {
+        try messages.append(gpa, .{ .role = "user", .content = try gpa.dupe(u8, "You have gathered enough. Stop using tools and give your final answer now.") });
+        if (provider_mod.complete(io, gpa, cfg_with_key, messages.items, null) catch null) |fin| {
+            try emitFinal(gpa, cfg, fin, false);
+            try messages.append(gpa, .{ .role = "assistant", .content = fin.content });
+            exit_code = 0;
+        }
+    }
+
     // --- Persist session (history + updated goal) ---
     if (cfg.session) |name| {
         if (stored_goal) |*g| {
