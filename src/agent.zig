@@ -92,7 +92,7 @@ pub fn run(
     // Skipped for goal mode (needs the tool loop) and for sessions (streaming
     // doesn't capture the assistant turn, so history would be incomplete — the
     // non-streaming loop below records full history instead).
-    if (cfg.stream and !goal_active and cfg.session == null) {
+    if (cfg.stream and !goal_active and cfg.session == null and !cfg.dry_run) {
         try provider_mod.completeStream(io, gpa, cfg_with_key, messages.items);
         return 0;
     }
@@ -107,6 +107,45 @@ pub fn run(
     }
     const tool_infos_slice = try tool_infos.toOwnedSlice(gpa);
     defer gpa.free(tool_infos_slice);
+
+    // --- Dry run: one planning turn, report tools that WOULD run, execute none ---
+    if (cfg.dry_run) {
+        const resp = try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tool_infos_slice);
+        defer gpa.free(resp.content);
+        if (resp.tool_calls.len == 0) {
+            try emitFinal(gpa, cfg, resp, false);
+            return 0;
+        }
+        switch (cfg.mode) {
+            .text => {
+                const hdr = "[dry-run] tau would call:\n";
+                _ = linux.write(1, hdr.ptr, hdr.len);
+                for (resp.tool_calls) |tc| {
+                    const line = try std.fmt.allocPrint(gpa, "  - {s} {s}\n", .{ tc.name, tc.arguments });
+                    defer gpa.free(line);
+                    _ = linux.write(1, line.ptr, line.len);
+                }
+            },
+            .json => {
+                var buf: std.ArrayList(u8) = .empty;
+                defer buf.deinit(gpa);
+                try buf.appendSlice(gpa, "{\"dry_run\":true,\"tool_calls\":[");
+                for (resp.tool_calls, 0..) |tc, i| {
+                    if (i != 0) try buf.append(gpa, ',');
+                    const ne = try jsonmod.escapeAlloc(gpa, tc.name);
+                    defer gpa.free(ne);
+                    const ae = try jsonmod.escapeAlloc(gpa, tc.arguments);
+                    defer gpa.free(ae);
+                    const obj = try std.fmt.allocPrint(gpa, "{{\"name\":\"{s}\",\"arguments\":\"{s}\"}}", .{ ne, ae });
+                    defer gpa.free(obj);
+                    try buf.appendSlice(gpa, obj);
+                }
+                try buf.appendSlice(gpa, "]}\n");
+                _ = linux.write(1, buf.items.ptr, buf.items.len);
+            },
+        }
+        return 0;
+    }
 
     // --- Agentic loop ---
     var iteration: u32 = 0;

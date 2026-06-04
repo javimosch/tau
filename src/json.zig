@@ -189,3 +189,38 @@ test "tool arg accessors" {
     try std.testing.expect(getIntArg(args, "missing") == null);
     try std.testing.expect(getBoolArg(args, "missing") == null);
 }
+
+test "adversarial json: escapes, unicode, malformed, no crash" {
+    const gpa = std.testing.allocator;
+
+    // escaped quotes + backslashes + newlines round-trip via unescape
+    {
+        const v = (try extractString(gpa, "{\"content\":\"a \\\"q\\\" b\\\\c\\nd\"}", "content")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("a \"q\" b\\c\nd", v);
+    }
+    // \uXXXX (BMP) decodes to UTF-8
+    {
+        const v = (try extractString(gpa, "{\"content\":\"caf\\u00e9\"}", "content")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("caf\u{00e9}", v);
+    }
+    // a backslash-escaped quote must NOT prematurely terminate the value
+    {
+        const v = (try getStringArg(gpa, "{\"command\":\"echo \\\"x\\\" && ls\"}", "command")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("echo \"x\" && ls", v);
+    }
+    // malformed / hostile inputs must return null/empty, never crash or loop
+    try std.testing.expect((try extractString(gpa, "{\"content\":\"unterminated", "content")) == null);
+    try std.testing.expect((try extractString(gpa, "not json at all", "content")) == null);
+    try std.testing.expect((try extractString(gpa, "", "content")) == null);
+    try std.testing.expect((try extractString(gpa, "{\"content\":", "content")) == null);
+    try std.testing.expect(getIntArg("{\"n\":\"notanumber\"}", "n") == null);
+    try std.testing.expect(getIntArg("{\"n\":}", "n") == null);
+    // trailing dangling backslash at end of input is handled
+    {
+        const v = (try extractString(gpa, "{\"content\":\"ends with backslash\\", "content"));
+        if (v) |vv| gpa.free(vv); // either null or a value, just must not crash
+    }
+}

@@ -37,6 +37,9 @@ pub const Config = struct {
     thinking: bool = false,
     /// Debug mode: show perf stats and tool calls (input+output)
     debug: bool = false,
+    /// Dry run: do one planning turn and report the tool calls the model would
+    /// make, without executing any of them.
+    dry_run: bool = false,
     temperature: f32 = 0.7,
     max_tokens: ?u32 = null,
     // Reasoning models routinely take >30s; default generously (the old 30s

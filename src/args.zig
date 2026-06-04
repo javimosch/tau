@@ -198,6 +198,10 @@ pub fn parse(
             cfg.debug = true;
             continue;
         }
+        if (eq(a, "--dry-run")) {
+            cfg.dry_run = true;
+            continue;
+        }
         if (eq(a, "--temperature")) {
             const v = val(argv, &i) orelse return missing(arena, a);
             cfg.temperature = std.fmt.parseFloat(f32, v) catch
