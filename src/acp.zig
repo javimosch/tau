@@ -19,10 +19,16 @@ const std = @import("std");
 const provider = @import("llm/provider.zig");
 const registry = @import("tools/registry.zig");
 const agentmod = @import("agent.zig");
+const session_mod = @import("session.zig");
 const cfgmod = @import("config.zig");
 const jsonmod = @import("json.zig");
 
 const linux = std.os.linux;
+
+/// Wall-clock milliseconds (for unique session ids).
+fn nowMillis(io: std.Io) i64 {
+    return std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds();
+}
 
 pub const Sub = cfgmod.AcpSub;
 
@@ -169,7 +175,7 @@ fn serve(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Env
             var stream = server.accept(io) catch break;
             var sr = stream.reader(io, rbuf);
             var sw = stream.writer(io, wbuf);
-            serveConn(io, gpa, cfg2, &sr.interface, &sw.interface) catch {};
+            serveConn(io, gpa, cfg2, env, &sr.interface, &sw.interface) catch {};
             stream.close(io);
         }
         return 0;
@@ -178,16 +184,16 @@ fn serve(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Env
     // stdio transport (standard ACP — the client spawned us)
     var fr = std.Io.File.stdin().reader(io, rbuf);
     var fw = std.Io.File.stdout().writer(io, wbuf);
-    serveConn(io, gpa, cfg2, &fr.interface, &fw.interface) catch {};
+    serveConn(io, gpa, cfg2, env, &fr.interface, &fw.interface) catch {};
     return 0;
 }
 
-fn serveConn(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, r: *std.Io.Reader, w: *std.Io.Writer) !void {
+fn serveConn(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, r: *std.Io.Reader, w: *std.Io.Writer) !void {
     while (true) {
         const line = (r.takeDelimiter('\n') catch return) orelse return;
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
-        handleMessage(io, gpa, cfg, trimmed, w) catch |err| {
+        handleMessage(io, gpa, cfg, env, trimmed, w) catch |err| {
             const m = std.fmt.allocPrint(gpa, "acp: message error: {s}\n", .{@errorName(err)}) catch continue;
             defer gpa.free(m);
             writeErr(m);
@@ -203,7 +209,7 @@ fn writeLine(w: *std.Io.Writer, s: []const u8) !void {
 
 var session_counter: u32 = 0;
 
-fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, line: []const u8, w: *std.Io.Writer) !void {
+fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, line: []const u8, w: *std.Io.Writer) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, line, .{}) catch {
         return; // not valid JSON; ignore (cannot form a proper error without an id)
     };
@@ -238,13 +244,19 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, line: []const
             }
         };
         session_counter += 1;
-        const result = try std.fmt.allocPrint(gpa, "{{\"sessionId\":\"tau-{d}\"}}", .{session_counter});
+        // Unique, inspectable session id (timestamp + counter). Persist an empty
+        // session file immediately so new ACP sessions show up on disk at
+        // ~/.config/tau/sessions/<id>.json.
+        const sid = try std.fmt.allocPrint(gpa, "acp-{d}-{d}", .{ nowMillis(io), session_counter });
+        defer gpa.free(sid);
+        session_mod.save(io, gpa, env, .{ .name = sid, .messages = &.{} }) catch {};
+        const result = try std.fmt.allocPrint(gpa, "{{\"sessionId\":\"{s}\"}}", .{sid});
         defer gpa.free(result);
         try respondResult(gpa, w, id_val, result);
     } else if (std.mem.eql(u8, method, "session/load")) {
         try respondResult(gpa, w, id_val, "{}");
     } else if (std.mem.eql(u8, method, "session/prompt")) {
-        try handlePrompt(io, gpa, cfg, w, id_val, params);
+        try handlePrompt(io, gpa, cfg, env, w, id_val, params);
     } else if (std.mem.eql(u8, method, "session/cancel")) {
         // notification only — nothing to respond.
     } else if (id_val != null) {
@@ -324,98 +336,94 @@ fn emitToolCallUpdate(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8
     try writeLine(w, n);
 }
 
-/// Run a full prompt turn: tau's agentic tool loop, streamed as ACP
-/// session/update notifications (agent_message_chunk + tool_call/tool_call_update),
-/// then a PromptResponse with stopReason.
-fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, w: *std.Io.Writer, id_val: ?std.json.Value, params: ?std.json.Value) !void {
-    const sid = paramSessionId(params, gpa);
-    defer gpa.free(sid);
-    const text = try paramPromptText(params, gpa);
-    defer gpa.free(text);
+/// Run a full prompt turn: load the persisted session, run tau's agentic tool
+/// loop (streamed as ACP session/update notifications), persist the updated
+/// conversation, then reply with a PromptResponse. All turn allocations live in
+/// a per-turn arena (freed on return) so a long-running server stays bounded;
+/// conversation state lives on disk at ~/.config/tau/sessions/<id>.json — which
+/// is also what makes Zed usage inspectable.
+fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, w: *std.Io.Writer, id_val: ?std.json.Value, params: ?std.json.Value) !void {
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
 
     if (cfg.api_key == null) {
-        if (id_val) |idv| try respondError(gpa, w, idv, -32000, "no API key configured");
+        if (id_val) |idv| try respondError(a, w, idv, -32000, "no API key configured");
         return;
     }
 
-    var messages: std.ArrayList(provider.Message) = .empty;
-    defer messages.deinit(gpa);
-    if (cfg.system_prompt) |sp| try messages.append(gpa, .{ .role = "system", .content = sp });
-    try messages.append(gpa, .{ .role = "user", .content = text });
+    const sid = paramSessionId(params, a);
+    const text = try paramPromptText(params, a);
 
-    const enabled = try registry.getEnabledTools(gpa, cfg.tools_allow, cfg.tools_deny);
-    defer gpa.free(enabled);
+    // Seed from the persisted session (multi-turn memory + on-disk inspection).
+    var messages: std.ArrayList(provider.Message) = .empty;
+    if (session_mod.load(io, a, env, sid) catch null) |st| {
+        for (st.messages) |m| try messages.append(a, m);
+    } else if (cfg.system_prompt) |sp| {
+        try messages.append(a, .{ .role = "system", .content = sp });
+    }
+    try messages.append(a, .{ .role = "user", .content = text });
+
+    const enabled = try registry.getEnabledTools(a, cfg.tools_allow, cfg.tools_deny);
     var tinfos: std.ArrayList(provider.ToolInfo) = .empty;
-    defer tinfos.deinit(gpa);
-    for (enabled) |t| try tinfos.append(gpa, .{ .name = t.name, .description = t.description });
-    const tinfos_slice = try tinfos.toOwnedSlice(gpa);
-    defer gpa.free(tinfos_slice);
-    const tools_arg: ?[]const provider.ToolInfo = if (cfg.no_tools) null else tinfos_slice;
+    for (enabled) |t| try tinfos.append(a, .{ .name = t.name, .description = t.description });
+    const tools_arg: ?[]const provider.ToolInfo = if (cfg.no_tools) null else tinfos.items;
 
     const maxit: u32 = if (cfg.max_iterations > 0) cfg.max_iterations else 10;
     var iter: u32 = 0;
     var stop_reason: []const u8 = "max_turn_requests";
 
     while (iter < maxit) : (iter += 1) {
-        const resp = provider.complete(io, gpa, cfg, messages.items, tools_arg) catch |err| {
+        const resp = provider.complete(io, a, cfg, messages.items, tools_arg) catch |err| {
+            session_mod.save(io, a, env, .{ .name = sid, .messages = messages.items }) catch {};
             if (id_val) |idv| {
-                const m = try std.fmt.allocPrint(gpa, "completion failed: {s}", .{@errorName(err)});
-                defer gpa.free(m);
-                try respondError(gpa, w, idv, -32001, m);
+                const m = try std.fmt.allocPrint(a, "completion failed: {s}", .{@errorName(err)});
+                try respondError(a, w, idv, -32001, m);
             }
             return;
         };
 
-        if (resp.content.len > 0) try emitMessageChunk(gpa, w, sid, resp.content);
-        const content_dupe = try gpa.dupe(u8, resp.content);
-        try messages.append(gpa, .{
+        if (resp.content.len > 0) try emitMessageChunk(a, w, sid, resp.content);
+        try messages.append(a, .{
             .role = "assistant",
-            .content = content_dupe,
+            .content = resp.content,
             .tool_calls = if (resp.tool_calls.len > 0) resp.tool_calls else null,
         });
 
         if (resp.tool_calls.len == 0) {
-            gpa.free(resp.content);
             stop_reason = "end_turn";
             break;
         }
-        gpa.free(resp.content);
 
         for (resp.tool_calls) |tc| {
-            const tcid = try gpa.dupe(u8, tc.id);
-            try emitToolCall(gpa, w, sid, tc.id, tc.name, toolKind(tc.name), tc.arguments);
-
+            try emitToolCall(a, w, sid, tc.id, tc.name, toolKind(tc.name), tc.arguments);
             const tool = registry.getTool(tc.name) orelse {
-                try emitToolCallUpdate(gpa, w, sid, tc.id, "failed", "tool not found");
-                try messages.append(gpa, .{ .role = "tool", .content = try gpa.dupe(u8, "tool not found"), .tool_call_id = tcid });
+                try emitToolCallUpdate(a, w, sid, tc.id, "failed", "tool not found");
+                try messages.append(a, .{ .role = "tool", .content = "tool not found", .tool_call_id = tc.id });
                 continue;
             };
-            const args = agentmod.buildToolArgs(gpa, tc.name, tc.arguments) catch {
-                try emitToolCallUpdate(gpa, w, sid, tc.id, "failed", "invalid tool arguments");
-                try messages.append(gpa, .{ .role = "tool", .content = try gpa.dupe(u8, "invalid tool arguments"), .tool_call_id = tcid });
+            const args = agentmod.buildToolArgs(a, tc.name, tc.arguments) catch {
+                try emitToolCallUpdate(a, w, sid, tc.id, "failed", "invalid tool arguments");
+                try messages.append(a, .{ .role = "tool", .content = "invalid tool arguments", .tool_call_id = tc.id });
                 continue;
             };
-            defer {
-                for (args) |a| gpa.free(a);
-                gpa.free(args);
-            }
-            const tr = tool.execute(io, gpa, args, cfg.timeout_ms) catch |err| {
-                const em = try std.fmt.allocPrint(gpa, "execution failed: {s}", .{@errorName(err)});
-                try emitToolCallUpdate(gpa, w, sid, tc.id, "failed", em);
-                try messages.append(gpa, .{ .role = "tool", .content = em, .tool_call_id = tcid });
+            const tr = tool.execute(io, a, args, cfg.timeout_ms) catch |err| {
+                const em = try std.fmt.allocPrint(a, "execution failed: {s}", .{@errorName(err)});
+                try emitToolCallUpdate(a, w, sid, tc.id, "failed", em);
+                try messages.append(a, .{ .role = "tool", .content = em, .tool_call_id = tc.id });
                 continue;
             };
             const out = if (tr.success) tr.stdout else tr.stderr;
-            try emitToolCallUpdate(gpa, w, sid, tc.id, if (tr.success) "completed" else "failed", out);
-            try messages.append(gpa, .{ .role = "tool", .content = try gpa.dupe(u8, out), .tool_call_id = tcid });
+            try emitToolCallUpdate(a, w, sid, tc.id, if (tr.success) "completed" else "failed", out);
+            try messages.append(a, .{ .role = "tool", .content = out, .tool_call_id = tc.id });
         }
-        // resp.tool_calls is referenced by the assistant message above; leave it
-        // alive for the rest of the turn (process-lifetime ownership, as in agent.zig).
     }
 
-    const result = try std.fmt.allocPrint(gpa, "{{\"stopReason\":\"{s}\"}}", .{stop_reason});
-    defer gpa.free(result);
-    try respondResult(gpa, w, id_val, result);
+    // Persist the full conversation (for inspection + next-turn memory).
+    session_mod.save(io, a, env, .{ .name = sid, .messages = messages.items }) catch {};
+
+    const result = try std.fmt.allocPrint(a, "{{\"stopReason\":\"{s}\"}}", .{stop_reason});
+    try respondResult(a, w, id_val, result);
 }
 
 // ---- JSON-RPC response helpers ---------------------------------------------
