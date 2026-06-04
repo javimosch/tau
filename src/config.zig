@@ -7,6 +7,9 @@ pub const OutputMode = enum { text, json };
 /// `resume_` avoids the Zig `resume` keyword; maps to the "resume" subcommand.
 pub const GoalAction = enum { none, set, status, pause, resume_, clear, complete };
 
+/// ACP (Agent Client Protocol) subcommand for `tau acp <sub>`.
+pub const AcpSub = enum { serve, start, stop, status };
+
 // Re-export provider table from llm/provider.zig
 pub const Provider = provider_mod.Provider;
 pub const providers = provider_mod.providers;
@@ -42,6 +45,11 @@ pub const Config = struct {
     /// Max iterations of the (non-goal) agentic tool loop. Raise for long
     /// autonomous tool workflows (e.g. multi-exchange a2a coordination).
     max_iterations: u32 = 10,
+
+    // --- ACP (Agent Client Protocol) ---
+    acp_sub: AcpSub = .serve,
+    /// Unix socket path for the ACP daemon (null = stdio for `serve`).
+    acp_socket: ?[]const u8 = null,
 
     // --- Session management ---
     /// Named session; persists conversation + goal to ~/.config/tau/sessions/<name>.json.

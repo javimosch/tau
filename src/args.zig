@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, err };
+pub const Action = enum { run, help, version, help_json, acp, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -48,6 +48,23 @@ pub fn parse(
     var argv_list: std.ArrayList([]const u8) = .empty;
     while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
     const argv = argv_list.items;
+
+    // `tau acp <start|stop|status|serve> [--acp-socket PATH]` — handled before
+    // the generic flag/prompt parsing (acp is a command, not a prompt).
+    if (argv.len > 0 and eq(argv[0], "acp")) {
+        var acfg: Config = base;
+        acfg.acp_sub = .serve;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "start")) acfg.acp_sub = .start else if (eq(a, "stop")) acfg.acp_sub = .stop else if (eq(a, "status")) acfg.acp_sub = .status else if (eq(a, "serve")) acfg.acp_sub = .serve else if (eq(a, "--acp-socket")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                acfg.acp_socket = argv[j];
+            } else return errResult(arena, "unknown acp argument: {s}", .{a});
+        }
+        return .{ .action = .acp, .config = acfg };
+    }
 
     // Start from `base` (config-file defaults). CLI flags below override it.
     var cfg: Config = base;

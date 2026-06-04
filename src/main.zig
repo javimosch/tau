@@ -73,6 +73,12 @@ const help_text =
     \\  /goal [--tokens N] <obj>     ...with a soft output-token budget (e.g. 250K)
     \\  /goal status|pause|resume|clear|complete   Manage the session's goal (needs --session)
     \\
+    \\ACP (Agent Client Protocol) server:
+    \\  tau acp serve [--acp-socket P] Run the JSON-RPC agent server (stdio, or a Unix socket)
+    \\  tau acp start                 Start the ACP server as a background daemon
+    \\  tau acp stop                  Stop the background ACP daemon
+    \\  tau acp status                Report ACP daemon status (JSON)
+    \\
     \\Examples:
     \\  tau "List the files in src/"
     \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
@@ -133,6 +139,14 @@ pub fn main(init: std.process.Init) !void {
             const msg = parsed.err_msg orelse "invalid arguments";
             printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", msg, false);
             std.process.exit(@intFromEnum(ExitCode.invalid_argument));
+        },
+        .acp => {
+            const acp = @import("acp.zig");
+            const code = acp.run(io, gpa, arena, parsed.config, init.environ_map, parsed.config.acp_sub, parsed.config.acp_socket) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "acp failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
         },
         .run => {},
     }
