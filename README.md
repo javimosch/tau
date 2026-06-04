@@ -11,7 +11,7 @@
   <b>Built for AI agents, not humans.</b>
 </p>
 
-> Think: "pi, but deterministic and JSON-first"
+> Think: "pi, but JSON-first, non-interactive only, and way faster"
 
 ## ⚡ TL;DR
 
