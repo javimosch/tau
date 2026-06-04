@@ -193,7 +193,7 @@ fn serveConn(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process
         const line = (r.takeDelimiter('\n') catch return) orelse return;
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
-        handleMessage(io, gpa, cfg, env, trimmed, w) catch |err| {
+        handleMessage(io, gpa, cfg, env, r, trimmed, w) catch |err| {
             const m = std.fmt.allocPrint(gpa, "acp: message error: {s}\n", .{@errorName(err)}) catch continue;
             defer gpa.free(m);
             writeErr(m);
@@ -208,8 +208,13 @@ fn writeLine(w: *std.Io.Writer, s: []const u8) !void {
 }
 
 var session_counter: u32 = 0;
+// Client capabilities learned at initialize; used to route mutating tools
+// through the editor's fs methods so edits land as approvable diffs.
+var client_fs_read: bool = false;
+var client_fs_write: bool = false;
+var fs_req_counter: u64 = 0;
 
-fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, line: []const u8, w: *std.Io.Writer) !void {
+fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, r: *std.Io.Reader, line: []const u8, w: *std.Io.Writer) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, line, .{}) catch {
         return; // not valid JSON; ignore (cannot form a proper error without an id)
     };
@@ -225,6 +230,16 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
     const params = obj.get("params");
 
     if (std.mem.eql(u8, method, "initialize")) {
+        // Learn the client's fs capabilities so mutating tools can be routed
+        // through fs/write_text_file (edits appear as diffs in the editor).
+        if (params) |p| if (p == .object) if (p.object.get("clientCapabilities")) |cc| if (cc == .object) if (cc.object.get("fs")) |fs| if (fs == .object) {
+            if (fs.object.get("readTextFile")) |b| {
+                if (b == .bool) client_fs_read = b.bool;
+            }
+            if (fs.object.get("writeTextFile")) |b| {
+                if (b == .bool) client_fs_write = b.bool;
+            }
+        };
         // Version negotiation: we support v1, so always answer v1 (== client's
         // version when they request 1; our latest otherwise, per spec).
         try respondResult(gpa, w, id_val,
@@ -256,7 +271,7 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
     } else if (std.mem.eql(u8, method, "session/load")) {
         try respondResult(gpa, w, id_val, "{}");
     } else if (std.mem.eql(u8, method, "session/prompt")) {
-        try handlePrompt(io, gpa, cfg, env, w, id_val, params);
+        try handlePrompt(io, gpa, cfg, env, r, w, id_val, params);
     } else if (std.mem.eql(u8, method, "session/cancel")) {
         // notification only — nothing to respond.
     } else if (id_val != null) {
@@ -336,13 +351,73 @@ fn emitToolCallUpdate(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8
     try writeLine(w, n);
 }
 
+// ---- client-method calls (agent -> editor) ---------------------------------
+
+/// Send a JSON-RPC request to the client and block until the matching response
+/// arrives, returning the parsed response object. Notifications/unrelated
+/// messages received meanwhile are ignored. `params_json` is the raw params JSON.
+fn clientRequest(a: std.mem.Allocator, r: *std.Io.Reader, w: *std.Io.Writer, method: []const u8, params_json: []const u8) !std.json.Value {
+    fs_req_counter += 1;
+    const reqid = try std.fmt.allocPrint(a, "tau-fs-{d}", .{fs_req_counter});
+    const msg = try std.fmt.allocPrint(a, "{{\"jsonrpc\":\"2.0\",\"id\":\"{s}\",\"method\":\"{s}\",\"params\":{s}}}", .{ reqid, method, params_json });
+    try writeLine(w, msg);
+    while (true) {
+        const line = (r.takeDelimiter('\n') catch return error.AcpClosed) orelse return error.AcpClosed;
+        const t = std.mem.trim(u8, line, " \t\r");
+        if (t.len == 0) continue;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, a, t, .{}) catch continue;
+        if (v != .object) continue;
+        if (v.object.get("id")) |iv| {
+            if (iv == .string and std.mem.eql(u8, iv.string, reqid)) return v;
+        }
+        // a notification (e.g. session/cancel) arrived during our call — ignore.
+    }
+}
+
+/// Write a file via the editor (fs/write_text_file) so the change shows as a diff.
+fn clientWriteFile(a: std.mem.Allocator, r: *std.Io.Reader, w: *std.Io.Writer, sid: []const u8, path: []const u8, content: []const u8) !void {
+    const se = try jsonmod.escapeAlloc(a, sid);
+    const pe = try jsonmod.escapeAlloc(a, path);
+    const ce = try jsonmod.escapeAlloc(a, content);
+    const params = try std.fmt.allocPrint(a, "{{\"sessionId\":\"{s}\",\"path\":\"{s}\",\"content\":\"{s}\"}}", .{ se, pe, ce });
+    const resp = try clientRequest(a, r, w, "fs/write_text_file", params);
+    if (resp.object.get("error") != null) return error.ClientWriteFailed;
+}
+
+/// Read a file via the editor (fs/read_text_file) — sees unsaved buffer content.
+fn clientReadFile(a: std.mem.Allocator, r: *std.Io.Reader, w: *std.Io.Writer, sid: []const u8, path: []const u8) ![]const u8 {
+    const se = try jsonmod.escapeAlloc(a, sid);
+    const pe = try jsonmod.escapeAlloc(a, path);
+    const params = try std.fmt.allocPrint(a, "{{\"sessionId\":\"{s}\",\"path\":\"{s}\"}}", .{ se, pe });
+    const resp = try clientRequest(a, r, w, "fs/read_text_file", params);
+    const result = resp.object.get("result") orelse return error.ClientReadFailed;
+    if (result == .object) if (result.object.get("content")) |c| if (c == .string) return c.string;
+    return error.ClientReadFailed;
+}
+
+/// Replace all occurrences of `needle` with `repl` (arena-allocated).
+fn replaceAlloc(a: std.mem.Allocator, s: []const u8, needle: []const u8, repl: []const u8) ![]u8 {
+    if (needle.len == 0) return a.dupe(u8, s);
+    var out: std.ArrayList(u8) = .empty;
+    var rest = s;
+    while (std.mem.indexOf(u8, rest, needle)) |idx| {
+        try out.appendSlice(a, rest[0..idx]);
+        try out.appendSlice(a, repl);
+        rest = rest[idx + needle.len ..];
+    }
+    try out.appendSlice(a, rest);
+    return out.toOwnedSlice(a);
+}
+
 /// Run a full prompt turn: load the persisted session, run tau's agentic tool
 /// loop (streamed as ACP session/update notifications), persist the updated
 /// conversation, then reply with a PromptResponse. All turn allocations live in
 /// a per-turn arena (freed on return) so a long-running server stays bounded;
 /// conversation state lives on disk at ~/.config/tau/sessions/<id>.json — which
-/// is also what makes Zed usage inspectable.
-fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, w: *std.Io.Writer, id_val: ?std.json.Value, params: ?std.json.Value) !void {
+/// is also what makes Zed usage inspectable. Mutating tools (write/edit) are
+/// routed through the editor's fs methods when the client supports them, so the
+/// changes appear as diffs instead of silent disk writes.
+fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, r: *std.Io.Reader, w: *std.Io.Writer, id_val: ?std.json.Value, params: ?std.json.Value) !void {
     var arena_inst = std.heap.ArenaAllocator.init(gpa);
     defer arena_inst.deinit();
     const a = arena_inst.allocator();
@@ -397,14 +472,39 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
 
         for (resp.tool_calls) |tc| {
             try emitToolCall(a, w, sid, tc.id, tc.name, toolKind(tc.name), tc.arguments);
-            const tool = registry.getTool(tc.name) orelse {
-                try emitToolCallUpdate(a, w, sid, tc.id, "failed", "tool not found");
-                try messages.append(a, .{ .role = "tool", .content = "tool not found", .tool_call_id = tc.id });
-                continue;
-            };
             const args = agentmod.buildToolArgs(a, tc.name, tc.arguments) catch {
                 try emitToolCallUpdate(a, w, sid, tc.id, "failed", "invalid tool arguments");
                 try messages.append(a, .{ .role = "tool", .content = "invalid tool arguments", .tool_call_id = tc.id });
+                continue;
+            };
+
+            // Route file mutations through the editor (fs/write_text_file) so the
+            // change lands as an approvable diff. Falls back to direct execution
+            // when the client has no fs capability.
+            if (client_fs_write and std.mem.eql(u8, tc.name, "write") and args.len >= 2) {
+                const ok = if (clientWriteFile(a, r, w, sid, args[0], args[1])) |_| true else |_| false;
+                const out = if (ok) "file written via editor" else "editor write failed";
+                try emitToolCallUpdate(a, w, sid, tc.id, if (ok) "completed" else "failed", out);
+                try messages.append(a, .{ .role = "tool", .content = out, .tool_call_id = tc.id });
+                continue;
+            }
+            if (client_fs_write and std.mem.eql(u8, tc.name, "edit") and args.len >= 3) {
+                const cur = if (client_fs_read)
+                    (clientReadFile(a, r, w, sid, args[0]) catch "")
+                else
+                    (std.Io.Dir.cwd().readFileAlloc(io, args[0], a, .unlimited) catch "");
+                const newc = try replaceAlloc(a, cur, args[1], args[2]);
+                const ok = if (clientWriteFile(a, r, w, sid, args[0], newc)) |_| true else |_| false;
+                const out = if (ok) "file edited via editor" else "editor edit failed";
+                try emitToolCallUpdate(a, w, sid, tc.id, if (ok) "completed" else "failed", out);
+                try messages.append(a, .{ .role = "tool", .content = out, .tool_call_id = tc.id });
+                continue;
+            }
+
+            // Otherwise execute tau's tool directly.
+            const tool = registry.getTool(tc.name) orelse {
+                try emitToolCallUpdate(a, w, sid, tc.id, "failed", "tool not found");
+                try messages.append(a, .{ .role = "tool", .content = "tool not found", .tool_call_id = tc.id });
                 continue;
             };
             const tr = tool.execute(io, a, args, cfg.timeout_ms) catch |err| {
