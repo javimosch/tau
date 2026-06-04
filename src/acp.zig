@@ -8,11 +8,17 @@
 //   tau acp status   -> report running/stopped (JSON)
 //   tau acp serve    -> run the JSON-RPC server (stdio, or --acp-socket <path>)
 //
-// Implemented agent methods: initialize, authenticate, session/new,
-// session/prompt (-> one LLM completion streamed back as an agent_message_chunk
-// then end_turn), and the session/cancel notification. Newline-delimited JSON.
+// Implemented agent methods: initialize (version negotiation + agentInfo +
+// capabilities), authenticate, session/new, session/load, session/prompt — which
+// runs tau's full agentic tool loop and streams it as ACP session/update
+// notifications (tool_call -> tool_call_update -> agent_message_chunk) ending in
+// a PromptResponse{stopReason}. session/cancel is a notification. Unknown methods
+// return JSON-RPC error -32601. Newline-delimited JSON-RPC over stdio (standard)
+// or a Unix socket.
 const std = @import("std");
 const provider = @import("llm/provider.zig");
+const registry = @import("tools/registry.zig");
+const agentmod = @import("agent.zig");
 const cfgmod = @import("config.zig");
 const jsonmod = @import("json.zig");
 
@@ -213,9 +219,12 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, line: []const
     const params = obj.get("params");
 
     if (std.mem.eql(u8, method, "initialize")) {
+        // Version negotiation: we support v1, so always answer v1 (== client's
+        // version when they request 1; our latest otherwise, per spec).
         try respondResult(gpa, w, id_val,
             "{\"protocolVersion\":" ++ std.fmt.comptimePrint("{d}", .{PROTOCOL_VERSION}) ++
-            ",\"agentCapabilities\":{\"loadSession\":false,\"promptCapabilities\":{\"image\":false,\"audio\":false,\"embeddedContext\":true}},\"authMethods\":[]}");
+            ",\"agentCapabilities\":{\"loadSession\":false,\"promptCapabilities\":{\"image\":false,\"audio\":false,\"embeddedContext\":true}},\"authMethods\":[]," ++
+            "\"agentInfo\":{\"name\":\"tau\",\"version\":\"0.2.0\"}}");
     } else if (std.mem.eql(u8, method, "authenticate")) {
         try respondResult(gpa, w, id_val, "{}");
     } else if (std.mem.eql(u8, method, "session/new")) {
@@ -260,6 +269,55 @@ fn paramPromptText(params: ?std.json.Value, gpa: std.mem.Allocator) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+/// Map a tool name to an ACP tool-call kind.
+fn toolKind(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "bash")) return "execute";
+    if (std.mem.eql(u8, name, "read") or std.mem.eql(u8, name, "ls")) return "read";
+    if (std.mem.eql(u8, name, "write") or std.mem.eql(u8, name, "edit")) return "edit";
+    if (std.mem.eql(u8, name, "grep") or std.mem.eql(u8, name, "find")) return "search";
+    return "other";
+}
+
+fn emitMessageChunk(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, text: []const u8) !void {
+    const se = try jsonmod.escapeAlloc(gpa, sid);
+    defer gpa.free(se);
+    const te = try jsonmod.escapeAlloc(gpa, text);
+    defer gpa.free(te);
+    const n = try std.fmt.allocPrint(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"{s}\",\"update\":{{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{{\"type\":\"text\",\"text\":\"{s}\"}}}}}}}}", .{ se, te });
+    defer gpa.free(n);
+    try writeLine(w, n);
+}
+
+fn emitToolCall(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, id: []const u8, title: []const u8, kind: []const u8, raw_args: []const u8) !void {
+    const se = try jsonmod.escapeAlloc(gpa, sid);
+    defer gpa.free(se);
+    const ide = try jsonmod.escapeAlloc(gpa, id);
+    defer gpa.free(ide);
+    const te = try jsonmod.escapeAlloc(gpa, title);
+    defer gpa.free(te);
+    // rawInput is an object; embed the model's args JSON verbatim if it looks
+    // like an object, else an empty object.
+    const raw = if (raw_args.len > 0 and raw_args[0] == '{') raw_args else "{}";
+    const n = try std.fmt.allocPrint(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"{s}\",\"update\":{{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"{s}\",\"title\":\"{s}\",\"kind\":\"{s}\",\"status\":\"pending\",\"rawInput\":{s}}}}}}}", .{ se, ide, te, kind, raw });
+    defer gpa.free(n);
+    try writeLine(w, n);
+}
+
+fn emitToolCallUpdate(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, id: []const u8, st: []const u8, content_text: []const u8) !void {
+    const se = try jsonmod.escapeAlloc(gpa, sid);
+    defer gpa.free(se);
+    const ide = try jsonmod.escapeAlloc(gpa, id);
+    defer gpa.free(ide);
+    const ce = try jsonmod.escapeAlloc(gpa, content_text);
+    defer gpa.free(ce);
+    const n = try std.fmt.allocPrint(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"{s}\",\"update\":{{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"{s}\",\"status\":\"{s}\",\"content\":[{{\"type\":\"content\",\"content\":{{\"type\":\"text\",\"text\":\"{s}\"}}}}]}}}}}}", .{ se, ide, st, ce });
+    defer gpa.free(n);
+    try writeLine(w, n);
+}
+
+/// Run a full prompt turn: tau's agentic tool loop, streamed as ACP
+/// session/update notifications (agent_message_chunk + tool_call/tool_call_update),
+/// then a PromptResponse with stopReason.
 fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, w: *std.Io.Writer, id_val: ?std.json.Value, params: ?std.json.Value) !void {
     const sid = paramSessionId(params, gpa);
     defer gpa.free(sid);
@@ -271,29 +329,84 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, w: *std.Io.Wri
         return;
     }
 
-    const messages = [_]provider.Message{.{ .role = "user", .content = text }};
-    const resp = provider.complete(io, gpa, cfg, &messages, null) catch |err| {
-        if (id_val) |idv| {
-            const m = try std.fmt.allocPrint(gpa, "completion failed: {s}", .{@errorName(err)});
-            defer gpa.free(m);
-            try respondError(gpa, w, idv, -32001, m);
+    var messages: std.ArrayList(provider.Message) = .empty;
+    defer messages.deinit(gpa);
+    if (cfg.system_prompt) |sp| try messages.append(gpa, .{ .role = "system", .content = sp });
+    try messages.append(gpa, .{ .role = "user", .content = text });
+
+    const enabled = try registry.getEnabledTools(gpa, cfg.tools_allow, cfg.tools_deny);
+    defer gpa.free(enabled);
+    var tinfos: std.ArrayList(provider.ToolInfo) = .empty;
+    defer tinfos.deinit(gpa);
+    for (enabled) |t| try tinfos.append(gpa, .{ .name = t.name, .description = t.description });
+    const tinfos_slice = try tinfos.toOwnedSlice(gpa);
+    defer gpa.free(tinfos_slice);
+    const tools_arg: ?[]const provider.ToolInfo = if (cfg.no_tools) null else tinfos_slice;
+
+    const maxit: u32 = if (cfg.max_iterations > 0) cfg.max_iterations else 10;
+    var iter: u32 = 0;
+    var stop_reason: []const u8 = "max_turn_requests";
+
+    while (iter < maxit) : (iter += 1) {
+        const resp = provider.complete(io, gpa, cfg, messages.items, tools_arg) catch |err| {
+            if (id_val) |idv| {
+                const m = try std.fmt.allocPrint(gpa, "completion failed: {s}", .{@errorName(err)});
+                defer gpa.free(m);
+                try respondError(gpa, w, idv, -32001, m);
+            }
+            return;
+        };
+
+        if (resp.content.len > 0) try emitMessageChunk(gpa, w, sid, resp.content);
+        const content_dupe = try gpa.dupe(u8, resp.content);
+        try messages.append(gpa, .{
+            .role = "assistant",
+            .content = content_dupe,
+            .tool_calls = if (resp.tool_calls.len > 0) resp.tool_calls else null,
+        });
+
+        if (resp.tool_calls.len == 0) {
+            gpa.free(resp.content);
+            stop_reason = "end_turn";
+            break;
         }
-        return;
-    };
-    defer gpa.free(resp.content);
-    if (resp.tool_calls.len > 0) gpa.free(resp.tool_calls);
+        gpa.free(resp.content);
 
-    // Stream the assistant text back as one agent_message_chunk update.
-    const esc = try jsonmod.escapeAlloc(gpa, resp.content);
-    defer gpa.free(esc);
-    const sid_esc = try jsonmod.escapeAlloc(gpa, sid);
-    defer gpa.free(sid_esc);
-    const note = try std.fmt.allocPrint(gpa,
-        "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"{s}\",\"update\":{{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{{\"type\":\"text\",\"text\":\"{s}\"}}}}}}}}", .{ sid_esc, esc });
-    defer gpa.free(note);
-    try writeLine(w, note);
+        for (resp.tool_calls) |tc| {
+            const tcid = try gpa.dupe(u8, tc.id);
+            try emitToolCall(gpa, w, sid, tc.id, tc.name, toolKind(tc.name), tc.arguments);
 
-    try respondResult(gpa, w, id_val, "{\"stopReason\":\"end_turn\"}");
+            const tool = registry.getTool(tc.name) orelse {
+                try emitToolCallUpdate(gpa, w, sid, tc.id, "failed", "tool not found");
+                try messages.append(gpa, .{ .role = "tool", .content = try gpa.dupe(u8, "tool not found"), .tool_call_id = tcid });
+                continue;
+            };
+            const args = agentmod.buildToolArgs(gpa, tc.name, tc.arguments) catch {
+                try emitToolCallUpdate(gpa, w, sid, tc.id, "failed", "invalid tool arguments");
+                try messages.append(gpa, .{ .role = "tool", .content = try gpa.dupe(u8, "invalid tool arguments"), .tool_call_id = tcid });
+                continue;
+            };
+            defer {
+                for (args) |a| gpa.free(a);
+                gpa.free(args);
+            }
+            const tr = tool.execute(io, gpa, args, cfg.timeout_ms) catch |err| {
+                const em = try std.fmt.allocPrint(gpa, "execution failed: {s}", .{@errorName(err)});
+                try emitToolCallUpdate(gpa, w, sid, tc.id, "failed", em);
+                try messages.append(gpa, .{ .role = "tool", .content = em, .tool_call_id = tcid });
+                continue;
+            };
+            const out = if (tr.success) tr.stdout else tr.stderr;
+            try emitToolCallUpdate(gpa, w, sid, tc.id, if (tr.success) "completed" else "failed", out);
+            try messages.append(gpa, .{ .role = "tool", .content = try gpa.dupe(u8, out), .tool_call_id = tcid });
+        }
+        // resp.tool_calls is referenced by the assistant message above; leave it
+        // alive for the rest of the turn (process-lifetime ownership, as in agent.zig).
+    }
+
+    const result = try std.fmt.allocPrint(gpa, "{{\"stopReason\":\"{s}\"}}", .{stop_reason});
+    defer gpa.free(result);
+    try respondResult(gpa, w, id_val, result);
 }
 
 // ---- JSON-RPC response helpers ---------------------------------------------

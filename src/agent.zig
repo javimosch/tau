@@ -346,7 +346,7 @@ fn saveSession(
 }
 
 /// Build argument array for a tool based on its name and arguments JSON
-fn buildToolArgs(gpa: std.mem.Allocator, tool_name: []const u8, args_json: []const u8) ![][]const u8 {
+pub fn buildToolArgs(gpa: std.mem.Allocator, tool_name: []const u8, args_json: []const u8) ![][]const u8 {
     var args = std.ArrayList([]const u8).empty;
     defer args.deinit(gpa);
 
