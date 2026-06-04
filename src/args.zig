@@ -54,6 +54,7 @@ pub fn parse(
     if (argv.len > 0 and eq(argv[0], "acp")) {
         var acfg: Config = base;
         acfg.acp_sub = .serve;
+        acfg.max_iterations = 25; // ACP default: exploratory turns need headroom
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
             const a = argv[j];
@@ -61,6 +62,11 @@ pub fn parse(
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
                 acfg.acp_socket = argv[j];
+            } else if (eq(a, "--max-iterations")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                acfg.max_iterations = std.fmt.parseInt(u32, argv[j], 10) catch
+                    return errResult(arena, "invalid --max-iterations: {s}", .{argv[j]});
             } else return errResult(arena, "unknown acp argument: {s}", .{a});
         }
         return .{ .action = .acp, .config = acfg };

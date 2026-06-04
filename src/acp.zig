@@ -314,14 +314,24 @@ fn toolKind(name: []const u8) []const u8 {
     return "other";
 }
 
-fn emitMessageChunk(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, text: []const u8) !void {
+/// Emit a session/update text chunk. `kind` is "agent_message_chunk" (assistant
+/// output) or "agent_thought_chunk" (model reasoning).
+fn emitTextChunk(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, kind: []const u8, text: []const u8) !void {
     const se = try jsonmod.escapeAlloc(gpa, sid);
     defer gpa.free(se);
     const te = try jsonmod.escapeAlloc(gpa, text);
     defer gpa.free(te);
-    const n = try std.fmt.allocPrint(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"{s}\",\"update\":{{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{{\"type\":\"text\",\"text\":\"{s}\"}}}}}}}}", .{ se, te });
+    const n = try std.fmt.allocPrint(gpa, "{{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{{\"sessionId\":\"{s}\",\"update\":{{\"sessionUpdate\":\"{s}\",\"content\":{{\"type\":\"text\",\"text\":\"{s}\"}}}}}}}}", .{ se, kind, te });
     defer gpa.free(n);
     try writeLine(w, n);
+}
+
+fn emitMessageChunk(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, text: []const u8) !void {
+    try emitTextChunk(gpa, w, sid, "agent_message_chunk", text);
+}
+
+fn emitThoughtChunk(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, text: []const u8) !void {
+    try emitTextChunk(gpa, w, sid, "agent_thought_chunk", text);
 }
 
 fn emitToolCall(gpa: std.mem.Allocator, w: *std.Io.Writer, sid: []const u8, id: []const u8, title: []const u8, kind: []const u8, raw_args: []const u8) !void {
@@ -444,7 +454,10 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
     for (enabled) |t| try tinfos.append(a, .{ .name = t.name, .description = t.description });
     const tools_arg: ?[]const provider.ToolInfo = if (cfg.no_tools) null else tinfos.items;
 
-    const maxit: u32 = if (cfg.max_iterations > 0) cfg.max_iterations else 10;
+    // Exploratory coding turns need many tool calls before answering; a tight
+    // cap leaves the user with no final answer. args sets the ACP default (25);
+    // --max-iterations overrides. On exhaustion we force a final answer below.
+    const maxit: u32 = if (cfg.max_iterations > 0) cfg.max_iterations else 25;
     var iter: u32 = 0;
     var stop_reason: []const u8 = "max_turn_requests";
 
@@ -458,6 +471,11 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
             return;
         };
 
+        // Surface the model's thinking (mimo returns it in reasoning_content) so
+        // Zed shows reasoning even on turns whose content is empty (tool turns).
+        if (resp.reasoning_content) |rc| {
+            if (rc.len > 0) try emitThoughtChunk(a, w, sid, rc);
+        }
         if (resp.content.len > 0) try emitMessageChunk(a, w, sid, resp.content);
         try messages.append(a, .{
             .role = "assistant",
@@ -516,6 +534,20 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
             const out = if (tr.success) tr.stdout else tr.stderr;
             try emitToolCallUpdate(a, w, sid, tc.id, if (tr.success) "completed" else "failed", out);
             try messages.append(a, .{ .role = "tool", .content = out, .tool_call_id = tc.id });
+        }
+    }
+
+    // If we exhausted the loop while still calling tools (no natural answer),
+    // force one final tool-free completion so the user always gets an answer.
+    if (std.mem.eql(u8, stop_reason, "max_turn_requests")) {
+        try messages.append(a, .{ .role = "user", .content = "You have gathered enough. Stop using tools and give your final answer now." });
+        if (provider.complete(io, a, cfg, messages.items, null) catch null) |fin| {
+            if (fin.reasoning_content) |rc| {
+                if (rc.len > 0) try emitThoughtChunk(a, w, sid, rc);
+            }
+            if (fin.content.len > 0) try emitMessageChunk(a, w, sid, fin.content);
+            try messages.append(a, .{ .role = "assistant", .content = fin.content });
+            stop_reason = "end_turn";
         }
     }
 
