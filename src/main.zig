@@ -157,9 +157,11 @@ pub fn main(init: std.process.Init) !void {
     const exit_code = agent.run(io, gpa, arena, cfg, init.environ_map) catch |err| {
         const code: ExitCode = switch (err) {
             error.Timeout => .connection_timeout,
+            error.AuthFailed => .auth_failed,
             else => .internal_error,
         };
-        printErrorJson(@intFromEnum(code), @errorName(err), "request failed", false);
+        const detail = if (err == error.AuthFailed) "invalid or missing API key" else "request failed";
+        printErrorJson(@intFromEnum(code), @errorName(err), detail, false);
         std.process.exit(@intFromEnum(code));
     };
     std.process.exit(exit_code);

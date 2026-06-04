@@ -212,8 +212,36 @@ fn toolParamsJson(name: []const u8) []const u8 {
     return "{\"type\":\"object\",\"properties\":{}}";
 }
 
+const max_http_attempts: u32 = 3;
+
+const BodyClass = enum { ok, auth, retryable };
+
+fn bodyContains(body: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, body, needle) != null;
+}
+
+/// Classify a successful-transport response body. Only bodies carrying an
+/// `"error":` envelope are treated as failures; normal/tool-call responses
+/// (including "content":null) are `.ok`.
+fn classifyBody(body: []const u8) BodyClass {
+    if (!bodyContains(body, "\"error\":")) return .ok;
+    if (bodyContains(body, "invalid_key") or bodyContains(body, "Invalid API Key") or
+        bodyContains(body, "401") or bodyContains(body, "nauthorized")) return .auth;
+    // 429 / 5xx / overload / rate-limit are transient; unknown error envelopes
+    // are retried once as well (could be transient).
+    return .retryable;
+}
+
+/// Exponential backoff between HTTP attempts (500ms, 1s, 2s, ...).
+fn backoff(io: std.Io, attempt: u32) void {
+    const ms: i64 = @as(i64, 500) * (@as(i64, 1) << @intCast(attempt - 1));
+    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(ms), .awake) catch {};
+}
+
 /// Complete an LLM request with optional tool schema.
-/// Returns Response with content and any tool_calls from the LLM.
+/// Returns Response with content and any tool_calls from the LLM. Transient HTTP
+/// failures (curl error, 429/5xx) are retried with exponential backoff; a 401 /
+/// invalid key surfaces as error.AuthFailed.
 pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
                 messages: []const Message, tools: ?[]const ToolInfo) !Response {
 
@@ -291,23 +319,57 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
         .clock = .awake,
     } };
 
-    const result = std.process.run(gpa, io, .{
-        .argv = argv_slice,
-        .stdout_limit = .unlimited,
-        .stderr_limit = .unlimited,
-        .timeout = timeout,
-    }) catch |err| {
-        if (err == error.Timeout) return error.Timeout;
-        return error.HTTPRequestFailed;
+    var attempt: u32 = 0;
+    const result = while (true) {
+        const res = std.process.run(gpa, io, .{
+            .argv = argv_slice,
+            .stdout_limit = .unlimited,
+            .stderr_limit = .unlimited,
+            .timeout = timeout,
+        }) catch |err| {
+            if (err == error.Timeout) return error.Timeout;
+            if (attempt + 1 < max_http_attempts) {
+                attempt += 1;
+                backoff(io, attempt);
+                continue;
+            }
+            return error.HTTPRequestFailed;
+        };
+        const ec: u8 = switch (res.term) {
+            .exited => |c| c,
+            else => 1,
+        };
+        if (ec != 0) {
+            gpa.free(res.stdout);
+            gpa.free(res.stderr);
+            if (attempt + 1 < max_http_attempts) {
+                attempt += 1;
+                backoff(io, attempt);
+                continue;
+            }
+            return error.HTTPRequestFailed;
+        }
+        switch (classifyBody(res.stdout)) {
+            .ok => break res,
+            .auth => {
+                gpa.free(res.stdout);
+                gpa.free(res.stderr);
+                return error.AuthFailed;
+            },
+            .retryable => {
+                gpa.free(res.stdout);
+                gpa.free(res.stderr);
+                if (attempt + 1 < max_http_attempts) {
+                    attempt += 1;
+                    backoff(io, attempt);
+                    continue;
+                }
+                return error.HTTPRequestFailed;
+            },
+        }
     };
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
-
-    const exit_code: u8 = switch (result.term) {
-        .exited => |c| c,
-        else => 1,
-    };
-    if (exit_code != 0) return error.HTTPRequestFailed;
 
     // Log raw response if debug mode is enabled
     if (cfg.debug) {
