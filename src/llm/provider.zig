@@ -47,8 +47,9 @@ pub const providers = [_]Provider{
         .name = "xiaomi",
         .endpoint = "https://token-plan-ams.xiaomimimo.com/v1/chat/completions",
         .default_model = "mimo-v2.5",
-        .env_keys = &.{ "TAU_API_KEY", "XIAOMI_API_KEY" },
-        .builtin_key = "tp-ejau4ye7ifigruk0ji0r5xul1nk00vwc9i1m32jdstxpcg52",
+        .env_keys = &.{ "XIAOMI_API_KEY", "PIZIG_API_KEY" },
+        // No hardcoded key. Supply via ~/.config/tau/config.json ("api_key"),
+        // a provider env var, TAU_API_KEY, or --api-key.
     },
     .{
         .name = "openai",

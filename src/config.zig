@@ -80,8 +80,9 @@ pub const Config = struct {
     compact_keep_recent_tokens: u32 = 20_000,
 };
 
-/// Resolve the effective API key. Precedence: explicit `--api-key` >
-/// provider-specific env var(s) > provider builtin key (xiaomi default).
+/// Resolve the effective API key. Precedence: explicit `--api-key` (or config
+/// file `api_key`) > provider-specific env var(s) > global TAU_API_KEY > provider
+/// builtin key (none ship by default). No key is hardcoded in the binary.
 pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
     if (cfg.api_key) |k| return k;
     if (findProvider(cfg.provider)) |p| {
@@ -90,7 +91,10 @@ pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
                 if (v.len > 0) return v;
             }
         }
-        return p.builtin_key;
+        if (p.builtin_key) |bk| return bk;
+    }
+    if (env.get("TAU_API_KEY")) |v| {
+        if (v.len > 0) return v;
     }
     return null;
 }
