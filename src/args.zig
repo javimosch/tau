@@ -54,7 +54,11 @@ pub fn parse(
     if (argv.len > 0 and eq(argv[0], "acp")) {
         var acfg: Config = base;
         acfg.acp_sub = .serve;
-        acfg.max_iterations = 25; // ACP default: exploratory turns need headroom
+        // ACP loop: the turn ends naturally when the model stops calling tools
+        // (like Claude Code / OpenCode, which don't cap by default). This is just
+        // a runaway backstop; compaction bounds context, and on hitting it we
+        // force a final summary answer. --max-iterations tunes it.
+        acfg.max_iterations = 100;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
             const a = argv[j];

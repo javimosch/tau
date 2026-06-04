@@ -454,10 +454,10 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
     for (enabled) |t| try tinfos.append(a, .{ .name = t.name, .description = t.description });
     const tools_arg: ?[]const provider.ToolInfo = if (cfg.no_tools) null else tinfos.items;
 
-    // Exploratory coding turns need many tool calls before answering; a tight
-    // cap leaves the user with no final answer. args sets the ACP default (25);
-    // --max-iterations overrides. On exhaustion we force a final answer below.
-    const maxit: u32 = if (cfg.max_iterations > 0) cfg.max_iterations else 25;
+    // The turn ends when the model stops calling tools (natural exit, like
+    // Claude Code / OpenCode). `maxit` is only a runaway backstop (args defaults
+    // it to 100 for ACP); on exhaustion we force a final summary answer below.
+    const maxit: u32 = if (cfg.max_iterations > 0) cfg.max_iterations else 100;
     var iter: u32 = 0;
     var stop_reason: []const u8 = "max_turn_requests";
 
