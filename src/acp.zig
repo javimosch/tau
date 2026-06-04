@@ -228,6 +228,15 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, line: []const
     } else if (std.mem.eql(u8, method, "authenticate")) {
         try respondResult(gpa, w, id_val, "{}");
     } else if (std.mem.eql(u8, method, "session/new")) {
+        // Operate in the project directory the client passed (editors set cwd
+        // to the workspace; honoring it makes relative-path tools work there).
+        if (params) |p| if (p == .object) if (p.object.get("cwd")) |c| if (c == .string) {
+            const z = gpa.dupeZ(u8, c.string) catch null;
+            if (z) |zz| {
+                _ = linux.chdir(zz.ptr);
+                gpa.free(zz);
+            }
+        };
         session_counter += 1;
         const result = try std.fmt.allocPrint(gpa, "{{\"sessionId\":\"tau-{d}\"}}", .{session_counter});
         defer gpa.free(result);
