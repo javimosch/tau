@@ -356,45 +356,90 @@ fn saveSession(
     };
 }
 
-/// Build argument array for a tool based on its name and arguments JSON
+fn hasNull(s: []const u8) bool {
+    return std.mem.indexOfScalar(u8, s, 0) != null;
+}
+
+/// A tool path must be non-empty, null-free, and free of `..` traversal
+/// components (absolute paths and clean relative paths are allowed; only
+/// parent-escapes like ../../etc/passwd are rejected).
+fn safePath(p: []const u8) bool {
+    if (p.len == 0 or hasNull(p)) return false;
+    var it = std.mem.splitScalar(u8, p, '/');
+    while (it.next()) |seg| if (std.mem.eql(u8, seg, "..")) return false;
+    return true;
+}
+
+/// Build argument array for a tool based on its name and arguments JSON.
+/// Validates inputs: rejects null bytes in any argument, empty bash commands,
+/// and `..` traversal in file paths (returns error.UnsafeArgument).
 pub fn buildToolArgs(gpa: std.mem.Allocator, tool_name: []const u8, args_json: []const u8) ![][]const u8 {
     var args = std.ArrayList([]const u8).empty;
     defer args.deinit(gpa);
 
     if (std.mem.eql(u8, tool_name, "bash")) {
         const command = (try jsonmod.getStringArg(gpa, args_json, "command")) orelse return error.MissingArgument;
+        if (command.len == 0 or hasNull(command)) return error.UnsafeArgument;
         try args.append(gpa, command);
     } else if (std.mem.eql(u8, tool_name, "ls")) {
         const path = try jsonmod.getStringArg(gpa, args_json, "path");
-        if (path) |p| try args.append(gpa, p);
+        if (path) |p| {
+            if (!safePath(p)) return error.UnsafeArgument;
+            try args.append(gpa, p);
+        }
     } else if (std.mem.eql(u8, tool_name, "read")) {
         const path = (try jsonmod.getStringArg(gpa, args_json, "path")) orelse return error.MissingArgument;
+        if (!safePath(path)) return error.UnsafeArgument;
         try args.append(gpa, path);
     } else if (std.mem.eql(u8, tool_name, "write")) {
         const path = (try jsonmod.getStringArg(gpa, args_json, "path")) orelse return error.MissingArgument;
         const content = (try jsonmod.getStringArg(gpa, args_json, "content")) orelse return error.MissingArgument;
+        if (!safePath(path) or hasNull(content)) return error.UnsafeArgument;
         try args.append(gpa, path);
         try args.append(gpa, content);
     } else if (std.mem.eql(u8, tool_name, "edit")) {
         const path = (try jsonmod.getStringArg(gpa, args_json, "path")) orelse return error.MissingArgument;
         const old_string = (try jsonmod.getStringArg(gpa, args_json, "old_string")) orelse return error.MissingArgument;
         const new_string = (try jsonmod.getStringArg(gpa, args_json, "new_string")) orelse return error.MissingArgument;
+        if (!safePath(path) or hasNull(old_string) or hasNull(new_string)) return error.UnsafeArgument;
         try args.append(gpa, path);
         try args.append(gpa, old_string);
         try args.append(gpa, new_string);
     } else if (std.mem.eql(u8, tool_name, "grep")) {
         const pattern = (try jsonmod.getStringArg(gpa, args_json, "pattern")) orelse return error.MissingArgument;
+        if (hasNull(pattern)) return error.UnsafeArgument;
         try args.append(gpa, pattern);
         const path = try jsonmod.getStringArg(gpa, args_json, "path");
-        if (path) |p| try args.append(gpa, p);
+        if (path) |p| {
+            if (!safePath(p)) return error.UnsafeArgument;
+            try args.append(gpa, p);
+        }
     } else if (std.mem.eql(u8, tool_name, "find")) {
         const pattern = (try jsonmod.getStringArg(gpa, args_json, "pattern")) orelse return error.MissingArgument;
+        if (hasNull(pattern)) return error.UnsafeArgument;
         try args.append(gpa, pattern);
         const path = try jsonmod.getStringArg(gpa, args_json, "path");
-        if (path) |p| try args.append(gpa, p);
+        if (path) |p| {
+            if (!safePath(p)) return error.UnsafeArgument;
+            try args.append(gpa, p);
+        }
     } else {
         return error.UnknownTool;
     }
 
     return args.toOwnedSlice(gpa);
+}
+
+test "buildToolArgs rejects unsafe paths and empty commands" {
+    // Use an arena (as the real callers do — per-turn arena in ACP, process
+    // lifetime in the CLI) so partial allocations on the validated error paths
+    // are reclaimed in one shot.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.UnsafeArgument, buildToolArgs(a, "write", "{\"path\":\"../../etc/passwd\",\"content\":\"x\"}"));
+    try std.testing.expectError(error.UnsafeArgument, buildToolArgs(a, "read", "{\"path\":\"a/../../b\"}"));
+    try std.testing.expectError(error.UnsafeArgument, buildToolArgs(a, "bash", "{\"command\":\"\"}"));
+    const ok = try buildToolArgs(a, "read", "{\"path\":\"/home/u/proj/main.zig\"}");
+    try std.testing.expectEqualStrings("/home/u/proj/main.zig", ok[0]);
 }
