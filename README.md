@@ -355,24 +355,24 @@ tau is designed to be lightweight — Zig's zero-overhead and compiled binary na
 
 ### Resource Usage (measured on Linux)
 
-|| Operation | Max RSS | User CPU | Sys CPU | Wall Time |
-||-----------|---------|----------|---------|-----------|
-|| Single-shot chat | ~13.3 MB | 0.04s | 0.00s | 2.6s |
-|| Tool-calling (bash) | ~13.6 MB | 0.09s | 0.01s | 4.0s |
-|| Session create | ~13.5 MB | 0.04s | 0.00s | 4.9s |
-|| Session recall | ~13.6 MB | 0.04s | 0.01s | 3.8s |
-|| Startup (--help) | ~4.6 MB | 0.00s | 0.00s | <0.01s |
+| Operation | Max RSS | User CPU | Sys CPU | Wall Time |
+|-----------|---------|----------|---------|-----------|
+| Single-shot chat | ~13.3 MB | 0.04s | 0.00s | 2.6s |
+| Tool-calling (bash) | ~13.6 MB | 0.09s | 0.01s | 4.0s |
+| Session create | ~13.5 MB | 0.04s | 0.00s | 4.9s |
+| Session recall | ~13.6 MB | 0.04s | 0.01s | 3.8s |
+| Startup (--help) | ~4.6 MB | 0.00s | 0.00s | <0.01s |
 
 *Measured with `/usr/bin/time` on x86_64 Linux, xiaomi mimo-v2.5 model. Wall time includes network latency.*
 
 ### Comparison to Other Agent CLIs
 
-|| CLI | Runtime | Typical RSS | Notes |
-||-----|---------|-------------|-------|
-|| **tau** | Zig (compiled) | ~13 MB | Zero-overhead, single binary |
-|| pi | Python | ~50-100 MB | Python runtime overhead |
-|| opencode | Node.js | ~100-200 MB | V8 + TypeScript runtime |
-|| devin | Node.js | ~100-200 MB | Electron/V8 overhead |
+| CLI | Runtime | Typical RSS | Notes |
+|-----|---------|-------------|-------|
+| **tau** | Zig (compiled) | ~13 MB | Zero-overhead, single binary |
+| pi | Python | ~50-100 MB | Python runtime overhead |
+| opencode | Node.js | ~100-200 MB | V8 + TypeScript runtime |
+| devin | Node.js | ~100-200 MB | Electron/V8 overhead |
 
 **Why tau is lighter:**
 - **No runtime VM** — Zig compiles to native machine code
@@ -381,6 +381,16 @@ tau is designed to be lightweight — Zig's zero-overhead and compiled binary na
 - **Fast startup** — ~4.6 MB RSS at idle, instant CLI help
 
 ### Benchmarking
+
+Run the resource benchmark script:
+
+```bash
+./scripts/benchmark-resources.sh
+```
+
+Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for each operation.
+
+---
 
 Run the resource benchmark script:
 
