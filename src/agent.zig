@@ -88,15 +88,6 @@ pub fn run(
     };
     try messages.append(gpa, .{ .role = "user", .content = try gpa.dupe(u8, user_text) });
 
-    // --- Streaming chat path (ephemeral single-shot only) ---
-    // Skipped for goal mode (needs the tool loop) and for sessions (streaming
-    // doesn't capture the assistant turn, so history would be incomplete — the
-    // non-streaming loop below records full history instead).
-    if (cfg.stream and !goal_active and cfg.session == null and !cfg.dry_run) {
-        try provider_mod.completeStream(io, gpa, cfg_with_key, messages.items);
-        return 0;
-    }
-
     // --- Tools ---
     const enabled_tools = try registry_mod.getEnabledTools(gpa, cfg.tools_allow, cfg.tools_deny);
     defer gpa.free(enabled_tools);
@@ -160,7 +151,13 @@ pub fn run(
         if (context_mod.shouldCompact(messages.items, cfg_with_key))
             context_mod.compact(io, gpa, cfg_with_key, &messages) catch {};
 
-        const response = try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tool_infos_slice);
+        // Streaming path: token-stream content + silently assemble tool_calls.
+        // Non-streaming path: blocking full-response.
+        // Both return the same Response shape; tool execution is identical either way.
+        const response = if (cfg.stream and !cfg.dry_run)
+            try provider_mod.completeStreamWithTools(io, gpa, cfg_with_key, messages.items, tool_infos_slice)
+        else
+            try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tool_infos_slice);
         defer gpa.free(response.content);
         tokens_out += (response.content.len + 3) / 4;
 
@@ -182,7 +179,8 @@ pub fn run(
                 try messages.append(gpa, .{ .role = "user", .content = try gpa.dupe(u8, goalmod.NUDGE) });
                 continue :loop;
             }
-            try emitFinal(gpa, cfg, response, goal_active);
+            // Streaming already emitted content + done marker; non-streaming needs emitFinal.
+            if (!cfg.stream) try emitFinal(gpa, cfg, response, goal_active);
             if (goal_active) goal_done = true;
             exit_code = 0;
             break :loop;

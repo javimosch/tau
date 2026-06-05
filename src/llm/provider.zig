@@ -238,31 +238,32 @@ fn backoff(io: std.Io, attempt: u32) void {
     std.Io.sleep(io, std.Io.Duration.fromMilliseconds(ms), .awake) catch {};
 }
 
-/// Complete an LLM request with optional tool schema.
-/// Returns Response with content and any tool_calls from the LLM. Transient HTTP
-/// failures (curl error, 429/5xx) are retried with exponential backoff; a 401 /
-/// invalid key surfaces as error.AuthFailed.
-pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
-                messages: []const Message, tools: ?[]const ToolInfo) !Response {
+// ---------------------------------------------------------------------------
+// Request body builder (shared by complete() and completeStreamWithTools())
+// ---------------------------------------------------------------------------
 
-    // Build request body with proper JSON escaping
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(gpa);
-
+fn appendRequestBody(
+    gpa: std.mem.Allocator,
+    body: *std.ArrayList(u8),
+    cfg: anytype,
+    messages: []const Message,
+    tools: ?[]const ToolInfo,
+    stream: bool,
+) !void {
     try body.appendSlice(gpa, "{\"model\":\"");
-    try jsonmod.escapeInto(gpa, &body, cfg.model);
+    try jsonmod.escapeInto(gpa, body, cfg.model);
     try body.appendSlice(gpa, "\",\"messages\":[");
 
     for (messages, 0..) |msg, i| {
         if (i > 0) try body.appendSlice(gpa, ",");
         try body.appendSlice(gpa, "{\"role\":\"");
-        try jsonmod.escapeInto(gpa, &body, msg.role);
+        try jsonmod.escapeInto(gpa, body, msg.role);
         try body.appendSlice(gpa, "\",\"content\":\"");
-        try jsonmod.escapeInto(gpa, &body, msg.content);
+        try jsonmod.escapeInto(gpa, body, msg.content);
         try body.appendSlice(gpa, "\"");
         if (msg.tool_call_id) |tcid| {
             try body.appendSlice(gpa, ",\"tool_call_id\":\"");
-            try jsonmod.escapeInto(gpa, &body, tcid);
+            try jsonmod.escapeInto(gpa, body, tcid);
             try body.appendSlice(gpa, "\"");
         }
         if (msg.tool_calls) |tcs| {
@@ -270,11 +271,11 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
             for (tcs, 0..) |tc, j| {
                 if (j > 0) try body.appendSlice(gpa, ",");
                 try body.appendSlice(gpa, "{\"id\":\"");
-                try jsonmod.escapeInto(gpa, &body, tc.id);
+                try jsonmod.escapeInto(gpa, body, tc.id);
                 try body.appendSlice(gpa, "\",\"type\":\"function\",\"function\":{\"name\":\"");
-                try jsonmod.escapeInto(gpa, &body, tc.name);
+                try jsonmod.escapeInto(gpa, body, tc.name);
                 try body.appendSlice(gpa, "\",\"arguments\":\"");
-                try jsonmod.escapeInto(gpa, &body, tc.arguments);
+                try jsonmod.escapeInto(gpa, body, tc.arguments);
                 try body.appendSlice(gpa, "\"}}");
             }
             try body.appendSlice(gpa, "]");
@@ -282,18 +283,21 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
         try body.appendSlice(gpa, "}");
     }
 
-    try body.appendSlice(gpa, "],\"stream\":false");
+    if (stream) {
+        try body.appendSlice(gpa, "],\"stream\":true");
+    } else {
+        try body.appendSlice(gpa, "],\"stream\":false");
+    }
 
-    // Add tool schema if tools are provided
     if (tools) |t| {
         if (t.len > 0) {
             try body.appendSlice(gpa, ",\"tools\":[");
             for (t, 0..) |tool, i| {
                 if (i > 0) try body.appendSlice(gpa, ",");
                 try body.appendSlice(gpa, "{\"type\":\"function\",\"function\":{\"name\":\"");
-                try jsonmod.escapeInto(gpa, &body, tool.name);
+                try jsonmod.escapeInto(gpa, body, tool.name);
                 try body.appendSlice(gpa, "\",\"description\":\"");
-                try jsonmod.escapeInto(gpa, &body, tool.description);
+                try jsonmod.escapeInto(gpa, body, tool.description);
                 try body.appendSlice(gpa, "\",\"parameters\":");
                 try body.appendSlice(gpa, toolParamsJson(tool.name));
                 try body.appendSlice(gpa, "}}");
@@ -303,6 +307,22 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     }
 
     try body.appendSlice(gpa, "}");
+}
+
+// ---------------------------------------------------------------------------
+// Non-streaming completion (blocking, full JSON response)
+// ---------------------------------------------------------------------------
+
+/// Complete an LLM request with optional tool schema.
+/// Returns Response with content and any tool_calls from the LLM. Transient HTTP
+/// failures (curl error, 429/5xx) are retried with exponential backoff; a 401 /
+/// invalid key surfaces as error.AuthFailed.
+pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
+                messages: []const Message, tools: ?[]const ToolInfo) !Response {
+
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    try appendRequestBody(gpa, &body, cfg, messages, tools, false);
 
     const api_key = cfg.api_key orelse return error.AuthFailed;
     const auth = try std.fmt.allocPrint(gpa, "Authorization: Bearer {s}", .{api_key});
@@ -436,44 +456,137 @@ fn extractDeltaReasoning(json: []const u8) ?[]const u8 {
     return json[start..end];
 }
 
-/// Streaming completion: sends `"stream":true`, spawns `curl -N`, parses the
-/// SSE `data:` events, and writes content deltas to stdout incrementally per
-/// cfg.mode. A pure chat turn (no tools — tool_call assembly is not streamed).
-/// text mode: raw token deltas. json mode: NDJSON `{"chunk":..,"done":false}`
-/// lines, then a final `{"model":..,"done":true}`.
-pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages: []const Message) !void {
+// ---------------------------------------------------------------------------
+// SSE tool_call delta extractors
+// ---------------------------------------------------------------------------
+
+/// True when this SSE chunk carries a tool_calls delta (vs. null).
+fn hasDeltaToolCall(json: []const u8) bool {
+    return std.mem.indexOf(u8, json, "\"tool_calls\":[{") != null;
+}
+
+/// Index of the tool_call being streamed (always 0 for single-tool turns,
+/// higher for parallel tool calls). Returns null if no tool_call delta.
+fn extractDeltaTCIndex(json: []const u8) ?usize {
+    const start = std.mem.indexOf(u8, json, "\"tool_calls\":[{") orelse return null;
+    const needle = "\"index\":";
+    const at = std.mem.indexOfPos(u8, json, start, needle) orelse return null;
+    var vs = at + needle.len;
+    while (vs < json.len and (json[vs] == ' ' or json[vs] == '\t')) vs += 1;
+    var end = vs;
+    while (end < json.len and json[end] >= '0' and json[end] <= '9') end += 1;
+    if (end == vs) return null;
+    return std.fmt.parseInt(usize, json[vs..end], 10) catch null;
+}
+
+/// The call id (e.g. "call_abc123") from the first chunk for a given index.
+/// Subsequent chunks have "id":null; this returns null in that case.
+fn extractDeltaTCId(json: []const u8) ?[]const u8 {
+    const needle = "\"id\":\"";
+    const at = std.mem.indexOf(u8, json, needle) orelse return null;
+    const start = at + needle.len;
+    var end = start;
+    while (end < json.len) : (end += 1) {
+        if (json[end] == '\\') { end += 1; continue; }
+        if (json[end] == '"') break;
+    } else return null;
+    return json[start..end];
+}
+
+/// The function name from the first chunk for a given index ("name":"bash").
+/// Subsequent chunks have "name":null; returns null in that case.
+fn extractDeltaTCName(json: []const u8) ?[]const u8 {
+    // The name lives inside "function":{...} — search from there to avoid
+    // matching other "name" fields (e.g. the tool's registered name elsewhere).
+    const func_at = std.mem.indexOf(u8, json, "\"function\":{") orelse return null;
+    const needle = "\"name\":\"";
+    const at = std.mem.indexOfPos(u8, json, func_at, needle) orelse return null;
+    const start = at + needle.len;
+    var end = start;
+    while (end < json.len) : (end += 1) {
+        if (json[end] == '\\') { end += 1; continue; }
+        if (json[end] == '"') break;
+    } else return null;
+    return json[start..end]; // already unescaped (tool names are ASCII)
+}
+
+/// The raw JSON-escaped arguments fragment from this chunk. Concatenate across
+/// all chunks for a given index to get the full escaped arguments body, then
+/// call unescapeAlloc once to get the final arguments string.
+fn extractDeltaTCArgs(json: []const u8) ?[]const u8 {
+    const needle = "\"arguments\":\"";
+    const at = std.mem.indexOf(u8, json, needle) orelse return null;
+    const start = at + needle.len;
+    var end = start;
+    while (end < json.len) : (end += 1) {
+        if (json[end] == '\\') { end += 1; continue; }
+        if (json[end] == '"') break;
+    } else return null;
+    return json[start..end];
+}
+
+// ---------------------------------------------------------------------------
+// Streaming completion with tool_call reassembly
+// ---------------------------------------------------------------------------
+
+/// Per-index buffer for an in-progress streaming tool_call.
+const InProgressTC = struct {
+    id: std.ArrayList(u8) = .empty,
+    name: std.ArrayList(u8) = .empty,
+    /// Raw JSON-escaped argument fragments, concatenated across chunks.
+    /// Unescaped once at the end to produce the final arguments string.
+    args_raw: std.ArrayList(u8) = .empty,
+    active: bool = false,
+};
+
+/// Streaming completion with full tool_call support. Sends `"stream":true`
+/// with the tool schema, spawns `curl -N`, and for each SSE chunk:
+///   - reasoning_content deltas → streamed to stdout (if --thinking)
+///   - content deltas          → streamed to stdout token-by-token
+///   - tool_calls deltas       → accumulated silently by index
+/// Returns Response with the assembled content string and tool_calls (same
+/// shape as complete()). The caller runs tool execution and the next iteration
+/// exactly as for the non-streaming path. The final "done" marker is emitted
+/// internally for pure-content turns; callers must NOT call emitFinal.
+pub fn completeStreamWithTools(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    cfg: anytype,
+    messages: []const Message,
+    tools: ?[]const ToolInfo,
+) !Response {
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(gpa);
-    try body.appendSlice(gpa, "{\"model\":\"");
-    try jsonmod.escapeInto(gpa, &body, cfg.model);
-    try body.appendSlice(gpa, "\",\"messages\":[");
-    for (messages, 0..) |msg, i| {
-        if (i > 0) try body.appendSlice(gpa, ",");
-        try body.appendSlice(gpa, "{\"role\":\"");
-        try jsonmod.escapeInto(gpa, &body, msg.role);
-        try body.appendSlice(gpa, "\",\"content\":\"");
-        try jsonmod.escapeInto(gpa, &body, msg.content);
-        try body.appendSlice(gpa, "\"}");
-    }
-    try body.appendSlice(gpa, "],\"stream\":true}");
+    try appendRequestBody(gpa, &body, cfg, messages, tools, true);
 
     const api_key = cfg.api_key orelse return error.AuthFailed;
     const auth = try std.fmt.allocPrint(gpa, "Authorization: Bearer {s}", .{api_key});
     defer gpa.free(auth);
 
-    const argv = &[_][]const u8{
-        "curl",          "-s",                          "-N", "-X", "POST", cfg.endpoint,
-        "-H",            auth,                          "-H", "Content-Type: application/json",
-        "--data-raw", body.items,
-    };
-
     var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
+        .argv = &[_][]const u8{
+            "curl", "-s", "-N", "-X", "POST", cfg.endpoint,
+            "-H",   auth, "-H", "Content-Type: application/json",
+            "--data-raw", body.items,
+        },
+        .stdin  = .ignore,
         .stdout = .pipe,
         .stderr = .ignore,
     });
     defer child.kill(io);
+
+    var content_buf: std.ArrayList(u8) = .empty;
+    errdefer content_buf.deinit(gpa);
+    var reasoning_buf: std.ArrayList(u8) = .empty;
+    defer reasoning_buf.deinit(gpa);
+
+    // Up to 8 concurrent tool calls (models rarely exceed 4 in parallel).
+    var tc_buf = [_]InProgressTC{.{}} ** 8;
+    defer for (&tc_buf) |*tc| {
+        tc.id.deinit(gpa);
+        tc.name.deinit(gpa);
+        tc.args_raw.deinit(gpa);
+    };
 
     const out = child.stdout.?;
     var rbuf: [16384]u8 = undefined;
@@ -486,13 +599,12 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
         if (line.len == 0) continue;
 
         if (cfg.debug) {
-            const debug_line = try std.fmt.allocPrint(gpa, "[DEBUG] SSE line: {s}\n", .{line});
-            defer gpa.free(debug_line);
-            term.err(debug_line);
+            const dbg = try std.fmt.allocPrint(gpa, "[DEBUG] SSE line: {s}\n", .{line});
+            defer gpa.free(dbg);
+            term.err(dbg);
         }
 
         if (!std.mem.startsWith(u8, line, "data:")) {
-            // Non-SSE line before any data: likely an error envelope.
             if (!saw_data and std.mem.indexOf(u8, line, "\"error\"") != null) {
                 _ = child.wait(io) catch {};
                 return error.HTTPRequestFailed;
@@ -504,54 +616,101 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
         if (data.len > 0 and data[0] == ' ') data = data[1..];
         if (std.mem.eql(u8, data, "[DONE]")) break;
 
-        // Extract reasoning_content first if thinking mode is enabled
+        // Reasoning deltas → stream if --thinking, accumulate.
         if (cfg.thinking) {
-            if (extractDeltaReasoning(data)) |reasoning_esc| {
-                if (reasoning_esc.len > 0) {
+            if (extractDeltaReasoning(data)) |esc| {
+                if (esc.len > 0) {
+                    const txt = try jsonmod.unescapeAlloc(gpa, esc);
+                    defer gpa.free(txt);
+                    try reasoning_buf.appendSlice(gpa, txt);
                     switch (cfg.mode) {
-                        .text => {
-                            const txt = try jsonmod.unescapeAlloc(gpa, reasoning_esc);
-                            defer gpa.free(txt);
-                            const prefix = "[THINKING] ";
-                            term.out(prefix);
-                            term.out(txt);
-                            term.out("\n");
-                        },
+                        .text => { term.out("[THINKING] "); term.out(txt); term.out("\n"); },
                         .json => {
-                            const out_line = try std.fmt.allocPrint(gpa, "{{\"reasoning\":\"{s}\",\"done\":false}}\n", .{reasoning_esc});
-                            defer gpa.free(out_line);
-                            term.out(out_line);
+                            const ol = try std.fmt.allocPrint(gpa, "{{\"reasoning\":\"{s}\",\"done\":false}}\n", .{esc});
+                            defer gpa.free(ol);
+                            term.out(ol);
                         },
                     }
                 }
             }
         }
 
-        const esc = extractDeltaContent(data) orelse continue;
-        if (esc.len == 0) continue;
-        switch (cfg.mode) {
-            .text => {
+        // Content deltas → stream to stdout, accumulate in content_buf.
+        if (extractDeltaContent(data)) |esc| {
+            if (esc.len > 0) {
                 const txt = try jsonmod.unescapeAlloc(gpa, esc);
                 defer gpa.free(txt);
-                term.out(txt);
-            },
-            .json => {
-                // esc is already valid JSON-escaped text; embed it directly.
-                const out_line = try std.fmt.allocPrint(gpa, "{{\"chunk\":\"{s}\",\"done\":false}}\n", .{esc});
-                defer gpa.free(out_line);
-                term.out(out_line);
-            },
+                try content_buf.appendSlice(gpa, txt);
+                switch (cfg.mode) {
+                    .text => term.out(txt),
+                    .json => {
+                        const ol = try std.fmt.allocPrint(gpa, "{{\"chunk\":\"{s}\",\"done\":false}}\n", .{esc});
+                        defer gpa.free(ol);
+                        term.out(ol);
+                    },
+                }
+            }
+        }
+
+        // Tool_call deltas → accumulate silently by index.
+        if (hasDeltaToolCall(data)) {
+            if (extractDeltaTCIndex(data)) |idx| {
+                if (idx < tc_buf.len) {
+                    tc_buf[idx].active = true;
+                    if (extractDeltaTCId(data)) |id|
+                        try tc_buf[idx].id.appendSlice(gpa, id);
+                    if (extractDeltaTCName(data)) |nm|
+                        try tc_buf[idx].name.appendSlice(gpa, nm);
+                    if (extractDeltaTCArgs(data)) |frag|
+                        try tc_buf[idx].args_raw.appendSlice(gpa, frag);
+                }
+            }
         }
     }
 
     _ = child.wait(io) catch {};
 
-    switch (cfg.mode) {
-        .text => term.out("\n"),
-        .json => {
-            const done = try std.fmt.allocPrint(gpa, "{{\"model\":\"{s}\",\"done\":true}}\n", .{cfg.model});
-            defer gpa.free(done);
-            term.out(done);
-        },
+    // Assemble tool_calls from accumulated fragments.
+    var tool_calls: std.ArrayList(ToolCall) = .empty;
+    errdefer {
+        for (tool_calls.items) |tc| {
+            gpa.free(tc.id);
+            gpa.free(tc.name);
+            gpa.free(tc.arguments);
+        }
+        tool_calls.deinit(gpa);
     }
+    for (&tc_buf) |*tc| {
+        if (!tc.active) continue;
+        const args = try jsonmod.unescapeAlloc(gpa, tc.args_raw.items);
+        try tool_calls.append(gpa, .{
+            .id        = try gpa.dupe(u8, tc.id.items),
+            .name      = try gpa.dupe(u8, tc.name.items),
+            .arguments = args,
+        });
+    }
+
+    // Emit terminal marker for pure-content turns (no tool calls).
+    // Tool-call turns have no marker — the caller will execute tools and loop.
+    if (tool_calls.items.len == 0) {
+        switch (cfg.mode) {
+            .text => term.out("\n"),
+            .json => {
+                const done = try std.fmt.allocPrint(gpa, "{{\"model\":\"{s}\",\"done\":true}}\n", .{cfg.model});
+                defer gpa.free(done);
+                term.out(done);
+            },
+        }
+    }
+
+    const reasoning = if (reasoning_buf.items.len > 0)
+        try gpa.dupe(u8, reasoning_buf.items)
+    else
+        null;
+
+    return Response{
+        .content        = try content_buf.toOwnedSlice(gpa),
+        .tool_calls     = try tool_calls.toOwnedSlice(gpa),
+        .reasoning_content = reasoning,
+    };
 }
