@@ -22,6 +22,7 @@ const agentmod = @import("agent.zig");
 const session_mod = @import("session.zig");
 const cfgmod = @import("config.zig");
 const jsonmod = @import("json.zig");
+const context_mod = @import("context.zig");
 
 const builtin = @import("builtin");
 const term = @import("term.zig");
@@ -491,6 +492,24 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
     } else if (cfg.system_prompt) |sp| {
         try messages.append(a, .{ .role = "system", .content = sp });
     }
+
+    // Hard cap: trim very long sessions before adding the new user turn.
+    // Compaction handles gradual growth; this is a backstop for sessions that
+    // accumulated many tool-result messages (each file read can be thousands of
+    // tokens) before compaction had a chance to fire.
+    const MSG_CAP: usize = 80;
+    if (messages.items.len > MSG_CAP) {
+        const has_sys = messages.items.len > 0 and std.mem.eql(u8, messages.items[0].role, "system");
+        // Keep at most MSG_CAP recent messages (plus the system message).
+        var keep_from = messages.items.len -| (MSG_CAP - @as(usize, if (has_sys) 1 else 0));
+        // Never start on a tool message (would orphan its assistant turn).
+        while (keep_from < messages.items.len and std.mem.eql(u8, messages.items[keep_from].role, "tool")) keep_from += 1;
+        var trimmed: std.ArrayList(provider.Message) = .empty;
+        if (has_sys) try trimmed.append(a, messages.items[0]);
+        for (messages.items[keep_from..]) |m| try trimmed.append(a, m);
+        messages = trimmed;
+    }
+
     try messages.append(a, .{ .role = "user", .content = text });
 
     const enabled = try registry.getEnabledTools(a, cfg.tools_allow, cfg.tools_deny);
@@ -506,6 +525,10 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
     var stop_reason: []const u8 = "max_turn_requests";
 
     while (iter < maxit) : (iter += 1) {
+        // Auto-compact before each model call (same logic as agent.zig).
+        if (context_mod.shouldCompact(messages.items, cfg))
+            context_mod.compact(io, a, cfg, &messages) catch {};
+
         const resp = provider.complete(io, a, cfg, messages.items, tools_arg) catch |err| {
             session_mod.save(io, a, env, .{ .name = sid, .messages = messages.items }) catch {};
             if (id_val) |idv| {
