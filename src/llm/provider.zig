@@ -551,12 +551,15 @@ const InProgressTC = struct {
 /// shape as complete()). The caller runs tool execution and the next iteration
 /// exactly as for the non-streaming path. The final "done" marker is emitted
 /// internally for pure-content turns; callers must NOT call emitFinal.
+/// When strip_sentinel is true, lines equal to "<GOAL_MET>" are suppressed
+/// from text-mode terminal output (the content is still returned in Response).
 pub fn completeStreamWithTools(
     io: std.Io,
     gpa: std.mem.Allocator,
     cfg: anytype,
     messages: []const Message,
     tools: ?[]const ToolInfo,
+    strip_sentinel: bool,
 ) !Response {
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(gpa);
@@ -582,6 +585,9 @@ pub fn completeStreamWithTools(
     errdefer content_buf.deinit(gpa);
     var reasoning_buf: std.ArrayList(u8) = .empty;
     defer reasoning_buf.deinit(gpa);
+    // Line buffer for sentinel suppression (goal mode, text mode only).
+    var line_buf: std.ArrayList(u8) = .empty;
+    defer line_buf.deinit(gpa);
 
     // Up to 8 concurrent tool calls (models rarely exceed 4 in parallel).
     var tc_buf = [_]InProgressTC{.{}} ** 8;
@@ -645,7 +651,19 @@ pub fn completeStreamWithTools(
                 defer gpa.free(txt);
                 try content_buf.appendSlice(gpa, txt);
                 switch (cfg.mode) {
-                    .text => term.out(txt),
+                    .text => if (strip_sentinel) {
+                        // Buffer line by line; suppress lines that equal the sentinel.
+                        for (txt) |c| {
+                            try line_buf.append(gpa, c);
+                            if (c == '\n') {
+                                const trimmed = std.mem.trim(u8, line_buf.items, " \t\r\n");
+                                if (!std.mem.eql(u8, trimmed, "<GOAL_MET>")) term.out(line_buf.items);
+                                line_buf.clearRetainingCapacity();
+                            }
+                        }
+                    } else {
+                        term.out(txt);
+                    },
                     .json => {
                         const ol = try std.fmt.allocPrint(gpa, "{{\"chunk\":\"{s}\",\"done\":false}}\n", .{esc});
                         defer gpa.free(ol);
@@ -691,6 +709,13 @@ pub fn completeStreamWithTools(
             .name      = try gpa.dupe(u8, tc.name.items),
             .arguments = args,
         });
+    }
+
+    // Flush any partial line remaining in the line buffer (no trailing '\n').
+    // A partial sentinel can't be a complete lone line, so always emit.
+    if (strip_sentinel and line_buf.items.len > 0) {
+        const trimmed = std.mem.trim(u8, line_buf.items, " \t\r\n");
+        if (!std.mem.eql(u8, trimmed, "<GOAL_MET>")) term.out(line_buf.items);
     }
 
     // Emit terminal marker for pure-content turns (no tool calls).

@@ -99,15 +99,71 @@ fn printVersion() void {
     writeOut(v);
 }
 
-// Valid machine-readable help JSON (note: a real JSON object, not the old
-// double-brace string that produced malformed output).
+// Single source of truth for all CLI flags. printHelpJson and the test both
+// derive from this table; help_text Options section must be kept in sync.
+const FlagSpec = struct { long: []const u8, short: ?[]const u8 = null, arg: ?[]const u8 = null };
+const flag_specs = [_]FlagSpec{
+    .{ .long = "--print",                .short = "-p"           },
+    .{ .long = "--provider",             .arg = "name"           },
+    .{ .long = "--model",                .arg = "pattern"        },
+    .{ .long = "--api-key",              .arg = "key"            },
+    .{ .long = "--system-prompt",        .arg = "text"           },
+    .{ .long = "--append-system-prompt", .arg = "text"           },
+    .{ .long = "--mode",                 .arg = "text|json"      },
+    .{ .long = "--no-stream"                                     },
+    .{ .long = "--tools",                .short = "-t",  .arg = "csv" },
+    .{ .long = "--exclude-tools",        .short = "-xt", .arg = "csv" },
+    .{ .long = "--no-tools",             .short = "-nt"          },
+    .{ .long = "--thinking"                                      },
+    .{ .long = "--debug"                                         },
+    .{ .long = "--dry-run"                                       },
+    .{ .long = "--temperature",          .arg = "f"              },
+    .{ .long = "--max-tokens",           .arg = "n"              },
+    .{ .long = "--timeout-ms",           .arg = "n"              },
+    .{ .long = "--session",              .arg = "name"           },
+    .{ .long = "--context-window",       .arg = "n"              },
+    .{ .long = "--compact-threshold",    .arg = "f"              },
+    .{ .long = "--compact-keep-recent",  .arg = "n"              },
+    .{ .long = "--no-compact"                                    },
+    .{ .long = "--max-iterations",       .arg = "n"              },
+    .{ .long = "--goal-max-iterations",  .arg = "n"              },
+    .{ .long = "--help-json"                                     },
+    .{ .long = "--help",                 .short = "-h"           },
+    .{ .long = "--version",              .short = "-v"           },
+};
+
 fn printHelpJson() void {
-    const j = std.fmt.allocPrint(std.heap.page_allocator,
-        \\{{"version":"{s}","name":"{s}","description":"Agent-first AI CLI - non-interactive Zig implementation of pi","flags":[{{"name":"--provider","arg":"name"}},{{"name":"--model","arg":"pattern"}},{{"name":"--api-key","arg":"key"}},{{"name":"--system-prompt","arg":"text"}},{{"name":"--append-system-prompt","arg":"text"}},{{"name":"--mode","arg":"text|json"}},{{"name":"--no-stream"}},{{"name":"--tools","arg":"csv"}},{{"name":"--exclude-tools","arg":"csv"}},{{"name":"--no-tools"}},{{"name":"--thinking"}},{{"name":"--debug"}},{{"name":"--dry-run"}},{{"name":"--temperature","arg":"f"}},{{"name":"--session","arg":"name"}},{{"name":"--context-window","arg":"n"}},{{"name":"--compact-threshold","arg":"f"}},{{"name":"--compact-keep-recent","arg":"n"}},{{"name":"--no-compact"}},{{"name":"--goal-max-iterations","arg":"n"}},{{"name":"--max-iterations","arg":"n"}},{{"name":"--print"}},{{"name":"--help"}},{{"name":"--version"}}],"goal_commands":["/goal <objective>","/goal status","/goal pause","/goal resume","/goal clear","/goal complete"],"output_modes":["json"],"defaults":{{"mode":"json","stream":true,"auto_compact":true}},"exit_codes":{{"0":"success","80":"invalid_argument","82":"missing_required_field","105":"connection_timeout","106":"auth_failed","110":"internal_error","111":"unimplemented"}}}}
-    , .{ version, name }) catch return;
-    defer std.heap.page_allocator.free(j);
-    writeOut(j);
-    writeOut("\n");
+    const alloc = std.heap.page_allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    buf.appendSlice(alloc, "{\"version\":\"") catch return;
+    buf.appendSlice(alloc, version) catch return;
+    buf.appendSlice(alloc, "\",\"name\":\"") catch return;
+    buf.appendSlice(alloc, name) catch return;
+    buf.appendSlice(alloc, "\",\"description\":\"Agent-first AI CLI - non-interactive Zig implementation of pi\",\"flags\":[") catch return;
+
+    for (flag_specs, 0..) |f, i| {
+        if (i != 0) buf.append(alloc, ',') catch return;
+        buf.appendSlice(alloc, "{\"name\":\"") catch return;
+        buf.appendSlice(alloc, f.long) catch return;
+        buf.append(alloc, '"') catch return;
+        if (f.arg) |a| {
+            buf.appendSlice(alloc, ",\"arg\":\"") catch return;
+            buf.appendSlice(alloc, a) catch return;
+            buf.append(alloc, '"') catch return;
+        }
+        buf.append(alloc, '}') catch return;
+    }
+
+    buf.appendSlice(alloc,
+        "],\"goal_commands\":[\"/goal <objective>\",\"/goal status\",\"/goal pause\",\"/goal resume\",\"/goal clear\",\"/goal complete\"]" ++
+        ",\"output_modes\":[\"json\"]" ++
+        ",\"defaults\":{\"mode\":\"json\",\"stream\":true,\"auto_compact\":true}" ++
+        ",\"exit_codes\":{\"0\":\"success\",\"80\":\"invalid_argument\",\"82\":\"missing_required_field\",\"105\":\"connection_timeout\",\"106\":\"auth_failed\",\"110\":\"internal_error\",\"111\":\"unimplemented\"}}\n"
+    ) catch return;
+
+    writeOut(buf.items);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -175,4 +231,12 @@ test {
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
+}
+
+test "flag_specs appear in help_text" {
+    for (flag_specs) |f| {
+        const found = std.mem.indexOf(u8, help_text, f.long) != null;
+        if (!found) std.debug.print("flag_specs entry '{s}' not found in help_text\n", .{f.long});
+        try std.testing.expect(found);
+    }
 }

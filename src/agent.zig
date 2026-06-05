@@ -155,7 +155,7 @@ pub fn run(
         // Non-streaming path: blocking full-response.
         // Both return the same Response shape; tool execution is identical either way.
         const response = if (cfg.stream and !cfg.dry_run)
-            try provider_mod.completeStreamWithTools(io, gpa, cfg_with_key, messages.items, tool_infos_slice)
+            try provider_mod.completeStreamWithTools(io, gpa, cfg_with_key, messages.items, tool_infos_slice, goal_active)
         else
             try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tool_infos_slice);
         defer gpa.free(response.content);
@@ -407,61 +407,68 @@ fn safePath(p: []const u8) bool {
     return true;
 }
 
+const FieldKind = enum { path, command, content, pattern };
+const FieldSpec = struct { key: []const u8, required: bool, kind: FieldKind };
+const ToolSpec = struct { name: []const u8, fields: []const FieldSpec };
+
+const tool_specs = [_]ToolSpec{
+    .{ .name = "bash", .fields = &.{
+        .{ .key = "command",    .required = true,  .kind = .command },
+    }},
+    .{ .name = "ls", .fields = &.{
+        .{ .key = "path",       .required = false, .kind = .path },
+    }},
+    .{ .name = "read", .fields = &.{
+        .{ .key = "path",       .required = true,  .kind = .path },
+    }},
+    .{ .name = "write", .fields = &.{
+        .{ .key = "path",       .required = true,  .kind = .path },
+        .{ .key = "content",    .required = true,  .kind = .content },
+    }},
+    .{ .name = "edit", .fields = &.{
+        .{ .key = "path",       .required = true,  .kind = .path },
+        .{ .key = "old_string", .required = true,  .kind = .content },
+        .{ .key = "new_string", .required = true,  .kind = .content },
+    }},
+    .{ .name = "grep", .fields = &.{
+        .{ .key = "pattern",    .required = true,  .kind = .pattern },
+        .{ .key = "path",       .required = false, .kind = .path },
+    }},
+    .{ .name = "find", .fields = &.{
+        .{ .key = "pattern",    .required = true,  .kind = .pattern },
+        .{ .key = "path",       .required = false, .kind = .path },
+    }},
+};
+
 /// Build argument array for a tool based on its name and arguments JSON.
 /// Validates inputs: rejects null bytes in any argument, empty bash commands,
 /// and `..` traversal in file paths (returns error.UnsafeArgument).
 pub fn buildToolArgs(gpa: std.mem.Allocator, tool_name: []const u8, args_json: []const u8) ![][]const u8 {
+    const spec = blk: {
+        for (&tool_specs) |*s| {
+            if (std.mem.eql(u8, s.name, tool_name)) break :blk s;
+        }
+        return error.UnknownTool;
+    };
+
     var args = std.ArrayList([]const u8).empty;
     defer args.deinit(gpa);
 
-    if (std.mem.eql(u8, tool_name, "bash")) {
-        const command = (try jsonmod.getStringArg(gpa, args_json, "command")) orelse return error.MissingArgument;
-        if (command.len == 0 or hasNull(command)) return error.UnsafeArgument;
-        try args.append(gpa, command);
-    } else if (std.mem.eql(u8, tool_name, "ls")) {
-        const path = try jsonmod.getStringArg(gpa, args_json, "path");
-        if (path) |p| {
-            if (!safePath(p)) return error.UnsafeArgument;
-            try args.append(gpa, p);
+    for (spec.fields) |field| {
+        const val = try jsonmod.getStringArg(gpa, args_json, field.key);
+        if (val == null) {
+            if (field.required) return error.MissingArgument;
+            continue;
         }
-    } else if (std.mem.eql(u8, tool_name, "read")) {
-        const path = (try jsonmod.getStringArg(gpa, args_json, "path")) orelse return error.MissingArgument;
-        if (!safePath(path)) return error.UnsafeArgument;
-        try args.append(gpa, path);
-    } else if (std.mem.eql(u8, tool_name, "write")) {
-        const path = (try jsonmod.getStringArg(gpa, args_json, "path")) orelse return error.MissingArgument;
-        const content = (try jsonmod.getStringArg(gpa, args_json, "content")) orelse return error.MissingArgument;
-        if (!safePath(path) or hasNull(content)) return error.UnsafeArgument;
-        try args.append(gpa, path);
-        try args.append(gpa, content);
-    } else if (std.mem.eql(u8, tool_name, "edit")) {
-        const path = (try jsonmod.getStringArg(gpa, args_json, "path")) orelse return error.MissingArgument;
-        const old_string = (try jsonmod.getStringArg(gpa, args_json, "old_string")) orelse return error.MissingArgument;
-        const new_string = (try jsonmod.getStringArg(gpa, args_json, "new_string")) orelse return error.MissingArgument;
-        if (!safePath(path) or hasNull(old_string) or hasNull(new_string)) return error.UnsafeArgument;
-        try args.append(gpa, path);
-        try args.append(gpa, old_string);
-        try args.append(gpa, new_string);
-    } else if (std.mem.eql(u8, tool_name, "grep")) {
-        const pattern = (try jsonmod.getStringArg(gpa, args_json, "pattern")) orelse return error.MissingArgument;
-        if (hasNull(pattern)) return error.UnsafeArgument;
-        try args.append(gpa, pattern);
-        const path = try jsonmod.getStringArg(gpa, args_json, "path");
-        if (path) |p| {
-            if (!safePath(p)) return error.UnsafeArgument;
-            try args.append(gpa, p);
-        }
-    } else if (std.mem.eql(u8, tool_name, "find")) {
-        const pattern = (try jsonmod.getStringArg(gpa, args_json, "pattern")) orelse return error.MissingArgument;
-        if (hasNull(pattern)) return error.UnsafeArgument;
-        try args.append(gpa, pattern);
-        const path = try jsonmod.getStringArg(gpa, args_json, "path");
-        if (path) |p| {
-            if (!safePath(p)) return error.UnsafeArgument;
-            try args.append(gpa, p);
-        }
-    } else {
-        return error.UnknownTool;
+        const v = val.?;
+        const ok = switch (field.kind) {
+            .path    => safePath(v),
+            .command => v.len > 0 and !hasNull(v),
+            .content => !hasNull(v),
+            .pattern => !hasNull(v),
+        };
+        if (!ok) return error.UnsafeArgument;
+        try args.append(gpa, v);
     }
 
     return args.toOwnedSlice(gpa);
