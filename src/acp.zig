@@ -506,8 +506,23 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
     var messages: std.ArrayList(provider.Message) = .empty;
     if (session_mod.load(io, a, env, sid) catch null) |st| {
         for (st.messages) |m| try messages.append(a, m);
-    } else if (cfg.system_prompt) |sp| {
-        try messages.append(a, .{ .role = "system", .content = sp });
+    }
+    // Always ensure a system message is present. On a fresh session the loaded
+    // history will be empty; on a loaded session it should already have one.
+    // Use the configured system prompt if set, otherwise a default that nudges
+    // the model to use tools when asked about project state.
+    const has_system = messages.items.len > 0 and std.mem.eql(u8, messages.items[0].role, "system");
+    if (!has_system) {
+        const sp = cfg.system_prompt orelse
+            "You are tau, an agent-first AI assistant. " ++
+            "When asked about prior work, recent changes, or project status — " ++
+            "use the available tools (bash, git log, ls, read) to answer from " ++
+            "the actual codebase rather than guessing. Never say you have no memory; " ++
+            "instead, inspect the project to reconstruct context.";
+        var with_sys: std.ArrayList(provider.Message) = .empty;
+        try with_sys.append(a, .{ .role = "system", .content = sp });
+        try with_sys.appendSlice(a, messages.items);
+        messages = with_sys;
     }
 
     // Hard cap: trim very long sessions before adding the new user turn.
