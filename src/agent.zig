@@ -7,7 +7,7 @@ const goalmod = @import("goal.zig");
 const context_mod = @import("context.zig");
 const session_mod = @import("session.zig");
 
-const linux = std.os.linux;
+const term = @import("term.zig");
 
 pub fn run(
     io: std.Io,
@@ -119,11 +119,11 @@ pub fn run(
         switch (cfg.mode) {
             .text => {
                 const hdr = "[dry-run] tau would call:\n";
-                _ = linux.write(1, hdr.ptr, hdr.len);
+                term.out(hdr);
                 for (resp.tool_calls) |tc| {
                     const line = try std.fmt.allocPrint(gpa, "  - {s} {s}\n", .{ tc.name, tc.arguments });
                     defer gpa.free(line);
-                    _ = linux.write(1, line.ptr, line.len);
+                    term.out(line);
                 }
             },
             .json => {
@@ -141,7 +141,7 @@ pub fn run(
                     try buf.appendSlice(gpa, obj);
                 }
                 try buf.appendSlice(gpa, "]}\n");
-                _ = linux.write(1, buf.items.ptr, buf.items.len);
+                term.out(buf.items);
             },
         }
         return 0;
@@ -208,7 +208,7 @@ pub fn run(
             if (cfg.debug) {
                 const debug_input = try std.fmt.allocPrint(gpa, "[DEBUG] Tool: {s}, Args: {s}\n", .{ tool_call.name, tool_call.arguments });
                 defer gpa.free(debug_input);
-                _ = linux.write(2, debug_input.ptr, debug_input.len);
+                term.err(debug_input);
             }
 
             const args = try buildToolArgs(gpa, tool_call.name, tool_call.arguments);
@@ -228,11 +228,11 @@ pub fn run(
             if (cfg.debug) {
                 const debug_output = try std.fmt.allocPrint(gpa, "[DEBUG] Tool result (success={}): {s}\n", .{ tool_result.success, tool_result.stdout });
                 defer gpa.free(debug_output);
-                _ = linux.write(2, debug_output.ptr, debug_output.len);
+                term.err(debug_output);
                 if (!tool_result.success and tool_result.stderr.len > 0) {
                     const debug_err = try std.fmt.allocPrint(gpa, "[DEBUG] Tool stderr: {s}\n", .{tool_result.stderr});
                     defer gpa.free(debug_err);
-                    _ = linux.write(2, debug_err.ptr, debug_err.len);
+                    term.err(debug_err);
                 }
             }
 
@@ -287,7 +287,7 @@ fn goalSubcommand(
 ) !u8 {
     const name = cfg.session orelse {
         const msg = "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\"}}\n";
-        _ = linux.write(2, msg.ptr, msg.len);
+        term.err(msg);
         return 80;
     };
 
@@ -310,10 +310,10 @@ fn goalSubcommand(
         defer gpa.free(obj);
         const out = try std.fmt.allocPrint(gpa, "{{\"goal\":{{\"objective\":\"{s}\",\"status\":\"{s}\",\"continues\":{d},\"tokens_used\":{d}}}}}\n", .{ obj, g.status, g.continues, g.tokens_used });
         defer gpa.free(out);
-        _ = linux.write(1, out.ptr, out.len);
+        term.out(out);
     } else {
         const out = "{\"goal\":null}\n";
-        _ = linux.write(1, out.ptr, out.len);
+        term.out(out);
     }
 
     saveSession(io, gpa, env_map, name, messages.items, stored_goal.*);
@@ -327,16 +327,16 @@ fn emitFinal(gpa: std.mem.Allocator, cfg: anytype, response: provider_mod.Respon
         if (response.reasoning_content) |rc| switch (cfg.mode) {
             .text => {
                 const prefix = "[THINKING] ";
-                _ = linux.write(1, prefix.ptr, prefix.len);
-                _ = linux.write(1, rc.ptr, rc.len);
-                _ = linux.write(1, "\n".ptr, 1);
+                term.out(prefix);
+                term.out(rc);
+                term.out("\n");
             },
             .json => {
                 const esc = try jsonmod.escapeAlloc(gpa, rc);
                 defer gpa.free(esc);
                 const out = try std.fmt.allocPrint(gpa, "{{\"reasoning\":\"{s}\",\"done\":false}}\n", .{esc});
                 defer gpa.free(out);
-                _ = linux.write(1, out.ptr, out.len);
+                term.out(out);
             },
         };
     }
@@ -352,15 +352,15 @@ fn emitFinal(gpa: std.mem.Allocator, cfg: anytype, response: provider_mod.Respon
 
     switch (cfg.mode) {
         .text => {
-            _ = linux.write(1, content.ptr, content.len);
-            _ = linux.write(1, "\n".ptr, 1);
+            term.out(content);
+            term.out("\n");
         },
         .json => {
             const esc = try jsonmod.escapeAlloc(gpa, content);
             defer gpa.free(esc);
             const out = try std.fmt.allocPrint(gpa, "{{\"version\":\"{s}\",\"model\":\"{s}\",\"content\":\"{s}\",\"done\":true}}\n", .{ @import("main.zig").version, cfg.model, esc });
             defer gpa.free(out);
-            _ = linux.write(1, out.ptr, out.len);
+            term.out(out);
         },
     }
 }
@@ -391,7 +391,7 @@ fn saveSession(
     session_mod.save(io, gpa, env_map, st) catch |err| {
         const m = std.fmt.allocPrint(gpa, "[WARN] failed to save session {s}: {s}\n", .{ name, @errorName(err) }) catch return;
         defer gpa.free(m);
-        _ = linux.write(2, m.ptr, m.len);
+        term.err(m);
     };
 }
 

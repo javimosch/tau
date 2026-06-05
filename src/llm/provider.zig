@@ -1,6 +1,6 @@
 const std = @import("std");
 const jsonmod = @import("../json.zig");
-const linux = std.os.linux;
+const term = @import("../term.zig");
 
 pub const Message = struct {
     role: []const u8,
@@ -375,7 +375,7 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     if (cfg.debug) {
         const debug_raw = try std.fmt.allocPrint(gpa, "[DEBUG] Raw API response: {s}\n", .{result.stdout});
         defer gpa.free(debug_raw);
-        _ = linux.write(2, debug_raw.ptr, debug_raw.len);
+        term.err(debug_raw);
     }
 
     // Parse tool_calls first: on a tool-call turn the model returns
@@ -488,7 +488,7 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
         if (cfg.debug) {
             const debug_line = try std.fmt.allocPrint(gpa, "[DEBUG] SSE line: {s}\n", .{line});
             defer gpa.free(debug_line);
-            _ = linux.write(2, debug_line.ptr, debug_line.len);
+            term.err(debug_line);
         }
 
         if (!std.mem.startsWith(u8, line, "data:")) {
@@ -513,14 +513,14 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
                             const txt = try jsonmod.unescapeAlloc(gpa, reasoning_esc);
                             defer gpa.free(txt);
                             const prefix = "[THINKING] ";
-                            _ = linux.write(1, prefix.ptr, prefix.len);
-                            _ = linux.write(1, txt.ptr, txt.len);
-                            _ = linux.write(1, "\n".ptr, 1);
+                            term.out(prefix);
+                            term.out(txt);
+                            term.out("\n");
                         },
                         .json => {
                             const out_line = try std.fmt.allocPrint(gpa, "{{\"reasoning\":\"{s}\",\"done\":false}}\n", .{reasoning_esc});
                             defer gpa.free(out_line);
-                            _ = linux.write(1, out_line.ptr, out_line.len);
+                            term.out(out_line);
                         },
                     }
                 }
@@ -533,13 +533,13 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
             .text => {
                 const txt = try jsonmod.unescapeAlloc(gpa, esc);
                 defer gpa.free(txt);
-                _ = linux.write(1, txt.ptr, txt.len);
+                term.out(txt);
             },
             .json => {
                 // esc is already valid JSON-escaped text; embed it directly.
                 const out_line = try std.fmt.allocPrint(gpa, "{{\"chunk\":\"{s}\",\"done\":false}}\n", .{esc});
                 defer gpa.free(out_line);
-                _ = linux.write(1, out_line.ptr, out_line.len);
+                term.out(out_line);
             },
         }
     }
@@ -547,11 +547,11 @@ pub fn completeStream(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, messages
     _ = child.wait(io) catch {};
 
     switch (cfg.mode) {
-        .text => _ = linux.write(1, "\n".ptr, 1),
+        .text => term.out("\n"),
         .json => {
             const done = try std.fmt.allocPrint(gpa, "{{\"model\":\"{s}\",\"done\":true}}\n", .{cfg.model});
             defer gpa.free(done);
-            _ = linux.write(1, done.ptr, done.len);
+            term.out(done);
         },
     }
 }

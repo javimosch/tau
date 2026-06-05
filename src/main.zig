@@ -1,5 +1,5 @@
 const std = @import("std");
-const linux = std.os.linux;
+const term = @import("term.zig");
 const cfgmod = @import("config.zig");
 const argsmod = @import("args.zig");
 const json = @import("json.zig");
@@ -22,10 +22,10 @@ const ExitCode = enum(u8) {
 };
 
 fn writeOut(s: []const u8) void {
-    _ = linux.write(1, s.ptr, s.len);
+    term.out(s);
 }
 fn writeErr(s: []const u8) void {
-    _ = linux.write(2, s.ptr, s.len);
+    term.err(s);
 }
 
 fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
@@ -114,6 +114,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
+    term.init(io); // portable stdout/stderr (replaces Linux-only write syscalls)
 
     // Config-file defaults (~/.config/tau/config.json); CLI flags override these.
     const base_cfg: Config = @import("configfile.zig").load(io, arena, init.environ_map);

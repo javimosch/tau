@@ -1,5 +1,4 @@
 const std = @import("std");
-const linux = std.os.linux;
 const jsonmod = @import("../json.zig");
 
 pub const ToolResult = struct {

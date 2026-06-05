@@ -1,5 +1,4 @@
 const std = @import("std");
-const linux = std.os.linux;
 const bashmod = @import("bash.zig");
 
 pub const ToolResult = bashmod.ToolResult;

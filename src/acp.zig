@@ -23,7 +23,21 @@ const session_mod = @import("session.zig");
 const cfgmod = @import("config.zig");
 const jsonmod = @import("json.zig");
 
-const linux = std.os.linux;
+const builtin = @import("builtin");
+const term = @import("term.zig");
+
+/// Best-effort chdir to the client-provided workspace `cwd`. Editors already
+/// spawn the agent with the workspace as its cwd, so this is a refinement.
+/// std 0.16 exposes no portable chdir, so we only do it on Linux; on macOS and
+/// Windows we rely on the inherited spawn cwd.
+fn chdirBestEffort(path: [:0]const u8) void {
+    if (builtin.os.tag == .linux) _ = std.os.linux.chdir(path.ptr);
+}
+
+/// True on platforms where the background daemon (start/stop/status, which use a
+/// pid file + signals) is supported. The stdio/Unix-socket `serve` path works
+/// everywhere regardless.
+const daemon_supported = builtin.os.tag != .windows;
 
 /// Wall-clock milliseconds (for unique session ids).
 fn nowMillis(io: std.Io) i64 {
@@ -35,7 +49,7 @@ pub const Sub = cfgmod.AcpSub;
 const PROTOCOL_VERSION = 1;
 
 fn writeErr(s: []const u8) void {
-    _ = linux.write(2, s.ptr, s.len);
+    term.err(s);
 }
 
 // ---- paths -----------------------------------------------------------------
@@ -79,12 +93,19 @@ pub fn run(
     sub: Sub,
     socket_opt: ?[]const u8,
 ) !u8 {
-    return switch (sub) {
-        .serve => serve(io, gpa, cfg, env, socket_opt),
+    if (sub == .serve) return serve(io, gpa, cfg, env, socket_opt);
+    // start/stop/status manage a background daemon via a pid file + signals,
+    // which is POSIX-only. The comptime-known guard prunes the daemon impls
+    // (and their pid/kill/`/proc` code) from non-POSIX builds entirely; the
+    // stdio `serve` path above works on every platform.
+    if (daemon_supported) return switch (sub) {
         .start => start(io, arena, env, socket_opt),
         .stop => stop(io, arena, env),
         .status => status(io, arena, env),
+        .serve => unreachable,
     };
+    writeErr("{\"err\":{\"code\":111,\"message\":\"acp daemon (start/stop/status) is unsupported on this platform; use `tau acp serve` over stdio\"}}\n");
+    return 111;
 }
 
 // ---- daemon management -----------------------------------------------------
@@ -100,7 +121,7 @@ fn start(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, so
 
     if (readLivePid(io, arena, env)) |pid| {
         const msg = try std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":true,\"pid\":{d},\"socket\":\"{s}\",\"note\":\"already running\"}}}}\n", .{ pid, sock });
-        _ = linux.write(1, msg.ptr, msg.len);
+        term.out(msg);
         return 0;
     }
 
@@ -121,13 +142,13 @@ fn start(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, so
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = pp, .data = pidstr });
 
     const msg = try std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":true,\"pid\":{d},\"socket\":\"{s}\"}}}}\n", .{ pid, sock });
-    _ = linux.write(1, msg.ptr, msg.len);
+    term.out(msg);
     return 0;
 }
 
 fn stop(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) !u8 {
     const pid = readLivePid(io, arena, env) orelse {
-        _ = linux.write(1, "{\"acp\":{\"running\":false,\"note\":\"not running\"}}\n".ptr, 47);
+        term.out("{\"acp\":{\"running\":false,\"note\":\"not running\"}}\n");
         // clean up any stale files
         if (pidPath(arena, env)) |pp| std.Io.Dir.cwd().deleteFile(io, pp) catch {};
         return 0;
@@ -136,7 +157,7 @@ fn stop(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) !u8
     if (pidPath(arena, env)) |pp| std.Io.Dir.cwd().deleteFile(io, pp) catch {};
     if (defaultSocket(arena, env)) |s| std.Io.Dir.cwd().deleteFile(io, s) catch {};
     const msg = try std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":false,\"stopped_pid\":{d}}}}}\n", .{pid});
-    _ = linux.write(1, msg.ptr, msg.len);
+    term.out(msg);
     return 0;
 }
 
@@ -144,9 +165,9 @@ fn status(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) !
     if (readLivePid(io, arena, env)) |pid| {
         const sock = defaultSocket(arena, env) orelse "";
         const msg = try std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":true,\"pid\":{d},\"socket\":\"{s}\"}}}}\n", .{ pid, sock });
-        _ = linux.write(1, msg.ptr, msg.len);
+        term.out(msg);
     } else {
-        _ = linux.write(1, "{\"acp\":{\"running\":false}}\n".ptr, 25);
+        term.out("{\"acp\":{\"running\":false}}\n");
     }
     return 0;
 }
@@ -254,7 +275,7 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
         if (params) |p| if (p == .object) if (p.object.get("cwd")) |c| if (c == .string) {
             const z = gpa.dupeZ(u8, c.string) catch null;
             if (z) |zz| {
-                _ = linux.chdir(zz.ptr);
+                chdirBestEffort(zz);
                 gpa.free(zz);
             }
         };
