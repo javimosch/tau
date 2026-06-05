@@ -570,11 +570,11 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
             return;
         };
 
-        // Surface the model's thinking (mimo returns it in reasoning_content) so
-        // Zed shows reasoning even on turns whose content is empty (tool turns).
-        if (resp.reasoning_content) |rc| {
+        // Surface reasoning only when --thinking is set; it's verbose and clutters
+        // the Zed chat panel on every tool turn when left unconditional.
+        if (cfg.thinking) if (resp.reasoning_content) |rc| {
             if (rc.len > 0) try emitThoughtChunk(a, w, sid, rc);
-        }
+        };
         if (resp.content.len > 0) try emitMessageChunk(a, w, sid, resp.content);
         try messages.append(a, .{
             .role = "assistant",
@@ -642,9 +642,9 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
     if (std.mem.eql(u8, stop_reason, "max_turn_requests")) {
         try messages.append(a, .{ .role = "user", .content = "You have gathered enough. Stop using tools and give your final answer now." });
         if (provider.complete(io, a, cfg, messages.items, null) catch null) |fin| {
-            if (fin.reasoning_content) |rc| {
+            if (cfg.thinking) if (fin.reasoning_content) |rc| {
                 if (rc.len > 0) try emitThoughtChunk(a, w, sid, rc);
-            }
+            };
             if (fin.content.len > 0) try emitMessageChunk(a, w, sid, fin.content);
             try messages.append(a, .{ .role = "assistant", .content = fin.content });
             stop_reason = "end_turn";
