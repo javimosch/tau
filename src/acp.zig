@@ -265,7 +265,7 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
         // version when they request 1; our latest otherwise, per spec).
         try respondResult(gpa, w, id_val,
             "{\"protocolVersion\":" ++ std.fmt.comptimePrint("{d}", .{PROTOCOL_VERSION}) ++
-            ",\"agentCapabilities\":{\"loadSession\":false,\"promptCapabilities\":{\"image\":false,\"audio\":false,\"embeddedContext\":true}},\"authMethods\":[]," ++
+            ",\"agentCapabilities\":{\"loadSession\":true,\"promptCapabilities\":{\"image\":false,\"audio\":false,\"embeddedContext\":true}},\"authMethods\":[]," ++
             "\"agentInfo\":{\"name\":\"tau\",\"version\":\"0.2.0\"}}");
     } else if (std.mem.eql(u8, method, "authenticate")) {
         try respondResult(gpa, w, id_val, "{}");
@@ -290,7 +290,25 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
         defer gpa.free(result);
         try respondResult(gpa, w, id_val, result);
     } else if (std.mem.eql(u8, method, "session/load")) {
-        try respondResult(gpa, w, id_val, "{}");
+        // Extract the sessionId and cwd sent by the client, apply cwd (same as
+        // session/new), then confirm the load with {sessionId}. The conversation
+        // history is seeded from disk in handlePrompt, so no history needs to be
+        // returned here — Zed just needs the confirmation to proceed.
+        const loaded_sid: []const u8 = blk: {
+            if (params) |p| if (p == .object) if (p.object.get("sessionId")) |s| if (s == .string) break :blk s.string;
+            break :blk "unknown";
+        };
+        const sid_dupe = try gpa.dupe(u8, loaded_sid);
+        defer gpa.free(sid_dupe);
+        if (params) |p| if (p == .object) if (p.object.get("cwd")) |c| if (c == .string) {
+            const z = gpa.dupeZ(u8, c.string) catch null;
+            if (z) |zz| { chdirBestEffort(zz); gpa.free(zz); }
+        };
+        const sid_esc = try jsonmod.escapeAlloc(gpa, sid_dupe);
+        defer gpa.free(sid_esc);
+        const result = try std.fmt.allocPrint(gpa, "{{\"sessionId\":\"{s}\"}}", .{sid_esc});
+        defer gpa.free(result);
+        try respondResult(gpa, w, id_val, result);
     } else if (std.mem.eql(u8, method, "session/prompt")) {
         try handlePrompt(io, gpa, cfg, env, r, w, id_val, params);
     } else if (std.mem.eql(u8, method, "session/cancel")) {
