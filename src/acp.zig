@@ -304,6 +304,11 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
             const z = gpa.dupeZ(u8, c.string) catch null;
             if (z) |zz| { chdirBestEffort(zz); gpa.free(zz); }
         };
+        // Clear the persisted message history so the next session/prompt starts
+        // with a blank slate. The Zed UI shows no prior messages anyway (we don't
+        // return history in this response), so agent and UI would be out of sync
+        // if we kept old messages — they would bleed into unrelated new prompts.
+        session_mod.save(io, gpa, env, .{ .name = sid_dupe, .messages = &.{} }) catch {};
         const sid_esc = try jsonmod.escapeAlloc(gpa, sid_dupe);
         defer gpa.free(sid_esc);
         const result = try std.fmt.allocPrint(gpa, "{{\"sessionId\":\"{s}\"}}", .{sid_esc});
