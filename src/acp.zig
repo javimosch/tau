@@ -305,11 +305,28 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
             const z = gpa.dupeZ(u8, c.string) catch null;
             if (z) |zz| { chdirBestEffort(zz); gpa.free(zz); }
         };
-        // Clear the persisted message history so the next session/prompt starts
-        // with a blank slate. The Zed UI shows no prior messages anyway (we don't
-        // return history in this response), so agent and UI would be out of sync
-        // if we kept old messages — they would bleed into unrelated new prompts.
-        session_mod.save(io, gpa, env, .{ .name = sid_dupe, .messages = &.{} }) catch {};
+        // Compact (or trim) the prior session history before the next prompt.
+        // The Zed UI shows no prior messages, but the agent should still have
+        // summarised context so it can continue coherently. A temporary arena
+        // holds all intermediates; everything is freed after the save.
+        var load_arena = std.heap.ArenaAllocator.init(gpa);
+        defer load_arena.deinit();
+        const la = load_arena.allocator();
+        if (session_mod.load(io, la, env, sid_dupe) catch null) |st| {
+            if (st.messages.len > 0) {
+                var msgs: std.ArrayList(provider.Message) = .empty;
+                for (st.messages) |m| try msgs.append(la, m);
+                // Try LLM compaction. On failure, fall back to a hard tail trim
+                // (last 20 messages) so the agent still has recent context.
+                context_mod.compact(io, la, cfg, &msgs) catch {
+                    const keep = @min(20, msgs.items.len);
+                    var tail: std.ArrayList(provider.Message) = .empty;
+                    for (msgs.items[msgs.items.len - keep ..]) |m| tail.append(la, m) catch {};
+                    msgs = tail;
+                };
+                session_mod.save(io, gpa, env, .{ .name = sid_dupe, .messages = msgs.items }) catch {};
+            }
+        }
         const sid_esc = try jsonmod.escapeAlloc(gpa, sid_dupe);
         defer gpa.free(sid_esc);
         const result = try std.fmt.allocPrint(gpa, "{{\"sessionId\":\"{s}\"}}", .{sid_esc});
