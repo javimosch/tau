@@ -77,8 +77,15 @@ pub fn directive(gpa: std.mem.Allocator, objective: []const u8) ![]u8 {
     , .{ objective, SENTINEL, SENTINEL });
 }
 
+/// True when content contains the sentinel on its own line (or at the very
+/// start/end of the string), preventing false positives from mid-sentence
+/// mentions of the token in the model's reasoning text.
 pub fn isMet(content: []const u8) bool {
-    return std.mem.indexOf(u8, content, SENTINEL) != null;
+    var it = std.mem.splitScalar(u8, content, '\n');
+    while (it.next()) |line| {
+        if (std.mem.eql(u8, std.mem.trim(u8, line, " \t\r"), SENTINEL)) return true;
+    }
+    return false;
 }
 
 test "parse subcommands and set" {

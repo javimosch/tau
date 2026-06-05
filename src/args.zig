@@ -299,16 +299,12 @@ pub fn parse(
         }
     }
 
-    // Handle --help: respect --mode (default json), but --help-json is explicit
-    if (help_requested) {
-        const action: Action = if (cfg.mode == .json) .help_json else .help;
-        return .{ .action = action, .config = cfg, .help_requested = true };
-    }
+    // -h/--help always shows human-readable text; --help-json is the machine form.
+    if (help_requested) return .{ .action = .help, .config = cfg, .help_requested = true };
 
-    // No args and no prompt: show help (instead of empty response)
+    // No args and no prompt: show human-readable help (not JSON).
     if (cfg.prompt == null and sys_parts.items.len == 0 and file_parts.items.len == 0) {
-        const action: Action = if (cfg.mode == .json) .help_json else .help;
-        return .{ .action = action, .config = cfg, .help_requested = true };
+        return .{ .action = .help, .config = cfg, .help_requested = true };
     }
 
     _ = env; // env-key resolution happens later via config.resolveApiKey
