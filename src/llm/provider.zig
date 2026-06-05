@@ -481,9 +481,12 @@ fn extractDeltaTCIndex(json: []const u8) ?usize {
 
 /// The call id (e.g. "call_abc123") from the first chunk for a given index.
 /// Subsequent chunks have "id":null; this returns null in that case.
+/// Searches within the tool_calls section to avoid matching the top-level
+/// response "id" field that also appears in every SSE chunk.
 fn extractDeltaTCId(json: []const u8) ?[]const u8 {
+    const tc_start = std.mem.indexOf(u8, json, "\"tool_calls\":[{") orelse return null;
     const needle = "\"id\":\"";
-    const at = std.mem.indexOf(u8, json, needle) orelse return null;
+    const at = std.mem.indexOfPos(u8, json, tc_start, needle) orelse return null;
     const start = at + needle.len;
     var end = start;
     while (end < json.len) : (end += 1) {
@@ -713,4 +716,101 @@ pub fn completeStreamWithTools(
         .tool_calls     = try tool_calls.toOwnedSlice(gpa),
         .reasoning_content = reasoning,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — SSE delta extractors
+// Real SSE chunk shapes captured from the xiaomi/mimo-v2.5 endpoint probe.
+// ---------------------------------------------------------------------------
+
+// Minimal real-shape SSE chunks (trimmed to the fields under test).
+const SSE_REASONING = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"content\":null,\"tool_calls\":null,\"reasoning_content\":\"I'll use the bash tool\"},\"finish_reason\":null,\"index\":0}]}";
+const SSE_CONTENT   = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"content\":\"Hello world\",\"tool_calls\":null,\"reasoning_content\":null},\"finish_reason\":null,\"index\":0}]}";
+// First tool_call chunk: id + name present, arguments empty.
+const SSE_TC_HEADER = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call_469abc\",\"function\":{\"arguments\":\"\",\"name\":\"bash\"},\"type\":\"function\"}],\"reasoning_content\":null},\"finish_reason\":null}]}";
+// Subsequent argument fragment: id/name null, arguments is a partial JSON fragment.
+const SSE_TC_ARGS1  = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":null,\"function\":{\"arguments\":\"{\\\"command\\\": \",\"name\":null},\"type\":\"function\"}]},\"finish_reason\":null}]}";
+const SSE_TC_ARGS2  = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":null,\"function\":{\"arguments\":\"\\\"ls /tmp\\\"\",\"name\":null},\"type\":\"function\"}]},\"finish_reason\":null}]}";
+const SSE_TC_ARGS3  = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":null,\"function\":{\"arguments\":\"}\",\"name\":null},\"type\":\"function\"}]},\"finish_reason\":null}]}";
+// finish_reason=tool_calls, no content.
+const SSE_TC_FINISH = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"content\":null,\"tool_calls\":null,\"reasoning_content\":null},\"finish_reason\":\"tool_calls\",\"index\":0}]}";
+// Parallel tool call at index 2.
+const SSE_TC_IDX2   = "{\"id\":\"e34d\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":2,\"id\":\"call_zyx\",\"function\":{\"arguments\":\"\",\"name\":\"read\"},\"type\":\"function\"}]}}]}";
+
+test "hasDeltaToolCall" {
+    try std.testing.expect(!hasDeltaToolCall(SSE_REASONING));
+    try std.testing.expect(!hasDeltaToolCall(SSE_CONTENT));
+    try std.testing.expect(!hasDeltaToolCall(SSE_TC_FINISH));
+    try std.testing.expect(hasDeltaToolCall(SSE_TC_HEADER));
+    try std.testing.expect(hasDeltaToolCall(SSE_TC_ARGS1));
+    try std.testing.expect(hasDeltaToolCall(SSE_TC_IDX2));
+}
+
+test "extractDeltaContent and extractDeltaReasoning" {
+    try std.testing.expect(extractDeltaContent(SSE_REASONING) == null);
+    try std.testing.expectEqualStrings("I'll use the bash tool", extractDeltaReasoning(SSE_REASONING).?);
+
+    try std.testing.expectEqualStrings("Hello world", extractDeltaContent(SSE_CONTENT).?);
+    try std.testing.expect(extractDeltaReasoning(SSE_CONTENT) == null);
+
+    // Tool-call chunks carry no content or reasoning.
+    try std.testing.expect(extractDeltaContent(SSE_TC_HEADER) == null);
+    try std.testing.expect(extractDeltaReasoning(SSE_TC_HEADER) == null);
+}
+
+test "extractDeltaTCIndex" {
+    try std.testing.expect(extractDeltaTCIndex(SSE_CONTENT) == null);
+    try std.testing.expect(extractDeltaTCIndex(SSE_REASONING) == null);
+    try std.testing.expectEqual(@as(usize, 0), extractDeltaTCIndex(SSE_TC_HEADER).?);
+    try std.testing.expectEqual(@as(usize, 0), extractDeltaTCIndex(SSE_TC_ARGS1).?);
+    try std.testing.expectEqual(@as(usize, 2), extractDeltaTCIndex(SSE_TC_IDX2).?);
+}
+
+test "extractDeltaTCId: returns call id, NOT the top-level response id" {
+    // The bug: every SSE chunk starts with "id":"e34d..." (response id).
+    // extractDeltaTCId must return the *call* id inside tool_calls, not "e34d".
+    try std.testing.expectEqualStrings("call_469abc", extractDeltaTCId(SSE_TC_HEADER).?);
+    // Subsequent chunks have "id":null inside tool_calls → should return null.
+    try std.testing.expect(extractDeltaTCId(SSE_TC_ARGS1) == null);
+    try std.testing.expect(extractDeltaTCId(SSE_TC_ARGS2) == null);
+    try std.testing.expectEqualStrings("call_zyx", extractDeltaTCId(SSE_TC_IDX2).?);
+    // Non-tool chunks: no tool_calls section → null (not the top-level response id).
+    try std.testing.expect(extractDeltaTCId(SSE_CONTENT) == null);
+}
+
+test "extractDeltaTCName" {
+    try std.testing.expectEqualStrings("bash", extractDeltaTCName(SSE_TC_HEADER).?);
+    try std.testing.expectEqualStrings("read", extractDeltaTCName(SSE_TC_IDX2).?);
+    // Subsequent chunks have "name":null inside function → null.
+    try std.testing.expect(extractDeltaTCName(SSE_TC_ARGS1) == null);
+    // Non-tool chunks → null.
+    try std.testing.expect(extractDeltaTCName(SSE_CONTENT) == null);
+}
+
+test "extractDeltaTCArgs" {
+    // First chunk: empty arguments string.
+    try std.testing.expectEqualStrings("", extractDeltaTCArgs(SSE_TC_HEADER).?);
+    // Argument fragment chunks return the raw JSON-escaped body.
+    try std.testing.expectEqualStrings("{\\\"command\\\": ", extractDeltaTCArgs(SSE_TC_ARGS1).?);
+    try std.testing.expectEqualStrings("\\\"ls /tmp\\\"", extractDeltaTCArgs(SSE_TC_ARGS2).?);
+    try std.testing.expectEqualStrings("}", extractDeltaTCArgs(SSE_TC_ARGS3).?);
+    // Non-tool chunks → null.
+    try std.testing.expect(extractDeltaTCArgs(SSE_CONTENT) == null);
+}
+
+test "tool_call fragment accumulation and unescape round-trip" {
+    // Simulate the accumulation loop: concatenate raw argument fragments across
+    // SSE_TC_HEADER, SSE_TC_ARGS1, SSE_TC_ARGS2, SSE_TC_ARGS3.
+    const gpa = std.testing.allocator;
+    var args_raw = std.ArrayList(u8).empty;
+    defer args_raw.deinit(gpa);
+
+    const chunks = [_][]const u8{ SSE_TC_HEADER, SSE_TC_ARGS1, SSE_TC_ARGS2, SSE_TC_ARGS3 };
+    for (chunks) |chunk| {
+        if (extractDeltaTCArgs(chunk)) |frag| try args_raw.appendSlice(gpa, frag);
+    }
+    // args_raw is the concatenated raw escaped body.
+    const result = try jsonmod.unescapeAlloc(gpa, args_raw.items);
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("{\"command\": \"ls /tmp\"}", result);
 }
