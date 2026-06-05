@@ -46,12 +46,9 @@ out=$("$BIN" --version); ok "--version exit" "$?" 0
 contains "--version says tau" "$out" "tau"
 
 out=$("$BIN" --help); ok "--help exit" "$?" 0
-# --help now outputs JSON by default (agent-first), check for JSON structure
-if printf '%s' "$out" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["name"]=="tau"' 2>/dev/null; then
-  printf 'PASS  --help is valid JSON with tau name\n'; pass=$((pass + 1))
-else
-  printf 'FAIL  --help is not valid JSON or missing tau name\n'; fail=$((fail + 1))
-fi
+# --help outputs human-readable text; check for expected sections
+contains "--help shows usage header" "$out" "Usage:"
+contains "--help mentions tau" "$out" "tau"
 
 out=$("$BIN" --help-json)
 if printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
@@ -74,11 +71,15 @@ contains "--mode text --help shows usage" "$out" "Usage:"
 if [ "$NET" = 1 ]; then
   echo "== network LLM tests =="
 
-  out=$("$BIN" -p "Reply with exactly: PIZIG_SMOKE_OK"); rc=$?
+  # Use --mode text so the response is raw streaming text, not NDJSON deltas —
+  # streaming JSON wraps each token in {"delta":"..."} which may split markers
+  # across chunks, making a substring search unreliable.
+  out=$("$BIN" --mode text "Reply with exactly: PIZIG_SMOKE_OK"); rc=$?
   ok "text-mode prompt exit" "$rc" 0
   contains "text-mode returns marker" "$out" "PIZIG_SMOKE_OK"
 
-  out=$("$BIN" --mode json "Say hi in three words"); rc=$?
+  # json-mode with --no-stream: single JSON object, check content field
+  out=$("$BIN" --mode json --no-stream "Say hi in three words"); rc=$?
   ok "json-mode prompt exit" "$rc" 0
   if printf '%s' "$out" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["content"]' 2>/dev/null; then
     printf 'PASS  json-mode has content field\n'; pass=$((pass + 1))
@@ -87,7 +88,7 @@ if [ "$NET" = 1 ]; then
   fi
 
   tmp="$(mktemp)"; printf 'the magic token is ZQ-91' > "$tmp"
-  out=$("$BIN" --system-prompt "Reply with only the token." "@$tmp" "What is the magic token?"); rc=$?
+  out=$("$BIN" --mode text --system-prompt "Reply with only the token." "@$tmp" "What is the magic token?"); rc=$?
   ok "@file + system-prompt exit" "$rc" 0
   contains "@file content reaches model" "$out" "ZQ-91"
   rm -f "$tmp"
@@ -110,13 +111,13 @@ assert json.loads(lines[-1]).get("done") is True' 2>/dev/null; then
   fi
 
   # Tool-calling: bash round-trip (model calls bash -> we execute -> model answers)
-  out=$("$BIN" --tools bash "Use the bash tool to run: echo TOOLS_WORK_91"); rc=$?
+  out=$("$BIN" --mode text --tools bash "Use the bash tool to run: echo TOOLS_WORK_91"); rc=$?
   ok "bash tool exit" "$rc" 0
   contains "bash tool executed end-to-end" "$out" "TOOLS_WORK_91"
 
   # Tool-calling: read round-trip
   tf="$(mktemp)"; printf 'SMOKE_FILE_MARKER_77' > "$tf"
-  out=$("$BIN" --tools read "Use the read tool to read $tf and quote its contents."); rc=$?
+  out=$("$BIN" --mode text --tools read "Use the read tool to read $tf and quote its contents."); rc=$?
   ok "read tool exit" "$rc" 0
   contains "read tool returned file contents" "$out" "SMOKE_FILE_MARKER_77"
   rm -f "$tf"
@@ -217,6 +218,126 @@ PYEOF
   fi
 
   rm -f "$csess_file"
+
+  # ── Edit tool ────────────────────────────────────────────────────────────────
+  echo "== edit / find / grep tools =="
+  ef="$(mktemp)"; printf 'Hello World' > "$ef"
+  out=$("$BIN" --tools edit "Use the edit tool to replace 'World' with 'Mars' in $ef"); rc=$?
+  ok "edit tool exit" "$rc" 0
+  if [ -f "$ef" ] && grep -q "Mars" "$ef"; then
+    printf 'PASS  edit tool mutated file on disk\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  edit tool did not update file\n'; fail=$((fail + 1))
+  fi
+  rm -f "$ef"
+
+  # ── Find tool ────────────────────────────────────────────────────────────────
+  fdir="$(mktemp -d)"
+  touch "$fdir/tau-FINDME99.txt"
+  out=$("$BIN" --mode text --tools find "Use the find tool to find files matching the pattern 'FINDME99' under $fdir. Quote the exact filename you find."); rc=$?
+  ok "find tool exit" "$rc" 0
+  contains "find tool returns result" "$out" "FINDME99"
+  rm -rf "$fdir"
+
+  # ── Grep tool ────────────────────────────────────────────────────────────────
+  gf="$(mktemp)"; printf 'GREP_NEEDLE_42 is the answer' > "$gf"
+  out=$("$BIN" --mode text --tools grep "Use the grep tool to search for GREP_NEEDLE_42 in $gf. Quote the matching line exactly."); rc=$?
+  ok "grep tool exit" "$rc" 0
+  contains "grep tool finds pattern" "$out" "GREP_NEEDLE_42"
+  rm -f "$gf"
+
+  # ── --dry-run: tool reported, not executed ────────────────────────────────────
+  echo "== dry-run / iteration cap / no-tools =="
+  dry_file="/tmp/tau-dryrun-$$-shouldnotexist"
+  out=$("$BIN" --dry-run --tools bash "Use bash to run: touch $dry_file"); rc=$?
+  ok "dry-run exit" "$rc" 0
+  if [ ! -f "$dry_file" ]; then
+    printf 'PASS  dry-run: no side effect on disk\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  dry-run: file was created (should not be)\n'; fail=$((fail + 1))
+    rm -f "$dry_file"
+  fi
+
+  # ── --max-iterations backstop ─────────────────────────────────────────────────
+  # max-iterations=1: model gets exactly 1 tool call, then is forced to give a
+  # final text answer. Should still exit 0 (forced-answer path).
+  out=$("$BIN" --max-iterations 1 --tools bash "Use bash to run 'echo HI', then summarize the output."); rc=$?
+  ok "--max-iterations=1 backstop exit" "$rc" 0
+
+  # ── --no-tools: model answers without tools ───────────────────────────────────
+  out=$("$BIN" --no-tools "What is 2+2? Reply with just the number."); rc=$?
+  ok "--no-tools exit" "$rc" 0
+  contains "--no-tools model still answers" "$out" "4"
+
+  # ── --append-system-prompt ────────────────────────────────────────────────────
+  echo "== system prompt flags =="
+  out=$("$BIN" --mode text --no-tools --append-system-prompt "IMPORTANT: You MUST end every reply with exactly: APPENDED_99" "Say hello."); rc=$?
+  ok "--append-system-prompt exit" "$rc" 0
+  contains "--append-system-prompt honored" "$out" "APPENDED_99"
+
+  # ── --exclude-tools denylist ──────────────────────────────────────────────────
+  # bash excluded; model should use ls tool. Use a small controlled directory
+  # (not /tmp: 2600+ files → 87KB ls output → SystemResources on second API call)
+  excl_dir="$(mktemp -d)"
+  touch "$excl_dir/alpha.txt" "$excl_dir/beta.txt"
+  out=$("$BIN" --mode text --exclude-tools bash "List files in $excl_dir using available tools. Say how many files there are."); rc=$?
+  ok "--exclude-tools exit" "$rc" 0
+  rm -rf "$excl_dir"
+
+  # ── Large @file injection ─────────────────────────────────────────────────────
+  echo "== large @file injection =="
+  bigf="$(mktemp)"
+  python3 -c "
+filler = 'The following text is padding to make a large file. ' * 60
+print(filler)
+print('The magic token is: BIGFILE_TOKEN_77')
+print(filler)
+" > "$bigf"
+  out=$("$BIN" --no-stream "@$bigf" "What is the magic token mentioned in the file? Reply with just the token."); rc=$?
+  ok "large @file exit" "$rc" 0
+  contains "large @file content reaches model" "$out" "BIGFILE_TOKEN_77"
+  rm -f "$bigf"
+
+  # ── Goal mode ─────────────────────────────────────────────────────────────────
+  echo "== goal mode =="
+  GSESS="smoke-goal-$$"
+  gsess_file="$HOME/.config/tau/sessions/${GSESS}.json"
+  goal_target="/tmp/tau-goal-target-$$"
+
+  out=$("$BIN" --session "$GSESS" --tools bash,write,read \
+    "/goal Create a file at $goal_target containing exactly: GOAL_SMOKE_OK"); rc=$?
+  ok "goal mode exit" "$rc" 0
+  if [ -f "$goal_target" ] && grep -q "GOAL_SMOKE_OK" "$goal_target"; then
+    printf 'PASS  goal mode: file created with correct content\n'; pass=$((pass + 1))
+  else
+    printf 'FAIL  goal mode: file missing or wrong content\n'; fail=$((fail + 1))
+  fi
+  rm -f "$goal_target" "$gsess_file"
+
+  # ── Goal mode: GOAL_MET sentinel stripped from terminal output ───────────────
+  # Verify <GOAL_MET> does not appear in what tau prints (it is consumed internally)
+  GSESS2="smoke-goalstrip-$$"
+  gsess2_file="$HOME/.config/tau/sessions/${GSESS2}.json"
+  goal_target2="/tmp/tau-goal-target2-$$"
+  out=$("$BIN" --session "$GSESS2" --tools write \
+    "/goal Write the word SENTINEL_STRIP_OK to $goal_target2")
+  if printf '%s' "$out" | grep -q '<GOAL_MET>'; then
+    printf 'FAIL  goal mode: <GOAL_MET> leaked to terminal output\n'; fail=$((fail + 1))
+  else
+    printf 'PASS  goal mode: <GOAL_MET> sentinel not visible in output\n'; pass=$((pass + 1))
+  fi
+  rm -f "$goal_target2" "$gsess2_file"
+
+  # ── Multi-tool in a single turn ───────────────────────────────────────────────
+  echo "== multi-tool turn =="
+  mf1="$(mktemp)"; printf 'MULTI_A_11' > "$mf1"
+  mf2="$(mktemp)"; printf 'MULTI_B_22' > "$mf2"
+  out=$("$BIN" --mode text --tools read "Read both $mf1 and $mf2 and quote their exact contents on one line each."); rc=$?
+  ok "multi-tool turn exit" "$rc" 0
+  contains "multi-tool: first file content" "$out" "MULTI_A_11"
+  contains "multi-tool: second file content" "$out" "MULTI_B_22"
+  rm -f "$mf1" "$mf2"
+
 else
   echo "(skipping network tests; pass --net to enable)"
 fi
