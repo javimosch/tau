@@ -581,14 +581,15 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
             };
 
             // Route file mutations through the editor (fs/write_text_file) so the
-            // change lands as an approvable diff. Falls back to direct execution
-            // when the client has no fs capability.
+            // change lands as an approvable diff. On success, short-circuit with
+            // continue. On failure (e.g. Zed rejects a relative path), fall through
+            // to direct tool execution so the write still succeeds.
             if (client_fs_write and std.mem.eql(u8, tc.name, "write") and args.len >= 2) {
-                const ok = if (clientWriteFile(a, r, w, sid, args[0], args[1])) |_| true else |_| false;
-                const out = if (ok) "file written via editor" else "editor write failed";
-                try emitToolCallUpdate(a, w, sid, tc.id, if (ok) "completed" else "failed", out);
-                try messages.append(a, .{ .role = "tool", .content = out, .tool_call_id = tc.id });
-                continue;
+                if (clientWriteFile(a, r, w, sid, args[0], args[1])) |_| {
+                    try emitToolCallUpdate(a, w, sid, tc.id, "completed", "file written via editor");
+                    try messages.append(a, .{ .role = "tool", .content = "file written via editor", .tool_call_id = tc.id });
+                    continue;
+                } else |_| {} // fall through to direct execution
             }
             if (client_fs_write and std.mem.eql(u8, tc.name, "edit") and args.len >= 3) {
                 const cur = if (client_fs_read)
@@ -596,11 +597,11 @@ fn handlePrompt(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.proc
                 else
                     (std.Io.Dir.cwd().readFileAlloc(io, args[0], a, .unlimited) catch "");
                 const newc = try replaceAlloc(a, cur, args[1], args[2]);
-                const ok = if (clientWriteFile(a, r, w, sid, args[0], newc)) |_| true else |_| false;
-                const out = if (ok) "file edited via editor" else "editor edit failed";
-                try emitToolCallUpdate(a, w, sid, tc.id, if (ok) "completed" else "failed", out);
-                try messages.append(a, .{ .role = "tool", .content = out, .tool_call_id = tc.id });
-                continue;
+                if (clientWriteFile(a, r, w, sid, args[0], newc)) |_| {
+                    try emitToolCallUpdate(a, w, sid, tc.id, "completed", "file edited via editor");
+                    try messages.append(a, .{ .role = "tool", .content = "file edited via editor", .tool_call_id = tc.id });
+                    continue;
+                } else |_| {} // fall through to direct execution
             }
 
             // Otherwise execute tau's tool directly.
