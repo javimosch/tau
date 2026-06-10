@@ -24,6 +24,9 @@ pub const Response = struct {
     content: []const u8,
     tool_calls: []ToolCall,
     reasoning_content: ?[]const u8 = null,
+    /// Total tokens consumed (from API usage.total_tokens). null when the API
+    /// doesn't report usage (some streaming responses may omit it).
+    total_tokens: ?u64 = null,
 };
 
 pub const ToolInfo = struct {
@@ -65,6 +68,13 @@ pub const providers = [_]Provider{
         .env_keys = &.{"DEEPSEEK_API_KEY"},
         .context_window = 65_536,
     },
+    .{
+        .name = "opencode-go",
+        .endpoint = "https://opencode.ai/zen/go/v1/chat/completions",
+        .default_model = "deepseek-v4-flash",
+        .env_keys = &.{"OPENCODE_API_KEY"},
+        .context_window = 204_800,
+    },
 };
 
 pub fn findProvider(name: []const u8) ?*const Provider {
@@ -72,6 +82,19 @@ pub fn findProvider(name: []const u8) ?*const Provider {
         if (std.mem.eql(u8, p.name, name)) return p;
     }
     return null;
+}
+
+/// Extract usage.total_tokens from an OpenAI-compatible response body.
+/// Returns null if the "usage" object or its "total_tokens" field is absent.
+fn extractUsage(json: []const u8) ?u64 {
+    const needle = "\"total_tokens\":";
+    const at = std.mem.indexOf(u8, json, needle) orelse return null;
+    var start = at + needle.len;
+    while (start < json.len and (json[start] == ' ' or json[start] == '\t')) start += 1;
+    var end = start;
+    while (end < json.len and json[end] >= '0' and json[end] <= '9') end += 1;
+    if (end == start) return null;
+    return std.fmt.parseInt(u64, json[start..end], 10) catch null;
 }
 
 /// Extract tool_calls from OpenAI response JSON
@@ -414,10 +437,14 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     // Extract reasoning_content if available (thinking chunks)
     const reasoning_content = try jsonmod.extractString(gpa, result.stdout, "reasoning_content");
 
+    // Extract usage.total_tokens if the API reports it.
+    const total_tokens = extractUsage(result.stdout);
+
     return Response{
         .content = content,
         .tool_calls = tool_calls,
         .reasoning_content = reasoning_content,
+        .total_tokens = total_tokens,
     };
 }
 
@@ -603,6 +630,7 @@ pub fn completeStreamWithTools(
     const r = &fr.interface;
 
     var saw_data = false;
+    var stream_usage: ?u64 = null;
     while (true) {
         const line = (r.takeDelimiter('\n') catch break) orelse break;
         if (line.len == 0) continue;
@@ -624,6 +652,11 @@ pub fn completeStreamWithTools(
         var data = line["data:".len..];
         if (data.len > 0 and data[0] == ' ') data = data[1..];
         if (std.mem.eql(u8, data, "[DONE]")) break;
+
+        // Usage chunk: extract total_tokens from any SSE line that carries it.
+        if (stream_usage == null) {
+            stream_usage = extractUsage(data);
+        }
 
         // Reasoning deltas → stream if --thinking, accumulate.
         if (cfg.thinking) {
@@ -740,6 +773,7 @@ pub fn completeStreamWithTools(
         .content        = try content_buf.toOwnedSlice(gpa),
         .tool_calls     = try tool_calls.toOwnedSlice(gpa),
         .reasoning_content = reasoning,
+        .total_tokens   = stream_usage,
     };
 }
 
@@ -838,4 +872,29 @@ test "tool_call fragment accumulation and unescape round-trip" {
     const result = try jsonmod.unescapeAlloc(gpa, args_raw.items);
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"command\": \"ls /tmp\"}", result);
+}
+
+test "extractUsage parses total_tokens from API response JSON" {
+    // Happy path: standard usage object.
+    const a = "{\"usage\":{\"total_tokens\":42}}";
+    try std.testing.expectEqual(@as(u64, 42), extractUsage(a).?);
+
+    // Zero tokens.
+    const b = "{\"usage\":{\"total_tokens\":0}}";
+    try std.testing.expectEqual(@as(u64, 0), extractUsage(b).?);
+
+    // Large number (18 quintillion).
+    const c = "{\"usage\":{\"total_tokens\":18446744073709551615}}";
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), extractUsage(c).?);
+
+    // No usage object at all.
+    const d = "{\"choices\":[{\"message\":{\"content\":\"hi\"}}]}";
+    try std.testing.expect(extractUsage(d) == null);
+
+    // total_tokens present but null.
+    const e = "{\"usage\":{\"total_tokens\":null}}";
+    try std.testing.expect(extractUsage(e) == null);
+
+    // Empty string.
+    try std.testing.expect(extractUsage("") == null);
 }

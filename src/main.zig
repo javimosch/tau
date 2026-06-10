@@ -7,7 +7,7 @@ const agent = @import("agent.zig");
 const Config = cfgmod.Config;
 
 pub const name = "tau";
-pub const version = "0.2.0";
+pub const version = "0.3.0";
 
 // Semantic exit codes (Square-style).
 const ExitCode = enum(u8) {
@@ -63,6 +63,8 @@ const help_text =
     \\      --compact-threshold <f>  Auto-compact above this fraction of the window (default: 0.5)
     \\      --compact-keep-recent <n>  Tokens of recent history kept verbatim (default: 20000)
     \\      --no-compact             Disable automatic context compaction
+    \\      --role <author|critic|coordinator|none>
+    \\                          Set the agent role (default: none)
     \\      --max-iterations <n>     Tool-loop runaway backstop (default: 100; forces a final answer)
     \\      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
     \\      --help-json              Machine-readable help as JSON
@@ -80,12 +82,28 @@ const help_text =
     \\  tau acp stop                  Stop the background ACP daemon
     \\  tau acp status                Report ACP daemon status (JSON)
     \\
+    \\Author<->Critic loop:
+    \\  --role <author|critic|coordinator|none>  Set the agent role (default: none)
+    \\
+    \\Fleet orchestration:
+    \\  tau fleet run --goal <text>   Decompose goal into work items and dispatch workers
+    \\      --coordinator-model <model> Override coordinator LLM model
+    \\      --worker-model <model>      Override worker LLM model
+    \\      --sequential                Run workers sequentially (default: parallel)
+    \\      --items <json>              Pre-supplied items JSON (skip coordinator)
+    \\  tau fleet status <id>         Show fleet manifest (spec + per-item status)
+    \\  tau fleet list                List active fleet ids
+    \\  tau fleet logs <id>           Show per-worker session hint
+    \\  tau fleet cancel <id>         Cancel a running fleet
+    \\
     \\Examples:
     \\  tau "List the files in src/"
     \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
     \\  tau --session work1 "Remember: the build uses zig 0.16"
     \\  tau --session work1 "/goal add a --version flag and verify it builds"
     \\  tau --session work1 "/goal status"
+    \\  tau --role author --tools bash,write "add version flag"
+    \\  tau fleet run --goal "add OAuth and write tests"
     \\
 ;
 
@@ -125,6 +143,7 @@ const flag_specs = [_]FlagSpec{
     .{ .long = "--compact-threshold",    .arg = "f"              },
     .{ .long = "--compact-keep-recent",  .arg = "n"              },
     .{ .long = "--no-compact"                                    },
+    .{ .long = "--role",                 .arg = "author|critic|coordinator|none" },
     .{ .long = "--max-iterations",       .arg = "n"              },
     .{ .long = "--goal-max-iterations",  .arg = "n"              },
     .{ .long = "--help-json"                                     },
@@ -206,13 +225,26 @@ pub fn main(init: std.process.Init) !void {
             };
             std.process.exit(code);
         },
+        .fleet => {
+            const fleet = @import("fleet.zig");
+            const sub_str = parsed.config.fleet_sub orelse "run";
+            const sub = std.meta.stringToEnum(fleet.FleetSub, sub_str) orelse {
+                printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", "unknown fleet subcommand", false);
+                std.process.exit(@intFromEnum(ExitCode.invalid_argument));
+            };
+            const code = fleet.dispatch(io, gpa, arena, parsed.config, init.environ_map, sub, parsed.config.fleet_id, parsed.config.fleet_goal) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "fleet failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
         .run => {},
     }
 
     const cfg = parsed.config;
 
     // Run the agent (replaces temporary runOnce)
-    const exit_code = agent.run(io, gpa, arena, cfg, init.environ_map) catch |err| {
+    const result = agent.run(io, gpa, arena, cfg, init.environ_map) catch |err| {
         const code: ExitCode = switch (err) {
             error.Timeout => .connection_timeout,
             error.AuthFailed => .auth_failed,
@@ -222,7 +254,7 @@ pub fn main(init: std.process.Init) !void {
         printErrorJson(@intFromEnum(code), @errorName(err), detail, false);
         std.process.exit(@intFromEnum(code));
     };
-    std.process.exit(exit_code);
+    std.process.exit(result.exit_code);
 }
 
 test {

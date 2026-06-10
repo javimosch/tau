@@ -131,7 +131,7 @@
       <div class="reveal">
         <div class="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-white/10 bg-white/5 text-xs font-medium tracking-wider uppercase text-slate-400 mb-8">
           <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          v0.2.0 — Now Available
+          v0.3.0 — Now Available
         </div>
         
         <h1 class="font-display text-6xl md:text-8xl font-bold tracking-tight leading-[0.9] mb-6">
@@ -247,6 +247,44 @@
             </div>
           </div>
         </div>
+        
+        <!-- Author↔Critic Loop -->
+        <div class="reveal">
+          <div class="card-shell h-full">
+            <div class="card-core p-6 h-full flex flex-col">
+              <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-rose-500/20 to-rose-500/5 flex items-center justify-center mb-4">
+                <svg class="w-5 h-5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+              </div>
+              <h3 class="font-display text-xl font-semibold mb-2">Author↔Critic Loop</h3>
+              <p class="text-slate-400 text-sm leading-relaxed">Adversarial self-review via --role author|critic. Sentinels: &lt;READY_FOR_REVIEW&gt; → &lt;APPROVED&gt; | &lt;BLOCKED&gt;.</p>
+              <div class="mt-auto pt-4">
+                <code class="text-xs text-rose-300 bg-rose-500/10 px-2 py-1 rounded-md">--role author</code>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Fleet Orchestration -->
+        <div class="reveal md:col-span-2">
+          <div class="card-shell h-full">
+            <div class="card-core p-6 h-full flex flex-col md:flex-row md:items-center gap-6">
+              <div class="flex-1">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500/20 to-cyan-500/5 flex items-center justify-center mb-4">
+                  <svg class="w-5 h-5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-5.13a4 4 0 11-8 0 4 4 0 018 0zm6 0a4 4 0 11-8 0 4 4 0 018 0z"/>
+                  </svg>
+                </div>
+                <h3 class="font-display text-xl font-semibold mb-2">Fleet Orchestration</h3>
+                <p class="text-slate-400 text-sm leading-relaxed">Coordinator LLM decomposes a goal into work items; one worker per item, each running its own Author↔Critic loop. Manifests persist to <code class="text-cyan-300 bg-cyan-500/10 px-1 py-0.5 rounded">~/.config/tau/fleets/</code>.</p>
+              </div>
+              <div class="flex-shrink-0">
+                <code class="text-xs text-cyan-300 bg-cyan-500/10 px-2 py-1 rounded-md block">tau fleet run --goal "ship X"</code>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -319,6 +357,12 @@
               </div>
               <div class="bg-black/40 rounded-xl p-4 border border-white/5">
                 <code class="text-sm text-slate-300">./zig-out/bin/tau --session project "/goal add tests"</code>
+              </div>
+              <div class="bg-black/40 rounded-xl p-4 border border-white/5">
+                <code class="text-sm text-slate-300">./zig-out/bin/tau --role author --tools bash,read,write "add a --version flag and verify it builds"</code>
+              </div>
+              <div class="bg-black/40 rounded-xl p-4 border border-white/5">
+                <code class="text-sm text-slate-300">./zig-out/bin/tau fleet run --goal "add OAuth, persist sessions, and write tests"</code>
               </div>
             </div>
           </div>

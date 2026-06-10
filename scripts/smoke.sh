@@ -68,6 +68,64 @@ contains "--mode text --help shows usage" "$out" "Usage:"
 "$BIN" --temperature notafloat "x" >/dev/null 2>&1; ok "bad --temperature -> invalid_argument" "$?" 80
 "$BIN" "@/no/such/file" "x" >/dev/null 2>&1;     ok "missing @file -> invalid_argument" "$?" 80
 
+# ── --role flag (Author↔Critic primitive) ─────────────────────────────────────
+echo "== --role flag parsing =="
+# Invalid role name rejected by parser
+"$BIN" --role invalid "x" >/dev/null 2>&1;       ok "--role invalid -> invalid_argument" "$?" 80
+# Valid role names accepted by parser; downstream auth (no API key) is expected
+# (106) — what we verify is the parser did NOT reject the value (so !=80).
+for r in author critic coordinator none; do
+  "$BIN" --role "$r" --no-tools --no-stream "x" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" != "80" ]; then
+    printf 'PASS  --role %s accepted by parser (downstream exit %s)\n' "$r" "$rc"
+    pass=$((pass + 1))
+  else
+    printf 'FAIL  --role %s rejected by parser\n' "$r"
+    fail=$((fail + 1))
+  fi
+done
+
+# ── tau fleet subcommand parsing ──────────────────────────────────────────────
+echo "== tau fleet subcommand parsing =="
+# No subcommand -> invalid_argument
+"$BIN" fleet >/dev/null 2>&1;                   ok "fleet (no sub) -> invalid_argument" "$?" 80
+# Unknown subcommand -> invalid_argument
+"$BIN" fleet bogus >/dev/null 2>&1;             ok "fleet bogus -> invalid_argument" "$?" 80
+# run without --goal -> missing_required_field
+"$BIN" fleet run >/dev/null 2>&1;               ok "fleet run without --goal -> missing_required_field" "$?" 82
+# status without id -> invalid_argument
+"$BIN" fleet status >/dev/null 2>&1;            ok "fleet status no id -> invalid_argument" "$?" 80
+# cancel without id -> invalid_argument
+"$BIN" fleet cancel >/dev/null 2>&1;            ok "fleet cancel no id -> invalid_argument" "$?" 80
+# status of nonexistent id -> exit 0, prints {"fleet":null}
+nonex_id="smoke-nonexistent-$$-$RANDOM"
+out=$("$BIN" fleet status "$nonex_id" 2>&1)
+if [ $? -eq 0 ] && printf '%s' "$out" | grep -q '"fleet":null'; then
+  printf 'PASS  fleet status nonexistent -> {"fleet":null}\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  fleet status nonexistent: %s\n' "$out"; fail=$((fail + 1))
+fi
+# cancel of nonexistent id -> exit 0, prints {"fleet":null}
+out=$("$BIN" fleet cancel "$nonex_id" 2>&1)
+if [ $? -eq 0 ] && printf '%s' "$out" | grep -q '"fleet":null'; then
+  printf 'PASS  fleet cancel nonexistent -> {"fleet":null}\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  fleet cancel nonexistent: %s\n' "$out"; fail=$((fail + 1))
+fi
+# list -> exit 0, prints {"fleets":[...]} (may be empty array)
+out=$("$BIN" fleet list 2>&1)
+if [ $? -eq 0 ] && printf '%s' "$out" | grep -q '"fleets":'; then
+  printf 'PASS  fleet list -> exit 0 with fleets array\n'; pass=$((pass + 1))
+else
+  printf 'FAIL  fleet list: %s\n' "$out"; fail=$((fail + 1))
+fi
+# Help text mentions --role and the new fleet subcommands
+contains "--help mentions --role" "$("$BIN" --help 2>&1)" "--role"
+contains "--help mentions fleet run" "$("$BIN" --help 2>&1)" "fleet run"
+contains "--help mentions fleet status" "$("$BIN" --help 2>&1)" "fleet status"
+contains "--help mentions fleet cancel" "$("$BIN" --help 2>&1)" "fleet cancel"
+
 if [ "$NET" = 1 ]; then
   echo "== network LLM tests =="
 

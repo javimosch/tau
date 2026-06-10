@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.3.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/zig-0.16.0-orange" alt="Zig">
 </p>
@@ -120,15 +120,19 @@ What this means day-to-day:
 - 🎯 **Goal mode** — `/goal <objective>` → autonomous work until complete
 - 💾 **Sessions** — `--session <name>` → persistent conversation + goal state
 - 🧠 **Context compaction** — Auto-summarization when history exceeds threshold
+- ⚔️ **Author↔Critic loop** — `--role author|critic` for adversarial self-review
+- 🚁 **Fleet orchestration** — `tau fleet run|status|list|cancel` for multi-agent coordination
 - 🚨 **Predictable errors** — Standard exit codes: `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 - 📡 **Streaming** — Real SSE token-by-token streaming (chat mode only)
 
 ```bash
-# Agent workflow: single-shot → tools → goal → session
+# Agent workflow: single-shot → tools → goal → session → author/critic → fleet
 tau "prompt"                    # JSON response
 tau --tools bash,read "task"    # Tool-calling loop
 tau --session s "/goal obj"     # Goal mode with persistence
 tau --session s "/goal status"  # Check progress
+tau --role critic "review X"    # Adversarial review (read-only)
+tau fleet run --goal "ship X"   # Multi-agent dispatch
 ```
 
 ---
@@ -145,6 +149,8 @@ tau gives agents a deterministic, non-interactive AI CLI:
 - 🧠 **Context compaction** — LLM summarization at configurable threshold
 - 🚨 **Semantic exit codes** — Deterministic error handling
 - 📡 **Streaming** — Real SSE token-by-token output
+- ⚔️ **Author↔Critic loop** — Adversarial self-review (author + critic roles)
+- 🚁 **Fleet orchestration** — Multi-agent work breakdown and dispatch
 
 ---
 
@@ -241,6 +247,58 @@ Auto-compact when history grows too large:
 - Trigger: estimated tokens > `--compact-threshold` (default: 0.5) of context window
 - Action: LLM summarizes older history, keeps recent tail verbatim
 - Configurable via `--compact-threshold`, `--compact-keep-recent`, `--no-compact`
+
+### Author↔Critic Loop
+
+Adversarial self-review via two complementary roles. Each turn runs the same agentic tool loop with a role-specific system directive and exit sentinel:
+
+```bash
+# Author: write/update code+tests, declare READY when done
+tau --role author --tools bash,read,write,edit,ls,grep,find --session proj-1 \
+    "Build feature X and run the test suite."
+
+# Critic: read-only audit, emit APPROVED or BLOCKED with concrete defects
+tau --role critic --tools read,grep,find,ls --session proj-1 \
+    "Audit the spec against the code in src/."
+
+# Combine by chaining two sessions in your harness:
+#   author -> (loop until <READY_FOR_REVIEW>) -> critic -> (loop until <APPROVED>) -> done
+```
+
+**Sentinels** (one token per line, on its own):
+
+| Role | Sentinel | Meaning |
+|---|---|---|
+| author | `<READY_FOR_REVIEW>` | Work complete, request critic review |
+| critic | `<APPROVED>` | Spec satisfied — done |
+| critic | `<BLOCKED>` | Defects found; describe concretely for the next author pass |
+
+The Author↔Critic primitive lives in `src/loop.zig` as `AuthorCriticSpec` + `runAuthorCritic`; it composes two `agent.run()` calls per iteration with different `cfg.role` and tool allowlists. See the global skill `tau-maintenance` for the full contract.
+
+### Fleet Orchestration
+
+A **fleet** is a goal + a work breakdown (set of work items) + a controller. A single coordinator LLM turn decomposes the goal into items with `depends_on` and `acceptance`; the controller then dispatches one tau worker per item (currently sequential, re-invoking `tau --role author` per item).
+
+```bash
+# Plan + dispatch a fleet (coordinator produces the work breakdown)
+tau fleet run --goal "add OAuth login, persist sessions, and write tests"
+
+# Plan with a model override
+tau fleet run --coordinator-model openai/gpt-4o-mini --goal "ship the redesign"
+
+# Inspect
+tau fleet list                    # list active fleets
+tau fleet status <id>             # full manifest (spec + per-item status)
+tau fleet logs <id>               # per-worker session hint
+tau fleet cancel <id>             # mark cancelled
+```
+
+Manifests persist to `~/.config/tau/fleets/<id>.json`; workers persist per-role sessions to `~/.config/tau/sessions/<fleet-id>-<item-id>-<role>-<iter>.json`.
+
+v0.3 limitations (see `~/.agents/skills/tau-maintenance` for the full gap list):
+- Workers run sequentially and report `status: running` until the harness collects their results.
+- `cancel` is in-memory for v0 (does not yet persist `global_status: cancelled`).
+- `topoSort` cycles surface as `{"code":110,"message":"toposort failed: Cycle"}`.
 
 ---
 
@@ -419,6 +477,8 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 | Session persistence (`--session <name>`) | ✅ done |
 | Goal mode (`/goal` + status/pause/resume/clear/complete) | ✅ done |
 | Auto context compaction (LLM summarization at threshold) | ✅ done |
+| Author↔Critic loop (`--role author\|critic\|coordinator`, `<READY_FOR_REVIEW>` / `<APPROVED>` / `<BLOCKED>` sentinels) | ✅ done |
+| Fleet orchestration (`tau fleet run\|status\|list\|cancel`, manifests at `~/.config/tau/fleets/`) | ✅ v0 |
 
 ---
 

@@ -10,6 +10,12 @@ pub const GoalAction = enum { none, set, status, pause, resume_, clear, complete
 /// ACP (Agent Client Protocol) subcommand for `tau acp <sub>`.
 pub const AcpSub = enum { serve, start, stop, status };
 
+/// Role for an Author↔Critic loop turn. `none` is the default (plain agent).
+/// `author` and `critic` get role-specific sentinels and tool allowlists; the
+/// fleet coordinator uses a planner role that emits no tools and produces a
+/// JSON work breakdown.
+pub const Role = enum { none, author, critic, coordinator };
+
 // Re-export provider table from llm/provider.zig
 pub const Provider = provider_mod.Provider;
 pub const providers = provider_mod.providers;
@@ -71,6 +77,35 @@ pub const Config = struct {
     goal_max_continues: u32 = 500,
     /// Optional soft output-token budget (/goal --tokens N).
     token_budget: ?u64 = null,
+
+    // --- Author↔Critic loop (loop.zig) ---
+    /// Current turn's role. When not .none, agent.zig injects the role-specific
+    /// directive and uses `exit_sentinel` as the termination token.
+    role: Role = .none,
+    /// Override the goal-mode exit sentinel. Used by the Author↔Critic loop
+    /// (READY_FOR_REVIEW / APPROVED / BLOCKED). When null and goal_action is
+    /// .set, the default `<GOAL_MET>` is used.
+    exit_sentinel: ?[]const u8 = null,
+    /// Optional feedback string prepended to the next user turn. Used by the
+    /// loop to inject Critic feedback into the Author's next pass.
+    feedback_message: ?[]const u8 = null,
+
+    // --- Fleet (fleet.zig) ---
+    /// `tau fleet <run|status|list|logs|cancel>` subcommand selector. Null means
+    /// the CLI was not invoked as a fleet subcommand.
+    fleet_sub: ?[]const u8 = null,
+    /// Fleet id (when subcommand needs one). Required for status/logs/cancel.
+    fleet_id: ?[]const u8 = null,
+    /// Fleet goal text (only for `fleet run`).
+    fleet_goal: ?[]const u8 = null,
+    /// Optional pre-supplied items JSON (skips the coordinator LLM turn).
+    fleet_items: ?[]const u8 = null,
+    /// Worker parallelism (default true).
+    fleet_parallel: bool = true,
+    /// Optional model override for the coordinator turn.
+    coordinator_model: ?[]const u8 = null,
+    /// Optional model override for worker turns.
+    worker_model: ?[]const u8 = null,
 
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.

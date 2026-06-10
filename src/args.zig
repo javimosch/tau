@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -49,6 +49,12 @@ pub fn parse(
     while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
     const argv = argv_list.items;
 
+    // Fleet-subcommand scratch state (declared up here so the fleet subcommand
+    // block above can write into them before the generic flag loop runs).
+    var fleet_goal: ?[]const u8 = null;
+    var fleet_id: ?[]const u8 = null;
+    var fleet_items: ?[]const u8 = null; // raw JSON blob of pre-supplied items
+
     // `tau acp <start|stop|status|serve> [--acp-socket PATH]` — handled before
     // the generic flag/prompt parsing (acp is a command, not a prompt).
     if (argv.len > 0 and eq(argv[0], "acp")) {
@@ -74,6 +80,57 @@ pub fn parse(
             } else return errResult(arena, "unknown acp argument: {s}", .{a});
         }
         return .{ .action = .acp, .config = acfg };
+    }
+
+    // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
+    if (argv.len > 0 and eq(argv[0], "fleet")) {
+        var fcfg: Config = base;
+        if (argv.len < 2) return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
+        var j: usize = 1;
+        var mode: ?[]const u8 = null;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--goal")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fleet_goal = argv[j];
+            } else if (eq(a, "--id")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fleet_id = argv[j];
+            } else if (eq(a, "--coordinator-model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fcfg.coordinator_model = argv[j];
+            } else if (eq(a, "--worker-model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fcfg.worker_model = argv[j];
+            } else if (eq(a, "--sequential")) {
+                fcfg.fleet_parallel = false;
+            } else if (eq(a, "--parallel")) {
+                fcfg.fleet_parallel = true;
+            } else if (eq(a, "--items")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fleet_items = argv[j];
+            } else if (mode == null and (eq(a, "run") or eq(a, "status") or eq(a, "list") or eq(a, "logs") or eq(a, "cancel"))) {
+                mode = a;
+            } else if (mode != null and a.len > 0 and a[0] != '-') {
+                // Positional argument: fleet_id for status/cancel/logs.
+                if (fleet_id != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
+                fleet_id = a;
+            } else {
+                return errResult(arena, "unknown fleet argument: {s}", .{a});
+            }
+        }
+        const m = mode orelse return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
+        // Stash mode + id + goal on Config so main.zig can dispatch.
+        fcfg.fleet_sub = m;
+        fcfg.fleet_id = fleet_id;
+        fcfg.fleet_goal = fleet_goal;
+        fcfg.fleet_items = fleet_items;
+        return .{ .action = .fleet, .config = fcfg };
     }
 
     // Start from `base` (config-file defaults). CLI flags below override it.
@@ -128,6 +185,15 @@ pub fn parse(
         }
         if (eq(a, "--no-compact")) {
             cfg.auto_compact = false;
+            continue;
+        }
+        if (eq(a, "--role")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            if (eq(v, "author")) cfg.role = .author
+            else if (eq(v, "critic")) cfg.role = .critic
+            else if (eq(v, "coordinator")) cfg.role = .coordinator
+            else if (eq(v, "none")) cfg.role = .none
+            else return errResult(arena, "invalid --role (want author|critic|coordinator|none): {s}", .{v});
             continue;
         }
         if (eq(a, "--compact-keep-recent")) {

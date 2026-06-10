@@ -1,0 +1,957 @@
+const std = @import("std");
+const cfgmod = @import("config.zig");
+const jsonmod = @import("json.zig");
+const term = @import("term.zig");
+const session_mod = @import("session.zig");
+
+/// One work item in a fleet — the unit of work for a single worker.
+pub const WorkItem = struct {
+    id: []const u8,
+    title: []const u8,
+    scope: []const u8,
+    deliverables: []const u8,
+    acceptance: []const u8,
+    /// IDs of items this depends on (must be completed first).
+    depends_on: []const []const u8 = &.{},
+};
+
+/// Per-worker status. Persisted in the manifest.
+pub const ItemStatus = enum { pending, running, approved, blocked, failed };
+
+pub const ItemResult = struct {
+    item: WorkItem,
+    status: ItemStatus = .pending,
+    iterations: u32 = 0,
+    feedback_history: []const []const u8 = &.{},
+};
+
+/// Top-level fleet spec — what the user (or coordinator) hands to `tau fleet run`.
+pub const FleetSpec = struct {
+    goal: []const u8,
+    items: []const WorkItem,
+    /// Max times to re-plan via the coordinator if a work breakdown isn't pre-supplied.
+    max_fleet_iterations: u32 = 3,
+    /// Cap for each worker's inner Author↔Critic loop.
+    worker_max_iterations: u32 = 8,
+    /// When true, workers can run in parallel (independent items); false = sequential.
+    parallel: bool = true,
+    /// Optional per-fleet token budget (soft).
+    token_budget: ?u64 = null,
+    /// Optional model override for the coordinator turn.
+    coordinator_model: ?[]const u8 = null,
+    /// Optional model override for worker turns.
+    worker_model: ?[]const u8 = null,
+};
+
+/// Persisted manifest: ~/.config/tau/fleets/<id>.json
+pub const Manifest = struct {
+    version: u32 = 1,
+    id: []const u8,
+    spec: FleetSpec,
+    items: []const ItemResult,
+    created_at: i64,
+    updated_at: i64,
+    global_status: enum { running, done, partial, failed, cancelled } = .running,
+};
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+/// ~/.config/tau/fleets
+pub fn fleetsDir(a: std.mem.Allocator, env: *std.process.Environ.Map) ?[]u8 {
+    const home = env.get("HOME") orelse return null;
+    return std.fmt.allocPrint(a, "{s}/.config/tau/fleets", .{home}) catch null;
+}
+
+/// ~/.config/tau/fleets/<id>.json (null if HOME unset or bad id)
+pub fn manifestPath(a: std.mem.Allocator, env: *std.process.Environ.Map, id: []const u8) ?[]u8 {
+    if (!validId(id)) return null;
+    const dir = fleetsDir(a, env) orelse return null;
+    return std.fmt.allocPrint(a, "{s}/{s}.json", .{ dir, id }) catch null;
+}
+
+fn validId(name: []const u8) bool {
+    if (name.len == 0 or name.len > 128) return false;
+    for (name) |c| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '-' or c == '_' or c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Coordinator
+// ---------------------------------------------------------------------------
+
+/// Build the coordinator directive. The coordinator is a one-shot LLM call
+/// (no tools) that decomposes `goal` into a JSON work breakdown.
+pub fn coordinatorDirective(gpa: std.mem.Allocator, goal: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa,
+        \\You are a FLEET COORDINATOR. Your only job is to plan, not to implement.
+        \\
+        \\Decompose the GOAL into 2-6 work items that can be implemented in
+        \\parallel by separate workers. Output a single JSON object — nothing else,
+        \\no prose, no markdown fences. The JSON MUST match this schema:
+        \\
+        \\{{
+        \\  "items": [
+        \\    {{
+        \\      "id": "kebab-case-id",
+        \\      "title": "short title",
+        \\      "scope": "what this item covers (1-3 sentences)",
+        \\      "deliverables": "what 'done' looks like (files, tests, behavior)",
+        \\      "acceptance": "concrete criteria the Critic will use to judge",
+        \\      "depends_on": ["other-item-id", ...]
+        \\    }}
+        \\  ]
+        \\}}
+        \\
+        \\Rules:
+        \\  - 2-6 items total. Prefer fewer, larger items over many tiny ones.
+        \\  - IDs MUST be unique kebab-case identifiers (a-z, 0-9, '-').
+        \\  - depends_on may be empty; only list real data/contract dependencies.
+        \\  - acceptance must be testable (a Critic with read-only tools should
+        \\    be able to verify it).
+        \\
+        \\GOAL:
+        \\{s}
+    , .{goal});
+}
+
+/// Try to extract a JSON object from a coordinator's response. Handles:
+///  - Markdown fences (```json ... ``` or ``` ... ```)
+///  - XML-style think blocks (<think> / <thinking> ...) with prose/logic
+///  - Prose before the JSON (e.g., "Here is the plan:\n{\"items\":[]}")
+/// Returns the JSON slice (caller must dup) or null.
+pub fn extractCoordinatorJson(response: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, response, " \t\r\n");
+
+    // --- 1. Strip <think> / <thinking> blocks ---
+    // Models may emit reasoning in XML tags. Strip all occurrences; any
+    // remaining text after the last block is the payload. <thinking> takes
+    // priority when it overlaps <think> (tag `>` is 10+12 chars vs 7+8).
+    var strip_think = trimmed;
+    while (true) {
+        const thk = std.mem.indexOf(u8, strip_think, "<think>");
+        const thkng = std.mem.indexOf(u8, strip_think, "<thinking>");
+
+        // Prefer <thinking> when it appears no later than <think>.
+        if (thkng != null and (thk == null or thkng.? <= thk.?)) {
+            const after_tag = strip_think[thkng.? + 10 ..];
+            if (std.mem.indexOf(u8, after_tag, "</thinking>")) |tag_end| {
+                const start = tag_end + 12;
+                strip_think = if (start <= after_tag.len) after_tag[start..] else "";
+                continue;
+            }
+            strip_think = "";
+            break;
+        }
+        if (thk != null) {
+            const after_tag = strip_think[thk.? + 7 ..];
+            if (std.mem.indexOf(u8, after_tag, "</think>")) |tag_end| {
+                const start = tag_end + 8;
+                strip_think = if (start <= after_tag.len) after_tag[start..] else "";
+                continue;
+            }
+            strip_think = "";
+            break;
+        }
+        break;
+    }
+
+    // After stripping think blocks, re-trim
+    const cleaned = std.mem.trim(u8, strip_think, " \t\r\n");
+    if (cleaned.len == 0) return null;
+
+    // --- 2. Strip ``` fences (```json ... ``` or ``` ... ```) ---
+    if (std.mem.startsWith(u8, cleaned, "```")) {
+        // find first newline
+        var start: usize = 0;
+        while (start < cleaned.len and cleaned[start] != '\n') start += 1;
+        if (start < cleaned.len) start += 1;
+        // find last ```
+        var end = cleaned.len;
+        if (std.mem.lastIndexOf(u8, cleaned[start..], "```")) |rel| {
+            end = start + rel;
+        }
+        return std.mem.trim(u8, cleaned[start..end], " \t\r\n");
+    }
+
+    // --- 3. Find the outermost {...} ---
+    const lb = std.mem.indexOfScalar(u8, cleaned, '{') orelse return null;
+    const rb = std.mem.lastIndexOfScalar(u8, cleaned, '}') orelse return null;
+    if (rb <= lb) return null;
+    return cleaned[lb .. rb + 1];
+}
+
+/// Parse a WorkItem from a JSON object.
+fn parseWorkItem(gpa: std.mem.Allocator, obj: std.json.Value) !WorkItem {
+    if (obj != .object) return error.InvalidWorkItem;
+    const id = (try objStr(obj, "id")) orelse return error.InvalidWorkItem;
+    const title = (try objStr(obj, "title")) orelse return error.InvalidWorkItem;
+    const scope = (try objStr(obj, "scope")) orelse return error.InvalidWorkItem;
+    const deliverables = (try objStr(obj, "deliverables")) orelse return error.InvalidWorkItem;
+    const acceptance = (try objStr(obj, "acceptance")) orelse return error.InvalidWorkItem;
+    var deps_storage = std.ArrayList([]const u8).empty;
+    if (obj.object.get("depends_on")) |d| {
+        if (d == .array) {
+            for (d.array.items) |it| {
+                try deps_storage.append(gpa, if (it == .string) it.string else "");
+            }
+        }
+    }
+    const deps = try deps_storage.toOwnedSlice(gpa);
+    return .{
+        .id = try gpa.dupe(u8, id),
+        .title = try gpa.dupe(u8, title),
+        .scope = try gpa.dupe(u8, scope),
+        .deliverables = try gpa.dupe(u8, deliverables),
+        .acceptance = try gpa.dupe(u8, acceptance),
+        .depends_on = deps,
+    };
+}
+
+/// Look up `key` in an object JSON value and return the string slice (no copy).
+/// Returns null if missing or not a string.
+fn objStr(obj: std.json.Value, key: []const u8) !?[]const u8 {
+    if (obj != .object) return null;
+    const v = obj.object.get(key) orelse return null;
+    return if (v == .string) v.string else null;
+}
+
+// ---------------------------------------------------------------------------
+// Dependency helpers
+// ---------------------------------------------------------------------------
+
+/// True when every dependency id appears in `done`.
+fn depsMet(deps: []const []const u8, done: []const []const u8) bool {
+    for (deps) |dep| {
+        var found = false;
+        for (done) |d| {
+            if (std.mem.eql(u8, dep, d)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Topological sort
+// ---------------------------------------------------------------------------
+
+/// Topologically sort items by depends_on. Returns a fresh slice in execution
+/// order. Returns error.Cycle if a cycle is detected.
+pub fn topoSort(gpa: std.mem.Allocator, items: []const WorkItem) ![]const WorkItem {
+    var sorted: std.ArrayList(WorkItem) = .empty;
+    var done = std.ArrayList(bool).empty;
+    defer done.deinit(gpa);
+    try done.resize(gpa, items.len);
+    @memset(done.items, false);
+
+    // Recursive DFS for each item
+    var on_stack = std.ArrayList(bool).empty;
+    defer on_stack.deinit(gpa);
+    try on_stack.resize(gpa, items.len);
+    @memset(on_stack.items, false);
+
+    for (items, 0..) |_, i| {
+        if (done.items[i]) continue;
+        try topoVisit(gpa, items, i, &done, &on_stack, &sorted);
+    }
+    return try sorted.toOwnedSlice(gpa);
+}
+
+fn topoVisit(gpa: std.mem.Allocator, items: []const WorkItem, idx: usize, done: *std.ArrayList(bool), on_stack: *std.ArrayList(bool), out: *std.ArrayList(WorkItem)) !void {
+    if (done.items[idx]) return;
+    if (on_stack.items[idx]) return error.Cycle;
+    on_stack.items[idx] = true;
+    const item = items[idx];
+    for (item.depends_on) |dep| {
+        const dep_idx = blk: {
+            for (items, 0..) |it, j| {
+                if (std.mem.eql(u8, it.id, dep)) break :blk j;
+            }
+            return error.UnknownDependency;
+        };
+        try topoVisit(gpa, items, dep_idx, done, on_stack, out);
+    }
+    done.items[idx] = true;
+    on_stack.items[idx] = false;
+    try out.append(gpa, item);
+}
+
+// ---------------------------------------------------------------------------
+// Manifest persistence
+// ---------------------------------------------------------------------------
+
+pub fn saveManifest(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    manifest: Manifest,
+) !void {
+    const dir = fleetsDir(gpa, env) orelse return error.NoHome;
+    defer gpa.free(dir);
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
+    const p = manifestPath(gpa, env, manifest.id) orelse return error.InvalidFleetId;
+    defer gpa.free(p);
+    const json = try std.json.Stringify.valueAlloc(gpa, manifest, .{ .whitespace = .indent_2 });
+    defer gpa.free(json);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = json });
+}
+
+pub fn loadManifest(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    id: []const u8,
+) !?Manifest {
+    const p = manifestPath(arena, env, id) orelse return null;
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch return null;
+    return try std.json.parseFromSliceLeaky(Manifest, arena, bytes, .{
+        .ignore_unknown_fields = true,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Fleet CLI dispatch
+// ---------------------------------------------------------------------------
+
+pub const FleetSub = enum { run, status, list, logs, cancel };
+
+/// Build the spec from CLI args, or call the LLM coordinator to produce one.
+/// Returns the final FleetSpec (caller frees via deinitSpec). When the
+/// coordinator is used, `coordinator_response` is set to its raw output for
+/// logging; otherwise null.
+pub fn buildSpec(
+    gpa: std.mem.Allocator,
+    cfg: anytype,
+    goal: []const u8,
+    items_override: ?[]const WorkItem,
+    io: std.Io,
+) !struct {
+    spec: FleetSpec,
+    coordinator_response: ?[]u8 = null,
+} {
+    if (items_override) |items| {
+        return .{
+            .spec = FleetSpec{
+                .goal = try gpa.dupe(u8, goal),
+                .items = items,
+                .parallel = cfg.fleet_parallel,
+            },
+        };
+    }
+    // LLM coordinator turn
+    const provider = @import("llm/provider.zig");
+    var coord_cfg = cfg;
+    coord_cfg.goal = null;
+    coord_cfg.goal_action = .none;
+    coord_cfg.exit_sentinel = null;
+    coord_cfg.feedback_message = null;
+    coord_cfg.role = .coordinator;
+    coord_cfg.stream = false;
+    if (cfg.coordinator_model) |m| coord_cfg.model = m;
+    if (cfg.coordinator_model != null) coord_cfg.provider = cfg.coordinator_model.?; // set by args
+
+    const sys = try coordinatorDirective(gpa, goal);
+    defer gpa.free(sys);
+    const user_turn = try gpa.dupe(u8, "Produce the work breakdown as JSON now.");
+    defer gpa.free(user_turn);
+
+    const messages = [_]provider.Message{
+        .{ .role = "system", .content = sys },
+        .{ .role = "user", .content = user_turn },
+    };
+    const resp = try provider.complete(io, gpa, coord_cfg, &messages, null);
+    defer gpa.free(resp.content);
+    const raw = try gpa.dupe(u8, resp.content);
+
+    const json_slice = extractCoordinatorJson(raw) orelse return error.CoordinatorParseFailed;
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_slice, .{}) catch
+        return error.CoordinatorParseFailed;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.CoordinatorParseFailed;
+    const items_v = parsed.value.object.get("items") orelse return error.CoordinatorParseFailed;
+    if (items_v != .array) return error.CoordinatorParseFailed;
+
+    var items = std.ArrayList(WorkItem).empty;
+    for (items_v.array.items) |it| {
+        try items.append(gpa, try parseWorkItem(gpa, it));
+    }
+    return .{
+        .spec = FleetSpec{
+            .goal = try gpa.dupe(u8, goal),
+            .items = try items.toOwnedSlice(gpa),
+            .parallel = cfg.fleet_parallel,
+        },
+        .coordinator_response = raw,
+    };
+}
+
+/// Dispatch a fleet subcommand. Exit code returned.
+pub fn dispatch(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    cfg: cfgmod.Config,
+    env: *std.process.Environ.Map,
+    sub: FleetSub,
+    fleet_id: ?[]const u8,
+    goal: ?[]const u8,
+) !u8 {
+    return switch (sub) {
+        .status => statusCmd(io, gpa, arena, env, fleet_id),
+        .list => listCmd(io, gpa, arena, env),
+        .cancel => cancelCmd(io, gpa, arena, env, fleet_id),
+        .logs => logsCmd(io, gpa, arena, env, fleet_id),
+        .run => runCmd(io, gpa, arena, cfg, env, fleet_id, goal),
+    };
+}
+
+fn statusCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, fleet_id: ?[]const u8) !u8 {
+    const id = fleet_id orelse {
+        term.out("{\"err\":{\"code\":80,\"message\":\"fleet status requires <id>\"}}\n");
+        return 80;
+    };
+    if (try loadManifest(io, arena, env, id)) |m| {
+        const out = try std.json.Stringify.valueAlloc(gpa, m, .{ .whitespace = .indent_2 });
+        defer gpa.free(out);
+        term.out(out);
+        term.out("\n");
+    } else {
+        term.out("{\"fleet\":null}\n");
+    }
+    return 0;
+}
+
+fn listCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map) !u8 {
+    const dir = fleetsDir(arena, env) orelse {
+        term.out("{\"fleets\":[]}\n");
+        return 0;
+    };
+    defer arena.free(dir);
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true }) catch {
+        term.out("{\"fleets\":[]}\n");
+        return 0;
+    };
+    defer d.close(io);
+    var it = d.iterate();
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(arena);
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.endsWith(u8, entry.name, ".json")) {
+            // strip .json
+            const base = entry.name[0 .. entry.name.len - 5];
+            try names.append(arena, base);
+        }
+    }
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, "{\"fleets\":[");
+    for (names.items, 0..) |n, i| {
+        if (i != 0) try out.append(gpa, ',');
+        const ne = try jsonmod.escapeAlloc(gpa, n);
+        defer gpa.free(ne);
+        const line = try std.fmt.allocPrint(gpa, "\"{s}\"", .{ne});
+        defer gpa.free(line);
+        try out.appendSlice(gpa, line);
+    }
+    try out.appendSlice(gpa, "]}\n");
+    term.out(out.items);
+    return 0;
+}
+
+fn cancelCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, fleet_id: ?[]const u8) !u8 {
+    const id = fleet_id orelse {
+        term.out("{\"err\":{\"code\":80,\"message\":\"fleet cancel requires <id>\"}}\n");
+        return 80;
+    };
+    const m = (try loadManifest(io, arena, env, id)) orelse {
+        term.out("{\"fleet\":null}\n");
+        return 0;
+    };
+    var updated = m;
+    updated.global_status = .cancelled;
+    updated.updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds();
+    saveManifest(io, gpa, env, updated) catch |err| {
+        const err_msg = try std.fmt.allocPrint(arena, "{{\"err\":{{\"code\":110,\"message\":\"cancel save failed: {s}\"}}}}\n", .{@errorName(err)});
+        term.out(err_msg);
+        return 110;
+    };
+    const out = try std.json.Stringify.valueAlloc(gpa, updated, .{ .whitespace = .indent_2 });
+    defer gpa.free(out);
+    term.out(out);
+    term.out("\n");
+    return 0;
+}
+
+fn logsCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, fleet_id: ?[]const u8) !u8 {
+    _ = gpa;
+    _ = arena;
+    _ = env;
+    _ = io;
+    const id = fleet_id orelse {
+        term.out("{\"err\":{\"code\":80,\"message\":\"fleet logs requires <id>\"}}\n");
+        return 80;
+    };
+    term.out("{\"note\":\"logs: inspect sessions under ~/.config/tau/sessions/ matching prefix ");
+    term.out(id);
+    term.out("-<item-id>-*\"}\n");
+    return 0;
+}
+
+fn runCmd(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    cfg: cfgmod.Config,
+    env: *std.process.Environ.Map,
+    fleet_id: ?[]const u8,
+    goal: ?[]const u8,
+) !u8 {
+    const gl = goal orelse {
+        term.out("{\"err\":{\"code\":82,\"message\":\"fleet run requires --goal <text>\"}}\n");
+        return 82;
+    };
+    const id = fleet_id orelse blk: {
+        const ts = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds();
+        break :blk try std.fmt.allocPrint(arena, "fleet-{d}", .{ts});
+    };
+    defer if (fleet_id == null) arena.free(id);
+
+    // Build spec (either from CLI items, or via coordinator LLM call).
+    const built = try buildSpec(gpa, cfg, gl, null, io);
+    const coordinator_response: ?[]u8 = built.coordinator_response;
+    defer if (coordinator_response) |cr| gpa.free(cr);
+    const spec = built.spec;
+
+    // Validate no cycles in sequential mode (parallel mode detects cycles
+    // dynamically via depsMet — an empty wave with pending items is a cycle).
+
+    // Initialize item results
+    var items = std.ArrayList(ItemResult).empty;
+    for (spec.items) |it| try items.append(gpa, .{ .item = it });
+
+    // Write the initial manifest
+    const manifest = Manifest{
+        .id = try gpa.dupe(u8, id),
+        .spec = spec,
+        .items = try items.toOwnedSlice(gpa),
+        .created_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+        .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+    };
+    saveManifest(io, gpa, env, manifest) catch |err| {
+        term.out("{\"err\":{\"code\":110,\"message\":\"manifest save failed: ");
+        term.out(@errorName(err));
+        term.out("\"}}\n");
+        return 110;
+    };
+
+    // Dispatch workers. In parallel mode, use wave-based dispatch: items
+    // whose dependencies are all satisfied are spawned simultaneously.
+    // In sequential mode, follow the topo-sorted order one at a time.
+    if (spec.parallel) {
+        // Parallel wave-based dispatch.
+        var done_ids: std.ArrayList([]const u8) = .empty;
+        defer done_ids.deinit(gpa);
+        var pending: std.ArrayList(usize) = .empty;
+        defer pending.deinit(gpa);
+        for (0..items.items.len) |idx| try pending.append(gpa, idx);
+
+        while (pending.items.len > 0) {
+            // Build the next wave: items whose deps are all done.
+            var wave_idxs: std.ArrayList(usize) = .empty;
+            defer wave_idxs.deinit(gpa);
+            var children: std.ArrayList(?std.process.Child) = .empty;
+            defer children.deinit(gpa);
+
+            var pi: usize = 0;
+            while (pi < pending.items.len) {
+                const idx = pending.items[pi];
+                const it = spec.items[idx];
+                if (depsMet(it.depends_on, done_ids.items)) {
+                    // Arena-allocate cmd_argv so it survives past this iteration.
+                    const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
+                    const cmd_argv = try arena.alloc([]const u8, 6);
+                    cmd_argv[0] = "tau";
+                    cmd_argv[1] = "--role";
+                    cmd_argv[2] = "author";
+                    cmd_argv[3] = "--session";
+                    cmd_argv[4] = session_name;
+                    cmd_argv[5] = it.scope;
+
+                    const child = std.process.spawn(io, .{
+                        .argv = cmd_argv,
+                        .stdin = .ignore,
+                        .stdout = .ignore,
+                        .stderr = .ignore,
+                    }) catch null;
+                    try children.append(gpa, child);
+                    try wave_idxs.append(gpa, idx);
+                    _ = pending.swapRemove(pi);
+                } else {
+                    pi += 1;
+                }
+            }
+
+            if (wave_idxs.items.len == 0) {
+                term.out("{\"err\":{\"code\":110,\"message\":\"unmet dependencies or cycle in fleet items\"}}\n");
+                return 110;
+            }
+
+            // Wait for all children in this wave to complete.
+            for (children.items) |*maybe_child| {
+                if (maybe_child.*) |*ch| {
+                    _ = ch.wait(io) catch {};
+                }
+            }
+
+            // Check results for each completed worker.
+            for (wave_idxs.items) |idx| {
+                const it = spec.items[idx];
+                const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
+
+                var worker_ok = false;
+                if (session_mod.load(io, arena, env, session_name)) |maybe_st| {
+                    if (maybe_st) |st| {
+                        var last_content: ?[]const u8 = null;
+                        for (st.messages) |msg| {
+                            if (std.mem.eql(u8, msg.role, "assistant")) {
+                                last_content = msg.content;
+                            }
+                        }
+                        if (last_content) |lc| {
+                            if (std.mem.indexOf(u8, lc, "<READY_FOR_REVIEW>") != null) {
+                                worker_ok = true;
+                            }
+                        }
+                    }
+                } else |_| {}
+
+                items.items[idx].status = if (worker_ok) .approved else .failed;
+                items.items[idx].iterations = if (worker_ok) @as(u32, 1) else @as(u32, 0);
+                if (worker_ok) {
+                    try done_ids.append(gpa, it.id);
+                }
+            }
+
+            // Save manifest incrementally.
+            const updated = Manifest{
+                .id = id,
+                .spec = spec,
+                .items = items.items,
+                .created_at = manifest.created_at,
+                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+                .global_status = .running,
+            };
+            saveManifest(io, gpa, env, updated) catch {};
+        }
+    } else {
+        // Sequential dispatch (original behavior).
+        const sorted = topoSort(gpa, spec.items) catch |err| {
+            term.out("{\"err\":{\"code\":110,\"message\":\"toposort failed: ");
+            term.out(@errorName(err));
+            term.out("\"}}\n");
+            return 110;
+        };
+        defer gpa.free(sorted);
+        for (sorted) |it| {
+            const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
+            const cmd_argv = [_][]const u8{
+                "tau", "--role", "author", "--session", session_name, it.scope,
+            };
+            var child = std.process.spawn(io, .{
+                .argv = &cmd_argv,
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            }) catch null;
+            if (child) |*ch| {
+                _ = ch.wait(io) catch {};
+            }
+
+            // Find the original index in items.items (order is topo-sorted).
+            const item_idx = blk: {
+                for (items.items, 0..) |ir, j| {
+                    if (std.mem.eql(u8, ir.item.id, it.id)) break :blk j;
+                }
+                unreachable;
+            };
+
+            // Check the worker's session file for the READY_FOR_REVIEW sentinel.
+            var worker_ok = false;
+            if (session_mod.load(io, arena, env, session_name)) |maybe_st| {
+                if (maybe_st) |st| {
+                    var last_content: ?[]const u8 = null;
+                    for (st.messages) |msg| {
+                        if (std.mem.eql(u8, msg.role, "assistant")) {
+                            last_content = msg.content;
+                        }
+                    }
+                    if (last_content) |lc| {
+                        if (std.mem.indexOf(u8, lc, "<READY_FOR_REVIEW>") != null) {
+                            worker_ok = true;
+                        }
+                    }
+                }
+            } else |_| {}
+
+            items.items[item_idx].status = if (worker_ok) .approved else .failed;
+            items.items[item_idx].iterations = if (worker_ok) @as(u32, 1) else @as(u32, 0);
+
+            // Save manifest incrementally.
+            const updated = Manifest{
+                .id = id,
+                .spec = spec,
+                .items = items.items,
+                .created_at = manifest.created_at,
+                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+                .global_status = .running,
+            };
+            saveManifest(io, gpa, env, updated) catch {};
+        }
+    }
+
+    // Count approvals for the final output and persist final status.
+    var approved_count: u32 = 0;
+    var failed_count: u32 = 0;
+    for (items.items) |ir| {
+        switch (ir.status) {
+            .approved => approved_count += 1,
+            .failed => failed_count += 1,
+            else => {},
+        }
+    }
+    const final_status: []const u8 = if (failed_count == 0 and approved_count == items.items.len) "done"
+        else if (approved_count > 0) "partial"
+        else "failed";
+
+    // Persist final manifest with correct global_status.
+    const final_manifest = Manifest{
+        .id = id,
+        .spec = spec,
+        .items = items.items,
+        .created_at = manifest.created_at,
+        .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+        .global_status = if (std.mem.eql(u8, final_status, "done")) .done
+            else if (std.mem.eql(u8, final_status, "partial")) .partial
+            else .failed,
+    };
+    saveManifest(io, gpa, env, final_manifest) catch {};
+
+    const final_out = try std.fmt.allocPrint(gpa, "{{\"fleet\":{{\"id\":\"{s}\",\"status\":\"{s}\",\"approved\":{d},\"failed\":{d},\"items\":{d}}}}}\n", .{ id, final_status, approved_count, failed_count, items.items.len });
+    defer gpa.free(final_out);
+    term.out(final_out);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "extractCoordinatorJson strips fences" {
+    const a = "```json\n{\"items\":[]}\n```";
+    const got = extractCoordinatorJson(a).?;
+    try std.testing.expectEqualStrings("{\"items\":[]}", got);
+
+    const b = "{\"items\":[]}";
+    try std.testing.expectEqualStrings(b, extractCoordinatorJson(b).?);
+
+    const c = "   leading\n{\"items\":[]}\ntrailing   ";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(c).?);
+
+    try std.testing.expect(extractCoordinatorJson("no braces here") == null);
+    try std.testing.expect(extractCoordinatorJson("") == null);
+}
+
+test "extractCoordinatorJson strips think blocks" {
+    // Single think block before JSON
+    const a = "<think>Let me plan this carefully</think>\n{\"items\":[]}";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(a).?);
+
+    // Think block with braces inside (should not confuse the parser)
+    const b = "<think>Need to output { and } as JSON</think>\n{\"items\":[{\"id\":\"a\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(b).?);
+
+    // Multiple think blocks
+    const c = "<think>first</think><think>second</think>{\"items\":[]}";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(c).?);
+
+    // Think block + markdown fences
+    const d = "<think>reasoning</think>```json\n{\"items\":[]}\n```";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(d).?);
+
+    // Think block with nested braces in reasoning
+    const e = "<think>I'll output {\"items\":[{\"id\":\"x\"}]} as the plan</think>\n{\"items\":[{\"id\":\"x\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"x\"}]}", extractCoordinatorJson(e).?);
+
+    // Unclosed think tag
+    const f = "<think>unclosed";
+    try std.testing.expect(extractCoordinatorJson(f) == null);
+
+    // Only think block, no JSON
+    const g = "<think>just reasoning</think>";
+    try std.testing.expect(extractCoordinatorJson(g) == null);
+
+    // --- <thinking> tag (longer variant) ---
+
+    // Single <thinking> block before JSON
+    const h = "<thinking>planning approach</thinking>\n{\"items\":[]}";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(h).?);
+
+    // <thinking> with braces inside
+    const i = "<thinking>considering { and } output</thinking>\n{\"items\":[{\"id\":\"b\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"b\"}]}", extractCoordinatorJson(i).?);
+
+    // Unclosed <thinking> tag
+    const j = "<thinking>unclosed";
+    try std.testing.expect(extractCoordinatorJson(j) == null);
+
+    // Only <thinking> block, no JSON
+    const k = "<thinking>just planning</thinking>";
+    try std.testing.expect(extractCoordinatorJson(k) == null);
+
+    // Mixed <think> and <thinking> blocks
+    const l = "<thinking>high level</thinking><think>details</think>{\"items\":[]}";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(l).?);
+
+    // <thinking> block with nested braces
+    const m = "<thinking>output {\"x\":1} format</thinking>\n{\"items\":[]}";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(m).?);
+}
+
+test "extractCoordinatorJson handles prose before JSON" {
+    // Prose then JSON
+    const a = "Here is the plan:\n{\"items\":[{\"id\":\"a\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(a).?);
+
+    // Prose before and after
+    const b = "The breakdown is:\n{\"items\":[]}\nThat should work.";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(b).?);
+
+    // Prose + think block + prose + JSON
+    const c = "Let me think...\n<think>analyzing</think>\nHere:\n{\"items\":[{\"id\":\"ok\"}]}\nDone.";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"ok\"}]}", extractCoordinatorJson(c).?);
+
+    // Prose without any braces
+    const d = "I cannot produce a breakdown right now.";
+    try std.testing.expect(extractCoordinatorJson(d) == null);
+}
+
+test "validId allows safe characters only" {
+    try std.testing.expect(validId("fleet-2026-06-09"));
+    try std.testing.expect(validId("a"));
+    try std.testing.expect(!validId(""));
+    try std.testing.expect(!validId("../escape"));
+    try std.testing.expect(!validId("has space"));
+    try std.testing.expect(!validId("slash/here"));
+}
+
+test "topoSort respects depends_on" {
+    const a = std.testing.allocator;
+    const items = [_]WorkItem{
+        .{ .id = "a", .title = "A", .scope = "a", .deliverables = "a", .acceptance = "a", .depends_on = &.{} },
+        .{ .id = "b", .title = "B", .scope = "b", .deliverables = "b", .acceptance = "b", .depends_on = &.{"a"} },
+        .{ .id = "c", .title = "C", .scope = "c", .deliverables = "c", .acceptance = "c", .depends_on = &.{"a","b"} },
+    };
+    const sorted = try topoSort(a, &items);
+    defer a.free(sorted);
+    try std.testing.expectEqual(@as(usize, 3), sorted.len);
+    // a must come before b, b before c.
+    var a_idx: ?usize = null;
+    var b_idx: ?usize = null;
+    var c_idx: ?usize = null;
+    for (sorted, 0..) |it, i| {
+        if (std.mem.eql(u8, it.id, "a")) a_idx = i;
+        if (std.mem.eql(u8, it.id, "b")) b_idx = i;
+        if (std.mem.eql(u8, it.id, "c")) c_idx = i;
+    }
+    try std.testing.expect(a_idx.? < b_idx.?);
+    try std.testing.expect(b_idx.? < c_idx.?);
+}
+
+test "topoSort detects cycle" {
+    const a = std.testing.allocator;
+    const items = [_]WorkItem{
+        .{ .id = "x", .title = "X", .scope = "x", .deliverables = "x", .acceptance = "x", .depends_on = &.{"y"} },
+        .{ .id = "y", .title = "Y", .scope = "y", .deliverables = "y", .acceptance = "y", .depends_on = &.{"x"} },
+    };
+    try std.testing.expectError(error.Cycle, topoSort(a, &items));
+}
+
+test "Manifest JSON round-trip: serialize then parse" {
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Build a known manifest.
+    const work_item = WorkItem{
+        .id = "build-core",
+        .title = "Build core",
+        .scope = "Implement the core module",
+        .deliverables = "src/core.zig passes tests",
+        .acceptance = "zig build test passes",
+        .depends_on = &.{"init"},
+    };
+    const items_gpa = try gpa.alloc(WorkItem, 1);
+    defer gpa.free(items_gpa);
+    items_gpa[0] = work_item;
+    const item_result = ItemResult{
+        .item = work_item,
+        .status = .approved,
+        .iterations = 3,
+    };
+    const irs_gpa = try gpa.alloc(ItemResult, 1);
+    defer gpa.free(irs_gpa);
+    irs_gpa[0] = item_result;
+
+    const original = Manifest{
+        .id = "roundtrip-test",
+        .spec = FleetSpec{
+            .goal = "ship v1",
+            .items = items_gpa,
+            .parallel = true,
+        },
+        .items = irs_gpa,
+        .created_at = 1000,
+        .updated_at = 2000,
+        .global_status = .done,
+    };
+
+    // Serialize to JSON.
+    const json = try std.json.Stringify.valueAlloc(gpa, original, .{ .whitespace = .indent_2 });
+    defer gpa.free(json);
+
+    // Parse back from JSON.
+    const loaded = try std.json.parseFromSliceLeaky(Manifest, arena, json, .{
+        .ignore_unknown_fields = true,
+    });
+
+    // Assert round-trip equality.
+    try std.testing.expectEqualStrings("roundtrip-test", loaded.id);
+    try std.testing.expectEqualStrings("ship v1", loaded.spec.goal);
+    try std.testing.expectEqual(@as(usize, 1), loaded.spec.items.len);
+    try std.testing.expectEqualStrings("build-core", loaded.spec.items[0].id);
+    try std.testing.expectEqualStrings("Build core", loaded.spec.items[0].title);
+    try std.testing.expectEqualStrings("Implement the core module", loaded.spec.items[0].scope);
+    try std.testing.expectEqualStrings("src/core.zig passes tests", loaded.spec.items[0].deliverables);
+    try std.testing.expectEqualStrings("zig build test passes", loaded.spec.items[0].acceptance);
+    try std.testing.expectEqual(@as(usize, 1), loaded.spec.items[0].depends_on.len);
+    try std.testing.expectEqualStrings("init", loaded.spec.items[0].depends_on[0]);
+    try std.testing.expect(loaded.spec.parallel);
+    try std.testing.expectEqual(@as(usize, 1), loaded.items.len);
+    try std.testing.expectEqual(ItemStatus.approved, loaded.items[0].status);
+    try std.testing.expectEqual(@as(u32, 3), loaded.items[0].iterations);
+    try std.testing.expectEqualStrings("build-core", loaded.items[0].item.id);
+    try std.testing.expectEqual(@as(i64, 1000), loaded.created_at);
+    try std.testing.expectEqual(@as(i64, 2000), loaded.updated_at);
+    try std.testing.expectEqual(@TypeOf(loaded.global_status).done, loaded.global_status);
+}

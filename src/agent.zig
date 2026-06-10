@@ -4,10 +4,21 @@ const registry_mod = @import("tools/registry.zig");
 const cfgmod = @import("config.zig");
 const jsonmod = @import("json.zig");
 const goalmod = @import("goal.zig");
+const loopmod = @import("loop.zig");
 const context_mod = @import("context.zig");
 const session_mod = @import("session.zig");
 
 const term = @import("term.zig");
+
+/// The exit sentinel for the current run. Priority:
+///   1. cfg.exit_sentinel (Author↔Critic loop overrides)
+///   2. GOAL_MET (goal mode default)
+///   3. null (no sentinel check; tool-stop is terminal)
+fn effectiveSentinel(cfg: anytype) ?[]const u8 {
+    if (cfg.exit_sentinel) |s| return s;
+    if (cfg.goal_action == .set) return goalmod.SENTINEL;
+    return null;
+}
 
 pub fn run(
     io: std.Io,
@@ -15,8 +26,8 @@ pub fn run(
     arena: std.mem.Allocator,
     cfg: anytype,
     env_map: *std.process.Environ.Map,
-) !u8 {
-    const api_key = cfgmod.resolveApiKey(cfg, env_map) orelse return 106; // auth_failed
+) !struct { exit_code: u8, tokens_out: u64 } {
+    const api_key = cfgmod.resolveApiKey(cfg, env_map) orelse return .{ .exit_code = 106, .tokens_out = 0 };
     var cfg_with_key = cfg;
     cfg_with_key.api_key = api_key;
 
@@ -35,9 +46,34 @@ pub fn run(
     // --- Goal subcommands that don't run the model ---
     switch (cfg.goal_action) {
         .status, .pause, .resume_, .clear, .complete => {
-            return goalSubcommand(io, gpa, env_map, cfg, &messages, &stored_goal);
+            const code = try goalSubcommand(io, gpa, env_map, cfg, &messages, &stored_goal);
+            return .{ .exit_code = code, .tokens_out = 0 };
         },
         else => {},
+    }
+
+    // --- Author↔Critic / role directive ---
+    // When a non-default role is set, build the role-specific directive and
+    // inject it as the system message (replacing any prior system turn). This
+    // takes precedence over the goal directive when cfg.goal_action is not .set.
+    if (cfg.role != .none) {
+        if (messages.items.len > 0 and std.mem.eql(u8, messages.items[0].role, "system"))
+            _ = messages.orderedRemove(0);
+        const spec = loopmod.AuthorCriticSpec{
+            .goal = cfg.goal orelse "",
+            .deliverables = cfg.goal orelse "",
+        };
+        const role_dir = switch (cfg.role) {
+            .author => try loopmod.authorDirective(gpa, spec),
+            .critic => try loopmod.criticDirective(gpa, spec),
+            .coordinator => try loopmod.authorDirective(gpa, spec), // coordinator uses author-style directive for now
+            .none => unreachable,
+        };
+        const sys_content = if (cfg.system_prompt) |sp|
+            try std.fmt.allocPrint(gpa, "{s}\n\n{s}", .{ sp, role_dir })
+        else
+            role_dir;
+        try messages.insert(gpa, 0, .{ .role = "system", .content = sys_content });
     }
 
     // --- Determine the active goal (set this turn, or an active stored one) ---
@@ -84,9 +120,20 @@ pub fn run(
         if (cfg.goal_action == .set) break :blk "Begin working toward the objective above.";
         if (cfg.prompt) |p| break :blk p;
         if (goal_active) break :blk "Continue working toward the objective.";
-        return 82; // missing_required_field
+        return .{ .exit_code = 82, .tokens_out = 0 };
     };
-    try messages.append(gpa, .{ .role = "user", .content = try gpa.dupe(u8, user_text) });
+    // Feedback injection: when loopmod provides feedback, prepend it to the
+    // user turn so the Author sees the Critic's review.
+    const final_user_text: []const u8 = blk: {
+        if (cfg.feedback_message) |fb| {
+            const composed = try std.fmt.allocPrint(gpa,
+                "Previous critic feedback (address every concrete defect before declaring READY):\n{s}\n\nBegin your Author turn.",
+                .{fb});
+            break :blk composed;
+        }
+        break :blk user_text;
+    };
+    try messages.append(gpa, .{ .role = "user", .content = try gpa.dupe(u8, final_user_text) });
 
     // --- Tools ---
     const enabled_tools = try registry_mod.getEnabledTools(gpa, cfg.tools_allow, cfg.tools_deny);
@@ -105,7 +152,7 @@ pub fn run(
         defer gpa.free(resp.content);
         if (resp.tool_calls.len == 0) {
             try emitFinal(gpa, cfg, resp, false);
-            return 0;
+            return .{ .exit_code = 0, .tokens_out = 0 };
         }
         switch (cfg.mode) {
             .text => {
@@ -135,7 +182,7 @@ pub fn run(
                 term.out(buf.items);
             },
         }
-        return 0;
+        return .{ .exit_code = 0, .tokens_out = 0 };
     }
 
     // --- Agentic loop ---
@@ -147,6 +194,7 @@ pub fn run(
     var budget_hit = false;
 
     loop: while (iteration < max_iterations) : (iteration += 1) {
+        const sentinel = effectiveSentinel(cfg);
         // Auto-compaction before each model call (best-effort).
         if (context_mod.shouldCompact(messages.items, cfg_with_key))
             context_mod.compact(io, gpa, cfg_with_key, &messages) catch {};
@@ -159,7 +207,8 @@ pub fn run(
         else
             try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tool_infos_slice);
         defer gpa.free(response.content);
-        tokens_out += (response.content.len + 3) / 4;
+        // Prefer API-reported token count; fall back to content-length estimate.
+        tokens_out += response.total_tokens orelse (response.content.len + 3) / 4;
 
         const content_dupe = try gpa.dupe(u8, response.content);
         try messages.append(gpa, .{
@@ -169,14 +218,22 @@ pub fn run(
         });
 
         if (response.tool_calls.len == 0) {
-            // In goal mode, a no-tool turn is only terminal with the sentinel.
-            if (goal_active and !goalmod.isMet(response.content)) {
+            // Sentinel check: when an effective sentinel is set (goal mode OR
+            // Author↔Critic exit_sentinel), a no-tool turn is only terminal if
+            // the model emitted the sentinel on its own line. Otherwise nudge.
+            if (sentinel != null and !sentinelMatch(response.content, sentinel.?)) {
                 if (cfg.token_budget) |b| if (tokens_out >= b) {
                     budget_hit = true;
                     exit_code = 0;
                     break :loop;
                 };
-                try messages.append(gpa, .{ .role = "user", .content = try gpa.dupe(u8, goalmod.NUDGE) });
+                // Nudge: goal mode uses a generic nudge; A/C uses a role-specific nudge.
+                const nudge_text: []const u8 = switch (cfg.role) {
+                    .author => "You stopped without emitting <READY_FOR_REVIEW>. Audit your work, finish, and end with <READY_FOR_REVIEW> on its own line.",
+                    .critic => "You stopped without emitting <APPROVED> or <BLOCKED>. Finish your review and end with exactly one of those tokens on its own line.",
+                    else => goalmod.NUDGE,
+                };
+                try messages.append(gpa, .{ .role = "user", .content = try gpa.dupe(u8, nudge_text) });
                 continue :loop;
             }
             // Streaming already emitted content + done marker; non-streaming needs emitFinal.
@@ -270,7 +327,7 @@ pub fn run(
         saveSession(io, gpa, env_map, name, messages.items, stored_goal);
     }
 
-    return exit_code;
+    return .{ .exit_code = exit_code, .tokens_out = tokens_out };
 }
 
 /// Handle /goal status|pause|resume|clear|complete (no model call). Requires a
@@ -395,6 +452,13 @@ fn saveSession(
 
 fn hasNull(s: []const u8) bool {
     return std.mem.indexOfScalar(u8, s, 0) != null;
+}
+
+/// True if `content` contains `sentinel` on its own line. Wraps `loopmod.hasSentinel`
+/// or `goalmod.isMet` depending on the sentinel string.
+fn sentinelMatch(content: []const u8, sentinel: []const u8) bool {
+    if (std.mem.eql(u8, sentinel, goalmod.SENTINEL)) return goalmod.isMet(content);
+    return loopmod.hasSentinel(content, sentinel);
 }
 
 /// A tool path must be non-empty, null-free, and free of `..` traversal

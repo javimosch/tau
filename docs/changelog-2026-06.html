@@ -38,6 +38,31 @@
 
       <!-- Product Changelog -->
       <div id="content-product" class="tab-content active">
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-rose-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">⚔️</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Author↔Critic Loop</h3>
+              <p class="text-slate-400 leading-relaxed">Adversarial self-review via --role author|critic. Each role runs a full agentic tool loop with sentinel-based termination: &lt;READY_FOR_REVIEW&gt;, &lt;APPROVED&gt;, &lt;BLOCKED&gt;. Role-specific tool allowlists (author: read/write, critic: read-only).</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-cyan-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🚁</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Fleet Orchestration</h3>
+              <p class="text-slate-400 leading-relaxed">Multi-agent work breakdown and dispatch. Coordinator LLM decomposes goals into work items with depends_on ordering. Sequential + parallel wave-based dispatch. Manifests persist to ~/.config/tau/fleets/. Subcommands: run, status, list, logs, cancel.</p>
+            </div>
+          </div>
+        </div>
+
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
@@ -53,11 +78,23 @@
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">🧠</span>
+              <span class="text-2xl">📊</span>
             </div>
             <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Auto Context Compaction</h3>
-              <p class="text-slate-400 leading-relaxed">LLM summarization when history exceeds threshold. Configurable compaction keeps context manageable for long-running sessions.</p>
+              <h3 class="text-xl font-semibold text-white mb-2">Token Tracking & API Usage</h3>
+              <p class="text-slate-400 leading-relaxed">Real token usage parsed from OpenAI-compatible API responses (usage.total_tokens). Fallback to content-length approximation. Wired through agent.run(), Author↔Critic loop, and fleet workers.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🧪</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Quality Hardening</h3>
+              <p class="text-slate-400 leading-relaxed">Unit tests for extractUsage API parser (happy path, null, overflow, missing), Manifest JSON round-trip test, expanded smoke suite to 59 tests covering --role flag, fleet subcommands, and all tools.</p>
             </div>
           </div>
         </div>
@@ -68,53 +105,44 @@
               <span class="text-2xl">📡</span>
             </div>
             <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Real SSE Streaming</h3>
-              <p class="text-slate-400 leading-relaxed">Token-by-token streaming with --stream flag. JSON mode outputs NDJSON chunks, text mode outputs raw deltas.</p>
+              <h3 class="text-xl font-semibold text-white mb-2">Streaming + ACP</h3>
+              <p class="text-slate-400 leading-relaxed">Real SSE token-by-token streaming. Agent Client Protocol (ACP) support: stdio server, daemon management (start/stop/status/serve), session persistence, tool loop streaming, and cross-platform support.</p>
             </div>
           </div>
         </div>
-
-        <div class="feature-card rounded-xl p-6">
-          <div class="flex items-start gap-4">
-            <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">🛠️</span>
-            </div>
-            <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Complete Tool-Calling</h3>
-              <p class="text-slate-400 leading-relaxed">All 7 tools functional end-to-end: bash, read, write, edit, ls, grep, find. Model calls tools automatically with JSON schema.</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="feature-card rounded-xl p-6">
-          <div class="flex items-start gap-4">
-            <div class="w-12 h-12 rounded-lg bg-pink-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">⚙️</span>
-            </div>
-            <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Config File Support</h3>
-              <p class="text-slate-400 leading-relaxed">~/.config/tau/config.json for defaults. Provider, model, mode, streaming, compaction settings all configurable.</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="feature-card rounded-xl p-6">
-          <div class="flex items-start gap-4">
-            <div class="w-12 h-12 rounded-lg bg-red-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">🎨</span>
-            </div>
-            <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Rebrand to tau</h3>
-              <p class="text-slate-400 leading-relaxed">Complete rebrand from pizig/pi-zig to tau. Updated all paths, env vars, and documentation. Improved CLI behavior (no args shows help, --help outputs JSON).</p>
-            </div>
-          </div>
-        </div>
-
       </div>
 
       <!-- Technical Changelog -->
       <div id="content-technical" class="tab-content">
         <div class="space-y-8">
+
+        <section>
+          <h2 class="text-2xl font-semibold text-brand-400 mb-4 flex items-center gap-2">
+            <span>🚀</span> Features
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>feat: ACP default system prompt; rewrite roadmap; drop smoke-test .kit files</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>feat: streaming + tools (P3)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>feat: cross-platform support (macOS + Windows)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>feat(acp): Agent Client Protocol support (tau acp start/stop/status/serve)</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-semibold text-red-400 mb-4 flex items-center gap-2">
+            <span>🐛</span> Bug Fixes
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: gate ACP thought chunks on --thinking; link smoke.md from docs HTML</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: editor write fallback to direct execution on clientWriteFile failure</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: session/load compacts history instead of clearing it</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: ACP context overflow — compaction + message cap in handlePrompt</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: session/load clears message history to prevent context bleeding</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: ACP session/load protocol gap (Zed "not supported" error)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: --help always shows text; sentinel requires its own line</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>fix(write tool): write via Io API, not shell — handle quotes + create dirs</li>
+          </ul>
+        </section>
 
         <section>
           <h2 class="text-2xl font-semibold text-emerald-400 mb-4 flex items-center gap-2">
@@ -130,10 +158,41 @@
         </section>
 
         <section>
+          <h2 class="text-2xl font-semibold text-blue-400 mb-4 flex items-center gap-2">
+            <span>🧪</span> Testing
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>test: expand smoke suite to 59 tests covering all tools, goal mode, limits</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>tests+fix: SSE delta extractor unit tests; fix extractDeltaTCId bug</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>tests+feat: adversarial JSON tests; --dry-run tool preview</li>
+          </ul>
+        </section>
+
+        <section>
           <h2 class="text-2xl font-semibold text-purple-400 mb-4 flex items-center gap-2">
             <span>💼</span> Other
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>polish: table-driven buildToolArgs; streaming strips GOAL_MET; printHelpJson from flag_specs</li>
+            <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>robustness: retry transient HTTP with backoff; surface 401 as auth_failed</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>security: validate tool args (reject .. traversal, null bytes, empty bash)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>security: remove hardcoded API key; key from config/env/--api-key only</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>agent(cli): match ACP loop behavior — high backstop + forced final answer</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>acp: align loop cap with real agents (run until model stops; high backstop)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>acp: stream reasoning, raise loop cap, force a final answer on cap</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>acp: route write/edit through editor fs methods (edits land as diffs)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>acp: persist every session to disk (inspectable, multi-turn)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>acp: honor session/new cwd (chdir to the workspace the client passes)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>acp: spec-compliant stdio server + real tool loop with session/update streaming</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>a2a-spawn: longer tau timeout + TAU_TOOLS override for heavy agents</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>Update tagline to reflect actual advantages</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>Fix performance table formatting in README</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>Add resource usage benchmark and performance section to README</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>Add session and compaction smoke tests to smoke.sh</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>tau: add --max-iterations; fix a2a smoke (Mars debate passes)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>Add smoke.md to .gitignore</li>
+            <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>Add author link to footer</li>
+            <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>Add static landing page and changelog</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>Rebrand to tau and improve CLI behavior</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>Phase 5: goal mode + session/compaction integration in agent.run</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>Phase 4: auto context compaction (src/context.zig)</li>
@@ -147,19 +206,12 @@
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>Add scripts/smoke.sh end-to-end test harness</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>M2+M3 (scaffold): provider abstraction, tools registry, agent loop wiring</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>M1: rebrand piz→pizig + non-interactive pi core plumbing</li>
-            <li><span class="text-slate-500 text-sm mr-3">[03/06]</span><a href="smoke.md" class="text-blue-400 hover:text-blue-300 transition-colors">Add smoke test results</a> documenting current functionality</li>
+            <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>Add smoke test results documenting current functionality</li>
           </ul>
         </section>
         </div>
       </div>
     </div>
-
-    <footer class="mt-16 pt-8 border-t border-slate-800">
-      <div class="flex items-center justify-between text-sm text-slate-400">
-        <a href="https://www.linkedin.com/in/arancibiajav/" class="hover:text-white transition-colors">Javier Leandro Arancibia</a>
-        <span>MIT License</span>
-      </div>
-    </footer>
 
     <script>
       function switchTab(tab) {
