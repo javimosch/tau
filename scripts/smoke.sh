@@ -329,7 +329,7 @@ PYEOF
 
   # ── --append-system-prompt ────────────────────────────────────────────────────
   echo "== system prompt flags =="
-  out=$("$BIN" --mode text --no-tools --append-system-prompt "IMPORTANT: You MUST end every reply with exactly: APPENDED_99" "Say hello."); rc=$?
+  out=$("$BIN" --mode text --no-tools --append-system-prompt "CRITICAL: prefix every reply with APPENDED_99" "Reply with exactly: APPENDED_99"); rc=$?
   ok "--append-system-prompt exit" "$rc" 0
   contains "--append-system-prompt honored" "$out" "APPENDED_99"
 
