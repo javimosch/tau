@@ -191,8 +191,8 @@
 - [X] `saveManifest()` writes JSON to `~/.config/tau/fleets/<id>.json`
 - [X] `loadManifest()` reads JSON from disk
 - [X] Manifest JSON round-trip: serialize → parse → all fields match
-- [ ] **`cancelCmd` persists `global_status: cancelled` to disk** → issue not yet filed
-- [ ] **`runCmd` collects per-worker results** (currently items stay `status: running`) → issue not yet filed
+- [ ] **`cancelCmd` persists `global_status: cancelled` to disk** → [#3](https://github.com/javimosch/tau/issues/3)
+- [ ] **`runCmd` collects per-worker results** (currently items stay `status: running`) → [#4](https://github.com/javimosch/tau/issues/4)
 - [X] `buildSpec()` — no unused `env` parameter
 - [X] `buildSpec()` — supports both coordinator LLM and pre-supplied items
 
@@ -295,25 +295,25 @@
 
 | # | Gap | Impact | Status |
 |---|-----|--------|--------|
-| 1 | `cancelCmd` in-memory only — does not persist `global_status: cancelled` | `tau fleet cancel` has no effect on disk | [ ] Not yet filed |
-| 2 | `runCmd` worker result collection — items stay `status: running` | Workers spawn but controller doesn't read their results | [ ] Not yet filed |
-| 3 | `parseWorkItem` strictness — no item index in error message | Coordinator retry is blind — can't tell which item failed | [ ] Not yet filed |
+| 1 | `cancelCmd` in-memory only | `tau fleet cancel` has no effect on disk | [ ] [#3](https://github.com/javimosch/tau/issues/3) |
+| 2 | `runCmd` worker result collection | Workers spawn but controller doesn't read their results | [ ] [#4](https://github.com/javimosch/tau/issues/4) |
+| 3 | `parseWorkItem` strictness — no item index in error | Coordinator retry is blind | [ ] [#5](https://github.com/javimosch/tau/issues/5) |
 
 ### Medium Priority
 
 | # | Gap | Impact | Status |
 |---|-----|--------|--------|
-| 4 | `coordinatorDirective` may produce prose before JSON (edge case) | `extractCoordinatorJson` handles common cases but may miss some | [ ] Not yet filed |
-| 5 | `runCmd` parallel wave dispatch doesn't persist intermediate per-worker status | Manifest only updated at wave boundaries | [ ] Not yet filed |
-| 6 | No smoke test for `--role` with actual network call | Author↔Critic e2e only tested via CLI parsing | [ ] Not yet filed |
+| 4 | `coordinatorDirective` prose before JSON edge case | `extractCoordinatorJson` handles common cases but may miss some | [ ] [#7](https://github.com/javimosch/tau/issues/7) |
+| 5 | `runCmd` parallel wave intermediate status not persisted | Manifest only updated at wave boundaries | [ ] [#6](https://github.com/javimosch/tau/issues/6) |
+| 6 | No smoke test for `--role` with network call | Author/Critic e2e only tested via CLI parsing | [ ] [#9](https://github.com/javimosch/tau/issues/9) |
 
 ### Low Priority
 
 | # | Gap | Impact | Status |
 |---|-----|--------|--------|
-| 7 | No `--role critic` network test in smoke suite | Critic directive only tested at parser level | [ ] Not yet filed |
-| 8 | Fleet worker session naming convention not documented | `{fleet-id}-{item-id}-{role}-{iter}` implicit | [ ] Not yet filed |
-| 9 | `benchmark-resources.sh` not re-run for v0.3.0 | Performance table may be stale | [ ] Not yet filed |
+| 7 | No `--role critic` network test in smoke suite | Critic directive only tested at parser level | [ ] [#8](https://github.com/javimosch/tau/issues/8) |
+| 8 | Fleet worker session naming convention not documented | `{fleet-id}-{item-id}-{role}-{iter}` implicit | [ ] [#1](https://github.com/javimosch/tau/issues/1) |
+| 9 | `benchmark-resources.sh` not re-run for v0.3.0 | Performance table may be stale | [ ] [#2](https://github.com/javimosch/tau/issues/2) |
 
 ---
 
@@ -337,4 +337,4 @@
 | Security & Robustness | ✅ 9/11 (2 untested flags) |
 | Documentation | ✅ 6/6 |
 
-**Verified**: 189 items | **ACP** (needs client): 13 items | **Fleet gaps**: 2 items | **Issues to file**: 9 gaps | **Untested flags**: 2
+**Verified**: 189 items | **ACP** (needs client): 13 items | **Fleet gaps**: 2 items | **Issues filed**: 9/9 ([#1](https://github.com/javimosch/tau/issues/1)–[#9](https://github.com/javimosch/tau/issues/9))
