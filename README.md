@@ -120,7 +120,7 @@ What this means day-to-day:
 - 🎯 **Goal mode** — `/goal <objective>` → autonomous work until complete
 - 💾 **Sessions** — `--session <name>` → persistent conversation + goal state
 - 🧠 **Context compaction** — Auto-summarization when history exceeds threshold
-- ⚔️ **Author↔Critic loop** — `--role author|critic` for adversarial self-review
+- ⚔️ **Author↔Critic loop** — `--role author|critic|coordinator|none` for adversarial self-review
 - 🚁 **Fleet orchestration** — `tau fleet run|status|list|cancel` for multi-agent coordination
 - 🚨 **Predictable errors** — Standard exit codes: `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 - 📡 **Streaming** — Real SSE token-by-token streaming (chat mode only)
@@ -485,6 +485,11 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 | ACP server (`tau acp start\|stop\|status\|serve`, JSON-RPC over stdio) | ✅ done |
 
 ---
+
+## 📝 Changelog
+
+- [v0.3.0 — June 2026 (product)](./docs/changelog-2026-06-product.md) · [HTML (with technical tab)](./docs/changelog-2026-06.html)
+- [Full index](./docs/changelog.html) · [Roadmap](./docs/roadmap.md)
 
 ## License
 

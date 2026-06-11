@@ -43,18 +43,19 @@ Tool allowlist (`-t`), denylist (`-xt`), and disable-all (`-nt`) flags. `--dry-r
 - `/goal <objective>` — autonomous multi-turn loop until `<GOAL_MET>` sentinel
 - `/goal --tokens N <objective>` — soft output-token budget
 - `/goal status|pause|resume|clear|complete` — manage goal state (requires `--session`)
-- NUDGE mechanic: pushes model to audit and confirm completion before emitting sentinel
-
-### Sessions
+- NUDGE mechanic: pushes model to audit and confirm completion before emitting sentinel### Sessions
 
 - `--session <name>` persists conversation history to `~/.config/tau/sessions/<name>.json`
 - Multi-turn memory across invocations
-- **Author↔Critic mode**: `--role author|critic|coordinator|none` for adversarial self-review
-  - Sentinels (one per line): author emits `<READY_FOR_REVIEW>`, critic emits `<APPROVED>` or `<BLOCKED>`
-  - Each role runs the same agentic tool loop with a role-specific system directive and tool allowlist
-  - Lives in `src/loop.zig` as `AuthorCriticSpec` + `runAuthorCritic`
 
-### Fleet Orchestration
+## Author↔Critic Loop
+
+- `--role author|critic|coordinator|none` for adversarial self-review
+- Sentinels (one per line): author emits `<READY_FOR_REVIEW>`, critic emits `<APPROVED>` or `<BLOCKED>`
+- Each role runs the same agentic tool loop with a role-specific system directive and tool allowlist
+- Lives in `src/loop.zig` as `AuthorCriticSpec` + `runAuthorCritic`
+
+## Fleet Orchestration
 
 - `tau fleet run|status|list|logs|cancel` — multi-agent work breakdown and dispatch
 - Coordinator LLM decomposes a goal into work items (`depends_on` + `acceptance`)
@@ -62,7 +63,7 @@ Tool allowlist (`-t`), denylist (`-xt`), and disable-all (`-nt`) flags. `--dry-r
 - Manifests persist to `~/.config/tau/fleets/<id>.json`
 - Per-role sessions: `~/.config/tau/sessions/<fleet-id>-<item-id>-<role>-<iter>.json`
 
-### ACP (Agent Client Protocol)
+## ACP (Agent Client Protocol)
 
 - JSON-RPC 2.0 over stdio (Zed integration)
 - Methods: `initialize`, `authenticate`, `session/new`, `session/load`, `session/prompt`
