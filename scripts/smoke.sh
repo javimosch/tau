@@ -10,6 +10,12 @@
 #   scripts/smoke.sh --list-groups           # list available test groups
 #   scripts/smoke.sh --config ./my-config    # use custom config
 #
+# Note: the default offline run includes the "bench" regression guard
+# (marked :slow in ALL_TEST_GROUPS), which recursively runs the smoke
+# harness with --bench and adds ~10s. To skip it during fast iteration,
+# list the fast groups explicitly:
+#   scripts/smoke.sh --group=help,flags,role,fleet,issue11,model,acp,goal,dry-run,session-validation,fleet-items,invalid-numeric,fleet-flags
+#
 # Exit 0 if all run tests pass, 1 otherwise.
 #
 # Environment variables:
@@ -61,7 +67,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
-  "bench:test_group_bench_smoke"
+  "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
   "at-file:test_group_network_at_file:network"
