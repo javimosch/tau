@@ -351,13 +351,6 @@ list_test_groups() {
   fi
 }
 
-# ── TAP plan ──────────────────────────────────────────────────────────────
-
-# tap_plan <count>: emit TAP plan line
-tap_plan() {
-  echo "1..$1"
-}
-
 # ── Final summary ─────────────────────────────────────────────────────────
 
 # print_summary: print pass/fail/skip counts
