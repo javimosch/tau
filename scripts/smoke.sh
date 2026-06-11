@@ -13,8 +13,8 @@
 # Note: the default offline run includes the "bench" regression guard
 # (marked :slow in ALL_TEST_GROUPS), which recursively runs the smoke
 # harness with --bench and adds ~10s. To skip it during fast iteration,
-# list the fast groups explicitly:
-#   scripts/smoke.sh --group=help,flags,role,fleet,issue11,model,acp,goal,dry-run,session-validation,fleet-items,invalid-numeric,fleet-flags
+# list the fast groups explicitly (use --list-groups to see all):
+#   scripts/smoke.sh --group=help,flags,role,...
 #
 # Exit 0 if all run tests pass, 1 otherwise.
 #
