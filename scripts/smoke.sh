@@ -61,6 +61,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "bench:test_group_bench_smoke"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
   "at-file:test_group_network_at_file:network"
@@ -535,6 +536,17 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: --bench regression guard
+# Runs the smoke harness recursively with --bench, asserts a benchmark CSV
+# row is emitted. Prevents --bench from silently regressing to dead-code
+# state (where the flag is parsed but run_benchmarks is never wired up).
+test_group_bench_smoke() {
+  local out; out=$("$ROOT/scripts/smoke.sh" --bench --group=help 2>&1)
+  if printf '%s\n' "$out" | sed 's/^# //' | grep -qE '^[a-z-]+,[0-9.]+,'; then
+    ok "--bench produces CSV row" 0 0
+  else ok "--bench produces CSV row" 1 0; fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
