@@ -24,3 +24,18 @@ Thumbs.db
 
 # Smoke test documentation
 smoke.md
+
+# Scratch / throwaway working-tree files
+tmp/
+hexgame/
+x
+x.zig
+x_new
+x_test
+exit
+Proof.md
+err.txt
+out.txt
+response.txt
+example_output.json
+prompt_self_aware.py
