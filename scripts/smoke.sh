@@ -543,10 +543,14 @@ test_group_fleet_flags() {
 # row is emitted. Prevents --bench from silently regressing to dead-code
 # state (where the flag is parsed but run_benchmarks is never wired up).
 test_group_bench_smoke() {
-  local out; out=$("$ROOT/scripts/smoke.sh" --bench --group=help 2>&1)
+  local out rc; out=$("$ROOT/scripts/smoke.sh" --bench --group=help 2>&1); rc=$?
   if printf '%s\n' "$out" | sed 's/^# //' | grep -qE '^[a-z-]+,[0-9.]+,'; then
     ok "--bench produces CSV row" 0 0
-  else ok "--bench produces CSV row" 1 0; fi
+  else
+    diag "--bench inner call exit=$rc; last 5 lines of output:"
+    diag "$(printf '%s\n' "$out" | tail -5)"
+    ok "--bench produces CSV row" 1 0
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
