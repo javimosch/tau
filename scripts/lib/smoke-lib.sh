@@ -310,21 +310,19 @@ _smoke_group_filter_matches() {
 }
 
 # _smoke_split_entry <entry>
-# Parses a "name:func[:marker]" entry string into three globals:
+# Parses a "name:func[:marker]" entry string into two globals:
 #   _smoke_entry_name   — group name
 #   _smoke_entry_func   — test_group_* function name
-#   _smoke_entry_marker — "network" if the entry has the :network marker, "" otherwise
-# Used by the dispatch loops in smoke.sh and by list_test_groups below so the
-# parsing logic lives in one place. Cheap O(n) per call (no array scan).
+# The optional marker (e.g. ":network") is NOT parsed here — callers that care
+# about it should do their own inline `case "$entry" in *:network) ... esac`
+# check, which is O(1) per entry via shell glob matching. Used by the dispatch
+# loops in smoke.sh and by list_test_groups below so the parsing logic lives
+# in one place.
 _smoke_split_entry() {
   local entry="$1"
   _smoke_entry_name="${entry%%:*}"
   local rest="${entry#*:}"
   _smoke_entry_func="${rest%%:*}"
-  case "$rest" in
-    *:network) _smoke_entry_marker="network" ;;
-    *)         _smoke_entry_marker="" ;;
-  esac
 }
 
 run_test_group() {
