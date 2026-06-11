@@ -81,20 +81,6 @@ ALL_TEST_GROUPS=(
   "multi-tool:test_group_network_multi_tool_turn:network"
 )
 
-# is_network_group <name>: returns 0 if the group entry is marked :network
-is_network_group() {
-  local entry
-  for entry in "${ALL_TEST_GROUPS[@]}"; do
-    if [ "${entry%%:*}" = "$1" ]; then
-      case "$entry" in
-        *:network) return 0 ;;
-        *) return 1 ;;
-      esac
-    fi
-  done
-  return 1
-}
-
 # ── Configuration ──────────────────────────────────────────────────────────
 load_config "$SCRIPT_DIR"
 
@@ -906,10 +892,9 @@ test_group_network_multi_tool_turn() {
 
 # Run offline groups
 for entry in "${ALL_TEST_GROUPS[@]}"; do
-  name="${entry%%:*}"
-  func="${entry#*:}"; func="${func%%:*}"  # strip optional :network marker
-  is_network_group "$name" && continue
-  run_test_group "$name" "$func"
+  case "$entry" in *:network) continue ;; esac
+  _smoke_split_entry "$entry"
+  run_test_group "$_smoke_entry_name" "$_smoke_entry_func"
 done
 
 # Run online groups if --net and API key available
@@ -918,10 +903,9 @@ if [ "$NET" = "1" ]; then
     echo "# WARNING: --net specified but no API key found; skipping online tests" >&2
   else
     for entry in "${ALL_TEST_GROUPS[@]}"; do
-      name="${entry%%:*}"
-      func="${entry#*:}"; func="${func%%:*}"  # strip optional :network marker
-      is_network_group "$name" || continue
-      run_test_group "$name" "$func"
+      case "$entry" in *:network) ;; *) continue ;; esac
+      _smoke_split_entry "$entry"
+      run_test_group "$_smoke_entry_name" "$_smoke_entry_func"
     done
   fi
 else

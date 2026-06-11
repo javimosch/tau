@@ -309,6 +309,24 @@ _smoke_group_filter_matches() {
   [ "$match" = "1" ]
 }
 
+# _smoke_split_entry <entry>
+# Parses a "name:func[:marker]" entry string into three globals:
+#   _smoke_entry_name   — group name
+#   _smoke_entry_func   — test_group_* function name
+#   _smoke_entry_marker — "network" if the entry has the :network marker, "" otherwise
+# Used by the dispatch loops in smoke.sh and by list_test_groups below so the
+# parsing logic lives in one place. Cheap O(n) per call (no array scan).
+_smoke_split_entry() {
+  local entry="$1"
+  _smoke_entry_name="${entry%%:*}"
+  local rest="${entry#*:}"
+  _smoke_entry_func="${rest%%:*}"
+  case "$rest" in
+    *:network) _smoke_entry_marker="network" ;;
+    *)         _smoke_entry_marker="" ;;
+  esac
+}
+
 run_test_group() {
   local group_name="$1"
   local group_func="$2"
@@ -326,14 +344,13 @@ run_test_group() {
 # list_test_groups: print all registered test groups (respects SMOKE_GROUPS filter)
 list_test_groups() {
   echo "Available test groups:"
-  local entry name func
+  local entry
   for entry in "${ALL_TEST_GROUPS[@]}"; do
-    name="${entry%%:*}"
-    func="${entry#*:}"; func="${func%%:*}"  # strip optional :network marker
-    if ! _smoke_group_filter_matches "$name"; then
+    _smoke_split_entry "$entry"
+    if ! _smoke_group_filter_matches "$_smoke_entry_name"; then
       continue
     fi
-    printf '  %-25s %s\n' "$name" "$func"
+    printf '  %-25s %s\n' "$_smoke_entry_name" "$_smoke_entry_func"
   done
   if [ -n "${SMOKE_GROUPS:-}" ]; then
     echo
