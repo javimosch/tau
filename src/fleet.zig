@@ -268,7 +268,11 @@ fn parseWorkItem(gpa: std.mem.Allocator, obj: std.json.Value, idx: usize) !WorkI
     if (obj.object.get("depends_on")) |d| {
         if (d == .array) {
             for (d.array.items) |it| {
-                try deps_storage.append(gpa, if (it == .string) it.string else "");
+                // Dupe each dependency string — it.string points into the
+                // parsed JSON tree which is freed by parsed.deinit() in
+                // buildSpec. Dangling pointers here crash saveManifest.
+                const dep_str = if (it == .string) try gpa.dupe(u8, it.string) else "";
+                try deps_storage.append(gpa, dep_str);
             }
         }
     }
