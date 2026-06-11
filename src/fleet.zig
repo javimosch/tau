@@ -3,6 +3,7 @@ const cfgmod = @import("config.zig");
 const jsonmod = @import("json.zig");
 const term = @import("term.zig");
 const session_mod = @import("session.zig");
+const provider_mod = @import("llm/provider.zig");
 
 /// One work item in a fleet — the unit of work for a single worker.
 pub const WorkItem = struct {
@@ -186,14 +187,51 @@ pub fn extractCoordinatorJson(response: []const u8) ?[]const u8 {
     return cleaned[lb .. rb + 1];
 }
 
-/// Parse a WorkItem from a JSON object.
-fn parseWorkItem(gpa: std.mem.Allocator, obj: std.json.Value) !WorkItem {
-    if (obj != .object) return error.InvalidWorkItem;
-    const id = (try objStr(obj, "id")) orelse return error.InvalidWorkItem;
-    const title = (try objStr(obj, "title")) orelse return error.InvalidWorkItem;
-    const scope = (try objStr(obj, "scope")) orelse return error.InvalidWorkItem;
-    const deliverables = (try objStr(obj, "deliverables")) orelse return error.InvalidWorkItem;
-    const acceptance = (try objStr(obj, "acceptance")) orelse return error.InvalidWorkItem;
+/// Emit a structured stderr line identifying which work item index and field
+/// caused a parse failure. Best-effort — write errors are swallowed but a
+/// fallback minimal diagnostic is emitted so the reader is never silent.
+fn logInvalidWorkItem(idx: usize, field: []const u8) void {
+    var buf: [512]u8 = undefined;
+    if (std.fmt.bufPrint(
+        &buf,
+        "{{\"err\":{{\"code\":110,\"message\":\"InvalidWorkItem at index {d}: missing or non-string field '{s}'\"}}}}\n",
+        .{ idx, field },
+    )) |msg| {
+        term.err(msg);
+    } else |_| {
+        // Fallback when 512-byte buffer is too small for the field name.
+        term.err("{\"err\":{\"code\":110,\"message\":\"InvalidWorkItem (overflow)\"}}\n");
+    }
+}
+
+/// Parse a WorkItem from a JSON object. `idx` is the array index of this item
+/// in the coordinator response; included in error logs so a retry can target
+/// the failing item.
+fn parseWorkItem(gpa: std.mem.Allocator, obj: std.json.Value, idx: usize) !WorkItem {
+    if (obj != .object) {
+        logInvalidWorkItem(idx, "<root>");
+        return error.InvalidWorkItem;
+    }
+    const id = (try objStr(obj, "id")) orelse {
+        logInvalidWorkItem(idx, "id");
+        return error.InvalidWorkItem;
+    };
+    const title = (try objStr(obj, "title")) orelse {
+        logInvalidWorkItem(idx, "title");
+        return error.InvalidWorkItem;
+    };
+    const scope = (try objStr(obj, "scope")) orelse {
+        logInvalidWorkItem(idx, "scope");
+        return error.InvalidWorkItem;
+    };
+    const deliverables = (try objStr(obj, "deliverables")) orelse {
+        logInvalidWorkItem(idx, "deliverables");
+        return error.InvalidWorkItem;
+    };
+    const acceptance = (try objStr(obj, "acceptance")) orelse {
+        logInvalidWorkItem(idx, "acceptance");
+        return error.InvalidWorkItem;
+    };
     var deps_storage = std.ArrayList([]const u8).empty;
     if (obj.object.get("depends_on")) |d| {
         if (d == .array) {
@@ -219,6 +257,28 @@ fn objStr(obj: std.json.Value, key: []const u8) !?[]const u8 {
     if (obj != .object) return null;
     const v = obj.object.get(key) orelse return null;
     return if (v == .string) v.string else null;
+}
+
+
+/// Extract the worker's status from its session's last assistant message.
+/// Returns .approved when the message contains <READY_FOR_REVIEW>, else .failed.
+/// Pure function so it can be unit-tested without spawning real workers.
+fn statusFromAssistant(content: ?[]const u8) ItemStatus {
+    const lc = content orelse return .failed;
+    if (std.mem.indexOf(u8, lc, "<READY_FOR_REVIEW>") != null) return .approved;
+    return .failed;
+}
+
+/// Walk a session's message history and return the content of the most recent
+/// assistant turn, or null if no assistant message exists.
+fn lastAssistantContent(messages: []const provider_mod.Message) ?[]const u8 {
+    var last_content: ?[]const u8 = null;
+    for (messages) |msg| {
+        if (std.mem.eql(u8, msg.role, "assistant")) {
+            last_content = msg.content;
+        }
+    }
+    return last_content;
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +408,6 @@ pub fn buildSpec(
         };
     }
     // LLM coordinator turn
-    const provider = @import("llm/provider.zig");
     var coord_cfg = cfg;
     coord_cfg.goal = null;
     coord_cfg.goal_action = .none;
@@ -364,11 +423,11 @@ pub fn buildSpec(
     const user_turn = try gpa.dupe(u8, "Produce the work breakdown as JSON now.");
     defer gpa.free(user_turn);
 
-    const messages = [_]provider.Message{
+    const messages = [_]provider_mod.Message{
         .{ .role = "system", .content = sys },
         .{ .role = "user", .content = user_turn },
     };
-    const resp = try provider.complete(io, gpa, coord_cfg, &messages, null);
+    const resp = try provider_mod.complete(io, gpa, coord_cfg, &messages, null);
     defer gpa.free(resp.content);
     const raw = try gpa.dupe(u8, resp.content);
 
@@ -381,8 +440,8 @@ pub fn buildSpec(
     if (items_v != .array) return error.CoordinatorParseFailed;
 
     var items = std.ArrayList(WorkItem).empty;
-    for (items_v.array.items) |it| {
-        try items.append(gpa, try parseWorkItem(gpa, it));
+    for (items_v.array.items, 0..) |it, idx| {
+        try items.append(gpa, try parseWorkItem(gpa, it, idx));
     }
     return .{
         .spec = FleetSpec{
@@ -485,6 +544,18 @@ fn cancelCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: 
         term.out(err_msg);
         return 110;
     };
+    // Verify persistence by reloading from disk — if the on-disk manifest
+    // does not reflect the cancelled status, surface that as a failure rather
+    // than silently lying to the caller.
+    if (try loadManifest(io, arena, env, id)) |reloaded| {
+        if (reloaded.global_status != .cancelled) {
+            term.out("{\"err\":{\"code\":110,\"message\":\"cancel did not persist global_status\"}}\n");
+            return 110;
+        }
+    } else {
+        term.out("{\"err\":{\"code\":110,\"message\":\"cancel persisted but reload failed\"}}\n");
+        return 110;
+    }
     const out = try std.json.Stringify.valueAlloc(gpa, updated, .{ .whitespace = .indent_2 });
     defer gpa.free(out);
     term.out(out);
@@ -618,26 +689,16 @@ fn runCmd(
                 const it = spec.items[idx];
                 const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
 
-                var worker_ok = false;
+                var status: ItemStatus = .failed;
                 if (session_mod.load(io, arena, env, session_name)) |maybe_st| {
                     if (maybe_st) |st| {
-                        var last_content: ?[]const u8 = null;
-                        for (st.messages) |msg| {
-                            if (std.mem.eql(u8, msg.role, "assistant")) {
-                                last_content = msg.content;
-                            }
-                        }
-                        if (last_content) |lc| {
-                            if (std.mem.indexOf(u8, lc, "<READY_FOR_REVIEW>") != null) {
-                                worker_ok = true;
-                            }
-                        }
+                        status = statusFromAssistant(lastAssistantContent(st.messages));
                     }
                 } else |_| {}
 
-                items.items[idx].status = if (worker_ok) .approved else .failed;
-                items.items[idx].iterations = if (worker_ok) @as(u32, 1) else @as(u32, 0);
-                if (worker_ok) {
+                items.items[idx].status = status;
+                items.items[idx].iterations = if (status == .approved) @as(u32, 1) else @as(u32, 0);
+                if (status == .approved) {
                     try done_ids.append(gpa, it.id);
                 }
             }
@@ -686,25 +747,15 @@ fn runCmd(
             };
 
             // Check the worker's session file for the READY_FOR_REVIEW sentinel.
-            var worker_ok = false;
+            var status: ItemStatus = .failed;
             if (session_mod.load(io, arena, env, session_name)) |maybe_st| {
                 if (maybe_st) |st| {
-                    var last_content: ?[]const u8 = null;
-                    for (st.messages) |msg| {
-                        if (std.mem.eql(u8, msg.role, "assistant")) {
-                            last_content = msg.content;
-                        }
-                    }
-                    if (last_content) |lc| {
-                        if (std.mem.indexOf(u8, lc, "<READY_FOR_REVIEW>") != null) {
-                            worker_ok = true;
-                        }
-                    }
+                    status = statusFromAssistant(lastAssistantContent(st.messages));
                 }
             } else |_| {}
 
-            items.items[item_idx].status = if (worker_ok) .approved else .failed;
-            items.items[item_idx].iterations = if (worker_ok) @as(u32, 1) else @as(u32, 0);
+            items.items[item_idx].status = status;
+            items.items[item_idx].iterations = if (status == .approved) @as(u32, 1) else @as(u32, 0);
 
             // Save manifest incrementally.
             const updated = Manifest{
@@ -954,4 +1005,105 @@ test "Manifest JSON round-trip: serialize then parse" {
     try std.testing.expectEqual(@as(i64, 1000), loaded.created_at);
     try std.testing.expectEqual(@as(i64, 2000), loaded.updated_at);
     try std.testing.expectEqual(@TypeOf(loaded.global_status).done, loaded.global_status);
+}
+
+
+test "parseWorkItem returns InvalidWorkItem on missing field" {
+    const a = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(a);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // Missing 'scope' field at index 2 — should return error.InvalidWorkItem.
+    // The structured stderr log is best-effort and not asserted here, but the
+    // index-aware signature is exercised.
+    const json_str =
+        \\{"id":"x","title":"t","deliverables":"d","acceptance":"acc"}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena, json_str, .{});
+    defer parsed.deinit();
+    try std.testing.expectError(error.InvalidWorkItem, parseWorkItem(a, parsed.value, 2));
+
+    // Non-object at index 0 — same error.
+    const json_arr = "[1, 2, 3]";
+    var parsed2 = try std.json.parseFromSlice(std.json.Value, arena, json_arr, .{});
+    defer parsed2.deinit();
+    try std.testing.expectError(error.InvalidWorkItem, parseWorkItem(a, parsed2.value, 0));
+
+    // Happy path — all fields present, no error.
+    const ok =
+        \\{"id":"a","title":"T","scope":"S","deliverables":"D","acceptance":"A"}
+    ;
+    var parsed3 = try std.json.parseFromSlice(std.json.Value, arena, ok, .{});
+    defer parsed3.deinit();
+    const wi = try parseWorkItem(a, parsed3.value, 0);
+    a.free(wi.id);
+    a.free(wi.title);
+    a.free(wi.scope);
+    a.free(wi.deliverables);
+    a.free(wi.acceptance);
+    a.free(wi.depends_on);
+}
+
+test "lastAssistantContent picks the most recent assistant turn" {
+    // Regression guard: must skip user/tool roles and return the LAST assistant
+    // content, not the first.
+    const msgs = [_]provider_mod.Message{
+        .{ .role = "user", .content = "user-1" },
+        .{ .role = "assistant", .content = "first-assistant" },
+        .{ .role = "tool", .content = "tool-result" },
+        .{ .role = "assistant", .content = "last-assistant" },
+    };
+    const got = lastAssistantContent(&msgs).?;
+    try std.testing.expectEqualStrings("last-assistant", got);
+
+    // Empty slice — returns null.
+    const empty: []const provider_mod.Message = &.{};
+    try std.testing.expect(lastAssistantContent(empty) == null);
+
+    // No assistant role — returns null.
+    const no_asst = [_]provider_mod.Message{
+        .{ .role = "user", .content = "u" },
+        .{ .role = "tool", .content = "t" },
+    };
+    try std.testing.expect(lastAssistantContent(&no_asst) == null);
+}
+
+test "statusFromAssistant maps sentinel presence to ItemStatus" {
+    // Regression guard for #4: the helper extracted from runCmd must classify
+    // worker results into .approved (sentinel present) or .failed (anything
+    // else — missing sentinel, null content, empty content). Items must never
+    // be left in .pending or .running by this code path.
+    try std.testing.expectEqual(ItemStatus.approved, statusFromAssistant("prose\n<READY_FOR_REVIEW>\n"));
+    try std.testing.expectEqual(ItemStatus.approved, statusFromAssistant("<READY_FOR_REVIEW>at-start"));
+    try std.testing.expectEqual(ItemStatus.failed, statusFromAssistant("still working on it"));
+    try std.testing.expectEqual(ItemStatus.failed, statusFromAssistant(""));
+    try std.testing.expectEqual(ItemStatus.failed, statusFromAssistant(null));
+}
+
+test "Manifest with global_status: cancelled round-trips through JSON" {
+    // Regression guard for #3: the persisted Manifest correctly serializes
+    // and deserializes the cancelled status, so cancelCmd's reload-and-verify
+    // path can trust loadManifest's result.
+    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const empty_items: []const WorkItem = &.{};
+    const empty_results: []const ItemResult = &.{};
+    const original = Manifest{
+        .id = "cancel-test",
+        .spec = FleetSpec{ .goal = "x", .items = empty_items },
+        .items = empty_results,
+        .created_at = 1,
+        .updated_at = 2,
+        .global_status = .cancelled,
+    };
+    const json = try std.json.Stringify.valueAlloc(gpa, original, .{});
+    defer gpa.free(json);
+    const loaded = try std.json.parseFromSliceLeaky(Manifest, arena, json, .{
+        .ignore_unknown_fields = true,
+    });
+    try std.testing.expectEqual(@TypeOf(loaded.global_status).cancelled, loaded.global_status);
 }
