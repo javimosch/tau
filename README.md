@@ -283,6 +283,9 @@ A **fleet** is a goal + a work breakdown (set of work items) + a controller. A s
 # Plan + dispatch a fleet (coordinator produces the work breakdown)
 tau fleet run --goal "add OAuth login, persist sessions, and write tests"
 
+# Pre-supply work items with dependencies (skip coordinator LLM call)
+tau fleet run --items '{"items":[{"id":"a","title":"...","scope":"...","deliverables":"...","acceptance":"...","depends_on":[]}]}' --goal "custom plan"
+
 # Plan with a model override
 tau fleet run --coordinator-model openai/gpt-4o-mini --goal "ship the redesign"
 
@@ -293,7 +296,7 @@ tau fleet logs <id>               # per-worker session hint
 tau fleet cancel <id>             # mark cancelled
 ```
 
-Manifests persist to `~/.config/tau/fleets/<id>.json`; workers persist per-role sessions to `~/.config/tau/sessions/<fleet-id>-<item-id>-<role>-<iter>.json`.
+Manifests persist to `~/.config/tau/fleets/<id>.json`; workers persist per-role sessions to `~/.config/tau/sessions/<fleet-id>-<item-id>.json`. The coordinator retries up to 3 times when all items fail to parse. Items with failed dependencies are marked `.blocked` and counted as failures in the final tally.
 
 v0.3 limitations (see `~/.agents/skills/tau-maintenance` for the full gap list):
 - Workers run sequentially and report `status: running` until the harness collects their results.

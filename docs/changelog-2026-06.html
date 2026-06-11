@@ -41,36 +41,12 @@
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
-            <div class="w-12 h-12 rounded-lg bg-rose-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">⚔️</span>
+            <div class="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">⚡</span>
             </div>
             <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Author↔Critic Loop</h3>
-              <p class="text-slate-400 leading-relaxed">Adversarial self-review via --role author|critic. Each role runs a full agentic tool loop with sentinel-based termination: &lt;READY_FOR_REVIEW&gt;, &lt;APPROVED&gt;, &lt;BLOCKED&gt;. Role-specific tool allowlists (author: read/write, critic: read-only).</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="feature-card rounded-xl p-6">
-          <div class="flex items-start gap-4">
-            <div class="w-12 h-12 rounded-lg bg-cyan-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">🚁</span>
-            </div>
-            <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Fleet Orchestration</h3>
-              <p class="text-slate-400 leading-relaxed">Multi-agent work breakdown and dispatch. Coordinator LLM decomposes goals into work items with depends_on ordering. Sequential + parallel wave-based dispatch. Manifests persist to ~/.config/tau/fleets/. Subcommands: run, status, list, logs, cancel.</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="feature-card rounded-xl p-6">
-          <div class="flex items-start gap-4">
-            <div class="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">🎯</span>
-            </div>
-            <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Goal Mode + Sessions</h3>
-              <p class="text-slate-400 leading-relaxed">Autonomous work with /goal syntax. Agents can work toward objectives across multiple invocations with persistent session state.</p>
+              <h3 class="text-xl font-semibold text-white mb-2">Real-time Data Updates</h3>
+              <p class="text-slate-400 leading-relaxed">Added WebSocket endpoint for live BTC price and slot updates every second. Replaced REST polling with persistent WebSocket connections for faster, more reliable data.</p>
             </div>
           </div>
         </div>
@@ -81,8 +57,20 @@
               <span class="text-2xl">📊</span>
             </div>
             <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Token Tracking & API Usage</h3>
-              <p class="text-slate-400 leading-relaxed">Real token usage parsed from OpenAI-compatible API responses (usage.total_tokens). Fallback to content-length approximation. Wired through agent.run(), Author↔Critic loop, and fleet workers.</p>
+              <h3 class="text-xl font-semibold text-white mb-2">Multi-Market Support</h3>
+              <p class="text-slate-400 leading-relaxed">Extended data collection to support multiple timeframes (15m, 5m, 1h) simultaneously. Added URL-driven navigation for different market views.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">💾</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Performance & Storage</h3>
+              <p class="text-slate-400 leading-relaxed">Implemented GZip compression and SQLite history storage for faster responses. Added connection pooling to eliminate database overhead.</p>
             </div>
           </div>
         </div>
@@ -90,23 +78,23 @@
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">🧪</span>
+              <span class="text-2xl">🔍</span>
             </div>
             <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Quality Hardening</h3>
-              <p class="text-slate-400 leading-relaxed">Unit tests for extractUsage API parser (happy path, null, overflow, missing), Manifest JSON round-trip test, expanded smoke suite to 59 tests covering --role flag, fleet subcommands, and all tools.</p>
+              <h3 class="text-xl font-semibold text-white mb-2">Chart Improvements</h3>
+              <p class="text-slate-400 leading-relaxed">Added zoom modal with full data support, interval controls, and smart downsampling for smooth performance. Implemented localStorage caching for faster chart loading.</p>
             </div>
           </div>
         </div>
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
-            <div class="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-              <span class="text-2xl">📡</span>
+            <div class="w-12 h-12 rounded-lg bg-red-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🐛</span>
             </div>
             <div>
-              <h3 class="text-xl font-semibold text-white mb-2">Streaming + ACP</h3>
-              <p class="text-slate-400 leading-relaxed">Real SSE token-by-token streaming. Agent Client Protocol (ACP) support: stdio server, daemon management (start/stop/status/serve), session persistence, tool loop streaming, and cross-platform support.</p>
+              <h3 class="text-xl font-semibold text-white mb-2">Bug Fixes</h3>
+              <p class="text-slate-400 leading-relaxed">Fixed redirect loops, improved data isolation between timeframes, resolved WebSocket connection issues, and added official-beat endpoint support.</p>
             </div>
           </div>
         </div>
@@ -121,6 +109,7 @@
             <span>🚀</span> Features
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[12/06]</span>feat(fleet): coordinator retry + --items wiring + parseItemsJson</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>feat: ACP default system prompt; rewrite roadmap; drop smoke-test .kit files</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>feat: streaming + tools (P3)</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>feat: cross-platform support (macOS + Windows)</li>
@@ -133,6 +122,10 @@
             <span>🐛</span> Bug Fixes
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>fix(fleet): dupe depends_on strings to avoid dangling pointers after parsed.deinit()</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>fix(fleet): resolve endpoint, API key, toOwnedSlice, blocked deps, UTF-8 segfault</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>fix(fleet): harden cancelCmd persistence + parseWorkItem error context + status helper</li>
+            <li><span class="text-slate-500 text-sm mr-3">[10/06]</span>fix: make APPENDED_99 smoke test deterministic</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: gate ACP thought chunks on --thinking; link smoke.md from docs HTML</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: editor write fallback to direct execution on clientWriteFile failure</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>fix: session/load compacts history instead of clearing it</li>
@@ -149,6 +142,11 @@
             <span>📚</span> Documentation
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>docs(smoke): shorten --group example in help text, add --list-groups hint</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>docs: finalize v0.3.0 alignment (role list, changelog link, roadmap sections)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>docs: align with v0.3.0 (opencode-go, Author↔Critic, Fleet, ACP) + smoke harness split</li>
+            <li><span class="text-slate-500 text-sm mr-3">[10/06]</span>docs: link all 9 gaps to real GitHub issues in harden-stabilize-check.md</li>
+            <li><span class="text-slate-500 text-sm mr-3">[10/06]</span>docs: add harden-stabilize-check.md checklist</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>docs: document config file, sessions, goal mode, compaction in README</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>docs: document --stream + JSON-default in README</li>
             <li><span class="text-slate-500 text-sm mr-3">[03/06]</span>docs: mark tool-calling done in README capability matrix</li>
@@ -158,13 +156,47 @@
         </section>
 
         <section>
+          <h2 class="text-2xl font-semibold text-slate-400 mb-4 flex items-center gap-2">
+            <span>⚡</span> Performance
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>perf(smoke): optimize dispatch loop — O(1) marker check + dedupe entry split</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-semibold text-amber-400 mb-4 flex items-center gap-2">
+            <span>🚜</span> Refactor
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>refactor(smoke): drop dead _smoke_entry_marker from _smoke_split_entry</li>
+          </ul>
+        </section>
+
+        <section>
           <h2 class="text-2xl font-semibold text-blue-400 mb-4 flex items-center gap-2">
             <span>🧪</span> Testing
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>test(smoke): mark bench group as :slow + document the ~10s slowdown</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>test(smoke): single-pass regex in bench guard — no more sed prefix-strip</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>test(smoke): surface --bench inner-call failure diagnostics in bench guard</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>test(smoke): add bench regression guard</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>test(smoke): wire --list-groups + fix --group=foo parser syntax, single source of truth</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>test: expand smoke suite to 59 tests covering all tools, goal mode, limits</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>tests+fix: SSE delta extractor unit tests; fix extractDeltaTCId bug</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>tests+feat: adversarial JSON tests; --dry-run tool preview</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-semibold text-slate-400 mb-4 flex items-center gap-2">
+            <span>⚙️</span> Miscellaneous Tasks
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>chore(smoke): dedupe lib init — move pass/fail/skip init to caller</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>chore(smoke): remove dead tap_plan helper</li>
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>chore(gitignore): silence scratch files (tmp/, hexgame/, x*, Proof.md, *.txt, prompt_self_aware.py)</li>
           </ul>
         </section>
 
@@ -173,6 +205,8 @@
             <span>💼</span> Other
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[11/06]</span>Merge branch 'fix/fleet-bugs' into master</li>
+            <li><span class="text-slate-500 text-sm mr-3">[10/06]</span>v0.3.0: Author<->Critic loop, Fleet orchestration, token tracking</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>polish: table-driven buildToolArgs; streaming strips GOAL_MET; printHelpJson from flag_specs</li>
             <li><span class="text-slate-500 text-sm mr-3">[05/06]</span>robustness: retry transient HTTP with backoff; surface 401 as auth_failed</li>
             <li><span class="text-slate-500 text-sm mr-3">[04/06]</span>security: validate tool args (reject .. traversal, null bytes, empty bash)</li>
