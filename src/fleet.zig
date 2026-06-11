@@ -4,6 +4,7 @@ const jsonmod = @import("json.zig");
 const term = @import("term.zig");
 const session_mod = @import("session.zig");
 const provider_mod = @import("llm/provider.zig");
+const helpers = @import("helpers.zig");
 
 /// One work item in a fleet — the unit of work for a single worker.
 pub const WorkItem = struct {
@@ -598,31 +599,19 @@ pub fn dispatch(
 }
 
 fn statusCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, fleet_id: ?[]const u8) !u8 {
-    const id = fleet_id orelse {
-        term.out("{\"err\":{\"code\":80,\"message\":\"fleet status requires <id>\"}}\n");
-        return 80;
-    };
+    const id = fleet_id orelse return helpers.fleetRequires("status", "<id>", 80);
     if (try loadManifest(io, arena, env, id)) |m| {
-        const out = try std.json.Stringify.valueAlloc(gpa, m, .{ .whitespace = .indent_2 });
-        defer gpa.free(out);
-        term.out(out);
-        term.out("\n");
+        try helpers.fleetPrintJson(gpa, m);
     } else {
-        term.out("{\"fleet\":null}\n");
+        return helpers.fleetEmpty("fleet", false);
     }
     return 0;
 }
 
 fn listCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map) !u8 {
-    const dir = fleetsDir(arena, env) orelse {
-        term.out("{\"fleets\":[]}\n");
-        return 0;
-    };
+    const dir = fleetsDir(arena, env) orelse return helpers.fleetEmpty("fleets", true);
     defer arena.free(dir);
-    var d = std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true }) catch {
-        term.out("{\"fleets\":[]}\n");
-        return 0;
-    };
+    var d = std.Io.Dir.cwd().openDir(io, dir, .{ .iterate = true }) catch return helpers.fleetEmpty("fleets", true);
     defer d.close(io);
     var it = d.iterate();
     var names: std.ArrayList([]const u8) = .empty;
@@ -652,22 +641,12 @@ fn listCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *s
 }
 
 fn cancelCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, fleet_id: ?[]const u8) !u8 {
-    const id = fleet_id orelse {
-        term.out("{\"err\":{\"code\":80,\"message\":\"fleet cancel requires <id>\"}}\n");
-        return 80;
-    };
-    const m = (try loadManifest(io, arena, env, id)) orelse {
-        term.out("{\"fleet\":null}\n");
-        return 0;
-    };
+    const id = fleet_id orelse return helpers.fleetRequires("cancel", "<id>", 80);
+    const m = (try loadManifest(io, arena, env, id)) orelse return helpers.fleetEmpty("fleet", false);
     var updated = m;
     updated.global_status = .cancelled;
     updated.updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds();
-    saveManifest(io, gpa, env, updated) catch |err| {
-        const err_msg = try std.fmt.allocPrint(arena, "{{\"err\":{{\"code\":110,\"message\":\"cancel save failed: {s}\"}}}}\n", .{@errorName(err)});
-        term.out(err_msg);
-        return 110;
-    };
+    saveManifest(io, gpa, env, updated) catch |err| return helpers.fleetErr(arena, "cancel save failed", err);
     // Verify persistence by reloading from disk — if the on-disk manifest
     // does not reflect the cancelled status, surface that as a failure rather
     // than silently lying to the caller.
@@ -680,10 +659,7 @@ fn cancelCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: 
         term.out("{\"err\":{\"code\":110,\"message\":\"cancel persisted but reload failed\"}}\n");
         return 110;
     }
-    const out = try std.json.Stringify.valueAlloc(gpa, updated, .{ .whitespace = .indent_2 });
-    defer gpa.free(out);
-    term.out(out);
-    term.out("\n");
+    try helpers.fleetPrintJson(gpa, updated);
     return 0;
 }
 
@@ -692,10 +668,7 @@ fn logsCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *s
     _ = arena;
     _ = env;
     _ = io;
-    const id = fleet_id orelse {
-        term.out("{\"err\":{\"code\":80,\"message\":\"fleet logs requires <id>\"}}\n");
-        return 80;
-    };
+    const id = fleet_id orelse return helpers.fleetRequires("logs", "<id>", 80);
     term.out("{\"note\":\"logs: inspect sessions under ~/.config/tau/sessions/ matching prefix ");
     term.out(id);
     term.out("-<item-id>-*\"}\n");
@@ -711,10 +684,7 @@ fn runCmd(
     fleet_id: ?[]const u8,
     goal: ?[]const u8,
 ) !u8 {
-    const gl = goal orelse {
-        term.out("{\"err\":{\"code\":82,\"message\":\"fleet run requires --goal <text>\"}}\n");
-        return 82;
-    };
+    const gl = goal orelse return helpers.fleetRequires("run", "--goal <text>", 82);
     const id = fleet_id orelse blk: {
         const ts = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds();
         break :blk try std.fmt.allocPrint(arena, "fleet-{d}", .{ts});
@@ -752,12 +722,7 @@ fn runCmd(
         .created_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
         .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
     };
-    saveManifest(io, gpa, env, manifest) catch |err| {
-        term.out("{\"err\":{\"code\":110,\"message\":\"manifest save failed: ");
-        term.out(@errorName(err));
-        term.out("\"}}\n");
-        return 110;
-    };
+    saveManifest(io, gpa, env, manifest) catch |err| return helpers.fleetErr(arena, "manifest save failed", err);
 
     // Dispatch workers. In parallel mode, use wave-based dispatch: items
     // whose dependencies are all satisfied are spawned simultaneously.
@@ -856,12 +821,7 @@ fn runCmd(
         }
     } else {
         // Sequential dispatch (original behavior).
-        const sorted = topoSort(gpa, spec.items) catch |err| {
-            term.out("{\"err\":{\"code\":110,\"message\":\"toposort failed: ");
-            term.out(@errorName(err));
-            term.out("\"}}\n");
-            return 110;
-        };
+        const sorted = topoSort(gpa, spec.items) catch |err| return helpers.fleetErr(arena, "toposort failed", err);
         defer gpa.free(sorted);
         for (sorted) |it| {
             const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
