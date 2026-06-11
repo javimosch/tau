@@ -6,16 +6,17 @@ tau is an agent-first AI CLI — a non-interactive, programmatic counterpart to 
 
 ---
 
-## Current State (v0.2.0)
+## Current State (v0.3.0)
 
 ### Core CLI
 
-- **Providers**: xiaomi (default), openai, deepseek — switchable via `--provider` / `--model`
+- **Providers**: xiaomi (default), openai, deepseek, opencode-go — switchable via `--provider` / `--model`. `--model provider/id` shorthand supported.
 - **API key resolution**: config file > provider env var > `TAU_API_KEY` > `--api-key` flag
 - **Streaming**: SSE delta streaming by default; `--no-stream` for batch
 - **Output modes**: JSON (default); text with `--mode text`
 - **Help**: `--help` human text, `--help-json` machine-readable flag schema (auto-generated from `flag_specs` table)
 - **Version**: `--version`
+- **System prompt**: `--system-prompt <text>` and `--append-system-prompt <text>` for persona/role injection
 
 ### Tools
 
@@ -48,6 +49,18 @@ Tool allowlist (`-t`), denylist (`-xt`), and disable-all (`-nt`) flags. `--dry-r
 
 - `--session <name>` persists conversation history to `~/.config/tau/sessions/<name>.json`
 - Multi-turn memory across invocations
+- **Author↔Critic mode**: `--role author|critic|coordinator|none` for adversarial self-review
+  - Sentinels (one per line): author emits `<READY_FOR_REVIEW>`, critic emits `<APPROVED>` or `<BLOCKED>`
+  - Each role runs the same agentic tool loop with a role-specific system directive and tool allowlist
+  - Lives in `src/loop.zig` as `AuthorCriticSpec` + `runAuthorCritic`
+
+### Fleet Orchestration
+
+- `tau fleet run|status|list|logs|cancel` — multi-agent work breakdown and dispatch
+- Coordinator LLM decomposes a goal into work items (`depends_on` + `acceptance`)
+- Workers re-invoke `tau --role author` per item (sequential by default, `--parallel` for waves)
+- Manifests persist to `~/.config/tau/fleets/<id>.json`
+- Per-role sessions: `~/.config/tau/sessions/<fleet-id>-<item-id>-<role>-<iter>.json`
 
 ### ACP (Agent Client Protocol)
 
@@ -85,10 +98,12 @@ tau/
 │   ├── config.zig        # Config struct + key resolution
 │   ├── configfile.zig    # ~/.config/tau/config.json loader
 │   ├── agent.zig         # Agentic tool loop, buildToolArgs (table-driven)
+│   ├── loop.zig          # Author↔Critic loop (AuthorCriticSpec + runAuthorCritic)
 │   ├── acp.zig           # ACP server (JSON-RPC over stdio + Unix socket)
 │   ├── context.zig       # Context compaction (shouldCompact + compact)
 │   ├── session.zig       # Session persistence
 │   ├── goal.zig          # /goal parsing, directive, sentinel logic
+│   ├── fleet.zig         # Fleet orchestration (run/status/list/logs/cancel)
 │   ├── json.zig          # JSON helpers + escape
 │   ├── term.zig          # Portable stdout/stderr
 │   ├── llm/
@@ -102,9 +117,18 @@ tau/
 │       ├── find.zig
 │       ├── grep.zig
 │       └── ls.zig
+├── scripts/
+│   ├── smoke.sh          # Smoke test harness (offline + --net)
+│   ├── smoke-features.sh # Extended feature tests
+│   ├── benchmark-resources.sh
+│   └── lib/
+│       └── smoke-lib.sh  # Shared test harness library (TAP output, capture, cleanup)
 └── docs/
     ├── roadmap.md        # This file
-    └── smoke.md          # Smoke test results
+    ├── changelog.html    # Index of monthly changelogs
+    ├── changelog-2026-06.html / .md  # June 2026 product changelog
+    ├── index.html        # Landing page
+    └── harden-stabilize-check.md  # Pre-ship hardening checklist
 ```
 
 ---
@@ -130,3 +154,5 @@ tau/
 - Web search tool
 - Skills loader (`~/.agents/skills/*.md`) for composable agent behaviors
 - `--output-file` flag for writing response JSON to disk
+- Fleet: parallel worker execution + persistent `global_status: cancelled` on cancel
+- Fleet: worker result collection harness (today workers report `running` until the harness polls)

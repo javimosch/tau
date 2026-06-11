@@ -1,155 +1,521 @@
 #!/usr/bin/env bash
-# pizig smoke test harness.
+# tau smoke test harness — revised modular version.
 #
 # Usage:
-#   scripts/smoke.sh            # deterministic, offline CLI tests only
-#   scripts/smoke.sh --net      # also run real LLM calls (needs network + key)
+#   scripts/smoke.sh                         # offline CLI tests only
+#   scripts/smoke.sh --net                   # also run real LLM calls
+#   scripts/smoke.sh --bench                 # run benchmarks after tests
+#   scripts/smoke.sh --group "help,fleet"    # run specific test groups
+#   scripts/smoke.sh --config ./my-config    # use custom config
 #
 # Exit 0 if all run tests pass, 1 otherwise.
+#
+# Environment variables:
+#   SMOKE_DEBUG=1          verbose debug output
+#   SMOKE_TRACE=1          bash -x tracing
+#   SMOKE_VERBOSE=1        print test names as they run
+#   SMOKE_LOG=/path/log    append all smoke output to file
+#   SMOKE_GROUPS="group1,group2"  filter test groups
+#   TAU_BIN=/path/to/tau   override binary path
+#
+# ---------------------------------------------------------------------------
 set -u
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/zig-out/bin/tau"
-NET=0
-[ "${1:-}" = "--net" ] && NET=1
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LIB="$SCRIPT_DIR/lib/smoke-lib.sh"
 
-pass=0
-fail=0
+# Source the shared library
+if [ ! -f "$LIB" ]; then
+  echo "FATAL: shared library not found at $LIB" >&2
+  exit 1
+fi
+source "$LIB"
 
-# ok <name> <actual_exit> <expected_exit>
-ok() {
-  if [ "$2" = "$3" ]; then
-    printf 'PASS  %s (exit %s)\n' "$1" "$2"
-    pass=$((pass + 1))
-  else
-    printf 'FAIL  %s (got exit %s, want %s)\n' "$1" "$2" "$3"
-    fail=$((fail + 1))
-  fi
-}
+# ── Configuration ──────────────────────────────────────────────────────────
+load_config "$SCRIPT_DIR"
 
-# contains <name> <haystack> <needle>
-contains() {
-  case "$2" in
-    *"$3"*) printf 'PASS  %s\n' "$1"; pass=$((pass + 1)) ;;
-    *)      printf 'FAIL  %s (missing %q)\n' "$1" "$3"; fail=$((fail + 1)) ;;
+# Defaults (may be overridden by config or environment)
+BIN="${TAU_BIN:-"$ROOT/zig-out/bin/tau"}"
+NET="${SMOKE_NET:-0}"
+RUN_BENCH="${SMOKE_BENCH:-0}"
+CLEANUP="${SMOKE_CLEANUP:-1}"
+
+# Parse CLI arguments (must come before env overrides)
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --net)        NET=1 ;;
+    --bench)      RUN_BENCH=1 ;;
+    --no-cleanup) CLEANUP=0 ;;
+    --group)      shift; SMOKE_GROUPS="${1:-}"; export SMOKE_GROUPS ;;
+    --config)     shift; [ -f "${1:-}" ] && source "$1" ;;
+    --help|-h)
+      sed -ne '/^# Usage:/,/^# -----/p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: $0 [--net] [--bench] [--group <groups>] [--config <file>]" >&2
+      exit 1
+      ;;
   esac
-}
-
-if [ ! -x "$BIN" ]; then
-  echo "building pizig..."
-  ( cd "$ROOT" && zig build ) || { echo "build failed"; exit 1; }
-fi
-
-echo "== deterministic CLI tests =="
-
-out=$("$BIN" --version); ok "--version exit" "$?" 0
-contains "--version says tau" "$out" "tau"
-
-out=$("$BIN" --help); ok "--help exit" "$?" 0
-# --help outputs human-readable text; check for expected sections
-contains "--help shows usage header" "$out" "Usage:"
-contains "--help mentions tau" "$out" "tau"
-
-out=$("$BIN" --help-json)
-if printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
-  printf 'PASS  --help-json is valid JSON\n'; pass=$((pass + 1))
-else
-  printf 'FAIL  --help-json is not valid JSON\n'; fail=$((fail + 1))
-fi
-
-# No prompt now shows help (exit 0) instead of missing_required_field (82)
-"$BIN" -p >/dev/null 2>&1;                       ok "no prompt -> shows help" "$?" 0
-# Text mode help should show human-readable usage
-out=$("$BIN" --mode text --help); ok "--mode text --help exit" "$?" 0
-contains "--mode text --help shows usage" "$out" "Usage:"
-"$BIN" --bogus "x" >/dev/null 2>&1;              ok "unknown flag -> invalid_argument" "$?" 80
-"$BIN" --provider nope "x" >/dev/null 2>&1;      ok "unknown provider -> invalid_argument" "$?" 80
-"$BIN" --mode bad "x" >/dev/null 2>&1;           ok "bad --mode -> invalid_argument" "$?" 80
-"$BIN" --temperature notafloat "x" >/dev/null 2>&1; ok "bad --temperature -> invalid_argument" "$?" 80
-"$BIN" "@/no/such/file" "x" >/dev/null 2>&1;     ok "missing @file -> invalid_argument" "$?" 80
-
-# ── --role flag (Author↔Critic primitive) ─────────────────────────────────────
-echo "== --role flag parsing =="
-# Invalid role name rejected by parser
-"$BIN" --role invalid "x" >/dev/null 2>&1;       ok "--role invalid -> invalid_argument" "$?" 80
-# Valid role names accepted by parser; downstream auth (no API key) is expected
-# (106) — what we verify is the parser did NOT reject the value (so !=80).
-for r in author critic coordinator none; do
-  "$BIN" --role "$r" --no-tools --no-stream "x" >/dev/null 2>&1
-  rc=$?
-  if [ "$rc" != "80" ]; then
-    printf 'PASS  --role %s accepted by parser (downstream exit %s)\n' "$r" "$rc"
-    pass=$((pass + 1))
-  else
-    printf 'FAIL  --role %s rejected by parser\n' "$r"
-    fail=$((fail + 1))
-  fi
+  shift
 done
 
-# ── tau fleet subcommand parsing ──────────────────────────────────────────────
-echo "== tau fleet subcommand parsing =="
-# No subcommand -> invalid_argument
-"$BIN" fleet >/dev/null 2>&1;                   ok "fleet (no sub) -> invalid_argument" "$?" 80
-# Unknown subcommand -> invalid_argument
-"$BIN" fleet bogus >/dev/null 2>&1;             ok "fleet bogus -> invalid_argument" "$?" 80
-# run without --goal -> missing_required_field
-"$BIN" fleet run >/dev/null 2>&1;               ok "fleet run without --goal -> missing_required_field" "$?" 82
-# status without id -> invalid_argument
-"$BIN" fleet status >/dev/null 2>&1;            ok "fleet status no id -> invalid_argument" "$?" 80
-# cancel without id -> invalid_argument
-"$BIN" fleet cancel >/dev/null 2>&1;            ok "fleet cancel no id -> invalid_argument" "$?" 80
-# status of nonexistent id -> exit 0, prints {"fleet":null}
-nonex_id="smoke-nonexistent-$$-$RANDOM"
-out=$("$BIN" fleet status "$nonex_id" 2>&1)
-if [ $? -eq 0 ] && printf '%s' "$out" | grep -q '"fleet":null'; then
-  printf 'PASS  fleet status nonexistent -> {"fleet":null}\n'; pass=$((pass + 1))
-else
-  printf 'FAIL  fleet status nonexistent: %s\n' "$out"; fail=$((fail + 1))
-fi
-# cancel of nonexistent id -> exit 0, prints {"fleet":null}
-out=$("$BIN" fleet cancel "$nonex_id" 2>&1)
-if [ $? -eq 0 ] && printf '%s' "$out" | grep -q '"fleet":null'; then
-  printf 'PASS  fleet cancel nonexistent -> {"fleet":null}\n'; pass=$((pass + 1))
-else
-  printf 'FAIL  fleet cancel nonexistent: %s\n' "$out"; fail=$((fail + 1))
-fi
-# list -> exit 0, prints {"fleets":[...]} (may be empty array)
-out=$("$BIN" fleet list 2>&1)
-if [ $? -eq 0 ] && printf '%s' "$out" | grep -q '"fleets":'; then
-  printf 'PASS  fleet list -> exit 0 with fleets array\n'; pass=$((pass + 1))
-else
-  printf 'FAIL  fleet list: %s\n' "$out"; fail=$((fail + 1))
-fi
-# Help text mentions --role and the new fleet subcommands
-contains "--help mentions --role" "$("$BIN" --help 2>&1)" "--role"
-contains "--help mentions fleet run" "$("$BIN" --help 2>&1)" "fleet run"
-contains "--help mentions fleet status" "$("$BIN" --help 2>&1)" "fleet status"
-contains "--help mentions fleet cancel" "$("$BIN" --help 2>&1)" "fleet cancel"
+# ── Runtime setup ─────────────────────────────────────────────────────────
 
-if [ "$NET" = 1 ]; then
-  echo "== network LLM tests =="
+# Check binary
+check_binary "$BIN" "$ROOT" || bail_out "binary check failed"
 
-  # Use --mode text so the response is raw streaming text, not NDJSON deltas —
-  # streaming JSON wraps each token in {"delta":"..."} which may split markers
-  # across chunks, making a substring search unreliable.
-  out=$("$BIN" --mode text "Reply with exactly: PIZIG_SMOKE_OK"); rc=$?
+# Ensure tau is on PATH for fleet worker spawns
+export PATH="$ROOT/zig-out/bin:$PATH"
+
+# Check API key availability
+has_key=false
+check_api_key || true  # don't abort; we'll skip network tests
+
+# Setup temp dir
+setup_temp
+
+# Trap for cleanup
+cleanup() {
+  local rc=$?
+  if [ "$CLEANUP" = "1" ]; then
+    cleanup_temp
+    # Clean up smoke sessions/fleets
+    cleanup_sessions "smoke-*"
+    cleanup_fleets "smoke-*"
+  fi
+  # Restore terminal settings if needed
+  exit $rc
+}
+trap cleanup EXIT INT TERM
+
+# ── TAP plan (will be updated dynamically) ────────────────────────────────
+# We emit plan at the end with total count. Start with a note.
+echo "# tau smoke test harness"
+echo "# binary: $BIN"
+echo "# network tests: $([ "$NET" = 1 ] && echo enabled || echo disabled)"
+echo "# date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Test Groups
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Group: version and help
+test_group_help() {
+  local out
+
+  out=$("$BIN" --version); ok "--version exit" "$?" 0
+  contains "--version says tau" "$out" "tau"
+
+  out=$("$BIN" --help); ok "--help exit" "$?" 0
+  contains "--help shows usage header" "$out" "Usage:"
+  contains "--help mentions tau" "$out" "tau"
+
+  out=$("$BIN" --help-json)
+  if printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
+    ok "--help-json is valid JSON" 0 0
+  else
+    ok "--help-json is not valid JSON" 1 0
+  fi
+}
+
+# Group: basic flag parsing
+test_group_flag_parsing() {
+  local out rc
+
+  # No prompt now shows help (exit 0) instead of missing_required_field (82)
+  "$BIN" -p >/dev/null 2>&1;                       ok "no prompt -> shows help" "$?" 0
+  # Text mode help should show human-readable usage
+  out=$("$BIN" --mode text --help); ok "--mode text --help exit" "$?" 0
+  contains "--mode text --help shows usage" "$out" "Usage:"
+  "$BIN" --bogus "x" >/dev/null 2>&1;              ok "unknown flag -> invalid_argument" "$?" 80
+  "$BIN" --provider nope "x" >/dev/null 2>&1;      ok "unknown provider -> invalid_argument" "$?" 80
+  "$BIN" --mode bad "x" >/dev/null 2>&1;           ok "bad --mode -> invalid_argument" "$?" 80
+  "$BIN" --temperature notafloat "x" >/dev/null 2>&1; ok "bad --temperature -> invalid_argument" "$?" 80
+  "$BIN" "@/no/such/file" "x" >/dev/null 2>&1;     ok "missing @file -> invalid_argument" "$?" 80
+}
+
+# Group: --role flag
+# Use --api-key fake --provider openai so auth fails fast at exit 106 (still != 80).
+# This avoids making slow LLM calls via the configured provider.
+test_group_role_flag() {
+  local rc
+
+  note "--role flag parsing"
+  "$BIN" --role invalid "x" >/dev/null 2>&1;       ok "--role invalid -> invalid_argument" "$?" 80
+  for r in author critic coordinator none; do
+    "$BIN" --role "$r" --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" != "80" ]; then
+      ok "--role $r accepted by parser (downstream exit $rc)" 0 0
+    else
+      ok "--role $r rejected by parser" 1 0
+    fi
+  done
+}
+
+# Group: fleet subcommands
+test_group_fleet() {
+  local out rc nonex_id
+
+  note "fleet subcommand parsing"
+
+  # No subcommand -> invalid_argument
+  "$BIN" fleet >/dev/null 2>&1;                   ok "fleet (no sub) -> invalid_argument" "$?" 80
+  # Unknown subcommand -> invalid_argument
+  "$BIN" fleet bogus >/dev/null 2>&1;             ok "fleet bogus -> invalid_argument" "$?" 80
+  # run without --goal -> missing_required_field
+  "$BIN" fleet run >/dev/null 2>&1;               ok "fleet run without --goal -> missing_required_field" "$?" 82
+  # status without id -> invalid_argument
+  "$BIN" fleet status >/dev/null 2>&1;            ok "fleet status no id -> invalid_argument" "$?" 80
+  # cancel without id -> invalid_argument
+  "$BIN" fleet cancel >/dev/null 2>&1;            ok "fleet cancel no id -> invalid_argument" "$?" 80
+  # logs without id -> invalid_argument
+  "$BIN" fleet logs >/dev/null 2>&1;              ok "fleet logs no id -> invalid_argument" "$?" 80
+
+  # status of nonexistent id -> exit 0, prints {"fleet":null}
+  nonex_id="smoke-nonexistent-$$-$RANDOM"
+  capture fleet_status "$BIN" fleet status "$nonex_id" 2>&1
+  if [ "$fleet_status_rc" -eq 0 ] && printf '%s' "$fleet_status_out" | grep -q '"fleet":null'; then
+    ok "fleet status nonexistent -> {\"fleet\":null}" 0 0
+  else
+    ok "fleet status nonexistent (got rc=$fleet_status_rc)" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "output: $fleet_status_out"
+  fi
+
+  # cancel of nonexistent id -> exit 0, prints {"fleet":null}
+  capture fleet_cancel "$BIN" fleet cancel "$nonex_id" 2>&1
+  if [ "$fleet_cancel_rc" -eq 0 ] && printf '%s' "$fleet_cancel_out" | grep -q '"fleet":null'; then
+    ok "fleet cancel nonexistent -> {\"fleet\":null}" 0 0
+  else
+    ok "fleet cancel nonexistent (got rc=$fleet_cancel_rc)" 1 0
+  fi
+
+  # list -> exit 0, prints {"fleets":[...]}
+  capture fleet_list "$BIN" fleet list 2>&1
+  if [ "$fleet_list_rc" -eq 0 ] && printf '%s' "$fleet_list_out" | grep -q '"fleets":'; then
+    ok "fleet list -> exit 0 with fleets array" 0 0
+  else
+    ok "fleet list (got rc=$fleet_list_rc)" 1 0
+  fi
+
+  # Help text mentions --role and fleet subcommands
+  local help_out
+  help_out=$("$BIN" --help 2>&1)
+  contains "--help mentions --role" "$help_out" "--role"
+  contains "--help mentions fleet run" "$help_out" "fleet run"
+  contains "--help mentions fleet status" "$help_out" "fleet status"
+  contains "--help mentions fleet cancel" "$help_out" "fleet cancel"
+  contains "--help mentions fleet logs" "$help_out" "fleet logs"
+  contains "--help mentions fleet list" "$help_out" "fleet list"
+}
+
+# Group: Issue #11 flags
+# Use --api-key fake --provider openai for "accepted by parser" tests so auth
+# fails fast at exit 106 (still != 80), avoiding slow LLM calls.
+test_group_issue11_flags() {
+  local rc
+
+  note "flag parsing: --thinking, --debug, --max-tokens, --timeout-ms, --api-key"
+
+  # --thinking accepted by parser
+  "$BIN" --thinking --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--thinking accepted by parser (exit $rc)" 0 0
+  else
+    ok "--thinking rejected by parser" 1 0
+  fi
+
+  # --debug accepted by parser
+  "$BIN" --debug --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--debug accepted by parser (exit $rc)" 0 0
+  else
+    ok "--debug rejected by parser" 1 0
+  fi
+
+  # --max-tokens bad value -> exit 80
+  "$BIN" --max-tokens bad "x" >/dev/null 2>&1; ok "bad --max-tokens -> exit 80" "$?" 80
+  # --max-tokens valid value accepted (fake key for fast auth fail)
+  "$BIN" --max-tokens 1000 --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--max-tokens 1000 accepted (exit $rc)" 0 0
+  else
+    ok "--max-tokens 1000 rejected" 1 0
+  fi
+
+  # --timeout-ms bad value -> exit 80
+  "$BIN" --timeout-ms bad "x" >/dev/null 2>&1; ok "bad --timeout-ms -> exit 80" "$?" 80
+  # --timeout-ms valid value accepted (fake key for fast auth fail)
+  "$BIN" --timeout-ms 5000 --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--timeout-ms 5000 accepted (exit $rc)" 0 0
+  else
+    ok "--timeout-ms 5000 rejected" 1 0
+  fi
+
+  # --api-key no value -> exit 80
+  "$BIN" --api-key >/dev/null 2>&1; ok "--api-key no value -> exit 80" "$?" 80
+}
+
+# Group: Issue #12 --model shorthand
+test_group_model_shorthand() {
+  local rc
+
+  note "--model provider/id shorthand"
+
+  # Valid provider/model shorthand accepted (fake key for fast auth fail)
+  "$BIN" --model openai/gpt-4o-mini --no-tools --no-stream --api-key fake "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--model openai/gpt-4o-mini accepted (exit $rc)" 0 0
+  else
+    ok "--model openai/gpt-4o-mini rejected" 1 0
+  fi
+
+  # Invalid provider in shorthand rejected
+  "$BIN" --model nope/some-model "x" >/dev/null 2>&1; ok "--model nope/some-model -> unknown provider" "$?" 80
+}
+
+# Group: Issue #13 ACP subcommand
+test_group_acp() {
+  local out rc
+
+  note "ACP subcommand parsing"
+
+  "$BIN" acp bogus >/dev/null 2>&1; ok "acp bogus -> invalid_argument" "$?" 80
+  # acp status accepted by parser (exit 0 if not running)
+  capture acp_status "$BIN" acp status 2>&1
+  if [ "$acp_status_rc" = "0" ] && printf '%s' "$acp_status_out" | grep -q '"acp"'; then
+    ok "acp status -> exit 0 with acp JSON" 0 0
+  else
+    ok "acp status: exit $acp_status_rc" 1 0
+  fi
+
+  # acp stop accepted by parser (exit 0 if not running)
+  capture acp_stop "$BIN" acp stop 2>&1
+  if [ "$acp_stop_rc" = "0" ] && printf '%s' "$acp_stop_out" | grep -q '"acp"'; then
+    ok "acp stop -> exit 0 with acp JSON" 0 0
+  else
+    ok "acp stop: exit $acp_stop_rc" 1 0
+  fi
+}
+
+# Group: Issue #17 goal mode subcommands offline
+test_group_goal_offline() {
+  local out rc GSESS_OFF
+
+  note "goal mode subcommands (offline)"
+
+  # /goal subcommands require --session
+  "$BIN" "/goal status" >/dev/null 2>&1; ok "/goal status without --session -> exit 80" "$?" 80
+
+  # /goal status with --session, no prior goal -> {"goal":null}
+  GSESS_OFF="smoke-goal-offline-$$"
+  capture goal_status "$BIN" --session "$GSESS_OFF" --no-tools --no-stream "/goal status" 2>&1
+  ok "/goal status (no goal) exit" "$goal_status_rc" 0
+  if printf '%s' "$goal_status_out" | grep -q '"goal":null'; then
+    ok "/goal status (no goal) -> {\"goal\":null}" 0 0
+  else
+    ok "/goal status (no goal): unexpected output" 1 0
+  fi
+  cleanup_sessions "$GSESS_OFF"
+
+  # /goal --tokens parsing (use --timeout-ms 1 so the LLM call fails fast)
+  "$BIN" --no-tools --no-stream --timeout-ms 1 "/goal --tokens 250K test" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "/goal --tokens 250K accepted (exit $rc)" 0 0
+  else
+    ok "/goal --tokens 250K rejected" 1 0
+  fi
+}
+
+# Group: Issue #18 --dry-run JSON format + error envelope
+# Note: --dry-run makes one LLM planning turn, so it needs a valid API key.
+# We use the configured provider for the dry-run JSON format test.
+test_group_dry_run() {
+  local dry_json err_env
+
+  note "--dry-run JSON format + error envelope"
+
+  # --dry-run output is valid JSON with expected fields
+  # dry-run makes one LLM planning turn, so we need the configured API key.
+  if $has_key; then
+    capture dry_run "$BIN" --dry-run --tools bash "echo hello" 2>&1
+    if printf '%s' "$dry_run_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("dry_run") == True; assert isinstance(d.get("tool_calls"), list)' 2>/dev/null; then
+      ok "--dry-run output is valid JSON with expected fields" 0 0
+    else
+      ok "--dry-run JSON format invalid" 1 0
+      [ "$SMOKE_DEBUG" = "1" ] && diag "dry-run output: $dry_run_out"
+    fi
+  else
+    skip_test "--dry-run JSON format" "no API key"
+  fi
+
+  # Error envelope JSON on stderr for invalid arguments
+  capture err_env "$BIN" --bogus 2>&1 >/dev/null
+  if printf '%s' "$err_env_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 80; assert d.get("err",{}).get("type") == "invalid_argument"' 2>/dev/null; then
+    ok "error envelope JSON has code 80 + type invalid_argument" 0 0
+  else
+    ok "error envelope format invalid" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope: $err_env_out"
+  fi
+}
+
+# Group: Issue #19 session name validation
+# Note: tau's parser does NOT validate session names at parse time.
+# Session name validation (validName) happens during load/save, which is
+# after auth. So invalid names with --api-key fake will exit 106 (auth failed),
+# not 80. We test that invalid names are accepted by the parser (!= 80).
+test_group_session_name_validation() {
+  local rc
+
+  note "session name validation"
+
+  # Empty session name: parser accepts it, but session load/save will handle it.
+  # With fake key, auth fails first at exit 106 (still != 80 = parser accepted).
+  "$BIN" --session "" --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "empty session name accepted by parser (exit $rc)" 0 0
+  else
+    ok "empty session name rejected by parser" 1 0
+  fi
+
+  # Path traversal in session name: parser accepts it
+  "$BIN" --session "../escape" --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "../escape session name accepted by parser (exit $rc)" 0 0
+  else
+    ok "../escape session name rejected by parser" 1 0
+  fi
+
+  # Session name with spaces: parser accepts it
+  "$BIN" --session "has space" --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "session name with space accepted by parser (exit $rc)" 0 0
+  else
+    ok "session name with space rejected by parser" 1 0
+  fi
+
+  # Valid session name with hyphens/underscores accepted
+  "$BIN" --session "my-test_123" --no-tools --no-stream --api-key fake --provider openai "/goal status" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "valid session name my-test_123 accepted (exit $rc)" 0 0
+  else
+    ok "valid session name rejected" 1 0
+  fi
+  cleanup_sessions "my-test_123"
+}
+
+# Group: Issue #21 fleet run --items
+test_group_fleet_items() {
+  local rc
+
+  note "fleet run --items flag"
+
+  # --items accepted by parser (fake key: fleet will fail at auth, not at arg parsing)
+  "$BIN" fleet run --goal test --items '{"items":[]}' --api-key fake --provider openai >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "fleet run --items accepted (exit $rc)" 0 0
+  else
+    ok "fleet run --items rejected" 1 0
+  fi
+}
+
+# Group: Issue #22 invalid numeric flag values
+test_group_invalid_numeric() {
+  note "invalid numeric flag values"
+
+  "$BIN" --context-window bad "x" >/dev/null 2>&1; ok "bad --context-window -> exit 80" "$?" 80
+  "$BIN" --compact-threshold bad "x" >/dev/null 2>&1; ok "bad --compact-threshold -> exit 80" "$?" 80
+  "$BIN" --compact-keep-recent bad "x" >/dev/null 2>&1; ok "bad --compact-keep-recent -> exit 80" "$?" 80
+  "$BIN" --goal-max-iterations bad "x" >/dev/null 2>&1; ok "bad --goal-max-iterations -> exit 80" "$?" 80
+}
+
+# Group: fleet flag parsing (from smoke-features)
+# Use --api-key fake --provider openai so auth fails fast.
+test_group_fleet_flags() {
+  local rc
+
+  note "fleet flag parsing"
+
+  "$BIN" fleet run --goal "test" --coordinator-model openai/gpt-4o-mini --api-key fake --provider openai >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "fleet run --coordinator-model accepted by parser (exit $rc)" 0 0
+  else
+    ok "fleet run --coordinator-model rejected by parser" 1 0
+  fi
+
+  "$BIN" fleet run --goal "test" --sequential --api-key fake --provider openai >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "fleet run --sequential accepted by parser (exit $rc)" 0 0
+  else
+    ok "fleet run --sequential rejected by parser" 1 0
+  fi
+
+  "$BIN" fleet run --goal "test" --parallel --api-key fake --provider openai >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "fleet run --parallel accepted by parser (exit $rc)" 0 0
+  else
+    ok "fleet run --parallel rejected by parser" 1 0
+  fi
+
+  "$BIN" fleet run --goal "test" --worker-model openai/gpt-4o-mini --api-key fake --provider openai >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "fleet run --worker-model accepted by parser (exit $rc)" 0 0
+  else
+    ok "fleet run --worker-model rejected by parser" 1 0
+  fi
+
+  "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Online (network) test groups
+# ═══════════════════════════════════════════════════════════════════════════
+
+test_group_network_baseline() {
+  local out rc
+
+  note "network: baseline say-hi"
+
+  out=$("$BIN" --mode text --no-tools --no-stream "Reply with exactly: PIZIG_SMOKE_OK"); rc=$?
   ok "text-mode prompt exit" "$rc" 0
   contains "text-mode returns marker" "$out" "PIZIG_SMOKE_OK"
+}
 
-  # json-mode with --no-stream: single JSON object, check content field
+test_group_network_json_mode() {
+  local out rc
+
+  note "network: json-mode"
+
   out=$("$BIN" --mode json --no-stream "Say hi in three words"); rc=$?
   ok "json-mode prompt exit" "$rc" 0
   if printf '%s' "$out" | python3 -c 'import sys,json;d=json.load(sys.stdin);assert d["content"]' 2>/dev/null; then
-    printf 'PASS  json-mode has content field\n'; pass=$((pass + 1))
+    ok "json-mode has content field" 0 0
   else
-    printf 'FAIL  json-mode invalid/empty\n'; fail=$((fail + 1))
+    ok "json-mode invalid/empty" 1 0
   fi
+}
+
+test_group_network_at_file() {
+  local out rc tmp
+
+  note "network: @file + system-prompt"
 
   tmp="$(mktemp)"; printf 'the magic token is ZQ-91' > "$tmp"
+  register_temp_file "$tmp"
   out=$("$BIN" --mode text --system-prompt "Reply with only the token." "@$tmp" "What is the magic token?"); rc=$?
   ok "@file + system-prompt exit" "$rc" 0
   contains "@file content reaches model" "$out" "ZQ-91"
-  rm -f "$tmp"
+}
+
+test_group_network_streaming() {
+  local out rc
+
+  note "network: streaming"
 
   # Streaming: text mode round-trip
   out=$("$BIN" --stream --mode text "Reply with exactly: STREAM_OK_42"); rc=$?
@@ -163,36 +529,46 @@ if [ "$NET" = 1 ]; then
 lines=[l for l in sys.stdin if l.strip()]
 assert all(json.loads(l) for l in lines)
 assert json.loads(lines[-1]).get("done") is True' 2>/dev/null; then
-    printf 'PASS  stream json is valid NDJSON ending in done\n'; pass=$((pass + 1))
+    ok "stream json is valid NDJSON ending in done" 0 0
   else
-    printf 'FAIL  stream json malformed\n'; fail=$((fail + 1))
+    ok "stream json malformed" 1 0
   fi
+}
 
-  # Tool-calling: bash round-trip (model calls bash -> we execute -> model answers)
+test_group_network_tools() {
+  local out rc tf wf
+
+  note "network: tool-calling"
+
+  # Tool-calling: bash round-trip
   out=$("$BIN" --mode text --tools bash "Use the bash tool to run: echo TOOLS_WORK_91"); rc=$?
   ok "bash tool exit" "$rc" 0
   contains "bash tool executed end-to-end" "$out" "TOOLS_WORK_91"
 
   # Tool-calling: read round-trip
   tf="$(mktemp)"; printf 'SMOKE_FILE_MARKER_77' > "$tf"
+  register_temp_file "$tf"
   out=$("$BIN" --mode text --tools read "Use the read tool to read $tf and quote its contents."); rc=$?
   ok "read tool exit" "$rc" 0
   contains "read tool returned file contents" "$out" "SMOKE_FILE_MARKER_77"
-  rm -f "$tf"
 
   # Tool-calling: write round-trip (verify the side effect on disk)
   wf="$(mktemp -u)"
+  register_temp_file "$wf"
   out=$("$BIN" --tools write "Use the write tool to create $wf containing exactly: WRITE_MARKER_55"); rc=$?
   ok "write tool exit" "$rc" 0
   if [ -f "$wf" ] && grep -q "WRITE_MARKER_55" "$wf"; then
-    printf 'PASS  write tool created file on disk\n'; pass=$((pass + 1))
+    ok "write tool created file on disk" 0 0
   else
-    printf 'FAIL  write tool did not create expected file\n'; fail=$((fail + 1))
+    ok "write tool did not create expected file" 1 0
   fi
-  rm -f "$wf"
+}
 
-  # ── Session smoke test ──────────────────────────────────────────────────────
-  echo "== session tests =="
+test_group_network_session() {
+  local out rc SESS sess_file
+
+  note "session tests"
+
   SESS="smoke-session-$$"
   sess_file="$HOME/.config/tau/sessions/${SESS}.json"
 
@@ -203,27 +579,26 @@ assert json.loads(lines[-1]).get("done") is True' 2>/dev/null; then
   ok "session: second turn exit" "$rc" 0
   contains "session: model recalls secret number" "$out" "42"
 
-  # Verify session file was written and has 4 messages (2 turns × user+assistant)
+  # Verify session file was written and has 4 messages (2 turns x user+assistant)
   if python3 - "$sess_file" <<'PYEOF' 2>/dev/null
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert len(d["messages"]) == 4, f"expected 4 messages, got {len(d['messages'])}"
 PYEOF
   then
-    printf 'PASS  session: file has 4 messages\n'; pass=$((pass + 1))
+    ok "session: file has 4 messages" 0 0
   else
-    printf 'FAIL  session: unexpected message count\n'; fail=$((fail + 1))
+    ok "session: unexpected message count" 1 0
   fi
 
-  rm -f "$sess_file"
+  cleanup_sessions "$SESS"
+}
 
-  # ── Auto-compaction smoke test ───────────────────────────────────────────────
-  # Strategy: seed a session with fat messages (--no-compact), then on the next
-  # call use --compact-keep-recent 50 with a tiny --context-window so that:
-  #   shouldCompact: est_tokens > context_window × compact_threshold  (fires)
-  #   compact():     tail_start > head+1                              (does work)
-  # Result: session shrinks and first msg contains "[Earlier conversation summary]"
-  echo "== compaction tests =="
+test_group_network_compaction() {
+  local out rc CSESS csess_file LONG_MSG seed_ok
+
+  note "compaction tests"
+
   CSESS="smoke-compact-$$"
   csess_file="$HOME/.config/tau/sessions/${CSESS}.json"
 
@@ -247,13 +622,12 @@ print(f"seeded: {len(msgs)} msgs, {est_tokens} tokens")
 PYEOF
   )
   if [ -n "$seed_ok" ]; then
-    printf 'PASS  compaction seed: %s\n' "$seed_ok"; pass=$((pass + 1))
+    ok "compaction seed: $seed_ok" 0 0
   else
-    printf 'FAIL  compaction seed: session not fat enough\n'; fail=$((fail + 1))
+    ok "compaction seed: session not fat enough" 1 0
   fi
 
-  # Trigger compaction: context_window=200, threshold=0.5 → fire at >100 tokens
-  # compact_keep_recent=50 → tiny tail, forces middle span to be summarized
+  # Trigger compaction: context_window=200, threshold=0.5 -> fire at >100 tokens
   out=$("$BIN" --session "$CSESS" --no-tools --no-stream \
     --context-window 200 --compact-threshold 0.5 --compact-keep-recent 50 \
     -p "Summarize what we discussed so far."); rc=$?
@@ -270,81 +644,118 @@ assert has_summary, "no compaction summary found in messages"
 print(f"compacted: {len(msgs)} msgs, summary present")
 PYEOF
   then
-    printf 'PASS  compaction: session shrank with summary sentinel\n'; pass=$((pass + 1))
+    ok "compaction: session shrank with summary sentinel" 0 0
   else
-    printf 'FAIL  compaction: session not compacted or summary missing\n'; fail=$((fail + 1))
+    ok "compaction: session not compacted or summary missing" 1 0
   fi
 
-  rm -f "$csess_file"
+  cleanup_sessions "$CSESS"
+}
 
-  # ── Edit tool ────────────────────────────────────────────────────────────────
-  echo "== edit / find / grep tools =="
+test_group_network_edit_tool() {
+  local out rc ef
+
+  note "edit / find / grep tools"
+
+  # Edit tool
   ef="$(mktemp)"; printf 'Hello World' > "$ef"
+  register_temp_file "$ef"
   out=$("$BIN" --tools edit "Use the edit tool to replace 'World' with 'Mars' in $ef"); rc=$?
   ok "edit tool exit" "$rc" 0
   if [ -f "$ef" ] && grep -q "Mars" "$ef"; then
-    printf 'PASS  edit tool mutated file on disk\n'; pass=$((pass + 1))
+    ok "edit tool mutated file on disk" 0 0
   else
-    printf 'FAIL  edit tool did not update file\n'; fail=$((fail + 1))
+    ok "edit tool did not update file" 1 0
   fi
-  rm -f "$ef"
+}
 
-  # ── Find tool ────────────────────────────────────────────────────────────────
+test_group_network_find_grep_tools() {
+  local out rc fdir gf
+
+  note "find / grep tools"
+
+  # Find tool
   fdir="$(mktemp -d)"
+  register_temp_dir "$fdir"
   touch "$fdir/tau-FINDME99.txt"
   out=$("$BIN" --mode text --tools find "Use the find tool to find files matching the pattern 'FINDME99' under $fdir. Quote the exact filename you find."); rc=$?
   ok "find tool exit" "$rc" 0
   contains "find tool returns result" "$out" "FINDME99"
-  rm -rf "$fdir"
 
-  # ── Grep tool ────────────────────────────────────────────────────────────────
+  # Grep tool
   gf="$(mktemp)"; printf 'GREP_NEEDLE_42 is the answer' > "$gf"
+  register_temp_file "$gf"
   out=$("$BIN" --mode text --tools grep "Use the grep tool to search for GREP_NEEDLE_42 in $gf. Quote the matching line exactly."); rc=$?
   ok "grep tool exit" "$rc" 0
   contains "grep tool finds pattern" "$out" "GREP_NEEDLE_42"
-  rm -f "$gf"
+}
 
-  # ── --dry-run: tool reported, not executed ────────────────────────────────────
-  echo "== dry-run / iteration cap / no-tools =="
+test_group_network_dry_run_no_side_effect() {
+  local out rc dry_file
+
+  note "dry-run / iteration cap / no-tools"
+
+  # --dry-run: tool reported, not executed
   dry_file="/tmp/tau-dryrun-$$-shouldnotexist"
   out=$("$BIN" --dry-run --tools bash "Use bash to run: touch $dry_file"); rc=$?
   ok "dry-run exit" "$rc" 0
   if [ ! -f "$dry_file" ]; then
-    printf 'PASS  dry-run: no side effect on disk\n'; pass=$((pass + 1))
+    ok "dry-run: no side effect on disk" 0 0
   else
-    printf 'FAIL  dry-run: file was created (should not be)\n'; fail=$((fail + 1))
+    ok "dry-run: file was created (should not be)" 1 0
     rm -f "$dry_file"
   fi
+}
 
-  # ── --max-iterations backstop ─────────────────────────────────────────────────
-  # max-iterations=1: model gets exactly 1 tool call, then is forced to give a
-  # final text answer. Should still exit 0 (forced-answer path).
+test_group_network_max_iterations() {
+  local out rc
+
+  note "--max-iterations backstop"
+
+  # max-iterations=1: model gets exactly 1 tool call, then is forced to give a final text answer
   out=$("$BIN" --max-iterations 1 --tools bash "Use bash to run 'echo HI', then summarize the output."); rc=$?
   ok "--max-iterations=1 backstop exit" "$rc" 0
+}
 
-  # ── --no-tools: model answers without tools ───────────────────────────────────
+test_group_network_no_tools() {
+  local out rc
+
+  note "--no-tools"
+
   out=$("$BIN" --no-tools "What is 2+2? Reply with just the number."); rc=$?
   ok "--no-tools exit" "$rc" 0
   contains "--no-tools model still answers" "$out" "4"
+}
 
-  # ── --append-system-prompt ────────────────────────────────────────────────────
-  echo "== system prompt flags =="
+test_group_network_system_prompt_flags() {
+  local out rc
+
+  note "system prompt flags"
+
   out=$("$BIN" --mode text --no-tools --append-system-prompt "CRITICAL: prefix every reply with APPENDED_99" "Reply with exactly: APPENDED_99"); rc=$?
   ok "--append-system-prompt exit" "$rc" 0
   contains "--append-system-prompt honored" "$out" "APPENDED_99"
+}
 
-  # ── --exclude-tools denylist ──────────────────────────────────────────────────
-  # bash excluded; model should use ls tool. Use a small controlled directory
-  # (not /tmp: 2600+ files → 87KB ls output → SystemResources on second API call)
+test_group_network_exclude_tools() {
+  local out rc excl_dir
+
+  note "--exclude-tools denylist"
+
   excl_dir="$(mktemp -d)"
+  register_temp_dir "$excl_dir"
   touch "$excl_dir/alpha.txt" "$excl_dir/beta.txt"
   out=$("$BIN" --mode text --exclude-tools bash "List files in $excl_dir using available tools. Say how many files there are."); rc=$?
   ok "--exclude-tools exit" "$rc" 0
-  rm -rf "$excl_dir"
+}
 
-  # ── Large @file injection ─────────────────────────────────────────────────────
-  echo "== large @file injection =="
+test_group_network_large_file_injection() {
+  local out rc bigf
+
+  note "large @file injection"
+
   bigf="$(mktemp)"
+  register_temp_file "$bigf"
   python3 -c "
 filler = 'The following text is padding to make a large file. ' * 60
 print(filler)
@@ -354,10 +765,13 @@ print(filler)
   out=$("$BIN" --no-stream "@$bigf" "What is the magic token mentioned in the file? Reply with just the token."); rc=$?
   ok "large @file exit" "$rc" 0
   contains "large @file content reaches model" "$out" "BIGFILE_TOKEN_77"
-  rm -f "$bigf"
+}
 
-  # ── Goal mode ─────────────────────────────────────────────────────────────────
-  echo "== goal mode =="
+test_group_network_goal_mode() {
+  local out rc GSESS gsess_file goal_target
+
+  note "goal mode"
+
   GSESS="smoke-goal-$$"
   gsess_file="$HOME/.config/tau/sessions/${GSESS}.json"
   goal_target="/tmp/tau-goal-target-$$"
@@ -366,40 +780,98 @@ print(filler)
     "/goal Create a file at $goal_target containing exactly: GOAL_SMOKE_OK"); rc=$?
   ok "goal mode exit" "$rc" 0
   if [ -f "$goal_target" ] && grep -q "GOAL_SMOKE_OK" "$goal_target"; then
-    printf 'PASS  goal mode: file created with correct content\n'; pass=$((pass + 1))
+    ok "goal mode: file created with correct content" 0 0
   else
-    printf 'FAIL  goal mode: file missing or wrong content\n'; fail=$((fail + 1))
+    ok "goal mode: file missing or wrong content" 1 0
   fi
-  rm -f "$goal_target" "$gsess_file"
+  rm -f "$goal_target"
+  cleanup_sessions "$GSESS"
+}
 
-  # ── Goal mode: GOAL_MET sentinel stripped from terminal output ───────────────
-  # Verify <GOAL_MET> does not appear in what tau prints (it is consumed internally)
+test_group_network_goal_sentinel_strip() {
+  local out rc GSESS2 gsess2_file goal_target2
+
+  note "goal mode: GOAL_MET sentinel stripped from terminal output"
+
   GSESS2="smoke-goalstrip-$$"
   gsess2_file="$HOME/.config/tau/sessions/${GSESS2}.json"
   goal_target2="/tmp/tau-goal-target2-$$"
   out=$("$BIN" --session "$GSESS2" --tools write \
     "/goal Write the word SENTINEL_STRIP_OK to $goal_target2")
   if printf '%s' "$out" | grep -q '<GOAL_MET>'; then
-    printf 'FAIL  goal mode: <GOAL_MET> leaked to terminal output\n'; fail=$((fail + 1))
+    ok "goal mode: <GOAL_MET> leaked to terminal output" 1 0
   else
-    printf 'PASS  goal mode: <GOAL_MET> sentinel not visible in output\n'; pass=$((pass + 1))
+    ok "goal mode: <GOAL_MET> sentinel not visible in output" 0 0
   fi
-  rm -f "$goal_target2" "$gsess2_file"
+  rm -f "$goal_target2"
+  cleanup_sessions "$GSESS2"
+}
 
-  # ── Multi-tool in a single turn ───────────────────────────────────────────────
-  echo "== multi-tool turn =="
+test_group_network_multi_tool_turn() {
+  local out rc mf1 mf2
+
+  note "multi-tool turn"
+
   mf1="$(mktemp)"; printf 'MULTI_A_11' > "$mf1"
   mf2="$(mktemp)"; printf 'MULTI_B_22' > "$mf2"
+  register_temp_file "$mf1" "$mf2"
   out=$("$BIN" --mode text --tools read "Read both $mf1 and $mf2 and quote their exact contents on one line each."); rc=$?
   ok "multi-tool turn exit" "$rc" 0
   contains "multi-tool: first file content" "$out" "MULTI_A_11"
   contains "multi-tool: second file content" "$out" "MULTI_B_22"
-  rm -f "$mf1" "$mf2"
+}
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Main test execution
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Run offline groups
+run_test_group "help"       test_group_help
+run_test_group "flags"      test_group_flag_parsing
+run_test_group "role"       test_group_role_flag
+run_test_group "fleet"      test_group_fleet
+run_test_group "issue11"    test_group_issue11_flags
+run_test_group "model"      test_group_model_shorthand
+run_test_group "acp"        test_group_acp
+run_test_group "goal"       test_group_goal_offline
+run_test_group "dry-run"    test_group_dry_run
+run_test_group "session-validation" test_group_session_name_validation
+run_test_group "fleet-items" test_group_fleet_items
+run_test_group "invalid-numeric" test_group_invalid_numeric
+run_test_group "fleet-flags" test_group_fleet_flags
+
+# Run online groups if --net and API key available
+if [ "$NET" = "1" ]; then
+  if ! $has_key; then
+    echo "# WARNING: --net specified but no API key found; skipping online tests" >&2
+  else
+    run_test_group "baseline"          test_group_network_baseline
+    run_test_group "json-mode"         test_group_network_json_mode
+    run_test_group "at-file"           test_group_network_at_file
+    run_test_group "streaming"         test_group_network_streaming
+    run_test_group "tools"             test_group_network_tools
+    run_test_group "session"           test_group_network_session
+    run_test_group "compaction"        test_group_network_compaction
+    run_test_group "edit-tool"         test_group_network_edit_tool
+    run_test_group "find-grep"         test_group_network_find_grep_tools
+    run_test_group "dry-run-no-side"   test_group_network_dry_run_no_side_effect
+    run_test_group "max-iterations"    test_group_network_max_iterations
+    run_test_group "no-tools"          test_group_network_no_tools
+    run_test_group "system-prompt"     test_group_network_system_prompt_flags
+    run_test_group "exclude-tools"     test_group_network_exclude_tools
+    run_test_group "large-file"        test_group_network_large_file_injection
+    run_test_group "goal-mode"         test_group_network_goal_mode
+    run_test_group "goal-strip"        test_group_network_goal_sentinel_strip
+    run_test_group "multi-tool"        test_group_network_multi_tool_turn
+  fi
 else
-  echo "(skipping network tests; pass --net to enable)"
+  echo "# (network tests skipped; use --net to enable)"
 fi
 
-echo
-echo "== summary: $pass passed, $fail failed =="
-[ "$fail" -eq 0 ]
+# ── Benchmark integration ─────────────────────────────────────────────────
+if [ "$RUN_BENCH" = "1" ]; then
+  run_benchmarks
+fi
+
+# ── Final summary ─────────────────────────────────────────────────────────
+print_summary

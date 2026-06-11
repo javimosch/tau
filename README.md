@@ -353,11 +353,14 @@ CLI flags override config file values.
 
 | Provider | Endpoint | Env var(s) | Default model |
 |----------|----------|------------|---------------|
-| `xiaomi` (default) | `…xiaomimimo.com/v1/chat/completions` | `TAU_API_KEY`, `XIAOMI_API_KEY` | `mimo-v2.5` |
+| `xiaomi` (default) | `token-plan-ams.xiaomimimo.com/v1/chat/completions` | `TAU_API_KEY`, `XIAOMI_API_KEY` | `mimo-v2.5` |
 | `openai` | `api.openai.com/v1/chat/completions` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `deepseek` | `api.deepseek.com/v1/chat/completions` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `opencode-go` | `opencode.ai/zen/go/v1/chat/completions` | `OPENCODE_API_KEY` | `deepseek-v4-flash` |
 
-Key resolution: `--api-key` → provider env var → provider builtin key.
+Shorthand: `--model openai/gpt-4o-mini` resolves provider + model in one flag.
+
+Key resolution: `--api-key` → provider env var → `TAU_API_KEY` → provider builtin key.
 
 ---
 
@@ -475,10 +478,11 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 | **Tool-calling loop** (schemas sent + tool execution) | ✅ done |
 | Config file (`~/.config/tau/config.json`) | ✅ done |
 | Session persistence (`--session <name>`) | ✅ done |
-| Goal mode (`/goal` + status/pause/resume/clear/complete) | ✅ done |
+| Goal mode (`/goal` + status/pause/resume/clear/complete, `--tokens N` soft budget) | ✅ done |
 | Auto context compaction (LLM summarization at threshold) | ✅ done |
 | Author↔Critic loop (`--role author\|critic\|coordinator`, `<READY_FOR_REVIEW>` / `<APPROVED>` / `<BLOCKED>` sentinels) | ✅ done |
-| Fleet orchestration (`tau fleet run\|status\|list\|cancel`, manifests at `~/.config/tau/fleets/`) | ✅ v0 |
+| Fleet orchestration (`tau fleet run\|status\|list\|logs\|cancel`, manifests at `~/.config/tau/fleets/`) | ✅ v0 |
+| ACP server (`tau acp start\|stop\|status\|serve`, JSON-RPC over stdio) | ✅ done |
 
 ---
 
