@@ -443,7 +443,8 @@ pub fn buildSpec(
             },
         };
     }
-    // LLM coordinator turn
+    // LLM coordinator turn with retry — when all items fail to parse, re-query
+    // the coordinator with a stronger directive (max 3 attempts).
     var coord_cfg = cfg;
     coord_cfg.goal = null;
     coord_cfg.goal_action = .none;
@@ -454,20 +455,113 @@ pub fn buildSpec(
     if (cfg.coordinator_model) |m| coord_cfg.model = m;
     if (cfg.coordinator_model != null) coord_cfg.provider = cfg.coordinator_model.?; // set by args
 
-    const sys = try coordinatorDirective(gpa, goal);
-    defer gpa.free(sys);
-    const user_turn = try gpa.dupe(u8, "Produce the work breakdown as JSON now.");
-    defer gpa.free(user_turn);
+    const max_attempts: u32 = 3;
+    var attempt: u32 = 0;
+    var last_raw: ?[]u8 = null;
+    // errdefer frees last_raw on any error return (but NOT on success — the
+    // caller takes ownership via coordinator_response).
+    errdefer if (last_raw) |lr| gpa.free(lr);
 
-    const messages = [_]provider_mod.Message{
-        .{ .role = "system", .content = sys },
-        .{ .role = "user", .content = user_turn },
-    };
-    const resp = try provider_mod.complete(io, gpa, coord_cfg, &messages, null);
-    defer gpa.free(resp.content);
-    const raw = try gpa.dupe(u8, resp.content);
+    while (attempt < max_attempts) : (attempt += 1) {
+        // Free the previous attempt's raw response before allocating a new one.
+        if (last_raw) |lr| {
+            gpa.free(lr);
+            last_raw = null;
+        }
 
-    const json_slice = extractCoordinatorJson(raw) orelse return error.CoordinatorParseFailed;
+        // Build the system directive. On retry, prepend a note demanding
+        // valid JSON only (the model already knows the schema from attempt 0).
+        const sys = try coordinatorDirective(gpa, goal);
+        defer gpa.free(sys);
+        const sys_msg: []const u8 = if (attempt == 0)
+            sys
+        else
+            try std.fmt.allocPrint(gpa,
+                "⚠️ RETRY — your previous response had parse errors on ALL items. " ++
+                    "Output ONLY the JSON object specified below. No prose, no markdown fences, " ++
+                    "no thinking tags. Every item MUST have all required fields: id, title, scope, " ++
+                    "deliverables, acceptance.\n\n{s}",
+                .{sys});
+        defer if (attempt > 0) gpa.free(sys_msg);
+
+        const user_turn = try gpa.dupe(u8,
+            if (attempt == 0) "Produce the work breakdown as JSON now."
+            else "Produce ONLY valid JSON. No other text.");
+        defer gpa.free(user_turn);
+
+        const messages = [_]provider_mod.Message{
+            .{ .role = "system", .content = sys_msg },
+            .{ .role = "user", .content = user_turn },
+        };
+        const resp = try provider_mod.complete(io, gpa, coord_cfg, &messages, null);
+        defer gpa.free(resp.content);
+        last_raw = try gpa.dupe(u8, resp.content);
+
+        const json_slice = extractCoordinatorJson(last_raw.?) orelse {
+            if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
+            continue;
+        };
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_slice, .{}) catch {
+            if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
+            continue;
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) {
+            if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
+            continue;
+        }
+        const items_v = parsed.value.object.get("items") orelse {
+            if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
+            continue;
+        };
+        if (items_v != .array) {
+            if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
+            continue;
+        }
+
+        // Collect items. Individual parse failures are logged via
+        // logInvalidWorkItem but do NOT abort — we retry only when ALL
+        // items fail (partial success is better than retrying forever).
+        var items = std.ArrayList(WorkItem).empty;
+        var any_failed = false;
+        for (items_v.array.items, 0..) |it, idx| {
+            const wi = parseWorkItem(gpa, it, idx) catch {
+                any_failed = true;
+                continue;
+            };
+            try items.append(gpa, wi);
+        }
+
+        if (items.items.len > 0) {
+            // At least some items parsed — return them. The coordinator_response
+            // carries last_raw (ownership transferred; errdefer will NOT free it
+            // because this is a success return, not an error).
+            return .{
+                .spec = FleetSpec{
+                    .goal = try gpa.dupe(u8, goal),
+                    .items = try items.toOwnedSlice(gpa),
+                    .parallel = cfg.fleet_parallel,
+                },
+                .coordinator_response = last_raw,
+            };
+        }
+
+        if (!any_failed) {
+            // Empty items array with no individual parse errors → fatal
+            return error.CoordinatorParseFailed;
+        }
+
+        // All items failed to parse. Clean up the empty ArrayList and retry.
+        items.deinit(gpa);
+    }
+
+    return error.CoordinatorParseFailed;
+}
+
+/// Parse a pre-supplied items JSON blob (same schema the coordinator
+/// produces) into a slice of WorkItem. Used by the --items CLI flag.
+pub fn parseItemsJson(gpa: std.mem.Allocator, raw_json: []const u8) ![]const WorkItem {
+    const json_slice = extractCoordinatorJson(raw_json) orelse return error.CoordinatorParseFailed;
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_slice, .{}) catch
         return error.CoordinatorParseFailed;
     defer parsed.deinit();
@@ -479,14 +573,8 @@ pub fn buildSpec(
     for (items_v.array.items, 0..) |it, idx| {
         try items.append(gpa, try parseWorkItem(gpa, it, idx));
     }
-    return .{
-        .spec = FleetSpec{
-            .goal = try gpa.dupe(u8, goal),
-            .items = try items.toOwnedSlice(gpa),
-            .parallel = cfg.fleet_parallel,
-        },
-        .coordinator_response = raw,
-    };
+    if (items.items.len == 0) return error.CoordinatorParseFailed;
+    return try items.toOwnedSlice(gpa);
 }
 
 /// Dispatch a fleet subcommand. Exit code returned.
@@ -633,8 +721,12 @@ fn runCmd(
     };
     defer if (fleet_id == null) arena.free(id);
 
-    // Build spec (either from CLI items, or via coordinator LLM call).
-    const built = try buildSpec(gpa, cfg, gl, null, io);
+    // Build spec: use pre-supplied --items JSON if given, otherwise coordinator LLM.
+    const items_override: ?[]const WorkItem = if (cfg.fleet_items) |raw|
+        try parseItemsJson(gpa, raw)
+    else
+        null;
+    const built = try buildSpec(gpa, cfg, gl, items_override, io);
     const coordinator_response: ?[]u8 = built.coordinator_response;
     defer if (coordinator_response) |cr| gpa.free(cr);
     const spec = built.spec;
