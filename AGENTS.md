@@ -14,6 +14,244 @@ Tau is a non-interactive, agent-first AI CLI written in Zig (0.16.0). It's desig
 - **Agent Loop**: `src/agent.zig`
 - **Goal Mode**: `src/goal.zig`
 
+## CLI Cheatsheet — Using tau End-to-End
+
+### Quick Reference: All Flags
+
+```bash
+tau [flags] "prompt"                    # Single-shot chat (JSON by default)
+tau [flags] "prompt1" "prompt2" ...     # Multi-message user turns
+tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-p, --print` | — | on | Non-interactive mode (always on) |
+| `--provider <name>` | string | xiaomi | LLM provider: xiaomi, openai, deepseek |
+| `--model <id>` | string | provider default | Model id or `provider/id` shorthand |
+| `--api-key <key>` | string | — | Override API key |
+| `--system-prompt <text>` | string | — | Set system prompt |
+| `--append-system-prompt <text>` | string | — | Append to system prompt (repeatable) |
+| `--mode <text\|json>` | enum | json | Output format |
+| `--no-stream` | flag | — | Disable SSE streaming (streaming is default) |
+| `-t, --tools <csv>` | string | all | Allowlist tool names |
+| `-xt, --exclude-tools <csv>` | string | — | Denylist tool names |
+| `-nt, --no-tools` | flag | — | Disable all tools |
+| `--thinking` | flag | off | Show thinking/reasoning chunks |
+| `--debug` | flag | off | Log perf stats + tool I/O to stderr |
+| `--dry-run` | flag | off | Plan tool calls, execute none |
+| `--temperature <f>` | float | 0.7 | Sampling temperature |
+| `--max-tokens <n>` | int | — | Cap output tokens |
+| `--timeout-ms <n>` | int | 120000 | HTTP timeout in ms |
+| `--session <name>` | string | — | Persist to `~/.config/tau/sessions/<name>.json` |
+| `--context-window <n>` | int | per-provider | Token capacity for compaction threshold |
+| `--compact-threshold <f>` | float | 0.5 | Fraction of window that triggers compaction |
+| `--compact-keep-recent <n>` | int | 20000 | Tokens kept verbatim after compaction |
+| `--no-compact` | flag | — | Disable auto-compaction |
+| `--role <author\|critic\|coordinator\|none>` | enum | none | Set agent role |
+| `--max-iterations <n>` | int | 100 | Tool-loop runaway backstop |
+| `--goal-max-iterations <n>` | int | 50 | Per-run cap in goal mode |
+| `--help-json` | — | — | Machine-readable help as JSON |
+| `-h, --help` | — | — | Show help text |
+| `-v, --version` | — | — | Show version |
+
+### Output Formats
+
+**JSON mode (default):**
+```json
+{"version":"0.3.0","model":"xiaomi/mimo-v2.5","content":"...","done":true}
+```
+
+**JSON streaming (NDJSON):**
+```json
+{"chunk":"token","done":false}
+...
+{"model":"xiaomi/mimo-v2.5","done":true}
+```
+
+**Text mode (`--mode text`):** Plain text on stdout.
+
+**Error envelope (stderr):**
+```json
+{"err":{"code":80,"type":"invalid_argument","message":"..."}}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `80` | Invalid argument (bad flag, unknown provider, etc.) |
+| `82` | Missing required field (e.g., `fleet run` without `--goal`) |
+| `105` | Connection timeout |
+| `106` | Auth failed (bad/missing API key) |
+| `110` | Internal error (HTTP failure, JSON parse error, etc.) |
+| `111` | Unimplemented |
+
+### Tools Reference
+
+All tools send JSON-schema'd parameters to the model. Allowlist with `--tools <csv>`, denylist with `--exclude-tools <csv>`, disable all with `--no-tools`.
+
+| Tool | Purpose | Key Params |
+|------|---------|------------|
+| `bash` | Execute shell commands | `command` (required) |
+| `read` | Read file contents | `path` (required), `max_lines` |
+| `write` | Create/overwrite files | `path`, `content` (required) |
+| `edit` | Replace strings in files | `path`, `old_string`, `new_string` |
+| `ls` | List directory contents | `path` (required) |
+| `grep` | Search files with regex | `pattern` (required), `path` |
+| `find` | Find files by glob pattern | `pattern` (required), `path` |
+
+### Common Workflows
+
+#### 1. Single-Shot (No Tools)
+```bash
+tau "What is Zig?"                           # JSON response
+tau --mode text "Explain this error"          # Human-readable
+tau --no-tools "What is 2+2?"                 # Force no tool use
+tau --model openai/gpt-4o-mini "hello"        # Provider/model shorthand
+```
+
+#### 2. Tool-Calling Loop
+```bash
+tau --tools bash "Run: echo hello"            # Single tool
+tau --tools bash,read,write "analyze src/"    # Multiple tools
+tau --exclude-tools bash "list files"         # Deny specific tools
+tau --no-tools "plain chat"                   # No tools at all
+```
+
+#### 3. Session Persistence
+```bash
+tau --session mywork "Remember: zig 0.16"     # Creates session
+tau --session mywork "What zig version?"       # Recalls from history
+# Session file: ~/.config/tau/sessions/mywork.json
+```
+
+#### 4. Goal Mode (Autonomous)
+```bash
+tau --session proj "/goal add tests for config"  # Start goal
+tau --session proj "/goal status"                 # Check progress
+tau --session proj "/goal pause"                  # Pause
+tau --session proj "/goal resume"                 # Resume
+tau --session proj "/goal clear"                  # Reset
+tau --session proj "/goal complete"               # Mark done
+# Goal budget: /goal --tokens 500K "objective"
+```
+
+#### 5. Author↔Critic Loop
+```bash
+# Author: code with tools, emit <READY_FOR_REVIEW> when done
+tau --role author --tools bash,write,edit --session pr1 \
+    "Implement feature X with tests"
+
+# Critic: read-only review, emit <APPROVED> or <BLOCKED>
+tau --role critic --tools read,grep,ls --session pr1 \
+    "Review implementation against spec"
+
+# Coordinator: decompose goal into work items (JSON)
+tau --role coordinator --no-tools \
+    "Decompose: add OAuth login"
+```
+
+#### 6. Fleet Orchestration
+```bash
+tau fleet run --goal "ship the redesign"          # Plan + dispatch
+tau fleet run --goal "x" --items '{"items":[...]}' # Pre-supplied items
+tau fleet run --goal "x" --coordinator-model openai/gpt-4o-mini
+tau fleet run --goal "x" --sequential              # Sequential workers
+tau fleet list                                     # Active fleets
+tau fleet status <id>                              # Full manifest
+tau fleet logs <id>                                # Per-worker session hints
+tau fleet cancel <id>                              # Cancel fleet
+```
+
+#### 7. ACP Server
+```bash
+tau acp serve                        # JSON-RPC over stdio
+tau acp serve --acp-socket /tmp/sock # Unix socket
+tau acp start                        # Background daemon
+tau acp status                       # Daemon status (JSON)
+tau acp stop                         # Stop daemon
+```
+
+#### 8. File Injection & System Prompts
+```bash
+# @path expands to a user message containing the file contents
+# It's positional: each @path arg becomes a separate user message
+tau "@file.txt" "summarize this"                # 2 user messages: file content + prompt
+tau --system-prompt "You are a critic" "review" # Set system prompt
+tau --append-system-prompt "Be concise" "x"     # Append to system prompt
+tau --append-system-prompt "A" --append-system-prompt "B" "x"  # Repeatable
+```
+
+#### 9. Dry-Run & Debugging
+```bash
+tau --dry-run --tools bash "touch /tmp/x"   # Plan only, no execution
+tau --debug "test"                          # Stderr: perf stats + tool I/O
+tau --thinking "complex reasoning task"     # Show model's thinking chunks
+tau --max-iterations 1 --tools bash "x"     # Cap tool loops
+```
+
+### Storage Paths
+
+| Path | Purpose |
+|------|---------|
+| `~/.config/tau/config.json` | Provider, model, mode defaults |
+| `~/.config/tau/sessions/<name>.json` | Session conversation + goal state |
+| `~/.config/tau/fleets/<id>.json` | Fleet manifests (spec + per-item status) |
+| `~/.config/tau/acp.sock` | ACP Unix socket (daemon mode) |
+| `~/.config/tau/acp.pid` | ACP daemon PID file |
+| `~/.config/tau/acp.log` | ACP daemon log |
+
+### How to Extend Tau
+
+#### File Map (by subsystem)
+
+| File | What It Does | When to Edit |
+|------|-------------|-------------|
+| `src/main.zig` | CLI dispatch, `help_text`, `flag_specs` | Adding CLI flags, subcommands |
+| `src/args.zig` | Argv parser, `Action` enum | Adding new subcommands |
+| `src/agent.zig` | Single-turn agentic tool loop | Modifying agent behavior |
+| `src/goal.zig` | Goal directive parsing + sentinels | Changing goal mode logic |
+| `src/loop.zig` | Author↔Critic primitive | A/C loop changes |
+| `src/fleet.zig` | Fleet orchestration | Fleet command changes |
+| `src/config.zig` | `Config` struct + `Role` enum + key resolution | Adding config fields |
+| `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
+| `src/session.zig` | Session persistence | Session format changes |
+| `src/context.zig` | Auto-compaction logic | Compaction algorithm |
+| `src/llm/provider.zig` | LLM providers, HTTP, streaming | Adding providers |
+| `src/llm/acp.zig` | ACP JSON-RPC server | ACP protocol changes |
+| `src/tools/*.zig` | Built-in tools (bash,read,write,edit,ls,grep,find) | Adding/modifying tools |
+| `src/tools/registry.zig` | Tool registry + allowlist/denylist | Registering new tools |
+| `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
+| `src/term.zig` | Portable stdout/stderr | Terminal output changes |
+
+#### Validation Commands
+
+```bash
+zig build                    # Compile (fast)
+zig build test               # Full unit test suite
+./scripts/smoke.sh           # Offline smoke: help, flags, parsing
+./scripts/smoke.sh --net     # Online smoke: LLM calls (needs API key)
+./scripts/smoke.sh --bench   # Resource benchmarks
+./scripts/smoke.sh --group fleet,role  # Run specific groups
+./scripts/smoke.sh --list-groups       # List all test groups
+./scripts/smoke.sh --bench             # Smoke + resource benchmarks
+./scripts/benchmark-resources.sh       # Standalone resource benchmarks
+./zig-out/bin/tau --help               # Verify help text
+./zig-out/bin/tau --help-json          # Verify JSON schema
+```
+
+#### Zig 0.16 Gotchas
+
+1. **`orelse try` requires a block** — wrap in `blk: { ... break :blk ... }`
+2. **`if (x) |y| defer ...;` is invalid** — use `const cr: ?[]u8 = ...; defer if (cr) |c| gpa.free(c);`
+3. **Empty string `""` is `*const [0:0]u8`** — use `&.{}` for empty slices
+4. **`spawn` returns `*const Child`** — use `var child = ...; if (child) |*ch| { ch.wait() }`
+5. **Analyzer flags params as "unused"** in early-return paths — add `_ = env;` workaround
+6. **`?[]const T` fields can't be reassigned** — use `ArrayList` + `toOwnedSlice`
+7. **Config is passed by value** — use `anytype` in helpers so tests can inject mocks
+
 ## Adding New LLM Providers
 
 ### Step 1: Add Provider to Provider Table

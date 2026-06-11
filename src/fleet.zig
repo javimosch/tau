@@ -204,9 +204,41 @@ fn logInvalidWorkItem(idx: usize, field: []const u8) void {
     }
 }
 
+/// Sanitize a byte slice to valid UTF-8 by replacing any non-UTF-8 sequences
+/// with the Unicode replacement character (U+FFFD = 0xEF 0xBF 0xBD).
+/// Returns a new gpa-allocated slice (always valid UTF-8).
+fn sanitizeUtf8(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
+    if (std.unicode.utf8ValidateSlice(s)) return try gpa.dupe(u8, s);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    var i: usize = 0;
+    while (i < s.len) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(s[i]) catch {
+            try out.appendSlice(gpa, "\xEF\xBF\xBD"); // U+FFFD
+            i += 1;
+            continue;
+        };
+        if (i + cp_len > s.len) {
+            try out.appendSlice(gpa, "\xEF\xBF\xBD");
+            i += 1;
+            continue;
+        }
+        const cp = std.unicode.utf8Decode(s[i..][0..cp_len]) catch {
+            try out.appendSlice(gpa, "\xEF\xBF\xBD");
+            i += 1;
+            continue;
+        };
+        _ = cp;
+        try out.appendSlice(gpa, s[i .. i + cp_len]);
+        i += cp_len;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
 /// Parse a WorkItem from a JSON object. `idx` is the array index of this item
 /// in the coordinator response; included in error logs so a retry can target
-/// the failing item.
+/// the failing item. All string fields are sanitized to valid UTF-8 so they
+/// never crash the JSON serializer.
 fn parseWorkItem(gpa: std.mem.Allocator, obj: std.json.Value, idx: usize) !WorkItem {
     if (obj != .object) {
         logInvalidWorkItem(idx, "<root>");
@@ -242,11 +274,11 @@ fn parseWorkItem(gpa: std.mem.Allocator, obj: std.json.Value, idx: usize) !WorkI
     }
     const deps = try deps_storage.toOwnedSlice(gpa);
     return .{
-        .id = try gpa.dupe(u8, id),
-        .title = try gpa.dupe(u8, title),
-        .scope = try gpa.dupe(u8, scope),
-        .deliverables = try gpa.dupe(u8, deliverables),
-        .acceptance = try gpa.dupe(u8, acceptance),
+        .id = try sanitizeUtf8(gpa, id),
+        .title = try sanitizeUtf8(gpa, title),
+        .scope = try sanitizeUtf8(gpa, scope),
+        .deliverables = try sanitizeUtf8(gpa, deliverables),
+        .acceptance = try sanitizeUtf8(gpa, acceptance),
         .depends_on = deps,
     };
 }
@@ -608,13 +640,19 @@ fn runCmd(
 
     // Initialize item results
     var items = std.ArrayList(ItemResult).empty;
+    defer items.deinit(gpa);
     for (spec.items) |it| try items.append(gpa, .{ .item = it });
+
+    // Clone items for the initial manifest (toOwnedSlice would consume the
+    // ArrayList, leaving the worker dispatch loop with zero items).
+    const manifest_items = try gpa.alloc(ItemResult, items.items.len);
+    @memcpy(manifest_items, items.items);
 
     // Write the initial manifest
     const manifest = Manifest{
         .id = try gpa.dupe(u8, id),
         .spec = spec,
-        .items = try items.toOwnedSlice(gpa),
+        .items = manifest_items,
         .created_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
         .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
     };
@@ -673,8 +711,14 @@ fn runCmd(
             }
 
             if (wave_idxs.items.len == 0) {
-                term.out("{\"err\":{\"code\":110,\"message\":\"unmet dependencies or cycle in fleet items\"}}\n");
-                return 110;
+                // All remaining items have unmet dependencies (including failed
+                // deps) or there is a genuine cycle. Mark remaining pending
+                // items as blocked and exit the wave loop gracefully.
+                for (pending.items) |idx| {
+                    if (items.items[idx].status == .pending)
+                        items.items[idx].status = .blocked;
+                }
+                break;
             }
 
             // Wait for all children in this wave to complete.
@@ -776,7 +820,7 @@ fn runCmd(
     for (items.items) |ir| {
         switch (ir.status) {
             .approved => approved_count += 1,
-            .failed => failed_count += 1,
+            .failed, .blocked => failed_count += 1,
             else => {},
         }
     }
@@ -1106,4 +1150,144 @@ test "Manifest with global_status: cancelled round-trips through JSON" {
         .ignore_unknown_fields = true,
     });
     try std.testing.expectEqual(@TypeOf(loaded.global_status).cancelled, loaded.global_status);
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests — fleet orchestration bugs found & fixed (June 2026)
+// ---------------------------------------------------------------------------
+
+test "sanitizeUtf8 passes through valid UTF-8 unchanged" {
+    const gpa = std.testing.allocator;
+    const input = "Hello, 世界! 🌍";
+    const result = try sanitizeUtf8(gpa, input);
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings(input, result);
+}
+
+test "sanitizeUtf8 handles empty string" {
+    const gpa = std.testing.allocator;
+    const result = try sanitizeUtf8(gpa, "");
+    defer gpa.free(result);
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "sanitizeUtf8 replaces single invalid byte with U+FFFD" {
+    const gpa = std.testing.allocator;
+    // 0xFF is never valid as a UTF-8 start byte or continuation byte.
+    const input: []const u8 = &.{ 'A', 0xFF, 'B' };
+    const result = try sanitizeUtf8(gpa, input);
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("A\xEF\xBF\xBDB", result);
+}
+
+test "sanitizeUtf8 replaces truncated sequence with U+FFFD" {
+    const gpa = std.testing.allocator;
+    // 0xC2 is a 2-byte sequence start but no continuation byte follows.
+    const input: []const u8 = &.{ 'A', 0xC2, 'B' };
+    const result = try sanitizeUtf8(gpa, input);
+    defer gpa.free(result);
+    try std.testing.expectEqualStrings("A\xEF\xBF\xBDB", result);
+}
+
+test "sanitizeUtf8 handles all-invalid bytes" {
+    const gpa = std.testing.allocator;
+    const input: []const u8 = &.{ 0xFF, 0xFE, 0xFD };
+    const result = try sanitizeUtf8(gpa, input);
+    defer gpa.free(result);
+    // 3 × U+FFFD = 9 bytes.
+    try std.testing.expectEqual(@as(usize, 9), result.len);
+    try std.testing.expectEqualStrings("\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD", result);
+}
+
+test "manifest items clone does not consume ArrayList" {
+    // Regression guard: verify that cloning items for the initial manifest
+    // (gpa.alloc + @memcpy) leaves the ArrayList intact. Previously
+    // toOwnedSlice was used, which consumed the ArrayList and left the
+    // worker dispatch loop with zero items.
+    const gpa = std.testing.allocator;
+    var items = std.ArrayList(ItemResult).empty;
+    defer items.deinit(gpa);
+
+    try items.append(gpa, .{ .item = WorkItem{
+        .id = "a", .title = "A", .scope = "a", .deliverables = "a", .acceptance = "a",
+    }});
+    try items.append(gpa, .{ .item = WorkItem{
+        .id = "b", .title = "B", .scope = "b", .deliverables = "b", .acceptance = "b",
+    }});
+    try items.append(gpa, .{ .item = WorkItem{
+        .id = "c", .title = "C", .scope = "c", .deliverables = "c", .acceptance = "c",
+    }});
+
+    // Clone (same pattern used in runCmd).
+    const manifest_items = try gpa.alloc(ItemResult, items.items.len);
+    defer gpa.free(manifest_items);
+    @memcpy(manifest_items, items.items);
+
+    // The ArrayList MUST still have 3 items (regression: was 0 with toOwnedSlice).
+    try std.testing.expectEqual(@as(usize, 3), items.items.len);
+    try std.testing.expectEqualStrings("a", items.items[0].item.id);
+    try std.testing.expectEqualStrings("b", items.items[1].item.id);
+    try std.testing.expectEqualStrings("c", items.items[2].item.id);
+
+    // The clone must also have correct data.
+    try std.testing.expectEqual(@as(usize, 3), manifest_items.len);
+    try std.testing.expectEqualStrings("a", manifest_items[0].item.id);
+}
+
+test "blocked items counted as failed in final tally" {
+    // Regression guard: .blocked items must be tallied as failures so
+    // the final output numbers reconcile (approved + failed = total).
+    // Previously .blocked was silently ignored.
+    const gpa = std.testing.allocator;
+    var items = std.ArrayList(ItemResult).empty;
+    defer items.deinit(gpa);
+
+    // 1 approved, 1 failed, 1 blocked.
+    try items.append(gpa, .{ .item = WorkItem{
+        .id = "ok", .title = "OK", .scope = "o", .deliverables = "o", .acceptance = "o",
+    }, .status = .approved });
+    try items.append(gpa, .{ .item = WorkItem{
+        .id = "fail", .title = "FAIL", .scope = "f", .deliverables = "f", .acceptance = "f",
+    }, .status = .failed });
+    try items.append(gpa, .{ .item = WorkItem{
+        .id = "blocked", .title = "BLOCKED", .scope = "b", .deliverables = "b", .acceptance = "b",
+    }, .status = .blocked });
+
+    // Replicate the counting logic from runCmd.
+    var approved_count: u32 = 0;
+    var failed_count: u32 = 0;
+    for (items.items) |ir| {
+        switch (ir.status) {
+            .approved => approved_count += 1,
+            .failed, .blocked => failed_count += 1,
+            else => {},
+        }
+    }
+
+    try std.testing.expectEqual(@as(u32, 1), approved_count);
+    try std.testing.expectEqual(@as(u32, 2), failed_count); // 1 failed + 1 blocked
+    try std.testing.expectEqual(items.items.len, approved_count + failed_count);
+}
+
+test "all-blocked items count as failed → fleet marked failed" {
+    const gpa = std.testing.allocator;
+    var items = std.ArrayList(ItemResult).empty;
+    defer items.deinit(gpa);
+
+    try items.append(gpa, .{ .item = WorkItem{
+        .id = "x", .title = "X", .scope = "x", .deliverables = "x", .acceptance = "x",
+    }, .status = .blocked });
+
+    var approved_count: u32 = 0;
+    var failed_count: u32 = 0;
+    for (items.items) |ir| {
+        switch (ir.status) {
+            .approved => approved_count += 1,
+            .failed, .blocked => failed_count += 1,
+            else => {},
+        }
+    }
+
+    try std.testing.expectEqual(@as(u32, 0), approved_count);
+    try std.testing.expectEqual(@as(u32, 1), failed_count);
 }

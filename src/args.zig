@@ -85,6 +85,15 @@ pub fn parse(
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
     if (argv.len > 0 and eq(argv[0], "fleet")) {
         var fcfg: Config = base;
+        // Resolve provider → endpoint (the non-fleet path does this at the end
+        // of parse; fleet returns early so it must be done here).
+        const p = cfgmod.findProvider(fcfg.provider) orelse
+            return errResult(arena, "unknown provider: {s}", .{fcfg.provider});
+        fcfg.provider = p.name;
+        fcfg.endpoint = p.endpoint;
+        if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
+            fcfg.model = p.default_model;
+        } // else keep base.model (config-file supplied a custom model)
         if (argv.len < 2) return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
         var j: usize = 1;
         var mode: ?[]const u8 = null;

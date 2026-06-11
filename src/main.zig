@@ -232,7 +232,19 @@ pub fn main(init: std.process.Init) !void {
                 printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", "unknown fleet subcommand", false);
                 std.process.exit(@intFromEnum(ExitCode.invalid_argument));
             };
-            const code = fleet.dispatch(io, gpa, arena, parsed.config, init.environ_map, sub, parsed.config.fleet_id, parsed.config.fleet_goal) catch |err| {
+            // Resolve API key for fleet run (coordinator LLM call needs it).
+            // Other fleet subcommands (status/list/cancel/logs) are read-only
+            // and don't need auth, so only check for .run.
+            var fleet_cfg = parsed.config;
+            if (sub == .run) {
+                if (cfgmod.resolveApiKey(fleet_cfg, init.environ_map)) |key| {
+                    fleet_cfg.api_key = key;
+                } else {
+                    printErrorJson(@intFromEnum(ExitCode.auth_failed), "AuthFailed", "invalid or missing API key", false);
+                    std.process.exit(@intFromEnum(ExitCode.auth_failed));
+                }
+            }
+            const code = fleet.dispatch(io, gpa, arena, fleet_cfg, init.environ_map, sub, fleet_cfg.fleet_id, fleet_cfg.fleet_goal) catch |err| {
                 printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "fleet failed", false);
                 std.process.exit(@intFromEnum(ExitCode.internal_error));
             };
