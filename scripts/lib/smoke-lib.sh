@@ -12,13 +12,6 @@
 # ---------------------------------------------------------------------------
 set -u
 
-# ── Global counters (must be declared in main script) ──────────────────────
-# We expect $pass, $fail, $skip to be set in the sourcing script.
-# If not, set defaults.
-[ -z "${pass:-}" ] && pass=0
-[ -z "${fail:-}" ] && fail=0
-[ -z "${skip:-}" ] && skip=0
-
 # ── Debug / trace modes ───────────────────────────────────────────────────
 SMOKE_DEBUG="${SMOKE_DEBUG:-0}"   # set to 1 for verbose debug output
 SMOKE_TRACE="${SMOKE_TRACE:-0}"   # set to 1 for bash -x style tracing

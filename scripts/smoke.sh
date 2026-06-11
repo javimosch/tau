@@ -34,6 +34,15 @@ if [ ! -f "$LIB" ]; then
 fi
 source "$LIB"
 
+# ── Test group counters (caller-owned, consumed by lib helpers) ────────────
+# The lib's helpers (ok, contains, skip_test) and print_summary expect these
+# to be initialized by the caller. Under `set -u`, arithmetic on unset vars
+# aborts, so we must declare them here — matching the smoke-features.sh
+# convention.
+pass=0
+fail=0
+skip=0
+
 # ── Test group registry (declared early so --list-groups works) ───────────
 # Format: "name:function_name[:network]". The optional :network marker means
 # the group requires network + an API key; it will be skipped otherwise.
