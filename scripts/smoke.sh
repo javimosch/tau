@@ -6,6 +6,8 @@
 #   scripts/smoke.sh --net                   # also run real LLM calls
 #   scripts/smoke.sh --bench                 # run benchmarks after tests
 #   scripts/smoke.sh --group "help,fleet"    # run specific test groups
+#   scripts/smoke.sh --group=fleet           # same, = form is also accepted
+#   scripts/smoke.sh --list-groups           # list available test groups
 #   scripts/smoke.sh --config ./my-config    # use custom config
 #
 # Exit 0 if all run tests pass, 1 otherwise.
@@ -32,6 +34,58 @@ if [ ! -f "$LIB" ]; then
 fi
 source "$LIB"
 
+# ── Test group registry (declared early so --list-groups works) ───────────
+# Format: "name:function_name[:network]". The optional :network marker means
+# the group requires network + an API key; it will be skipped otherwise.
+# This is the single source of truth — the dispatch loops below derive from it.
+ALL_TEST_GROUPS=(
+  "help:test_group_help"
+  "flags:test_group_flag_parsing"
+  "role:test_group_role_flag"
+  "fleet:test_group_fleet"
+  "issue11:test_group_issue11_flags"
+  "model:test_group_model_shorthand"
+  "acp:test_group_acp"
+  "goal:test_group_goal_offline"
+  "dry-run:test_group_dry_run"
+  "session-validation:test_group_session_name_validation"
+  "fleet-items:test_group_fleet_items"
+  "invalid-numeric:test_group_invalid_numeric"
+  "fleet-flags:test_group_fleet_flags"
+  "baseline:test_group_network_baseline:network"
+  "json-mode:test_group_network_json_mode:network"
+  "at-file:test_group_network_at_file:network"
+  "streaming:test_group_network_streaming:network"
+  "tools:test_group_network_tools:network"
+  "session:test_group_network_session:network"
+  "compaction:test_group_network_compaction:network"
+  "edit-tool:test_group_network_edit_tool:network"
+  "find-grep:test_group_network_find_grep_tools:network"
+  "dry-run-no-side:test_group_network_dry_run_no_side_effect:network"
+  "max-iterations:test_group_network_max_iterations:network"
+  "no-tools:test_group_network_no_tools:network"
+  "system-prompt:test_group_network_system_prompt_flags:network"
+  "exclude-tools:test_group_network_exclude_tools:network"
+  "large-file:test_group_network_large_file_injection:network"
+  "goal-mode:test_group_network_goal_mode:network"
+  "goal-strip:test_group_network_goal_sentinel_strip:network"
+  "multi-tool:test_group_network_multi_tool_turn:network"
+)
+
+# is_network_group <name>: returns 0 if the group entry is marked :network
+is_network_group() {
+  local entry
+  for entry in "${ALL_TEST_GROUPS[@]}"; do
+    if [ "${entry%%:*}" = "$1" ]; then
+      case "$entry" in
+        *:network) return 0 ;;
+        *) return 1 ;;
+      esac
+    fi
+  done
+  return 1
+}
+
 # ── Configuration ──────────────────────────────────────────────────────────
 load_config "$SCRIPT_DIR"
 
@@ -47,15 +101,31 @@ while [ $# -gt 0 ]; do
     --net)        NET=1 ;;
     --bench)      RUN_BENCH=1 ;;
     --no-cleanup) CLEANUP=0 ;;
-    --group)      shift; SMOKE_GROUPS="${1:-}"; export SMOKE_GROUPS ;;
-    --config)     shift; [ -f "${1:-}" ] && source "$1" ;;
+    --list-groups) list_test_groups; exit 0 ;;
+    --group|--group=*)
+      if [ "$1" = "--group" ]; then
+        shift; SMOKE_GROUPS="${1:-}"
+      else
+        SMOKE_GROUPS="${1#--group=}"
+      fi
+      [ -z "$SMOKE_GROUPS" ] && bail_out "--group requires a non-empty value (comma-separated group names)"
+      export SMOKE_GROUPS
+      ;;
+    --config|--config=*)
+      if [ "$1" = "--config" ]; then
+        shift; [ -f "${1:-}" ] && source "$1"
+      else
+        cfg="${1#--config=}"
+        [ -f "$cfg" ] && source "$cfg"
+      fi
+      ;;
     --help|-h)
       sed -ne '/^# Usage:/,/^# -----/p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--net] [--bench] [--group <groups>] [--config <file>]" >&2
+      echo "Usage: $0 [--net] [--bench] [--group <groups>] [--list-groups] [--config <file>]" >&2
       exit 1
       ;;
   esac
@@ -826,43 +896,24 @@ test_group_network_multi_tool_turn() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Run offline groups
-run_test_group "help"       test_group_help
-run_test_group "flags"      test_group_flag_parsing
-run_test_group "role"       test_group_role_flag
-run_test_group "fleet"      test_group_fleet
-run_test_group "issue11"    test_group_issue11_flags
-run_test_group "model"      test_group_model_shorthand
-run_test_group "acp"        test_group_acp
-run_test_group "goal"       test_group_goal_offline
-run_test_group "dry-run"    test_group_dry_run
-run_test_group "session-validation" test_group_session_name_validation
-run_test_group "fleet-items" test_group_fleet_items
-run_test_group "invalid-numeric" test_group_invalid_numeric
-run_test_group "fleet-flags" test_group_fleet_flags
+for entry in "${ALL_TEST_GROUPS[@]}"; do
+  name="${entry%%:*}"
+  func="${entry#*:}"; func="${func%%:*}"  # strip optional :network marker
+  is_network_group "$name" && continue
+  run_test_group "$name" "$func"
+done
 
 # Run online groups if --net and API key available
 if [ "$NET" = "1" ]; then
   if ! $has_key; then
     echo "# WARNING: --net specified but no API key found; skipping online tests" >&2
   else
-    run_test_group "baseline"          test_group_network_baseline
-    run_test_group "json-mode"         test_group_network_json_mode
-    run_test_group "at-file"           test_group_network_at_file
-    run_test_group "streaming"         test_group_network_streaming
-    run_test_group "tools"             test_group_network_tools
-    run_test_group "session"           test_group_network_session
-    run_test_group "compaction"        test_group_network_compaction
-    run_test_group "edit-tool"         test_group_network_edit_tool
-    run_test_group "find-grep"         test_group_network_find_grep_tools
-    run_test_group "dry-run-no-side"   test_group_network_dry_run_no_side_effect
-    run_test_group "max-iterations"    test_group_network_max_iterations
-    run_test_group "no-tools"          test_group_network_no_tools
-    run_test_group "system-prompt"     test_group_network_system_prompt_flags
-    run_test_group "exclude-tools"     test_group_network_exclude_tools
-    run_test_group "large-file"        test_group_network_large_file_injection
-    run_test_group "goal-mode"         test_group_network_goal_mode
-    run_test_group "goal-strip"        test_group_network_goal_sentinel_strip
-    run_test_group "multi-tool"        test_group_network_multi_tool_turn
+    for entry in "${ALL_TEST_GROUPS[@]}"; do
+      name="${entry%%:*}"
+      func="${entry#*:}"; func="${func%%:*}"  # strip optional :network marker
+      is_network_group "$name" || continue
+      run_test_group "$name" "$func"
+    done
   fi
 else
   echo "# (network tests skipped; use --net to enable)"

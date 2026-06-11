@@ -293,28 +293,62 @@ run_benchmarks() {
 # run_test_group <name> <function>
 # Invokes the function if it matches the current filter (SMOKE_GROUPS).
 # SMOKE_GROUPS can be a comma-separated list of group names to run.
+# Global registry: ALL_TEST_GROUPS entries are "name:function" strings.
+# Populated by run_test_group; consumed by list_test_groups / --list-groups.
+ALL_TEST_GROUPS=()
+
+# _smoke_group_filter_matches <name>
+# Returns 0 if no filter is set OR name is in SMOKE_GROUPS, 1 otherwise.
+_smoke_group_filter_matches() {
+  local group_name="$1"
+  if [ -z "${SMOKE_GROUPS:-}" ]; then
+    return 0
+  fi
+  local match=0
+  local IFS=,
+  # shellcheck disable=SC2086
+  for g in $SMOKE_GROUPS; do
+    if [ "$g" = "$group_name" ]; then
+      match=1
+      break
+    fi
+  done
+  [ "$match" = "1" ]
+}
+
 run_test_group() {
   local group_name="$1"
   local group_func="$2"
 
   # If SMOKE_GROUPS is set, only run matching groups
-  if [ -n "${SMOKE_GROUPS:-}" ]; then
-    local match=0
-    local IFS=,
-    for g in $SMOKE_GROUPS; do
-      if [ "$g" = "$group_name" ]; then
-        match=1
-        break
-      fi
-    done
-    if [ "$match" = 0 ]; then
-      diag "skipping group '$group_name' (not in SMOKE_GROUPS)"
-      return
-    fi
+  if ! _smoke_group_filter_matches "$group_name"; then
+    diag "skipping group '$group_name' (not in SMOKE_GROUPS)"
+    return
   fi
 
   note "$group_name"
   $group_func
+}
+
+# list_test_groups: print all registered test groups (respects SMOKE_GROUPS filter)
+list_test_groups() {
+  echo "Available test groups:"
+  local entry name func
+  for entry in "${ALL_TEST_GROUPS[@]}"; do
+    name="${entry%%:*}"
+    func="${entry#*:}"; func="${func%%:*}"  # strip optional :network marker
+    if ! _smoke_group_filter_matches "$name"; then
+      continue
+    fi
+    printf '  %-25s %s\n' "$name" "$func"
+  done
+  if [ -n "${SMOKE_GROUPS:-}" ]; then
+    echo
+    echo "Filter active: $SMOKE_GROUPS (only matching groups will run)"
+  else
+    echo
+    echo "No filter; use --group <name1,name2> to run a subset."
+  fi
 }
 
 # ── TAP plan ──────────────────────────────────────────────────────────────
