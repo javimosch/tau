@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -80,6 +80,18 @@ pub fn parse(
             } else return errResult(arena, "unknown acp argument: {s}", .{a});
         }
         return .{ .action = .acp, .config = acfg };
+    }
+
+    // `tau skills <list|search|load> [args]` — parallel to `tau acp` / `tau fleet`.
+    if (argv.len > 0 and eq(argv[0], "skills")) {
+        var scfg: Config = base;
+        if (argv.len < 2) return errResult(arena, "skills subcommand required: list | search | load", .{});
+        scfg.skills_sub = argv[1];
+        if (argv.len > 2) scfg.skills_arg = argv[2];
+        if (!eq(argv[1], "list") and !eq(argv[1], "search") and !eq(argv[1], "load")) {
+            return errResult(arena, "invalid skills subcommand (want list|search|load): {s}", .{argv[1]});
+        }
+        return .{ .action = .skills, .config = scfg };
     }
 
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
@@ -249,6 +261,19 @@ pub fn parse(
             continue;
         }
 
+        if (eq(a, "--scan-agents")) {
+            cfg.scan_agents = true;
+            continue;
+        }
+        if (eq(a, "--load-agents-md")) {
+            cfg.load_agents_md = val(argv, &i) orelse return missing(arena, a);
+            continue;
+        }
+        if (eq(a, "--auto-agents-md")) {
+            cfg.auto_agents_md = true;
+            continue;
+        }
+
         if (eq(a, "--provider")) {
             provider_opt = val(argv, &i) orelse return missing(arena, a);
             continue;
@@ -402,8 +427,10 @@ pub fn parse(
     // -h/--help always shows human-readable text; --help-json is the machine form.
     if (help_requested) return .{ .action = .help, .config = cfg, .help_requested = true };
 
-    // No args and no prompt: show human-readable help (not JSON).
-    if (cfg.prompt == null and sys_parts.items.len == 0 and file_parts.items.len == 0) {
+    // No args and no prompt: show human-readable help (not JSON),
+    // unless a standalone flag like --scan-agents or --load-agents-md is set.
+    const has_standalone_flag = cfg.scan_agents or cfg.load_agents_md != null or cfg.auto_agents_md;
+    if (cfg.prompt == null and sys_parts.items.len == 0 and file_parts.items.len == 0 and !has_standalone_flag) {
         return .{ .action = .help, .config = cfg, .help_requested = true };
     }
 

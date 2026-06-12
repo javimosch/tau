@@ -113,6 +113,20 @@ pub const Config = struct {
     /// Can be inline JSON or prefixed with @ to load from a file.
     schema: ?[]const u8 = null,
 
+    // --- AGENTS.md scanning ---
+    /// If true, scan CWD for AGENTS.md files on startup (lazy: stat + first line only).
+    scan_agents: bool = false,
+    /// If set, load this AGENTS.md file content into the system prompt.
+    load_agents_md: ?[]const u8 = null,
+    /// If true, auto-inject the root-level AGENTS.md (cwd/AGENTS.md) on startup.
+    auto_agents_md: bool = false,
+
+    // --- Skills autodiscovery ---
+    /// `tau skills <list|search|load>` subcommand selector. Null means no skills subcommand.
+    skills_sub: ?[]const u8 = null,
+    /// Argument to the skills subcommand (e.g. skill name for `load`, query for `search`).
+    skills_arg: ?[]const u8 = null,
+
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.
     context_window: u32 = 256_000,
