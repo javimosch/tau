@@ -56,3 +56,27 @@ zig build test               # Full test suite
 2. **`if (x) \|y\| defer ...;` is invalid** — `defer` must be at statement level
 3. **Empty string literal `""` is `*const [0:0]u8`** — use `&.{}` for empty slice
 4. **`spawn` returns `*const Child`** — use `\|*ch\|` to call `wait`
+
+## Deployment gotchas
+
+### rbm21 / LXC containers: "Illegal instruction" (exit 132)
+
+When building for deployment on LXC containers (especially Proxmox LXC like rbm21),
+the default `zig build -Doptimize=ReleaseSafe` may produce a binary that crashes
+with `Illegal instruction` (exit 132) because Zig emits modern x86-64 instructions
+the target CPU doesn't support.
+
+**Fix:** Build with a conservative CPU baseline:
+```bash
+zig build -Doptimize=ReleaseSafe -Dcpu=x86_64_v2
+```
+
+This targets the x86-64-v2 microarchitecture level (roughly Sandy Bridge / 2011),
+which is compatible with virtually all x86-64 LXC hosts. The binary is slightly
+larger (~5.4MB vs ~5.3MB) and may be a few percent slower, but runs everywhere.
+
+**Check the target CPU:**
+```bash
+ssh rbm21 "cat /proc/cpuinfo | grep 'model name' | head -1"
+# → 13th Gen Intel(R) Core(TM) i5-13400T  (still needed -Dcpu=x86_64_v2!)
+```
