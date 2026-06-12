@@ -107,6 +107,12 @@ pub const Config = struct {
     /// Optional model override for worker turns.
     worker_model: ?[]const u8 = null,
 
+    // --- Schema structured output ---
+    /// JSON Schema for structured output. When set, the model is constrained
+    /// to produce valid JSON matching this schema (via response_format).
+    /// Can be inline JSON or prefixed with @ to load from a file.
+    schema: ?[]const u8 = null,
+
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.
     context_window: u32 = 256_000,

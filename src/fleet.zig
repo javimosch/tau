@@ -498,10 +498,15 @@ pub fn buildSpec(
         defer gpa.free(resp.content);
         last_raw = try gpa.dupe(u8, resp.content);
 
-        const json_slice = extractCoordinatorJson(last_raw.?) orelse {
-            if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
-            continue;
-        };
+        // When schema is set, the model produces valid JSON directly
+        // (no extractCoordinatorJson needed — response IS the JSON).
+        const json_slice = if (@hasField(@TypeOf(cfg), "schema") and cfg.schema != null)
+            last_raw.?
+        else
+            extractCoordinatorJson(last_raw.?) orelse {
+                if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
+                continue;
+            };
         var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_slice, .{}) catch {
             if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
             continue;

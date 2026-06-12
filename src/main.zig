@@ -65,6 +65,10 @@ const help_text =
     \\      --no-compact             Disable automatic context compaction
     \\      --role <author|critic|coordinator|none>
     \\                          Set the agent role (default: none)
+    \\      --schema <json|@file>    JSON Schema for structured output. Model must
+    \\                          produce valid JSON matching this schema.
+    \\                          Inline: --schema '{\"type\":\"object\",...}'
+    \\                          File:   --schema @path/to/schema.json
     \\      --max-iterations <n>     Tool-loop runaway backstop (default: 100; forces a final answer)
     \\      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
     \\      --help-json              Machine-readable help as JSON
@@ -91,6 +95,7 @@ const help_text =
     \\      --worker-model <model>      Override worker LLM model
     \\      --sequential                Run workers sequentially (default: parallel)
     \\      --items <json>              Pre-supplied items JSON (skip coordinator)
+    \\      --schema <json|@file>        JSON Schema for the coordinator response
     \\  tau fleet status <id>         Show fleet manifest (spec + per-item status)
     \\  tau fleet list                List active fleet ids
     \\  tau fleet logs <id>           Show per-worker session hint
@@ -144,6 +149,7 @@ const flag_specs = [_]FlagSpec{
     .{ .long = "--compact-keep-recent",  .arg = "n"              },
     .{ .long = "--no-compact"                                    },
     .{ .long = "--role",                 .arg = "author|critic|coordinator|none" },
+    .{ .long = "--schema",              .arg = "json|@file"     },
     .{ .long = "--max-iterations",       .arg = "n"              },
     .{ .long = "--goal-max-iterations",  .arg = "n"              },
     .{ .long = "--help-json"                                     },
