@@ -119,6 +119,14 @@ pub fn parse(
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
                 fleet_id = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fcfg.api_key = argv[j];
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fcfg.provider = argv[j];
             } else if (eq(a, "--coordinator-model")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
