@@ -70,6 +70,9 @@ const help_text =
     \\                          Inline: --schema '{\"type\":\"object\",...}'
     \\                          File:   --schema @path/to/schema.json
     \\      --max-iterations <n>     Tool-loop runaway backstop (default: 100; forces a final answer)
+    \\      --scan-agents            Scan CWD for AGENTS.md files and list them
+    \\      --load-agents-md <path>  Load an AGENTS.md file into system context
+    \\      --auto-agents-md         Auto-load cwd/AGENTS.md on startup
     \\      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
     \\      --help-json              Machine-readable help as JSON
     \\  -h, --help                   Show this help
@@ -100,6 +103,12 @@ const help_text =
     \\  tau fleet list                List active fleet ids
     \\  tau fleet logs <id>           Show per-worker session hint
     \\  tau fleet cancel <id>         Cancel a running fleet
+    \\
+    \\Skills (autodiscover ~/.agents/skills/):
+    \\  tau skills list               List all discoverable skills
+    \\  tau skills search <query>     Search skills by keyword
+    \\  tau skills load <name>        Load a skill into system context
+    \\
     \\
     \\Examples:
     \\  tau "List the files in src/"
@@ -150,6 +159,9 @@ const flag_specs = [_]FlagSpec{
     .{ .long = "--no-compact"                                    },
     .{ .long = "--role",                 .arg = "author|critic|coordinator|none" },
     .{ .long = "--schema",              .arg = "json|@file"     },
+    .{ .long = "--scan-agents"                                     },
+    .{ .long = "--load-agents-md",       .arg = "path"           },
+    .{ .long = "--auto-agents-md"                                  },
     .{ .long = "--max-iterations",       .arg = "n"              },
     .{ .long = "--goal-max-iterations",  .arg = "n"              },
     .{ .long = "--help-json"                                     },
@@ -231,6 +243,74 @@ pub fn main(init: std.process.Init) !void {
             };
             std.process.exit(code);
         },
+        .skills => {
+            const skills = @import("skills.zig");
+
+            if (std.mem.eql(u8, parsed.config.skills_sub orelse "", "list")) {
+                const entries = skills.scanSkills(io, arena, init.environ_map, gpa) catch |err| {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "skills scan failed", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                };
+                term.out("{\"skills\":[");
+                for (entries, 0..) |e, i| {
+                    if (i > 0) term.out(",");
+                    const entry = std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"description\":\"{s}\"}}", .{ e.name, e.description }) catch continue;
+                    term.out(entry);
+                }
+                term.out("]}\n");
+                return;
+            }
+            if (std.mem.eql(u8, parsed.config.skills_sub orelse "", "search")) {
+                const q = parsed.config.skills_arg orelse "";
+                const entries = skills.searchSkills(io, arena, init.environ_map, gpa, q) catch |err| {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "skills search failed", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                };
+                term.out("{\"skills\":[");
+                for (entries, 0..) |e, i| {
+                    if (i > 0) term.out(",");
+                    const entry = std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"description\":\"{s}\"}}", .{ e.name, e.description }) catch continue;
+                    term.out(entry);
+                }
+                term.out("]}\n");
+                return;
+            }
+            if (std.mem.eql(u8, parsed.config.skills_sub orelse "", "load")) {
+                const skill_name = parsed.config.skills_arg orelse {
+                    printErrorJson(@intFromEnum(ExitCode.missing_required_field), "missing_required_field", "skill name required", false);
+                    std.process.exit(@intFromEnum(ExitCode.missing_required_field));
+                };
+                const content = (skills.loadSkill(io, arena, init.environ_map, gpa, skill_name) catch null) orelse {
+                    const msg = try std.fmt.allocPrint(arena, "skill not found: {s}", .{skill_name});
+                    printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
+                    std.process.exit(@intFromEnum(ExitCode.generic_failure));
+                };
+                term.out("{\"skill\":\"");
+                // Escape skill_name for JSON
+                for (skill_name) |c| {
+                    switch (c) {
+                        '\\' => term.out("\\\\"),
+                        '"' => term.out("\\\""),
+                        else => term.out(&[_]u8{c}),
+                    }
+                }
+                term.out("\",\"content\":\"");
+                for (content) |c| {
+                    switch (c) {
+                        '\\' => term.out("\\\\"),
+                        '"' => term.out("\\\""),
+                        '\n' => term.out("\\n"),
+                        '\r' => term.out("\\r"),
+                        '\t' => term.out("\\t"),
+                        else => term.out(&[_]u8{c}),
+                    }
+                }
+                term.out("\"}\n");
+                return;
+            }
+            printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", "invalid skills subcommand", false);
+            std.process.exit(@intFromEnum(ExitCode.invalid_argument));
+        },
         .fleet => {
             const fleet = @import("fleet.zig");
             const sub_str = parsed.config.fleet_sub orelse "run";
@@ -259,7 +339,46 @@ pub fn main(init: std.process.Init) !void {
         .run => {},
     }
 
-    const cfg = parsed.config;
+    var cfg = parsed.config;
+
+    // Handle --scan-agents: list AGENTS.md files and exit
+    if (cfg.scan_agents) {
+        const agents_md = @import("agents_md.zig");
+        const entries = agents_md.scanAgentsMd(io, gpa, arena, ".") catch |err| {
+            printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "agents scan failed", false);
+            std.process.exit(@intFromEnum(ExitCode.internal_error));
+        };
+        term.out("{\"agents_md_files\":[");
+        for (entries, 0..) |e, i| {
+            if (i > 0) term.out(",");
+            const entry = std.fmt.allocPrint(arena, "{{\"path\":\"{s}\",\"first_line\":\"{s}\",\"size\":{d}}}", .{ e.path, e.first_line, e.size }) catch continue;
+            term.out(entry);
+        }
+        term.out("]}\n");
+        return;
+    }
+
+    // Handle --load-agents-md: inject AGENTS.md content into system prompt
+    if (cfg.load_agents_md) |path| {
+        const agents_md = @import("agents_md.zig");
+        const content = agents_md.loadAgentsMd(io, arena, path) orelse {
+            const msg = try std.fmt.allocPrint(arena, "AGENTS.md not found: {s}", .{path});
+            printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
+            std.process.exit(@intFromEnum(ExitCode.generic_failure));
+        };
+        // Prepend to system prompt
+        const existing = cfg.system_prompt orelse "";
+        cfg.system_prompt = try std.fmt.allocPrint(arena, "{s}\n\n---\nContext from {s}:\n{s}\n---", .{ existing, path, content });
+    }
+
+    // Handle --auto-agents-md: auto-load cwd/AGENTS.md
+    if (cfg.auto_agents_md) {
+        const agents_md = @import("agents_md.zig");
+        if (agents_md.loadAgentsMd(io, arena, "AGENTS.md")) |content| {
+            const existing = cfg.system_prompt orelse "";
+            cfg.system_prompt = try std.fmt.allocPrint(arena, "{s}\n\n---\nContext from AGENTS.md:\n{s}\n---", .{ existing, content });
+        }
+    }
 
     // Run the agent (replaces temporary runOnce)
     const result = agent.run(io, gpa, arena, cfg, init.environ_map) catch |err| {
