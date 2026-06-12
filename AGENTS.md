@@ -224,7 +224,13 @@ tau skills load agent-memory-toolbox     # Load skill into system context
 # → {"skill":"agent-memory-toolbox","content":"# Agent Memory Toolbox..."}
 ```
 
-#### 13. AGENTS.md Context
+#### 13. Model Discovery
+```bash
+tau models
+# → {"providers":[{"name":"opencode-go","default_model":"deepseek-v4-flash",...}]}
+```
+
+#### 14. AGENTS.md Context
 ```bash
 tau --scan-agents                        # Find AGENTS.md files in CWD
 tau --load-agents-md ./docs/AGENTS.md \
