@@ -123,6 +123,17 @@ pub fn parse(
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
                 fleet_items = argv[j];
+            } else if (eq(a, "--schema")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                if (argv[j].len > 0 and argv[j][0] == '@') {
+                    const path = argv[j][1..];
+                    const content = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch
+                        return errResult(arena, "cannot read schema file: {s}", .{argv[j]});
+                    fcfg.schema = content;
+                } else {
+                    fcfg.schema = argv[j];
+                }
             } else if (mode == null and (eq(a, "run") or eq(a, "status") or eq(a, "list") or eq(a, "logs") or eq(a, "cancel"))) {
                 mode = a;
             } else if (mode != null and a.len > 0 and a[0] != '-') {
@@ -221,6 +232,20 @@ pub fn parse(
             const v = val(argv, &i) orelse return missing(arena, a);
             cfg.max_iterations = std.fmt.parseInt(u32, v, 10) catch
                 return errResult(arena, "invalid --max-iterations: {s}", .{v});
+            continue;
+        }
+
+        if (eq(a, "--schema")) {
+            const v = val(argv, &i) orelse return missing(arena, a);
+            if (v.len > 0 and v[0] == '@') {
+                // Load schema from file
+                const path = v[1..];
+                const content = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch
+                    return errResult(arena, "cannot read schema file: {s}", .{v});
+                cfg.schema = content;
+            } else {
+                cfg.schema = v;
+            }
             continue;
         }
 

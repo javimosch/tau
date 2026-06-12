@@ -329,6 +329,15 @@ fn appendRequestBody(
         }
     }
 
+    // response_format for JSON Schema structured output
+    if (@hasField(@TypeOf(cfg), "schema")) {
+        if (cfg.schema) |s| {
+            try body.appendSlice(gpa, ",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"response\",\"strict\":true,\"schema\":");
+            try body.appendSlice(gpa, s);
+            try body.appendSlice(gpa, "}}");
+        }
+    }
+
     try body.appendSlice(gpa, "}");
 }
 
