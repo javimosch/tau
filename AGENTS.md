@@ -192,6 +192,30 @@ tau --thinking "complex reasoning task"     # Show model's thinking chunks
 tau --max-iterations 1 --tools bash "x"     # Cap tool loops
 ```
 
+#### 10. A2A Integration (a2a-spawn env vars)
+
+The [a2a-spawn](https://github.com/javimosch/a2a-skill) script launches tau as a peer agent on the a2a message bus. It respects these environment variables:
+
+| Env Var | Default | Effect |
+|---------|---------|--------|
+| `TAU_TOOLS` | `bash` | Tools passed to `--tools` (e.g., `TAU_TOOLS="bash,read"`) |
+| `TAU_THINKING` | `0` | Set to `1` to enable `--thinking` (show reasoning chunks in agent logs) |
+| `TAU_DEBUG` | `0` | Set to `1` to enable `--debug` (perf stats + tool I/O to stderr) |
+| `TAU_BIN` | — | Override tau binary path (skips `./zig-out/bin/tau` → `~/ai/tau/zig-out/bin/tau` → `PATH` resolution) |
+
+```bash
+# Debug a misbehaving tau agent:
+TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
+
+# Give a tau agent read access to the codebase:
+TAU_TOOLS="bash,read,ls,grep" a2a-spawn --cli tau --id reader --kit-file kit.txt
+
+# Point to a custom tau build:
+TAU_BIN="$HOME/ai/tau-custom/zig-out/bin/tau" a2a-spawn --cli tau --id custom --kit-file kit.txt
+```
+
+Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations 40 --timeout-ms 300000`.
+
 ### Storage Paths
 
 | Path | Purpose |

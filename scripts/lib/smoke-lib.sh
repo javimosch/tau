@@ -53,6 +53,7 @@ ok() {
     fail=$((fail + 1))
   fi
   [ "$SMOKE_VERBOSE" = "1" ] && echo "# exit code: $actual" >&2
+  return 0
 }
 
 # contains <name> <haystack> <needle>
@@ -72,6 +73,7 @@ contains() {
       ;;
   esac
   [ "$SMOKE_VERBOSE" = "1" ] && echo "# output snippet: ${haystack:0:200}..." >&2
+  return 0
 }
 
 # skip_test <name> [reason]
@@ -239,10 +241,11 @@ capture() {
   tmp_err="$(mktemp)"
   register_temp_file "$tmp_out" "$tmp_err"
 
+  local old_opts; old_opts="$(set +o)"
   set +e
   "$@" >"$tmp_out" 2>"$tmp_err"
   local rc=$?
-  set -e
+  eval "$old_opts"
 
   # Use printf -v instead of eval to safely handle output containing quotes/braces
   local _content

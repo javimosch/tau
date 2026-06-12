@@ -121,7 +121,7 @@ What this means day-to-day:
 - 💾 **Sessions** — `--session <name>` → persistent conversation + goal state
 - 🧠 **Context compaction** — Auto-summarization when history exceeds threshold
 - ⚔️ **Author↔Critic loop** — `--role author|critic|coordinator|none` for adversarial self-review
-- 🚁 **Fleet orchestration** — `tau fleet run|status|list|cancel` for multi-agent coordination
+- 🚁 **Fleet orchestration** — `tau fleet run|status|list|logs|cancel` for multi-agent coordination
 - 🚨 **Predictable errors** — Standard exit codes: `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 - 📡 **Streaming** — Real SSE token-by-token streaming (chat mode only)
 
@@ -175,6 +175,17 @@ tau --session project "/goal resume"
 # Sessions
 tau --session work1 "Remember: the build uses zig 0.16"
 tau --session work1 "What zig version?"
+
+# Author↔Critic loop
+tau --role author --tools bash,write "Implement feature X"
+tau --role critic --tools read,grep "Review the implementation"
+
+# Fleet orchestration
+tau fleet run --goal "add OAuth and write tests"
+tau fleet status <id>
+tau fleet list
+tau fleet logs <id>
+tau fleet cancel <id>
 
 # Human-readable output
 tau --mode text "Explain this in simple terms"
@@ -297,6 +308,8 @@ tau fleet cancel <id>             # mark cancelled
 ```
 
 Manifests persist to `~/.config/tau/fleets/<id>.json`; workers persist per-role sessions to `~/.config/tau/sessions/<fleet-id>-<item-id>.json`. The coordinator retries up to 3 times when all items fail to parse. Items with failed dependencies are marked `.blocked` and counted as failures in the final tally.
+
+**Worker session naming**: each worker is spawned as `tau --role author --session <fleet-id>-<item-id>`, so its session file is `~/.config/tau/sessions/<fleet-id>-<item-id>.json`. Use `tau fleet logs <id>` to see the per-worker session names, then inspect them with `tau --session <fleet-id>-<item-id> "/goal status"`.
 
 v0.3 limitations (see `~/.agents/skills/tau-maintenance` for the full gap list):
 - Workers run sequentially and report `status: running` until the harness collects their results.
@@ -421,11 +434,11 @@ tau is designed to be lightweight — Zig's zero-overhead and compiled binary na
 
 | Operation | Max RSS | User CPU | Sys CPU | Wall Time |
 |-----------|---------|----------|---------|-----------|
-| Single-shot chat | ~13.3 MB | 0.04s | 0.00s | 2.6s |
-| Tool-calling (bash) | ~13.6 MB | 0.09s | 0.01s | 4.0s |
-| Session create | ~13.5 MB | 0.04s | 0.00s | 4.9s |
-| Session recall | ~13.6 MB | 0.04s | 0.01s | 3.8s |
-| Startup (--help) | ~4.6 MB | 0.00s | 0.00s | <0.01s |
+| Single-shot chat | ~13.6 MB | 0.04s | 0.00s | 2.0s |
+| Tool-calling (bash) | ~13.8 MB | 0.09s | 0.01s | 3.8s |
+| Session create | ~13.6 MB | 0.05s | 0.00s | 1.7s |
+| Session recall | ~13.8 MB | 0.06s | 0.01s | 1.9s |
+| Startup (--help) | ~5.4 MB | 0.00s | 0.00s | <0.01s |
 
 *Measured with `/usr/bin/time` on x86_64 Linux, xiaomi mimo-v2.5 model. Wall time includes network latency.*
 

@@ -61,8 +61,10 @@ ALL_TEST_GROUPS=(
   "issue11:test_group_issue11_flags"
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
+  "config-file:test_group_config_file"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
+  "at-file-system-prompt:test_group_at_file_system_prompt"
   "session-validation:test_group_session_name_validation"
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
@@ -86,6 +88,7 @@ ALL_TEST_GROUPS=(
   "goal-mode:test_group_network_goal_mode:network"
   "goal-strip:test_group_network_goal_sentinel_strip:network"
   "multi-tool:test_group_network_multi_tool_turn:network"
+  "ls-tool:test_group_network_ls_tool:network"
 )
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -208,6 +211,15 @@ test_group_flag_parsing() {
   "$BIN" --mode bad "x" >/dev/null 2>&1;           ok "bad --mode -> invalid_argument" "$?" 80
   "$BIN" --temperature notafloat "x" >/dev/null 2>&1; ok "bad --temperature -> invalid_argument" "$?" 80
   "$BIN" "@/no/such/file" "x" >/dev/null 2>&1;     ok "missing @file -> invalid_argument" "$?" 80
+
+  # --exclude-tools multi-tool CSV parsing (#20)
+  # Use fake key to auth-fail fast at exit 106 (still != 80 = parser accepted)
+  "$BIN" --exclude-tools bash,write --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--exclude-tools multi-tool CSV accepted (exit $rc)" 0 0
+  else
+    ok "--exclude-tools multi-tool CSV rejected" 1 0
+  fi
 }
 
 # Group: --role flag
@@ -358,12 +370,19 @@ test_group_acp() {
   note "ACP subcommand parsing"
 
   "$BIN" acp bogus >/dev/null 2>&1; ok "acp bogus -> invalid_argument" "$?" 80
+
   # acp status accepted by parser (exit 0 if not running)
   capture acp_status "$BIN" acp status 2>&1
   if [ "$acp_status_rc" = "0" ] && printf '%s' "$acp_status_out" | grep -q '"acp"'; then
     ok "acp status -> exit 0 with acp JSON" 0 0
   else
     ok "acp status: exit $acp_status_rc" 1 0
+  fi
+  # Verify status reports running:false when not running
+  if printf '%s' "$acp_status_out" | grep -q '"running":false'; then
+    ok "acp status reports running:false" 0 0
+  else
+    ok "acp status missing running:false" 1 0
   fi
 
   # acp stop accepted by parser (exit 0 if not running)
@@ -373,16 +392,70 @@ test_group_acp() {
   else
     ok "acp stop: exit $acp_stop_rc" 1 0
   fi
+
+  # acp serve --max-iterations: bad value rejected at parse time
+  "$BIN" acp serve --max-iterations bad >/dev/null 2>&1; ok "acp serve --max-iterations bad -> exit 80" "$?" 80
+
+  # acp serve --acp-socket flag recognized by parser (combine with bad flag to avoid hanging)
+  "$BIN" acp serve --acp-socket /tmp/tau-test.sock --max-iterations bad >/dev/null 2>&1; rc=$?
+  if [ "$rc" = "80" ]; then
+    ok "acp serve --acp-socket recognized (parse error on bad --max-iterations, exit 80)" 0 0
+  else
+    ok "acp serve --acp-socket recognized (exit $rc)" 1 0
+  fi
+}
+
+# Group: Issue #14 config file loading + CLI override
+test_group_config_file() {
+  local rc mock_home mock_config
+
+  note "config file loading and CLI override precedence"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+  mock_config="$mock_home/.config/tau"
+  mkdir -p "$mock_config"
+
+  # Test 1: config file loads correctly (provider from config used)
+  printf '{"provider":"openai"}' > "$mock_config/config.json"
+  HOME="$mock_home" "$BIN" --api-key fake "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "config file provider loaded (openai + fake key → exit $rc, not 80)" 0 0
+  else
+    ok "config file provider loaded (exit 80 = parser rejected)" 1 0
+  fi
+
+  # Test 2: CLI overrides config file (--provider beats config)
+  printf '{"provider":"nope"}' > "$mock_config/config.json"
+  HOME="$mock_home" "$BIN" --provider openai --api-key fake "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "CLI --provider overrides config (openai + fake key → exit $rc, not 80)" 0 0
+  else
+    ok "CLI --provider overrides config (exit 80 = config nope rejected)" 1 0
+  fi
+
+  # Test 3: invalid JSON degrades gracefully (returns to defaults, doesn't exit 80)
+  printf 'this is not valid json' > "$mock_config/config.json"
+  HOME="$mock_home" "$BIN" --provider openai --api-key fake "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "invalid config JSON degrades gracefully (exit $rc, not 80)" 0 0
+  else
+    ok "invalid config JSON degrades gracefully" 1 0
+  fi
 }
 
 # Group: Issue #17 goal mode subcommands offline
 test_group_goal_offline() {
-  local out rc GSESS_OFF
+  local out rc GSESS_OFF sub sname
 
   note "goal mode subcommands (offline)"
 
   # /goal subcommands require --session
-  "$BIN" "/goal status" >/dev/null 2>&1; ok "/goal status without --session -> exit 80" "$?" 80
+  "$BIN" "/goal status" >/dev/null 2>&1;   ok "/goal status without --session -> exit 80" "$?" 80
+  "$BIN" "/goal pause" >/dev/null 2>&1;    ok "/goal pause without --session -> exit 80" "$?" 80
+  "$BIN" "/goal resume" >/dev/null 2>&1;   ok "/goal resume without --session -> exit 80" "$?" 80
+  "$BIN" "/goal clear" >/dev/null 2>&1;    ok "/goal clear without --session -> exit 80" "$?" 80
+  "$BIN" "/goal complete" >/dev/null 2>&1; ok "/goal complete without --session -> exit 80" "$?" 80
 
   # /goal status with --session, no prior goal -> {"goal":null}
   GSESS_OFF="smoke-goal-offline-$$"
@@ -394,6 +467,19 @@ test_group_goal_offline() {
     ok "/goal status (no goal): unexpected output" 1 0
   fi
   cleanup_sessions "$GSESS_OFF"
+
+  # /goal pause|resume|clear|complete with --session, no prior goal -> {"goal":null}
+  for sub in pause resume clear complete; do
+    sname="smoke-goal-off-${sub}-$$"
+    capture goal_sub "$BIN" --session "$sname" --no-tools --no-stream "/goal $sub" 2>&1
+    ok "/goal $sub (no goal) exit" "$goal_sub_rc" 0
+    if printf '%s' "$goal_sub_out" | grep -q '"goal":null'; then
+      ok "/goal $sub (no goal) -> {\"goal\":null}" 0 0
+    else
+      ok "/goal $sub (no goal): unexpected output" 1 0
+    fi
+    cleanup_sessions "$sname"
+  done
 
   # /goal --tokens parsing (use --timeout-ms 1 so the LLM call fails fast)
   "$BIN" --no-tools --no-stream --timeout-ms 1 "/goal --tokens 250K test" >/dev/null 2>&1; rc=$?
@@ -426,13 +512,60 @@ test_group_dry_run() {
     skip_test "--dry-run JSON format" "no API key"
   fi
 
-  # Error envelope JSON on stderr for invalid arguments
+  # Error envelope JSON on stderr for invalid arguments (exit 80)
   capture err_env "$BIN" --bogus 2>&1 >/dev/null
-  if printf '%s' "$err_env_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 80; assert d.get("err",{}).get("type") == "invalid_argument"' 2>/dev/null; then
-    ok "error envelope JSON has code 80 + type invalid_argument" 0 0
+  if printf '%s' "$err_env_err" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 80; assert d.get("err",{}).get("type") == "invalid_argument"' 2>/dev/null; then
+    ok "error envelope code 80 has type invalid_argument" 0 0
   else
-    ok "error envelope format invalid" 1 0
-    [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope: $err_env_out"
+    ok "error envelope code 80 format invalid" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope: $err_env_err"
+  fi
+
+  # Error envelope for missing required field (exit 82)
+  # fleet run without --goal writes to stdout via fleetRequires (term.out, not term.err)
+  capture err_82 "$BIN" fleet run 2>&1 >/dev/null
+  if printf '%s' "$err_82_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 82' 2>/dev/null; then
+    ok "error envelope code 82 exists" 0 0
+  else
+    ok "error envelope code 82 format invalid" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 82: $err_82_out"
+  fi
+
+  # Error envelope for internal error (exit 110) triggered by fake API key
+  capture err_110 "$BIN" --api-key fake --provider openai --no-tools --no-stream "x" 2>&1 >/dev/null
+  if printf '%s' "$err_110_err" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 110' 2>/dev/null; then
+    ok "error envelope code 110 has internal_error" 0 0
+  else
+    ok "error envelope code 110 format invalid" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 110: $err_110_err"
+  fi
+}
+
+# Group: Issue #16 multiple @file + repeatable --append-system-prompt
+# Use --api-key fake --provider openai so auth fails fast at exit 106 (still != 80).
+test_group_at_file_system_prompt() {
+  local rc tmp1 tmp2
+
+  note "multiple @file injection + --append-system-prompt repeatability"
+
+  # Multiple @file injection: create two temp files, verify parser accepts multiple @ args
+  tmp1="$(mktemp)"; printf 'content one' > "$tmp1"
+  register_temp_file "$tmp1"
+  tmp2="$(mktemp)"; printf 'content two' > "$tmp2"
+  register_temp_file "$tmp2"
+  "$BIN" "@$tmp1" "@$tmp2" --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "multiple @file injection accepted (exit $rc)" 0 0
+  else
+    ok "multiple @file injection rejected" 1 0
+  fi
+
+  # --append-system-prompt repeatability: verify multiple flags are accepted
+  "$BIN" --append-system-prompt "Be concise" --append-system-prompt "Be accurate" --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--append-system-prompt repeatable accepted (exit $rc)" 0 0
+  else
+    ok "--append-system-prompt repeatable rejected" 1 0
   fi
 }
 
@@ -481,18 +614,27 @@ test_group_session_name_validation() {
   cleanup_sessions "my-test_123"
 }
 
-# Group: Issue #21 fleet run --items
+# Group: Issue #21 / #23 fleet run --items
 test_group_fleet_items() {
   local rc
 
   note "fleet run --items flag"
 
-  # --items accepted by parser (fake key: fleet will fail at auth, not at arg parsing)
-  "$BIN" fleet run --goal test --items '{"items":[]}' --api-key fake --provider openai >/dev/null 2>&1; rc=$?
+  # --items accepted by parser. No --api-key needed: --items skips the
+  # coordinator LLM call, and empty items array fails before spawning workers.
+  "$BIN" fleet run --goal test --items '{"items":[]}' >/dev/null 2>&1; rc=$?
   if [ "$rc" != "80" ]; then
-    ok "fleet run --items accepted (exit $rc)" 0 0
+    ok "fleet run --items accepted (exit $rc, not 80)" 0 0
   else
     ok "fleet run --items rejected" 1 0
+  fi
+
+  # --items with invalid JSON: graceful degradation (not exit 80)
+  "$BIN" fleet run --goal test --items '{invalid}' >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "fleet run --items invalid JSON degrades gracefully (exit $rc, not 80)" 0 0
+  else
+    ok "fleet run --items invalid JSON rejected as bad arg" 1 0
   fi
 }
 
@@ -504,6 +646,7 @@ test_group_invalid_numeric() {
   "$BIN" --compact-threshold bad "x" >/dev/null 2>&1; ok "bad --compact-threshold -> exit 80" "$?" 80
   "$BIN" --compact-keep-recent bad "x" >/dev/null 2>&1; ok "bad --compact-keep-recent -> exit 80" "$?" 80
   "$BIN" --goal-max-iterations bad "x" >/dev/null 2>&1; ok "bad --goal-max-iterations -> exit 80" "$?" 80
+  "$BIN" --max-iterations bad "x" >/dev/null 2>&1;     ok "bad --max-iterations -> exit 80" "$?" 80
 }
 
 # Group: fleet flag parsing (from smoke-features)
@@ -906,6 +1049,20 @@ test_group_network_multi_tool_turn() {
   ok "multi-tool turn exit" "$rc" 0
   contains "multi-tool: first file content" "$out" "MULTI_A_11"
   contains "multi-tool: second file content" "$out" "MULTI_B_22"
+}
+
+test_group_network_ls_tool() {
+  local out rc ltdir
+
+  note "ls tool end-to-end"
+
+  ltdir="$(mktemp -d)"
+  register_temp_dir "$ltdir"
+  touch "$ltdir/tau-LS-ALPHA.txt" "$ltdir/tau-LS-BETA.txt"
+  out=$("$BIN" --mode text --tools ls "Use the ls tool to list files in $ltdir. Quote the exact filenames you see."); rc=$?
+  ok "ls tool exit" "$rc" 0
+  contains "ls tool returns alpha" "$out" "tau-LS-ALPHA"
+  contains "ls tool returns beta" "$out" "tau-LS-BETA"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
