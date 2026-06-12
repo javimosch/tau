@@ -6,7 +6,7 @@ tau is an agent-first AI CLI — a non-interactive, programmatic counterpart to 
 
 ---
 
-## Current State (v0.3.0)
+## Current State (v0.4.0)
 
 ### Core CLI
 
@@ -14,6 +14,7 @@ tau is an agent-first AI CLI — a non-interactive, programmatic counterpart to 
 - **API key resolution**: config file > provider env var > `TAU_API_KEY` > `--api-key` flag
 - **Streaming**: SSE delta streaming by default; `--no-stream` for batch
 - **Output modes**: JSON (default); text with `--mode text`
+- **Structured output**: `--schema <json|@file>` enforces JSON Schema via `response_format`
 - **Help**: `--help` human text, `--help-json` machine-readable flag schema (auto-generated from `flag_specs` table)
 - **Version**: `--version`
 - **System prompt**: `--system-prompt <text>` and `--append-system-prompt <text>` for persona/role injection
@@ -153,7 +154,9 @@ tau/
 - Arena allocator in the tool loop (P2-2): reuse per-iteration allocation instead of GPA for tool result strings
 - Reasoning filter in ACP: toggle or severity gate for `emitThoughtChunk`
 - Web search tool
-- Skills loader (`~/.agents/skills/*.md`) for composable agent behaviors
 - `--output-file` flag for writing response JSON to disk
-- Fleet: parallel worker execution + persistent `global_status: cancelled` on cancel
+- Fleet: parallel worker execution + persistent `global_status: cancelled` on cancel (in progress)
 - Fleet: worker result collection harness (today workers report `running` until the harness polls)
+- Skills: JSON escape descriptions (descriptions with `"` break output)
+- Skills: `--load-skill` flag for direct CLI injection into session
+- AGENTS.md: recursive scanning depth limit option

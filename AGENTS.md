@@ -49,6 +49,10 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `--compact-keep-recent <n>` | int | 20000 | Tokens kept verbatim after compaction |
 | `--no-compact` | flag | — | Disable auto-compaction |
 | `--role <author\|critic\|coordinator\|none>` | enum | none | Set agent role |
+| `--schema <json\|@file>` | string | — | JSON Schema for structured output |
+| `--scan-agents` | flag | — | Scan CWD for AGENTS.md files |
+| `--load-agents-md <path>` | string | — | Load AGENTS.md file into system context |
+| `--auto-agents-md` | flag | — | Auto-load cwd/AGENTS.md on startup |
 | `--max-iterations <n>` | int | 100 | Tool-loop runaway backstop |
 | `--goal-max-iterations <n>` | int | 50 | Per-run cap in goal mode |
 | `--help-json` | — | — | Machine-readable help as JSON |
@@ -59,7 +63,7 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 
 **JSON mode (default):**
 ```json
-{"version":"0.3.0","model":"xiaomi/mimo-v2.5","content":"...","done":true}
+{"version":"0.4.0","model":"xiaomi/mimo-v2.5","content":"...","done":true}
 ```
 
 **JSON streaming (NDJSON):**
@@ -202,6 +206,32 @@ The [a2a-spawn](https://github.com/javimosch/a2a-skill) script launches tau as a
 | `TAU_THINKING` | `0` | Set to `1` to enable `--thinking` (show reasoning chunks in agent logs) |
 | `TAU_DEBUG` | `0` | Set to `1` to enable `--debug` (perf stats + tool I/O to stderr) |
 | `TAU_BIN` | — | Override tau binary path (skips `./zig-out/bin/tau` → `~/ai/tau/zig-out/bin/tau` → `PATH` resolution) |
+
+#### 11. Structured Output (JSON Schema)
+```bash
+tau --schema '{"type":"object","properties":{"result":{"type":"string"}}}' \
+  --mode text "extract the main point"
+tau --schema @schemas/work-breakdown.json \
+  fleet run --goal "refactor auth"  # Fleet coordinator uses schema automatically
+```
+
+#### 12. Skills Autodiscovery
+```bash
+tau skills list                          # List all ~113 skills
+# → {"skills":[{"name":"agent-memory-toolbox","description":"..."},...]}
+tau skills search memory                 # Find memory-related skills
+tau skills load agent-memory-toolbox     # Load skill into system context
+# → {"skill":"agent-memory-toolbox","content":"# Agent Memory Toolbox..."}
+```
+
+#### 13. AGENTS.md Context
+```bash
+tau --scan-agents                        # Find AGENTS.md files in CWD
+tau --load-agents-md ./docs/AGENTS.md \
+  --mode text "follow the guide"         # Load specific AGENTS.md
+tau --auto-agents-md \
+  --mode text "follow project rules"     # Auto-load cwd/AGENTS.md
+```
 
 ```bash
 # Debug a misbehaving tau agent:

@@ -56,6 +56,9 @@ tau gives agents what they need:
 - **JSON by default** — deterministic structured output
 - **Tool-calling loop** — agents can use bash, read, write, edit, ls, grep, find
 - **Goal mode** — autonomous work until objective is complete
+- **Structured output** — `--schema` constrains model to JSON Schema
+- **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
+- **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -311,7 +314,7 @@ Manifests persist to `~/.config/tau/fleets/<id>.json`; workers persist per-role 
 
 **Worker session naming**: each worker is spawned as `tau --role author --session <fleet-id>-<item-id>`, so its session file is `~/.config/tau/sessions/<fleet-id>-<item-id>.json`. Use `tau fleet logs <id>` to see the per-worker session names, then inspect them with `tau --session <fleet-id>-<item-id> "/goal status"`.
 
-v0.3 limitations (see `~/.agents/skills/tau-maintenance` for the full gap list):
+v0.4 known issues (see `~/.agents/skills/tau-maintenance` for the full gap list):
 - Workers run sequentially and report `status: running` until the harness collects their results.
 - `cancel` is in-memory for v0 (does not yet persist `global_status: cancelled`).
 - `topoSort` cycles surface as `{"code":110,"message":"toposort failed: Cycle"}`.
@@ -504,7 +507,7 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 
 ## 📝 Changelog
 
-- [v0.3.0 — June 2026 (product)](./docs/changelog-2026-06-product.md) · [HTML (with technical tab)](./docs/changelog-2026-06.html)
+- [v0.4.0 — JSON Schema + Skills Autodiscovery](./docs/changelog-2026-06-product.md) · [HTML (with technical tab)](./docs/changelog-2026-06.html)
 - [Full index](./docs/changelog.html) · [Roadmap](./docs/roadmap.md)
 
 ## License
