@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -82,6 +82,11 @@ pub fn parse(
         return .{ .action = .acp, .config = acfg };
     }
 
+    // `tau models` — list available providers and their models.
+    if (argv.len > 0 and eq(argv[0], "models")) {
+        return .{ .action = .models, .config = base };
+    }
+
     // `tau skills <list|search|load> [args]` — parallel to `tau acp` / `tau fleet`.
     if (argv.len > 0 and eq(argv[0], "skills")) {
         var scfg: Config = base;
@@ -131,6 +136,10 @@ pub fn parse(
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
                 fcfg.coordinator_model = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                fcfg.model = argv[j];
             } else if (eq(a, "--worker-model")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);

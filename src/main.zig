@@ -110,7 +110,10 @@ const help_text =
     \\  tau skills load <name>        Load a skill into system context
     \\
     \\
-    \\Examples:
+    \\
+    \\Models:
+    \\  tau models                    List available providers and models
+    \\\Examples:
     \\  tau "List the files in src/"
     \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
     \\  tau --session work1 "Remember: the build uses zig 0.16"
@@ -242,6 +245,20 @@ pub fn main(init: std.process.Init) !void {
                 std.process.exit(@intFromEnum(ExitCode.internal_error));
             };
             std.process.exit(code);
+        },
+                .models => {
+            const provs = cfgmod.providers;
+            term.out("{\"providers\":[");
+            for (provs, 0..) |p, i| {
+                if (i > 0) term.out(",");
+                const entry = std.fmt.allocPrint(arena,
+                    "{{\"name\":\"{s}\",\"default_model\":\"{s}\",\"endpoint\":\"{s}\",\"context_window\":{d}}}",
+                    .{ p.name, p.default_model, p.endpoint, p.context_window },
+                ) catch continue;
+                term.out(entry);
+            }
+            term.out("]}\n");
+            return;
         },
         .skills => {
             const skills = @import("skills.zig");

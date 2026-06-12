@@ -287,7 +287,7 @@ tau --role critic --tools read,grep,find,ls --session proj-1 \
 | critic | `<APPROVED>` | Spec satisfied — done |
 | critic | `<BLOCKED>` | Defects found; describe concretely for the next author pass |
 
-The Author↔Critic primitive lives in `src/loop.zig` as `AuthorCriticSpec` + `runAuthorCritic`; it composes two `agent.run()` calls per iteration with different `cfg.role` and tool allowlists. See the global skill `tau-maintenance` for the full contract.
+The Author↔Critic primitive lives in `src/loop.zig` as `AuthorCriticSpec` + `runAuthorCritic`; it composes two `agent.run()` calls per iteration with different `cfg.role` and tool allowlists. See `.agents/skills/tau-maintenance/SKILL.md` for the full contract.
 
 ### Fleet Orchestration
 
@@ -314,7 +314,7 @@ Manifests persist to `~/.config/tau/fleets/<id>.json`; workers persist per-role 
 
 **Worker session naming**: each worker is spawned as `tau --role author --session <fleet-id>-<item-id>`, so its session file is `~/.config/tau/sessions/<fleet-id>-<item-id>.json`. Use `tau fleet logs <id>` to see the per-worker session names, then inspect them with `tau --session <fleet-id>-<item-id> "/goal status"`.
 
-v0.4 known issues (see `~/.agents/skills/tau-maintenance` for the full gap list):
+v0.4 known issues (see `.agents/skills/tau-maintenance/SKILL.md` for the full gap list):
 - Workers run sequentially and report `status: running` until the harness collects their results.
 - `cancel` is in-memory for v0 (does not yet persist `global_status: cancelled`).
 - `topoSort` cycles surface as `{"code":110,"message":"toposort failed: Cycle"}`.
