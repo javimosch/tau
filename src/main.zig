@@ -7,7 +7,7 @@ const agent = @import("agent.zig");
 const Config = cfgmod.Config;
 
 pub const name = "tau";
-pub const version = "0.3.0";
+pub const version = "0.4.0";
 
 // Semantic exit codes (Square-style).
 const ExitCode = enum(u8) {
