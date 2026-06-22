@@ -8,6 +8,8 @@ const FileConfig = struct {
     provider: ?[]const u8 = null,
     model: ?[]const u8 = null,
     api_key: ?[]const u8 = null,
+    /// Per-provider API keys: provider-name → api-key string.
+    keys: ?std.json.Value = null,
     mode: ?[]const u8 = null, // "text" | "json"
     stream: ?bool = null,
     thinking: ?bool = null,
@@ -44,7 +46,7 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
 
     if (fc.provider) |v| cfg.provider = v;
     if (fc.model) |v| cfg.model = v;
-    if (fc.api_key) |v| cfg.api_key = v;
+    if (fc.api_key) |v| cfg.config_api_key = v;
     if (fc.mode) |v| {
         if (std.mem.eql(u8, v, "text")) cfg.mode = .text else if (std.mem.eql(u8, v, "json")) cfg.mode = .json;
     }
@@ -60,5 +62,17 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     if (fc.compact_keep_recent_tokens) |v| cfg.compact_keep_recent_tokens = v;
     if (fc.goal_max_iterations) |v| cfg.goal_max_iterations = v;
     if (fc.goal_max_continues) |v| cfg.goal_max_continues = v;
+    if (fc.keys) |keys_val| {
+        if (keys_val == .object) {
+            var km = std.StringHashMap([]const u8).init(arena);
+            var it = keys_val.object.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* == .string) {
+                    km.put(entry.key_ptr.*, entry.value_ptr.*.string) catch {};
+                }
+            }
+            cfg.keys = km;
+        }
+    }
     return cfg;
 }

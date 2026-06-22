@@ -26,6 +26,10 @@ pub const Config = struct {
     endpoint: []const u8 = provider_mod.providers[0].endpoint,
     model: []const u8 = provider_mod.providers[0].default_model,
     api_key: ?[]const u8 = null,
+    /// Global api_key from config file (below per-provider keys in precedence).
+    config_api_key: ?[]const u8 = null,
+    /// Per-provider API keys from config file's "keys" object.
+    keys: ?std.StringHashMap([]const u8) = null,
     prompt: ?[]const u8 = null,
     system_prompt: ?[]const u8 = null,
     mode: OutputMode = .json,
@@ -138,21 +142,45 @@ pub const Config = struct {
     compact_keep_recent_tokens: u32 = 20_000,
 };
 
-/// Resolve the effective API key. Precedence: explicit `--api-key` (or config
-/// file `api_key`) > provider-specific env var(s) > global TAU_API_KEY > provider
-/// builtin key (none ship by default). No key is hardcoded in the binary.
+/// Resolve the effective API key. Precedence:
+/// 1. `--api-key` (explicit flag)
+/// 2. config `keys[selected_provider]`
+/// 3. provider env var(s)
+/// 4. config global `api_key`
+/// 5. `TAU_API_KEY`
+/// 6. provider builtin / keyless
 pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
+    // 1. --api-key (explicit flag)
     if (cfg.api_key) |k| return k;
+
+    // 2. config keys[selected_provider]
+    if (cfg.keys) |keys_map| {
+        if (keys_map.get(cfg.provider)) |k| {
+            if (k.len > 0) return k;
+        }
+    }
+
+    // 3. provider env var(s)
     if (findProvider(cfg.provider)) |p| {
         for (p.env_keys) |ek| {
             if (env.get(ek)) |v| {
                 if (v.len > 0) return v;
             }
         }
-        if (p.builtin_key) |bk| return bk;
     }
+
+    // 4. config global api_key
+    if (cfg.config_api_key) |k| return k;
+
+    // 5. TAU_API_KEY
     if (env.get("TAU_API_KEY")) |v| {
         if (v.len > 0) return v;
     }
+
+    // 6. provider builtin
+    if (findProvider(cfg.provider)) |p| {
+        if (p.builtin_key) |bk| return bk;
+    }
+
     return null;
 }
