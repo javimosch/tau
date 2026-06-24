@@ -59,3 +59,63 @@ pub fn execBash(io: std.Io, gpa: std.mem.Allocator, command: []const u8, timeout
         .exit_code = exit_code,
     };
 }
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+test "execBash success: echo hello returns exit_code 0 and stdout contains hello" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    const r = try execBash(io, gpa, "echo hello", 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    try std.testing.expectEqual(@as(u8, 0), r.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "hello") != null);
+}
+
+test "execBash non-zero exit: exit 42 returns exit_code 42" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    const r = try execBash(io, gpa, "exit 42", 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(!r.success);
+    try std.testing.expectEqual(@as(u8, 42), r.exit_code);
+}
+
+test "execBash stderr capture: echo to stderr produces stderr output and empty stdout" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    const r = try execBash(io, gpa, "echo err >&2", 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    try std.testing.expectEqual(@as(u8, 0), r.exit_code);
+    try std.testing.expectEqualStrings("", r.stdout);
+    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "err") != null);
+}
+
+test "execBash timeout: sleep 10 with 1ms timeout returns exit_code 124 and stderr contains timed out" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    const r = try execBash(io, gpa, "sleep 10", 1);
+
+    // stdout/stderr may be literals (not heap-allocated) on timeout path;
+    // only free them when they are heap-allocated (non-empty dynamic buffers
+    // are returned by std.process.run on the happy path). The timeout branch
+    // returns string literals so we must not free them.
+    try std.testing.expect(!r.success);
+    try std.testing.expectEqual(@as(u8, 124), r.exit_code);
+
+    // case-insensitive search for "timed out"
+    var lower_buf: [64]u8 = undefined;
+    const stderr_lower = std.ascii.lowerString(lower_buf[0..@min(r.stderr.len, lower_buf.len)], r.stderr[0..@min(r.stderr.len, lower_buf.len)]);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_lower, "timed out") != null);
+}
