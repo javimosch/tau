@@ -682,3 +682,184 @@ fn respondError(gpa: std.mem.Allocator, w: *std.Io.Writer, id_val: std.json.Valu
     defer gpa.free(msg);
     try writeLine(w, msg);
 }
+
+// ---- unit tests ------------------------------------------------------------
+
+test "configDir: null when HOME is absent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try std.testing.expect(configDir(a, &env) == null);
+}
+
+test "configDir: builds ~/.config/tau path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("HOME", "/home/alice");
+    const got = configDir(a, &env) orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("/home/alice/.config/tau", got);
+}
+
+test "pidPath: null when HOME is absent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try std.testing.expect(pidPath(a, &env) == null);
+}
+
+test "pidPath: builds acp.pid path from HOME" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("HOME", "/home/alice");
+    const got = pidPath(a, &env) orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("/home/alice/.config/tau/acp.pid", got);
+}
+
+test "defaultSocket: builds acp.sock path from HOME" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("HOME", "/home/alice");
+    const got = defaultSocket(a, &env) orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("/home/alice/.config/tau/acp.sock", got);
+}
+
+test "toolKind: maps all known tool names" {
+    try std.testing.expectEqualStrings("execute", toolKind("bash"));
+    try std.testing.expectEqualStrings("read", toolKind("read"));
+    try std.testing.expectEqualStrings("read", toolKind("ls"));
+    try std.testing.expectEqualStrings("edit", toolKind("write"));
+    try std.testing.expectEqualStrings("edit", toolKind("edit"));
+    try std.testing.expectEqualStrings("search", toolKind("grep"));
+    try std.testing.expectEqualStrings("search", toolKind("find"));
+}
+
+test "toolKind: returns other for unknown tool" {
+    try std.testing.expectEqualStrings("other", toolKind("unknown_tool"));
+    try std.testing.expectEqualStrings("other", toolKind(""));
+    try std.testing.expectEqualStrings("other", toolKind("cat"));
+}
+
+test "replaceAlloc: replaces all occurrences" {
+    const gpa = std.testing.allocator;
+    const got = try replaceAlloc(gpa, "hello world hello", "hello", "hi");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("hi world hi", got);
+}
+
+test "replaceAlloc: empty needle returns copy of input" {
+    const gpa = std.testing.allocator;
+    const got = try replaceAlloc(gpa, "hello", "", "X");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("hello", got);
+}
+
+test "replaceAlloc: needle not present returns copy" {
+    const gpa = std.testing.allocator;
+    const got = try replaceAlloc(gpa, "hello world", "xyz", "Q");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("hello world", got);
+}
+
+test "replaceAlloc: needle at start and end" {
+    const gpa = std.testing.allocator;
+    const got = try replaceAlloc(gpa, "ab middle ab", "ab", "Z");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("Z middle Z", got);
+}
+
+test "replaceAlloc: empty string input" {
+    const gpa = std.testing.allocator;
+    const got = try replaceAlloc(gpa, "", "needle", "repl");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("", got);
+}
+
+test "paramSessionId: extracts sessionId from params" {
+    const gpa = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"sessionId\":\"session-abc\"}", .{});
+    defer parsed.deinit();
+    const sid = paramSessionId(parsed.value, gpa);
+    defer gpa.free(sid);
+    try std.testing.expectEqualStrings("session-abc", sid);
+}
+
+test "paramSessionId: returns unknown when params is null" {
+    const gpa = std.testing.allocator;
+    const sid = paramSessionId(null, gpa);
+    defer gpa.free(sid);
+    try std.testing.expectEqualStrings("unknown", sid);
+}
+
+test "paramSessionId: returns unknown when sessionId key is absent" {
+    const gpa = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"other\":\"value\"}", .{});
+    defer parsed.deinit();
+    const sid = paramSessionId(parsed.value, gpa);
+    defer gpa.free(sid);
+    try std.testing.expectEqualStrings("unknown", sid);
+}
+
+test "paramPromptText: string prompt extracted verbatim" {
+    const gpa = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"prompt\":\"hello world\"}", .{});
+    defer parsed.deinit();
+    const text = try paramPromptText(parsed.value, gpa);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings("hello world", text);
+}
+
+test "paramPromptText: array of text blocks joined with newlines" {
+    const gpa = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"prompt\":[{\"text\":\"line one\"},{\"text\":\"line two\"}]}", .{});
+    defer parsed.deinit();
+    const text = try paramPromptText(parsed.value, gpa);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings("line one\nline two", text);
+}
+
+test "paramPromptText: null params returns empty string" {
+    const gpa = std.testing.allocator;
+    const text = try paramPromptText(null, gpa);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings("", text);
+}
+
+test "paramPromptText: missing prompt key returns empty string" {
+    const gpa = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"sessionId\":\"s1\"}", .{});
+    defer parsed.deinit();
+    const text = try paramPromptText(parsed.value, gpa);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings("", text);
+}
+
+test "paramPromptText: array blocks missing text key are skipped" {
+    const gpa = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, "{\"prompt\":[{\"type\":\"image\"},{\"text\":\"actual text\"}]}", .{});
+    defer parsed.deinit();
+    const text = try paramPromptText(parsed.value, gpa);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings("actual text", text);
+}
+
+test "idText: serializes integer id" {
+    const gpa = std.testing.allocator;
+    const t = try idText(gpa, std.json.Value{ .integer = 42 });
+    defer gpa.free(t);
+    try std.testing.expectEqualStrings("42", t);
+}
+
+test "idText: serializes string id with surrounding quotes" {
+    const gpa = std.testing.allocator;
+    const t = try idText(gpa, std.json.Value{ .string = "req-1" });
+    defer gpa.free(t);
+    try std.testing.expectEqualStrings("\"req-1\"", t);
+}
