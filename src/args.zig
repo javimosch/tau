@@ -723,7 +723,9 @@ test "parse: unknown provider is rejected" {
 
     const p = try parseArgv(a, &.{ "tau", "--provider", "acme", "hi" }, .{});
     try std.testing.expectEqual(Action.err, p.action);
-    try std.testing.expectEqualStrings("unknown provider: acme", p.err_msg.?);
+    // Message wording is owned by unknownProviderErr (lists valid providers); assert the essentials.
+    try std.testing.expect(std.mem.indexOf(u8, p.err_msg.?, "unknown provider") != null);
+    try std.testing.expect(std.mem.indexOf(u8, p.err_msg.?, "acme") != null);
 }
 
 test "parse: --api-key overrides, otherwise base api_key is preserved" {
