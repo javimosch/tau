@@ -224,3 +224,169 @@ test "adversarial json: escapes, unicode, malformed, no crash" {
         if (v) |vv| gpa.free(vv); // either null or a value, just must not crash
     }
 }
+
+test "escapeAlloc: all named escape sequences and control chars" {
+    const gpa = std.testing.allocator;
+
+    // empty string round-trips cleanly
+    {
+        const esc = try escapeAlloc(gpa, "");
+        defer gpa.free(esc);
+        try std.testing.expectEqualStrings("", esc);
+    }
+    // carriage return (0x0D)
+    {
+        const esc = try escapeAlloc(gpa, "\r");
+        defer gpa.free(esc);
+        try std.testing.expectEqualStrings("\\r", esc);
+    }
+    // backspace (0x08)
+    {
+        const esc = try escapeAlloc(gpa, "\x08");
+        defer gpa.free(esc);
+        try std.testing.expectEqualStrings("\\b", esc);
+    }
+    // form feed (0x0C)
+    {
+        const esc = try escapeAlloc(gpa, "\x0C");
+        defer gpa.free(esc);
+        try std.testing.expectEqualStrings("\\f", esc);
+    }
+    // other control chars < 0x20 become \uXXXX
+    {
+        const esc = try escapeAlloc(gpa, "\x01");
+        defer gpa.free(esc);
+        try std.testing.expectEqualStrings("\\u0001", esc);
+    }
+    // forward slash passes through unchanged
+    {
+        const esc = try escapeAlloc(gpa, "a/b");
+        defer gpa.free(esc);
+        try std.testing.expectEqualStrings("a/b", esc);
+    }
+}
+
+test "unescapeAlloc: forward slash and unknown escape fallback" {
+    const gpa = std.testing.allocator;
+
+    // \/ -> /
+    {
+        const v = try unescapeAlloc(gpa, "\\/");
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("/", v);
+    }
+    // unknown escape \q -> q (else fallback)
+    {
+        const v = try unescapeAlloc(gpa, "\\q");
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("q", v);
+    }
+    // empty string -> empty string
+    {
+        const v = try unescapeAlloc(gpa, "");
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("", v);
+    }
+    // no escapes at all — passthrough
+    {
+        const v = try unescapeAlloc(gpa, "plain text");
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("plain text", v);
+    }
+    // \uZZZZ (invalid hex) -> 'u' appended, trailing chars as literals
+    {
+        const v = try unescapeAlloc(gpa, "\\uZZZZ");
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("uZZZZ", v);
+    }
+}
+
+test "extractString: empty value, multiple fields, prefix field, tab in value" {
+    const gpa = std.testing.allocator;
+
+    // empty string value
+    {
+        const v = (try extractString(gpa, "{\"k\":\"\"}", "k")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("", v);
+    }
+    // returns first matching field
+    {
+        const v = (try extractString(gpa, "{\"a\":\"one\",\"b\":\"two\"}", "a")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("one", v);
+    }
+    // second field is also reachable
+    {
+        const v = (try extractString(gpa, "{\"a\":\"one\",\"b\":\"two\"}", "b")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("two", v);
+    }
+    // field name that is a strict prefix of a key is not confused
+    try std.testing.expect((try extractString(gpa, "{\"content\":\"x\"}", "cont")) == null);
+    // tab escape in value
+    {
+        const v = (try extractString(gpa, "{\"msg\":\"a\\tb\"}", "msg")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("a\tb", v);
+    }
+}
+
+test "getStringArg: empty value and key prefix disambiguation" {
+    const gpa = std.testing.allocator;
+
+    // empty value
+    {
+        const v = (try getStringArg(gpa, "{\"k\":\"\"}", "k")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("", v);
+    }
+    // "n" must not match key "name"
+    try std.testing.expect((try getStringArg(gpa, "{\"name\":\"alice\"}", "n")) == null);
+    // value with tab and newline escapes
+    {
+        const v = (try getStringArg(gpa, "{\"msg\":\"a\\tb\\nc\"}", "msg")).?;
+        defer gpa.free(v);
+        try std.testing.expectEqualStrings("a\tb\nc", v);
+    }
+}
+
+test "getIntArg: zero, positive bare, plus-quoted, and negative bare" {
+    const j = "{\"z\":0,\"pos\":42,\"pq\":\"+7\",\"nb\":-99}";
+    try std.testing.expectEqual(@as(i64, 0), getIntArg(j, "z").?);
+    try std.testing.expectEqual(@as(i64, 42), getIntArg(j, "pos").?);
+    try std.testing.expectEqual(@as(i64, 7), getIntArg(j, "pq").?);
+    try std.testing.expectEqual(@as(i64, -99), getIntArg(j, "nb").?);
+    // key that is a prefix of another must not match
+    try std.testing.expect(getIntArg("{\"zz\":1}", "z") == null);
+}
+
+test "getBoolArg: all bare and quoted forms" {
+    // bare false
+    try std.testing.expectEqual(false, getBoolArg("{\"f\":false}", "f").?);
+    // quoted true
+    try std.testing.expectEqual(true, getBoolArg("{\"t\":\"true\"}", "t").?);
+    // quoted false
+    try std.testing.expectEqual(false, getBoolArg("{\"f\":\"false\"}", "f").?);
+    // missing key returns null
+    try std.testing.expect(getBoolArg("{\"t\":true}", "missing") == null);
+}
+
+test "nested-structure round-trip: string value containing json" {
+    const gpa = std.testing.allocator;
+
+    const inner = "{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hello world\"}]}";
+    const escaped = try escapeAlloc(gpa, inner);
+    defer gpa.free(escaped);
+    // unescape restores original
+    const restored = try unescapeAlloc(gpa, escaped);
+    defer gpa.free(restored);
+    try std.testing.expectEqualStrings(inner, restored);
+
+    // build an outer JSON with the escaped payload and extract it back
+    const outer = try std.fmt.allocPrint(gpa, "{{\"payload\":\"{s}\"}}", .{escaped});
+    defer gpa.free(outer);
+    const extracted = (try extractString(gpa, outer, "payload")).?;
+    defer gpa.free(extracted);
+    try std.testing.expectEqualStrings(inner, extracted);
+}
