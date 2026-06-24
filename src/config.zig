@@ -140,6 +140,10 @@ pub const Config = struct {
     compact_threshold: f32 = 0.5,
     /// Tokens of recent history kept verbatim during compaction (pi default).
     compact_keep_recent_tokens: u32 = 20_000,
+
+    /// Set by configfile.load() when the config file exists but has invalid JSON.
+    /// main.zig emits a warning and continues with defaults.
+    config_warning: ?[]const u8 = null,
 };
 
 /// Resolve the effective API key. Precedence:
