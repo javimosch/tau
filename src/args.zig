@@ -464,6 +464,381 @@ fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytyp
     return .{ .action = .err, .err_msg = try std.fmt.allocPrint(arena, fmt, fmtargs) };
 }
 
+// ── Tests ───────────────────────────────────────────────────────────────────
+//
+// `parse` consumes a `std.process.Args` (the platform argv vector) and a
+// `std.process.Environ.Map`. On the test host both are constructed directly:
+// `Args.vector` is just a `[]const [*:0]const u8`, so an array of string
+// literals (with a dummy argv[0], which `parse` skips) drives the parser. The
+// env map is left empty — env-key resolution happens later in main, not here.
+
+const provider_mod = @import("llm/provider.zig");
+
+/// Run `parse` over an explicit argv (caller supplies argv[0]). All retained
+/// strings land in `arena`, freed together by the caller's arena.deinit().
+fn parseArgv(arena: std.mem.Allocator, argv: []const [*:0]const u8, base: Config) !Parsed {
+    var env = std.process.Environ.Map.init(arena);
+    const args: std.process.Args = .{ .vector = argv };
+    return parse(std.testing.io, arena, args, &env, base);
+}
+
+test "parse: bare positional becomes a run prompt" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "hello", "world" }, .{});
+    try std.testing.expectEqual(Action.run, p.action);
+    try std.testing.expectEqualStrings("hello world", p.config.prompt.?);
+}
+
+test "parse: no args shows help" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{"tau"}, .{});
+    try std.testing.expectEqual(Action.help, p.action);
+    try std.testing.expect(p.help_requested);
+    try std.testing.expect(p.config.prompt == null);
+}
+
+test "parse: -h/--help requests help, -v/--version selects version" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    try std.testing.expectEqual(Action.help, (try parseArgv(a, &.{ "tau", "-h" }, .{})).action);
+    try std.testing.expectEqual(Action.help, (try parseArgv(a, &.{ "tau", "--help" }, .{})).action);
+    try std.testing.expectEqual(Action.version, (try parseArgv(a, &.{ "tau", "-v" }, .{})).action);
+    try std.testing.expectEqual(Action.version, (try parseArgv(a, &.{ "tau", "--version" }, .{})).action);
+    try std.testing.expectEqual(Action.help_json, (try parseArgv(a, &.{ "tau", "--help-json" }, .{})).action);
+}
+
+test "parse: boolean flags toggle config" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--no-stream", "--no-tools", "--thinking", "--debug", "--dry-run", "--no-compact", "hi" }, .{});
+    try std.testing.expectEqual(Action.run, p.action);
+    try std.testing.expect(!p.config.stream);
+    try std.testing.expect(p.config.no_tools);
+    try std.testing.expect(p.config.thinking);
+    try std.testing.expect(p.config.debug);
+    try std.testing.expect(p.config.dry_run);
+    try std.testing.expect(!p.config.auto_compact);
+
+    // Short aliases: -nt == --no-tools.
+    const q = try parseArgv(a, &.{ "tau", "-nt", "hi" }, .{});
+    try std.testing.expect(q.config.no_tools);
+
+    // --stream re-enables streaming after a config-file default of false.
+    const r = try parseArgv(a, &.{ "tau", "--stream", "hi" }, .{ .stream = false });
+    try std.testing.expect(r.config.stream);
+}
+
+test "parse: numeric flags parse and validate" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--temperature", "0.2", "--max-tokens", "1024", "--timeout-ms", "9000", "--max-iterations", "7", "--context-window", "65536", "hi" }, .{});
+    try std.testing.expectEqual(@as(f32, 0.2), p.config.temperature);
+    try std.testing.expectEqual(@as(u32, 1024), p.config.max_tokens.?);
+    try std.testing.expectEqual(@as(i64, 9000), p.config.timeout_ms);
+    try std.testing.expectEqual(@as(u32, 7), p.config.max_iterations);
+    try std.testing.expectEqual(@as(u32, 65536), p.config.context_window);
+
+    // Invalid numeric values surface a descriptive error, not a crash.
+    const e1 = try parseArgv(a, &.{ "tau", "--temperature", "hot" }, .{});
+    try std.testing.expectEqual(Action.err, e1.action);
+    try std.testing.expectEqualStrings("invalid --temperature: hot", e1.err_msg.?);
+
+    const e2 = try parseArgv(a, &.{ "tau", "--max-tokens", "lots" }, .{});
+    try std.testing.expectEqual(Action.err, e2.action);
+    try std.testing.expectEqualStrings("invalid --max-tokens: lots", e2.err_msg.?);
+
+    const e3 = try parseArgv(a, &.{ "tau", "--context-window", "wide" }, .{});
+    try std.testing.expectEqual(Action.err, e3.action);
+    try std.testing.expectEqualStrings("invalid --context-window: wide", e3.err_msg.?);
+}
+
+test "parse: missing value for a flag that needs one" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--session" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expectEqualStrings("missing value for --session", p.err_msg.?);
+
+    const q = try parseArgv(a, &.{ "tau", "--model" }, .{});
+    try std.testing.expectEqual(Action.err, q.action);
+    try std.testing.expectEqualStrings("missing value for --model", q.err_msg.?);
+}
+
+test "parse: unknown option is rejected" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--nope" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expectEqualStrings("unknown option: --nope", p.err_msg.?);
+}
+
+test "parse: --role accepts known roles and rejects others" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    try std.testing.expectEqual(cfgmod.Role.author, (try parseArgv(a, &.{ "tau", "--role", "author", "hi" }, .{})).config.role);
+    try std.testing.expectEqual(cfgmod.Role.critic, (try parseArgv(a, &.{ "tau", "--role", "critic", "hi" }, .{})).config.role);
+    try std.testing.expectEqual(cfgmod.Role.coordinator, (try parseArgv(a, &.{ "tau", "--role", "coordinator", "hi" }, .{})).config.role);
+    try std.testing.expectEqual(cfgmod.Role.none, (try parseArgv(a, &.{ "tau", "--role", "none", "hi" }, .{})).config.role);
+
+    const e = try parseArgv(a, &.{ "tau", "--role", "boss", "hi" }, .{});
+    try std.testing.expectEqual(Action.err, e.action);
+    try std.testing.expectEqualStrings("invalid --role (want author|critic|coordinator|none): boss", e.err_msg.?);
+}
+
+test "parse: --mode accepts text|json and rejects others" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    try std.testing.expectEqual(cfgmod.OutputMode.text, (try parseArgv(a, &.{ "tau", "--mode", "text", "hi" }, .{})).config.mode);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, (try parseArgv(a, &.{ "tau", "--mode", "json", "hi" }, .{})).config.mode);
+
+    const e = try parseArgv(a, &.{ "tau", "--mode", "yaml", "hi" }, .{});
+    try std.testing.expectEqual(Action.err, e.action);
+    try std.testing.expectEqualStrings("invalid --mode (want text|json): yaml", e.err_msg.?);
+}
+
+test "parse: --tools / --exclude-tools split CSV and trim whitespace" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--tools", "bash, read , write", "--exclude-tools", "grep", "hi" }, .{});
+    const allow = p.config.tools_allow.?;
+    try std.testing.expectEqual(@as(usize, 3), allow.len);
+    try std.testing.expectEqualStrings("bash", allow[0]);
+    try std.testing.expectEqualStrings("read", allow[1]);
+    try std.testing.expectEqualStrings("write", allow[2]);
+    const deny = p.config.tools_deny.?;
+    try std.testing.expectEqual(@as(usize, 1), deny.len);
+    try std.testing.expectEqualStrings("grep", deny[0]);
+}
+
+test "parse: system prompt parts join with newlines" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--system-prompt", "base", "--append-system-prompt", "more", "hi" }, .{});
+    try std.testing.expectEqualStrings("base\nmore", p.config.system_prompt.?);
+
+    // A later --system-prompt resets earlier parts.
+    const q = try parseArgv(a, &.{ "tau", "--append-system-prompt", "dropped", "--system-prompt", "fresh", "hi" }, .{});
+    try std.testing.expectEqualStrings("fresh", q.config.system_prompt.?);
+}
+
+// ── Provider / model resolution ──────────────────────────────────────────────
+
+test "parse: default provider resolves to the first provider table entry" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "hi" }, .{});
+    const want = provider_mod.providers[0];
+    try std.testing.expectEqualStrings(want.name, p.config.provider);
+    try std.testing.expectEqualStrings(want.endpoint, p.config.endpoint);
+    try std.testing.expectEqualStrings(want.default_model, p.config.model);
+}
+
+test "parse: --provider sets endpoint and provider default model" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--provider", "openai", "hi" }, .{});
+    const oai = provider_mod.findProvider("openai").?;
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(oai.endpoint, p.config.endpoint);
+    try std.testing.expectEqualStrings(oai.default_model, p.config.model);
+    try std.testing.expectEqual(oai.context_window, p.config.context_window);
+}
+
+test "parse: --model provider/id form sets both provider and model" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--model", "deepseek/deepseek-reasoner", "hi" }, .{});
+    try std.testing.expectEqualStrings("deepseek", p.config.provider);
+    try std.testing.expectEqualStrings("deepseek-reasoner", p.config.model);
+    try std.testing.expectEqualStrings(provider_mod.findProvider("deepseek").?.endpoint, p.config.endpoint);
+}
+
+test "parse: --model without slash keeps the current provider" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--model", "my-custom-model", "hi" }, .{});
+    try std.testing.expectEqualStrings(provider_mod.providers[0].name, p.config.provider);
+    try std.testing.expectEqualStrings("my-custom-model", p.config.model);
+}
+
+test "parse: explicit --provider wins over provider implied by --model" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // --provider precedes --model: provider_opt is already set, so the slash
+    // prefix only contributes the model id, not the provider.
+    const p = try parseArgv(a, &.{ "tau", "--provider", "openai", "--model", "deepseek/x", "hi" }, .{});
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings("x", p.config.model);
+}
+
+test "parse: a config-file custom model survives provider defaulting" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // base.model differs from providers[0].default_model → keep it even when no
+    // --model flag is given (config-file precedence over provider default).
+    const p = try parseArgv(a, &.{ "tau", "hi" }, .{ .model = "configured-model" });
+    try std.testing.expectEqualStrings("configured-model", p.config.model);
+}
+
+test "parse: unknown provider is rejected" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--provider", "acme", "hi" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    // Message wording is owned by unknownProviderErr (lists valid providers); assert the essentials.
+    try std.testing.expect(std.mem.indexOf(u8, p.err_msg.?, "unknown provider") != null);
+    try std.testing.expect(std.mem.indexOf(u8, p.err_msg.?, "acme") != null);
+}
+
+test "parse: --api-key overrides, otherwise base api_key is preserved" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--api-key", "sk-flag", "hi" }, .{ .api_key = "sk-base" });
+    try std.testing.expectEqualStrings("sk-flag", p.config.api_key.?);
+
+    const q = try parseArgv(a, &.{ "tau", "hi" }, .{ .api_key = "sk-base" });
+    try std.testing.expectEqualStrings("sk-base", q.config.api_key.?);
+}
+
+// ── Subcommands: acp / models / skills / fleet ───────────────────────────────
+
+test "parse: acp subcommands and validation" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const serve = try parseArgv(a, &.{ "tau", "acp" }, .{});
+    try std.testing.expectEqual(Action.acp, serve.action);
+    try std.testing.expectEqual(cfgmod.AcpSub.serve, serve.config.acp_sub);
+
+    const start = try parseArgv(a, &.{ "tau", "acp", "start", "--acp-socket", "/tmp/tau.sock" }, .{});
+    try std.testing.expectEqual(cfgmod.AcpSub.start, start.config.acp_sub);
+    try std.testing.expectEqualStrings("/tmp/tau.sock", start.config.acp_socket.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "acp", "--frob" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown acp argument: --frob", bad.err_msg.?);
+
+    const bad_iter = try parseArgv(a, &.{ "tau", "acp", "--max-iterations", "ten" }, .{});
+    try std.testing.expectEqual(Action.err, bad_iter.action);
+    try std.testing.expectEqualStrings("invalid --max-iterations: ten", bad_iter.err_msg.?);
+}
+
+test "parse: models subcommand" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "models" }, .{});
+    try std.testing.expectEqual(Action.models, p.action);
+}
+
+test "parse: skills subcommand validation" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const list = try parseArgv(a, &.{ "tau", "skills", "list" }, .{});
+    try std.testing.expectEqual(Action.skills, list.action);
+    try std.testing.expectEqualStrings("list", list.config.skills_sub.?);
+
+    const search = try parseArgv(a, &.{ "tau", "skills", "search", "deploy" }, .{});
+    try std.testing.expectEqualStrings("search", search.config.skills_sub.?);
+    try std.testing.expectEqualStrings("deploy", search.config.skills_arg.?);
+
+    const none = try parseArgv(a, &.{ "tau", "skills" }, .{});
+    try std.testing.expectEqual(Action.err, none.action);
+    try std.testing.expectEqualStrings("skills subcommand required: list | search | load", none.err_msg.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "skills", "frob" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): frob", bad.err_msg.?);
+}
+
+test "parse: fleet run resolves provider and captures goal" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "fleet", "run", "--goal", "ship it", "--sequential" }, .{});
+    try std.testing.expectEqual(Action.fleet, p.action);
+    try std.testing.expectEqualStrings("run", p.config.fleet_sub.?);
+    try std.testing.expectEqualStrings("ship it", p.config.fleet_goal.?);
+    try std.testing.expect(!p.config.fleet_parallel);
+    // Provider resolution happens inline for the fleet early-return path.
+    try std.testing.expectEqualStrings(provider_mod.providers[0].endpoint, p.config.endpoint);
+}
+
+test "parse: fleet positional id and validation errors" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const status = try parseArgv(a, &.{ "tau", "fleet", "status", "job-42" }, .{});
+    try std.testing.expectEqualStrings("status", status.config.fleet_sub.?);
+    try std.testing.expectEqualStrings("job-42", status.config.fleet_id.?);
+
+    const none = try parseArgv(a, &.{ "tau", "fleet" }, .{});
+    try std.testing.expectEqual(Action.err, none.action);
+    try std.testing.expectEqualStrings("fleet subcommand required: run | status | list | logs | cancel", none.err_msg.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "fleet", "frob" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown fleet argument: frob", bad.err_msg.?);
+}
+
+test "parse: /goal prompt switches into goal mode and disables streaming" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "/goal", "build the parser" }, .{});
+    try std.testing.expectEqual(Action.run, p.action);
+    try std.testing.expectEqual(cfgmod.GoalAction.set, p.config.goal_action);
+    try std.testing.expectEqualStrings("build the parser", p.config.goal.?);
+    // `/goal --tokens N` budgets, and a .set goal forces non-streaming.
+    try std.testing.expect(!p.config.stream);
+}
 /// Build "unknown provider 'X' — valid providers: a, b, c (run 'tau models')" error.
 fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {
     var buf: std.ArrayList(u8) = .empty;
