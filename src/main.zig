@@ -34,6 +34,24 @@ fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recover
     writeErr(j);
 }
 
+fn printWarnJson(message: []const u8) void {
+    const j = std.fmt.allocPrint(std.heap.page_allocator, "{{\"warn\":{{\"message\":\"{s}\"}}}}\n", .{message}) catch return;
+    defer std.heap.page_allocator.free(j);
+    writeErr(j);
+}
+
+/// Build a recovery hint for a missing API key: names the env var(s) to set.
+fn authHint(arena: std.mem.Allocator, provider: []const u8) []const u8 {
+    const p = cfgmod.findProvider(provider) orelse return "use --api-key <key>";
+    if (p.env_keys.len == 0) return "use --api-key <key>";
+    var buf: std.ArrayList(u8) = .empty;
+    for (p.env_keys, 0..) |ek, i| {
+        if (i != 0) buf.appendSlice(arena, " or ") catch return "use --api-key <key>";
+        buf.appendSlice(arena, ek) catch return "use --api-key <key>";
+    }
+    return std.fmt.allocPrint(arena, "set {s} env var, or use --api-key <key>", .{buf.items}) catch "use --api-key <key>";
+}
+
 const help_text =
     \\tau - agent-first AI CLI (non-interactive Zig implementation of pi)
     \\
@@ -214,6 +232,8 @@ pub fn main(init: std.process.Init) !void {
 
     // Config-file defaults (~/.config/tau/config.json); CLI flags override these.
     const base_cfg: Config = @import("configfile.zig").load(io, arena, init.environ_map);
+    // Warn if the config file exists but has invalid JSON (load degrades silently).
+    if (base_cfg.config_warning) |w| printWarnJson(w);
 
     const parsed = argsmod.parse(io, arena, init.minimal.args, init.environ_map, base_cfg) catch {
         printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "argument parsing failed", false);
@@ -343,7 +363,10 @@ pub fn main(init: std.process.Init) !void {
                 if (cfgmod.resolveApiKey(fleet_cfg, init.environ_map)) |key| {
                     fleet_cfg.api_key = key;
                 } else {
-                    printErrorJson(@intFromEnum(ExitCode.auth_failed), "AuthFailed", "invalid or missing API key", false);
+                    const hint = authHint(arena, fleet_cfg.provider);
+                    const msg = std.fmt.allocPrint(arena,
+                        "no API key for provider '{s}' — {s}", .{ fleet_cfg.provider, hint }) catch "missing API key";
+                    printErrorJson(@intFromEnum(ExitCode.auth_failed), "AuthFailed", msg, false);
                     std.process.exit(@intFromEnum(ExitCode.auth_failed));
                 }
             }
@@ -404,7 +427,11 @@ pub fn main(init: std.process.Init) !void {
             error.AuthFailed => .auth_failed,
             else => .internal_error,
         };
-        const detail = if (err == error.AuthFailed) "invalid or missing API key" else "request failed";
+        const detail = if (err == error.AuthFailed) blk: {
+            const hint = authHint(arena, cfg.provider);
+            break :blk std.fmt.allocPrint(arena,
+                "no API key for provider '{s}' — {s}", .{ cfg.provider, hint }) catch "missing API key";
+        } else "request failed";
         printErrorJson(@intFromEnum(code), @errorName(err), detail, false);
         std.process.exit(@intFromEnum(code));
     };

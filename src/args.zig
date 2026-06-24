@@ -105,7 +105,7 @@ pub fn parse(
         // Resolve provider → endpoint (the non-fleet path does this at the end
         // of parse; fleet returns early so it must be done here).
         const p = cfgmod.findProvider(fcfg.provider) orelse
-            return errResult(arena, "unknown provider: {s}", .{fcfg.provider});
+            return unknownProviderErr(arena, fcfg.provider);
         fcfg.provider = p.name;
         fcfg.endpoint = p.endpoint;
         if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
@@ -382,7 +382,7 @@ pub fn parse(
     }
     const prov_name = provider_opt orelse cfg.provider;
     const p = cfgmod.findProvider(prov_name) orelse
-        return errResult(arena, "unknown provider: {s}", .{prov_name});
+        return unknownProviderErr(arena, prov_name);
     cfg.provider = p.name;
     cfg.endpoint = p.endpoint;
     // Model precedence: --model > config-file model (if non-default) > provider default.
@@ -462,4 +462,16 @@ fn missing(arena: std.mem.Allocator, flag: []const u8) Parsed {
 
 fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytype) !Parsed {
     return .{ .action = .err, .err_msg = try std.fmt.allocPrint(arena, fmt, fmtargs) };
+}
+
+/// Build "unknown provider 'X' — valid providers: a, b, c (run 'tau models')" error.
+fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {
+    var buf: std.ArrayList(u8) = .empty;
+    for (cfgmod.providers, 0..) |p, i| {
+        if (i != 0) try buf.appendSlice(arena, ", ");
+        try buf.appendSlice(arena, p.name);
+    }
+    const msg = try std.fmt.allocPrint(arena,
+        "unknown provider '{s}' — valid providers: {s} (run 'tau models' for details)", .{ given, buf.items });
+    return .{ .action = .err, .err_msg = msg };
 }
