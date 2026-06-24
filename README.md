@@ -35,6 +35,76 @@ tau --session myproject "/goal status"
 👉 Semantic exit codes — scripts and agents handle failures deterministically
 👉 Sessions + goal mode — persistent state across invocations
 
+## 🚀 Getting Started
+
+Zero to your first response in five steps. Every command below is copy-pasteable.
+
+### 1. Prerequisites
+
+- **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against
+- **`curl`** on your `PATH` — tau shells out to it for HTTP
+- **`git`** — to clone the repo
+
+```bash
+zig version   # should print 0.16.0
+curl --version | head -1
+```
+
+### 2. Clone and build
+
+```bash
+git clone https://github.com/javimosch/tau.git
+cd tau
+zig build              # compiles to ./zig-out/bin/tau
+```
+
+(Optional) put tau on your `PATH` so you can call it as `tau` instead of `./zig-out/bin/tau`:
+
+```bash
+export PATH="$PWD/zig-out/bin:$PATH"
+```
+
+### 3. Configure an API key
+
+tau ships with a built-in key for its default `xiaomi` provider, so the first run works out of the box. To use your own key or a different provider, export the matching environment variable:
+
+```bash
+# Default provider (xiaomi)
+export TAU_API_KEY="your-key-here"
+
+# …or pick another provider's key
+export OPENAI_API_KEY="sk-..."       # use with --model openai/gpt-4o-mini
+export DEEPSEEK_API_KEY="..."        # use with --model deepseek/deepseek-chat
+```
+
+Key resolution order: `--api-key` flag → provider env var → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the full provider table and config file.
+
+### 4. First run
+
+```bash
+# Human-readable answer
+./zig-out/bin/tau --mode text "Say hello in one short sentence."
+
+# Same call, default JSON envelope (what agents consume)
+./zig-out/bin/tau "Say hello in one short sentence."
+```
+
+You should see a one-line greeting (text mode) or a `{"version":...,"content":"...","done":true}` envelope (JSON mode). The process exits `0` on success — see [Exit Codes](#exit-codes) for the rest.
+
+### 5. Try tool-calling
+
+Let the model use tools to inspect this very repo:
+
+```bash
+./zig-out/bin/tau --mode text --tools bash,read,ls "List the files in src/ and summarize what tau does."
+```
+
+That's it — you're running tau. Next steps:
+
+- **Verify your build:** `zig build test` (unit tests) and `./scripts/smoke.sh` (offline smoke tests)
+- **Go autonomous:** `tau --session demo "/goal add a --version flag and verify it builds"`
+- **Keep reading:** [CLI Usage Examples](#-cli-usage-examples) · [Configuration](#-configuration) · [Troubleshooting](#-troubleshooting)
+
 ## The Problem
 
 AI agents need deterministic, predictable interfaces:

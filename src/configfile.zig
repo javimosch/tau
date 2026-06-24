@@ -42,7 +42,11 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch return cfg;
     const fc = std.json.parseFromSliceLeaky(FileConfig, arena, bytes, .{
         .ignore_unknown_fields = true,
-    }) catch return cfg;
+    }) catch {
+        cfg.config_warning = std.fmt.allocPrint(arena,
+            "config file has invalid JSON and was ignored: {s} — fix the JSON syntax or delete the file", .{p}) catch null;
+        return cfg;
+    };
 
     if (fc.provider) |v| cfg.provider = v;
     if (fc.model) |v| cfg.model = v;

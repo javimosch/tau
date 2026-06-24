@@ -1,0 +1,134 @@
+#compdef tau
+# zsh completion for tau
+# -----------------------------------------------------------------------------
+# One-time (current session):
+#   source completions/_tau
+#
+# Permanent:
+#   1. Pick (or create) a completions directory in your $fpath, e.g.:
+#        mkdir -p ~/.zsh/completions
+#   2. Add it to $fpath BEFORE the `compinit` call in ~/.zshrc:
+#        fpath=(~/.zsh/completions $fpath)
+#   3. Copy this file (the name _tau is required):
+#        cp completions/_tau ~/.zsh/completions/_tau
+#   4. Rebuild the completion cache:
+#        rm -f ~/.zcompdump && compinit
+
+_tau() {
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    local -a global_opts=(
+        '(-h --help)'{-h,--help}'[show help text]'
+        '(-v --version)'{-v,--version}'[show version]'
+        '--help-json[output machine-readable help as JSON]'
+        '(-p --print)'{-p,--print}'[non-interactive (print-only) mode]'
+        '--mode=[output mode]:mode:(text json)'
+        '--stream[enable streaming output]'
+        '--no-stream[disable streaming output]'
+        '--debug[show performance stats and tool calls]'
+        '--dry-run[report tool calls without executing them]'
+        '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)'
+        '--model=[model ID or provider/model shorthand]:model:'
+        '--api-key=[API key (overrides env vars)]:key:'
+        '--system-prompt=[set (replace) system prompt]:prompt:'
+        '--append-system-prompt=[append to system prompt (repeatable)]:prompt:'
+        '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
+        '--exclude-tools=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
+        '(-nt --no-tools)'{-nt,--no-tools}'[disable all built-in tools]'
+        '--temperature=[sampling temperature (0.0–2.0)]:float:'
+        '--max-tokens=[maximum output tokens]:n:'
+        '--timeout-ms=[HTTP request timeout in ms (default 120000)]:ms:'
+        '--thinking[enable reasoning/thinking chunks]'
+        '--context-window=[override model context window in tokens]:tokens:'
+        '--no-compact[disable automatic context compaction]'
+        '--compact-threshold=[compaction trigger fraction of context (0–1)]:float:'
+        '--compact-keep-recent=[tokens of recent history kept verbatim after compaction]:tokens:'
+        '--schema=[JSON Schema for structured output (inline JSON or @file)]:schema:_files'
+        '--session=[named session for conversation persistence]:name:'
+        '--goal-max-iterations=[per-run loop cap for /goal mode]:n:'
+        '--max-iterations=[tool-loop runaway backstop]:n:'
+        '--role=[role for adversarial author↔critic loop]:role:(author critic coordinator none)'
+        '--scan-agents[scan cwd for AGENTS.md files]'
+        '--load-agents-md=[load an AGENTS.md file into system context]:file:_files'
+        '--auto-agents-md[auto-load cwd/AGENTS.md on startup]'
+    )
+
+    _arguments -C \
+        $global_opts \
+        ': :->command' \
+        '*:: :->command_args'
+
+    case $state in
+        command)
+            local -a commands=(
+                'acp:manage the Agent Client Protocol server (start|stop|status|serve)'
+                'models:list available providers and models'
+                'skills:manage skills autodiscovery (list|search|load)'
+                'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+            )
+            _alternative \
+                'commands:subcommand:_describe subcommand commands' \
+                'files:file path (for @file inclusion):_files'
+            ;;
+
+        command_args)
+            case ${line[1]} in
+                acp)
+                    _arguments \
+                        '1: :(start stop status serve)' \
+                        '--acp-socket=[Unix socket path for ACP daemon]:path:_files' \
+                        '--max-iterations=[runaway-loop backstop]:n:'
+                    ;;
+
+                fleet)
+                    local curcontext="$curcontext" state line
+                    _arguments -C \
+                        '1: :->fleet_sub' \
+                        '*:: :->fleet_opts'
+                    case $state in
+                        fleet_sub)
+                            local -a fleet_cmds=(
+                                'run:decompose a goal and dispatch to parallel worker agents'
+                                'status:check status of a fleet by ID'
+                                'list:list all known fleets'
+                                'logs:stream worker session logs for a fleet ID'
+                                'cancel:cancel a running fleet by ID'
+                            )
+                            _describe 'fleet subcommand' fleet_cmds
+                            ;;
+                        fleet_opts)
+                            _arguments \
+                                '--goal=[fleet objective (natural language)]:text:' \
+                                '--id=[fleet identifier]:id:' \
+                                '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                                '--model=[model ID]:model:' \
+                                '--api-key=[API key]:key:' \
+                                '--coordinator-model=[coordinator agent model override]:model:' \
+                                '--worker-model=[worker agent model override]:model:' \
+                                '--sequential[run worker agents sequentially]' \
+                                '--parallel[run worker agents in parallel (default)]' \
+                                '--items=[pre-supplied work items, skips coordinator (JSON)]:json:' \
+                                '--schema=[JSON Schema for work-item breakdown]:schema:_files'
+                            ;;
+                    esac
+                    ;;
+
+                skills)
+                    local -a skill_cmds=(
+                        'list:list all discoverable skills'
+                        'search:search skills by keyword'
+                        'load:load a skill into the system context by name'
+                    )
+                    _arguments '1: :_describe skill_subcommand skill_cmds'
+                    ;;
+
+                models)
+                    # `tau models` takes no further arguments.
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_tau "$@"
