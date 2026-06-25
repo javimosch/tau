@@ -50,10 +50,6 @@ pub fn loadAgentsMd(io: std.Io, arena: std.mem.Allocator, path: []const u8) ?[]c
 }
 
 test "scanAgentsMd returns empty for bad path" {
-    // Will fail gracefully
-    const result = scanAgentsMd(undefined, std.testing.allocator, std.testing.allocator, "/nonexistent") catch |err| {
-        _ = err;
-        return;
-    };
-    _ = result;
+    const result = scanAgentsMd(std.testing.io, std.testing.allocator, std.testing.allocator, "/nonexistent") catch return;
+    try std.testing.expectEqual(@as(usize, 0), result.len);
 }
