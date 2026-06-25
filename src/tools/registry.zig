@@ -105,3 +105,53 @@ fn executeFind(io: std.Io, gpa: std.mem.Allocator, args: []const []const u8, tim
     const path = if (args.len > 1) args[1] else null;
     return find_mod.find(io, gpa, args[0], path, timeout_ms);
 }
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+test "getTool hit: 'bash' returns a non-null pointer with name bash" {
+    const tool = getTool("bash");
+    try std.testing.expect(tool != null);
+    try std.testing.expectEqualStrings("bash", tool.?.name);
+}
+
+test "getTool miss: unknown name returns null" {
+    const tool = getTool("nonexistent_tool");
+    try std.testing.expect(tool == null);
+}
+
+test "getEnabledTools no-filter: null allowlist and null denylist returns all 7 tools" {
+    const gpa = std.testing.allocator;
+    const result = try getEnabledTools(gpa, null, null);
+    defer gpa.free(result);
+    try std.testing.expectEqual(@as(usize, 7), result.len);
+}
+
+test "getEnabledTools allowlist: only requested tools are returned in order" {
+    const gpa = std.testing.allocator;
+    const allow = [_][]const u8{ "bash", "read" };
+    const result = try getEnabledTools(gpa, &allow, null);
+    defer gpa.free(result);
+    try std.testing.expectEqual(@as(usize, 2), result.len);
+    try std.testing.expectEqualStrings("bash", result[0].name);
+    try std.testing.expectEqualStrings("read", result[1].name);
+}
+
+test "getEnabledTools denylist: denied tool is excluded from results" {
+    const gpa = std.testing.allocator;
+    const deny = [_][]const u8{"bash"};
+    const result = try getEnabledTools(gpa, null, &deny);
+    defer gpa.free(result);
+    try std.testing.expectEqual(@as(usize, 6), result.len);
+    for (result) |tool| {
+        try std.testing.expect(!std.mem.eql(u8, tool.name, "bash"));
+    }
+}
+
+test "getEnabledTools allowlist with unknown name: unknown names are silently skipped" {
+    const gpa = std.testing.allocator;
+    const allow = [_][]const u8{ "bash", "no_such_tool" };
+    const result = try getEnabledTools(gpa, &allow, null);
+    defer gpa.free(result);
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expectEqualStrings("bash", result[0].name);
+}
