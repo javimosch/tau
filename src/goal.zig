@@ -104,3 +104,40 @@ test "parse subcommands and set" {
     try std.testing.expectEqual(@as(u64, 250_000), budg.token_budget.?);
     try std.testing.expectEqualStrings("ship it", budg.objective.?);
 }
+
+test "parse complete subcommand" {
+    try std.testing.expectEqual(GoalAction.complete, parse("/goal complete").?.action);
+}
+
+test "parse --tokens with lowercase k and m suffixes" {
+    const k = parse("/goal --tokens 500k do X").?;
+    try std.testing.expectEqual(@as(u64, 500_000), k.token_budget.?);
+    try std.testing.expectEqualStrings("do X", k.objective.?);
+
+    const m = parse("/goal --tokens 2m do Y").?;
+    try std.testing.expectEqual(@as(u64, 2_000_000), m.token_budget.?);
+
+    // --tokens alone (no objective) falls back to status.
+    const no_obj = parse("/goal --tokens 100k").?;
+    try std.testing.expectEqual(GoalAction.status, no_obj.action);
+    try std.testing.expect(no_obj.token_budget == null); // no objective → status branch, budget dropped
+}
+
+test "isMet detects sentinel on its own line" {
+    try std.testing.expect(isMet("<GOAL_MET>"));
+    try std.testing.expect(isMet("work done\n<GOAL_MET>\n"));
+    try std.testing.expect(isMet("work done\n  <GOAL_MET>  \n"));
+    // Inline mention must NOT trigger.
+    try std.testing.expect(!isMet("the <GOAL_MET> token is just referenced here"));
+    try std.testing.expect(!isMet(""));
+    try std.testing.expect(!isMet("almost done"));
+}
+
+test "directive embeds objective and sentinel" {
+    const gpa = std.testing.allocator;
+    const dir = try directive(gpa, "write the widget");
+    defer gpa.free(dir);
+    try std.testing.expect(std.mem.indexOf(u8, dir, "write the widget") != null);
+    try std.testing.expect(std.mem.indexOf(u8, dir, SENTINEL) != null);
+    try std.testing.expect(std.mem.indexOf(u8, dir, "GOAL MODE") != null);
+}

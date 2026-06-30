@@ -69,6 +69,62 @@ pub fn save(io: std.Io, gpa: std.mem.Allocator, env: *std.process.Environ.Map, s
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = json });
 }
 
+test "validName accepts safe names and rejects unsafe ones" {
+    // safe
+    try std.testing.expect(validName("my-session"));
+    try std.testing.expect(validName("loop_author_0"));
+    try std.testing.expect(validName("Session.v2"));
+    try std.testing.expect(validName("a")); // minimum length
+
+    // unsafe: traversal
+    try std.testing.expect(!validName(".."));
+    try std.testing.expect(!validName("."));
+    try std.testing.expect(!validName("../../etc/passwd"));
+    try std.testing.expect(!validName("foo/bar"));
+    try std.testing.expect(!validName("foo\\bar"));
+    try std.testing.expect(!validName("foo bar")); // space
+    try std.testing.expect(!validName("foo:bar")); // colon
+    try std.testing.expect(!validName("")); // empty
+}
+
+test "validName rejects names longer than 128 chars" {
+    const long = "a" ** 129;
+    try std.testing.expect(!validName(long));
+    const max_ok = "a" ** 128;
+    try std.testing.expect(validName(max_ok));
+}
+
+test "sessionsDir and path build correct paths" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("HOME", "/home/user");
+
+    const dir = sessionsDir(a, &env).?;
+    try std.testing.expectEqualStrings("/home/user/.config/tau/sessions", dir);
+
+    const p = path(a, &env, "my-session").?;
+    try std.testing.expectEqualStrings("/home/user/.config/tau/sessions/my-session.json", p);
+
+    // Bad name → null, no allocation.
+    try std.testing.expect(path(a, &env, "../escape") == null);
+    try std.testing.expect(path(a, &env, "") == null);
+}
+
+test "sessionsDir returns null when HOME unset" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try std.testing.expect(sessionsDir(a, &env) == null);
+    try std.testing.expect(path(a, &env, "s") == null);
+}
+
 test "session state round-trips through json" {
     const gpa = std.testing.allocator;
     const tcs = [_]provider.ToolCall{.{ .id = "c1", .name = "bash", .arguments = "{\"command\":\"echo hi\"}" }};
