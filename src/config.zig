@@ -188,3 +188,83 @@ pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
 
     return null;
 }
+
+const testing = std.testing;
+
+test "resolveApiKey: explicit --api-key wins all lower levels" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var env = std.process.Environ.Map.init(alloc);
+    try env.put("OPENAI_API_KEY", "env-key");
+    try env.put("TAU_API_KEY", "tau-key");
+    const cfg = Config{ .provider = "openai", .api_key = "explicit-key", .config_api_key = "global-key" };
+    try testing.expectEqualStrings("explicit-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: config keys map beats provider env var" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var env = std.process.Environ.Map.init(alloc);
+    try env.put("OPENAI_API_KEY", "env-key");
+    var km = std.StringHashMap([]const u8).init(alloc);
+    try km.put("openai", "map-key");
+    const cfg = Config{ .provider = "openai", .keys = km };
+    try testing.expectEqualStrings("map-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: provider env var is used when no higher source present" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("OPENAI_API_KEY", "env-key");
+    try env.put("TAU_API_KEY", "tau-key");
+    const cfg = Config{ .provider = "openai" };
+    try testing.expectEqualStrings("env-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: second provider env key is tried when first absent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("PIZIG_API_KEY", "pizig-key");
+    const cfg = Config{ .provider = "xiaomi" };
+    try testing.expectEqualStrings("pizig-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: config_api_key beats TAU_API_KEY" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("TAU_API_KEY", "tau-key");
+    const cfg = Config{ .provider = "openai", .config_api_key = "global-key" };
+    try testing.expectEqualStrings("global-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: TAU_API_KEY used as last resort before null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("TAU_API_KEY", "tau-key");
+    const cfg = Config{ .provider = "openai" };
+    try testing.expectEqualStrings("tau-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: returns null when no key available" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    const cfg = Config{ .provider = "openai" };
+    try testing.expect(resolveApiKey(cfg, &env) == null);
+}
+
+test "resolveApiKey: empty string env values are skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("OPENAI_API_KEY", "");
+    try env.put("TAU_API_KEY", "tau-key");
+    const cfg = Config{ .provider = "openai" };
+    try testing.expectEqualStrings("tau-key", resolveApiKey(cfg, &env).?);
+}
