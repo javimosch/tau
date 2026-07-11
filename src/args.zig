@@ -108,6 +108,10 @@ pub fn parse(
             return unknownProviderErr(arena, fcfg.provider);
         fcfg.provider = p.name;
         fcfg.endpoint = p.endpoint;
+        // TAU_ENDPOINT overrides the provider's endpoint (see non-fleet path).
+        if (env.get("TAU_ENDPOINT")) |ep| {
+            if (ep.len > 0) fcfg.endpoint = try arena.dupe(u8, ep);
+        }
         if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
             fcfg.model = p.default_model;
         } // else keep base.model (config-file supplied a custom model)
@@ -385,6 +389,11 @@ pub fn parse(
         return unknownProviderErr(arena, prov_name);
     cfg.provider = p.name;
     cfg.endpoint = p.endpoint;
+    // TAU_ENDPOINT overrides the provider's endpoint — point tau at any
+    // OpenAI-compatible server (a local llama.cpp/vllm/machin-colibri, a proxy).
+    if (env.get("TAU_ENDPOINT")) |ep| {
+        if (ep.len > 0) cfg.endpoint = try arena.dupe(u8, ep);
+    }
     // Model precedence: --model > config-file model (if non-default) > provider default.
     if (model_opt) |m| {
         cfg.model = m;
@@ -451,7 +460,6 @@ pub fn parse(
         return .{ .action = .help, .config = cfg, .help_requested = true };
     }
 
-    _ = env; // env-key resolution happens later via config.resolveApiKey
     return .{ .action = .run, .config = cfg };
 }
 
