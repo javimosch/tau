@@ -102,10 +102,15 @@ fn extractToolCalls(gpa: std.mem.Allocator, response: []const u8) ![]ToolCall {
     var tool_calls = std.ArrayList(ToolCall).empty;
     defer tool_calls.deinit(gpa);
 
-    // Look for "tool_calls":[...] pattern
-    const tool_calls_start = std.mem.indexOf(u8, response, "\"tool_calls\":[") orelse return &.{};
+    // Look for "tool_calls":[...] pattern, tolerating whitespace after the
+    // colon (spaced/pretty-printed OpenAI JSON).
+    const tc_key = "\"tool_calls\":";
+    const tc_key_at = std.mem.indexOf(u8, response, tc_key) orelse return &.{};
+    var bracket = tc_key_at + tc_key.len;
+    while (bracket < response.len and jsonmod.isJsonWs(response[bracket])) bracket += 1;
+    if (bracket >= response.len or response[bracket] != '[') return &.{};
 
-    var pos = tool_calls_start + "\"tool_calls\":[".len;
+    var pos = bracket + 1;
     var depth: usize = 0;
     var in_string = false;
     var escape_next = false;
@@ -198,9 +203,14 @@ fn parseToolCall(gpa: std.mem.Allocator, call_json: []const u8) !?ToolCall {
     const id = (try jsonmod.extractString(gpa, call_json, "id")) orelse return null;
     defer gpa.free(id);
 
-    // Extract function.name
-    const func_start = std.mem.indexOf(u8, call_json, "\"function\":{") orelse return null;
-    const func_json = call_json[func_start..];
+    // Extract function.name (tolerate whitespace after the colon, e.g.
+    // "function": { ... } in pretty-printed JSON).
+    const func_key = "\"function\":";
+    const func_key_at = std.mem.indexOf(u8, call_json, func_key) orelse return null;
+    var func_brace = func_key_at + func_key.len;
+    while (func_brace < call_json.len and jsonmod.isJsonWs(call_json[func_brace])) func_brace += 1;
+    if (func_brace >= call_json.len or call_json[func_brace] != '{') return null;
+    const func_json = call_json[func_brace..];
     const name = (try jsonmod.extractString(gpa, func_json, "name")) orelse return null;
     defer gpa.free(name);
 
@@ -459,12 +469,16 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
 
 /// Return the JSON-escaped slice of `delta.content` within an SSE chunk (the
 /// chars between the quotes), or null if the field is absent or null. The
-/// `"content":"` needle never matches inside `"reasoning_content":"` (the byte
+/// `"content":` needle never matches inside `"reasoning_content":` (the byte
 /// before `content` is `_`, not `"`), so reasoning deltas are skipped.
+/// Whitespace after the colon (spaced/pretty-printed JSON) is tolerated.
 fn extractDeltaContent(json: []const u8) ?[]const u8 {
-    const needle = "\"content\":\"";
+    const needle = "\"content\":";
     const at = std.mem.indexOf(u8, json, needle) orelse return null;
-    const start = at + needle.len;
+    var vs = at + needle.len;
+    while (vs < json.len and jsonmod.isJsonWs(json[vs])) vs += 1;
+    if (vs >= json.len or json[vs] != '"') return null;
+    const start = vs + 1;
     var end = start;
     while (end < json.len) : (end += 1) {
         if (json[end] == '\\') {
@@ -824,6 +838,13 @@ test "extractDeltaContent and extractDeltaReasoning" {
     // Tool-call chunks carry no content or reasoning.
     try std.testing.expect(extractDeltaContent(SSE_TC_HEADER) == null);
     try std.testing.expect(extractDeltaReasoning(SSE_TC_HEADER) == null);
+
+    // Spaced/pretty-printed delta JSON must still parse (issue #65). A
+    // reasoning_content field must not be mistaken for content.
+    const spaced = "data: {\"choices\":[{\"delta\":{\"content\": \"Hi\"}}]}";
+    try std.testing.expectEqualStrings("Hi", extractDeltaContent(spaced).?);
+    const spaced_reasoning = "data: {\"choices\":[{\"delta\":{\"reasoning_content\": \"think\"}}]}";
+    try std.testing.expect(extractDeltaContent(spaced_reasoning) == null);
 }
 
 test "extractDeltaTCIndex" {
@@ -906,4 +927,27 @@ test "extractUsage parses total_tokens from API response JSON" {
 
     // Empty string.
     try std.testing.expect(extractUsage("") == null);
+}
+
+test "extractToolCalls tolerates whitespace after colons (spaced JSON)" {
+    const gpa = std.testing.allocator;
+    // Pretty-printed OpenAI response: spaces after "tool_calls":, "function":,
+    // and inside the function object.
+    const spaced =
+        "{\"choices\":[{\"message\":{\"tool_calls\": [{\"id\": \"call_1\"," ++
+        "\"type\": \"function\",\"function\": {\"name\": \"bash\"," ++
+        "\"arguments\": \"{}\"}}]}}]}";
+    const calls = try extractToolCalls(gpa, spaced);
+    defer {
+        for (calls) |tc| {
+            gpa.free(tc.id);
+            gpa.free(tc.name);
+            gpa.free(tc.arguments);
+        }
+        gpa.free(calls);
+    }
+    try std.testing.expectEqual(@as(usize, 1), calls.len);
+    try std.testing.expectEqualStrings("call_1", calls[0].id);
+    try std.testing.expectEqualStrings("bash", calls[0].name);
+    try std.testing.expectEqualStrings("{}", calls[0].arguments);
 }
