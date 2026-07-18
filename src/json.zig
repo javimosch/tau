@@ -1,5 +1,10 @@
 const std = @import("std");
 
+/// True for the four insignificant JSON whitespace bytes (space, tab, CR, LF).
+pub fn isJsonWs(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\r' or c == '\n';
+}
+
 /// Append `s` to `out` as a JSON-escaped string body (no surrounding quotes).
 pub fn escapeInto(gpa: std.mem.Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
     for (s) |c| switch (c) {
@@ -76,10 +81,15 @@ pub fn unescapeAlloc(gpa: std.mem.Allocator, s: []const u8) ![]u8 {
 /// Extract the unescaped value of the first `"field":"..."` occurrence in
 /// `json`. Returns null if the field is absent. Caller owns the result.
 pub fn extractString(gpa: std.mem.Allocator, json: []const u8, field: []const u8) !?[]u8 {
-    const needle = try std.fmt.allocPrint(gpa, "\"{s}\":\"", .{field});
+    // Match `"field":` then tolerate insignificant JSON whitespace before the
+    // opening quote of the value (some OpenAI servers pretty-print spaced JSON).
+    const needle = try std.fmt.allocPrint(gpa, "\"{s}\":", .{field});
     defer gpa.free(needle);
     const at = std.mem.indexOf(u8, json, needle) orelse return null;
-    const start = at + needle.len;
+    var vs = at + needle.len;
+    while (vs < json.len and isJsonWs(json[vs])) vs += 1;
+    if (vs >= json.len or json[vs] != '"') return null;
+    const start = vs + 1;
     var end = start;
     while (end < json.len) : (end += 1) {
         if (json[end] == '\\') {
@@ -171,6 +181,21 @@ test "extractString" {
     const got = (try extractString(gpa, body, "content")).?;
     defer gpa.free(got);
     try std.testing.expectEqualStrings("line1\nline2 \"q\"", got);
+}
+
+test "extractString: tolerates whitespace after the colon (spaced JSON)" {
+    const gpa = std.testing.allocator;
+    // OpenAI servers that pretty-print emit a space after the colon.
+    const spaced = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\": \"Hello world\"}}]}";
+    const got = (try extractString(gpa, spaced, "content")).?;
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("Hello world", got);
+
+    // Newline/tab between colon and value are also insignificant whitespace.
+    const wrapped = "{\"content\":\n\t\"multi\"}";
+    const got2 = (try extractString(gpa, wrapped, "content")).?;
+    defer gpa.free(got2);
+    try std.testing.expectEqualStrings("multi", got2);
 }
 
 test "tool arg accessors" {
