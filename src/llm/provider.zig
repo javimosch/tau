@@ -490,20 +490,62 @@ fn extractDeltaContent(json: []const u8) ?[]const u8 {
     return json[start..end];
 }
 
-/// Return the JSON-escaped slice of `delta.reasoning_content` within an SSE chunk.
-fn extractDeltaReasoning(json: []const u8) ?[]const u8 {
-    const needle = "\"reasoning_content\":\"";
-    const at = std.mem.indexOf(u8, json, needle) orelse return null;
-    const start = at + needle.len;
+// ---------------------------------------------------------------------------
+// Whitespace-tolerant SSE field scanning
+// ---------------------------------------------------------------------------
+//
+// SSE `data:` chunks are located with byte-exact needles. A pretty-printing
+// OpenAI-compatible server inserts insignificant JSON whitespace after the
+// colon (`"index": 0`, `"tool_calls": [ {`), which byte-exact needles miss —
+// silently dropping streaming tool calls and reasoning deltas (issue #67, the
+// streaming twin of #65). The helpers below match `"key":`, skip whitespace,
+// then expect the value's opening delimiter, so both compact and spaced chunks
+// parse identically.
+
+/// Skip insignificant JSON whitespace (space, tab, CR, LF) from `i`.
+fn skipSseWs(json: []const u8, i: usize) usize {
+    var p = i;
+    while (p < json.len and (json[p] == ' ' or json[p] == '\t' or json[p] == '\r' or json[p] == '\n')) p += 1;
+    return p;
+}
+
+/// Find `key` (a full `"name":` needle) at or after `from`, skip whitespace
+/// after the colon, and if the next byte equals `open`, return the index just
+/// past it. Returns null if the key is absent or the value does not open with
+/// `open`. Tolerates pretty-printed (spaced) JSON.
+fn valueAfterKey(json: []const u8, from: usize, key: []const u8, open: u8) ?usize {
+    const at = std.mem.indexOfPos(u8, json, from, key) orelse return null;
+    const vs = skipSseWs(json, at + key.len);
+    if (vs >= json.len or json[vs] != open) return null;
+    return vs + 1;
+}
+
+/// Read a JSON string body starting at `start` (just past the opening quote),
+/// returning the raw escaped slice up to — but not including — the closing
+/// quote. Returns null if the string is unterminated.
+fn readSseString(json: []const u8, start: usize) ?[]const u8 {
     var end = start;
     while (end < json.len) : (end += 1) {
-        if (json[end] == '\\') {
-            end += 1;
-            continue;
-        }
-        if (json[end] == '"') break;
-    } else return null;
-    return json[start..end];
+        if (json[end] == '\\') { end += 1; continue; }
+        if (json[end] == '"') return json[start..end];
+    }
+    return null;
+}
+
+/// Index just past the `{` opening the first tool_calls object, tolerating
+/// whitespace in `"tool_calls": [ { ...`. Null when there is no tool_call
+/// delta (e.g. `"tool_calls":null`).
+fn tcObjStart(json: []const u8) ?usize {
+    const arr = valueAfterKey(json, 0, "\"tool_calls\":", '[') orelse return null;
+    const ws = skipSseWs(json, arr);
+    if (ws >= json.len or json[ws] != '{') return null;
+    return ws + 1;
+}
+
+/// Return the JSON-escaped slice of `delta.reasoning_content` within an SSE chunk.
+fn extractDeltaReasoning(json: []const u8) ?[]const u8 {
+    const start = valueAfterKey(json, 0, "\"reasoning_content\":", '"') orelse return null;
+    return readSseString(json, start);
 }
 
 // ---------------------------------------------------------------------------
@@ -512,17 +554,16 @@ fn extractDeltaReasoning(json: []const u8) ?[]const u8 {
 
 /// True when this SSE chunk carries a tool_calls delta (vs. null).
 fn hasDeltaToolCall(json: []const u8) bool {
-    return std.mem.indexOf(u8, json, "\"tool_calls\":[{") != null;
+    return tcObjStart(json) != null;
 }
 
 /// Index of the tool_call being streamed (always 0 for single-tool turns,
 /// higher for parallel tool calls). Returns null if no tool_call delta.
 fn extractDeltaTCIndex(json: []const u8) ?usize {
-    const start = std.mem.indexOf(u8, json, "\"tool_calls\":[{") orelse return null;
+    const start = tcObjStart(json) orelse return null;
     const needle = "\"index\":";
     const at = std.mem.indexOfPos(u8, json, start, needle) orelse return null;
-    var vs = at + needle.len;
-    while (vs < json.len and (json[vs] == ' ' or json[vs] == '\t')) vs += 1;
+    const vs = skipSseWs(json, at + needle.len);
     var end = vs;
     while (end < json.len and json[end] >= '0' and json[end] <= '9') end += 1;
     if (end == vs) return null;
@@ -534,16 +575,9 @@ fn extractDeltaTCIndex(json: []const u8) ?usize {
 /// Searches within the tool_calls section to avoid matching the top-level
 /// response "id" field that also appears in every SSE chunk.
 fn extractDeltaTCId(json: []const u8) ?[]const u8 {
-    const tc_start = std.mem.indexOf(u8, json, "\"tool_calls\":[{") orelse return null;
-    const needle = "\"id\":\"";
-    const at = std.mem.indexOfPos(u8, json, tc_start, needle) orelse return null;
-    const start = at + needle.len;
-    var end = start;
-    while (end < json.len) : (end += 1) {
-        if (json[end] == '\\') { end += 1; continue; }
-        if (json[end] == '"') break;
-    } else return null;
-    return json[start..end];
+    const tc_start = tcObjStart(json) orelse return null;
+    const start = valueAfterKey(json, tc_start, "\"id\":", '"') orelse return null;
+    return readSseString(json, start);
 }
 
 /// The function name from the first chunk for a given index ("name":"bash").
@@ -551,31 +585,17 @@ fn extractDeltaTCId(json: []const u8) ?[]const u8 {
 fn extractDeltaTCName(json: []const u8) ?[]const u8 {
     // The name lives inside "function":{...} — search from there to avoid
     // matching other "name" fields (e.g. the tool's registered name elsewhere).
-    const func_at = std.mem.indexOf(u8, json, "\"function\":{") orelse return null;
-    const needle = "\"name\":\"";
-    const at = std.mem.indexOfPos(u8, json, func_at, needle) orelse return null;
-    const start = at + needle.len;
-    var end = start;
-    while (end < json.len) : (end += 1) {
-        if (json[end] == '\\') { end += 1; continue; }
-        if (json[end] == '"') break;
-    } else return null;
-    return json[start..end]; // already unescaped (tool names are ASCII)
+    const func_at = valueAfterKey(json, 0, "\"function\":", '{') orelse return null;
+    const start = valueAfterKey(json, func_at, "\"name\":", '"') orelse return null;
+    return readSseString(json, start); // already unescaped (tool names are ASCII)
 }
 
 /// The raw JSON-escaped arguments fragment from this chunk. Concatenate across
 /// all chunks for a given index to get the full escaped arguments body, then
 /// call unescapeAlloc once to get the final arguments string.
 fn extractDeltaTCArgs(json: []const u8) ?[]const u8 {
-    const needle = "\"arguments\":\"";
-    const at = std.mem.indexOf(u8, json, needle) orelse return null;
-    const start = at + needle.len;
-    var end = start;
-    while (end < json.len) : (end += 1) {
-        if (json[end] == '\\') { end += 1; continue; }
-        if (json[end] == '"') break;
-    } else return null;
-    return json[start..end];
+    const start = valueAfterKey(json, 0, "\"arguments\":", '"') orelse return null;
+    return readSseString(json, start);
 }
 
 // ---------------------------------------------------------------------------
@@ -885,6 +905,28 @@ test "extractDeltaTCArgs" {
     try std.testing.expectEqualStrings("}", extractDeltaTCArgs(SSE_TC_ARGS3).?);
     // Non-tool chunks → null.
     try std.testing.expect(extractDeltaTCArgs(SSE_CONTENT) == null);
+}
+
+// Pretty-printed SSE chunks: a space after every colon and around the
+// tool_calls array/object openers, as some OpenAI-compatible servers emit.
+// The streaming extractors must parse these identically to the compact ones
+// (issue #67, the SSE twin of #65).
+const SSE_TC_SPACED = "{\"id\": \"e34d\",\"choices\": [{\"delta\": {\"content\": null,\"tool_calls\": [ { \"index\": 0,\"id\": \"call_1\",\"function\": {\"arguments\": \"{\\\"path\\\": \",\"name\": \"bash\"},\"type\": \"function\"} ],\"reasoning_content\": null},\"finish_reason\": null}]}";
+const SSE_REASONING_SPACED = "{\"choices\": [{\"delta\": {\"reasoning_content\": \"thinking hard\",\"tool_calls\": null}}]}";
+
+test "streaming extractors tolerate whitespace after colons (spaced SSE, #67)" {
+    // Reasoning delta with a space after the colon.
+    try std.testing.expectEqualStrings("thinking hard", extractDeltaReasoning(SSE_REASONING_SPACED).?);
+    try std.testing.expect(!hasDeltaToolCall(SSE_REASONING_SPACED));
+
+    // Spaced tool-call header: detection + every field must resolve.
+    try std.testing.expect(hasDeltaToolCall(SSE_TC_SPACED));
+    try std.testing.expectEqual(@as(usize, 0), extractDeltaTCIndex(SSE_TC_SPACED).?);
+    try std.testing.expectEqualStrings("call_1", extractDeltaTCId(SSE_TC_SPACED).?);
+    try std.testing.expectEqualStrings("bash", extractDeltaTCName(SSE_TC_SPACED).?);
+    try std.testing.expectEqualStrings("{\\\"path\\\": ", extractDeltaTCArgs(SSE_TC_SPACED).?);
+    // reasoning_content is null here → no reasoning delta.
+    try std.testing.expect(extractDeltaReasoning(SSE_TC_SPACED) == null);
 }
 
 test "tool_call fragment accumulation and unescape round-trip" {
