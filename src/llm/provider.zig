@@ -982,6 +982,159 @@ test "extractToolCalls tolerates whitespace after colons (spaced JSON)" {
     const calls = try extractToolCalls(gpa, spaced);
     defer {
         for (calls) |tc| {
+
+// ---------------------------------------------------------------------------
+// Unit tests — classifyBody (API error mapping)
+// ---------------------------------------------------------------------------
+
+test "classifyBody: normal response without error envelope is ok" {
+    const normal = "{\"choices\":[{\"message\":{\"content\":\"hello\"}}],\"usage\":{\"total_tokens\":5}}";
+    try std.testing.expectEqual(BodyClass.ok, classifyBody(normal));
+}
+
+test "classifyBody: content null on tool-call turn is ok" {
+    const tc_turn =
+        \\{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1"}]}}]}
+    ;
+    try std.testing.expectEqual(BodyClass.ok, classifyBody(tc_turn));
+}
+
+test "classifyBody: invalid_key and Invalid API Key map to auth" {
+    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"message\":\"invalid_key supplied\"}}"));
+    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"message\":\"Invalid API Key\"}}"));
+}
+
+test "classifyBody: 401 and nauthorized substrings map to auth" {
+    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"code\":\"401\",\"message\":\"auth error\"}}"));
+    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"message\":\"Unauthorized request\"}}"));
+}
+
+test "classifyBody: unknown error envelopes are retryable" {
+    try std.testing.expectEqual(BodyClass.retryable, classifyBody("{\"error\":{\"type\":\"rate_limit_exceeded\"}}"));
+    try std.testing.expectEqual(BodyClass.retryable, classifyBody("{\"error\":{\"type\":\"server_error\",\"message\":\"500\"}}"));
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — findProvider (provider table lookup)
+// ---------------------------------------------------------------------------
+
+test "findProvider: all four known providers resolve by name" {
+    const x = findProvider("xiaomi");
+    try std.testing.expect(x != null);
+    try std.testing.expectEqualStrings("xiaomi", x.?.name);
+
+    const o = findProvider("openai");
+    try std.testing.expect(o != null);
+    try std.testing.expectEqualStrings("gpt-4o-mini", o.?.default_model);
+
+    const d = findProvider("deepseek");
+    try std.testing.expect(d != null);
+    try std.testing.expectEqualStrings("deepseek", d.?.name);
+
+    const g = findProvider("opencode-go");
+    try std.testing.expect(g != null);
+    try std.testing.expectEqualStrings("opencode-go", g.?.name);
+}
+
+test "findProvider: unknown and empty names return null" {
+    try std.testing.expect(findProvider("anthropic") == null);
+    try std.testing.expect(findProvider("") == null);
+    try std.testing.expect(findProvider("OPENAI") == null); // case-sensitive
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — appendRequestBody (request serialization)
+// ---------------------------------------------------------------------------
+
+// Minimal config struct for testing appendRequestBody — only the two fields
+// the function actually touches (model always, schema via @hasField check).
+const TestCfg = struct { model: []const u8, schema: ?[]const u8 = null };
+
+test "appendRequestBody: single user message with no tools" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "user", .content = "Hello" }};
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "gpt-4o-mini" }, &msgs, null, false);
+    const s = body.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"model\":\"gpt-4o-mini\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"role\":\"user\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"content\":\"Hello\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"stream\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"tools\"") == null);
+}
+
+test "appendRequestBody: stream:true flag is serialized" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "user", .content = "Hi" }};
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "m" }, &msgs, null, true);
+    try std.testing.expect(std.mem.indexOf(u8, body.items, "\"stream\":true") != null);
+}
+
+test "appendRequestBody: special characters in content are JSON-escaped" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    // Content contains real newline, tab, and double-quote.
+    const msgs = [_]Message{.{ .role = "user", .content = "a\nb\t\"c\"" }};
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "m" }, &msgs, null, false);
+    // escapeInto must produce \n, \t, \" escape sequences in the JSON body.
+    try std.testing.expect(std.mem.indexOf(u8, body.items, "a\\nb\\t\\\"c\\\"") != null);
+}
+
+test "appendRequestBody: tool_call_id is included on tool-role messages" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "tool", .content = "ok", .tool_call_id = "call_xyz" }};
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "m" }, &msgs, null, false);
+    try std.testing.expect(std.mem.indexOf(u8, body.items, "\"tool_call_id\":\"call_xyz\"") != null);
+}
+
+test "appendRequestBody: assistant tool_calls are echoed in the message" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const tcs = [_]ToolCall{.{ .id = "c1", .name = "bash", .arguments = "{}" }};
+    const msgs = [_]Message{.{ .role = "assistant", .content = "", .tool_calls = &tcs }};
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "m" }, &msgs, null, false);
+    const s = body.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"tool_calls\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"id\":\"c1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"name\":\"bash\"") != null);
+}
+
+test "appendRequestBody: tool schema is serialized with known parameters" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "user", .content = "run something" }};
+    const tools = [_]ToolInfo{.{ .name = "bash", .description = "Run a shell command" }};
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "m" }, &msgs, &tools, false);
+    const s = body.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"tools\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"name\":\"bash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"description\":\"Run a shell command\"") != null);
+    // bash tool gets its known parameter schema (includes "command" property)
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"command\":{\"type\":\"string\"") != null);
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — extractToolCalls (response deserialization)
+// ---------------------------------------------------------------------------
+
+test "extractToolCalls: parses a single tool call with id, name, and arguments" {
+    const gpa = std.testing.allocator;
+    // In this multiline string \\" is a literal backslash+quote (Zig raw string).
+    // extractString unescapes them: {\"command\":\"ls\"} → {"command":"ls"}
+    const response =
+        \\{"choices":[{"message":{"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}}]}
+    ;
+    const tcs = try extractToolCalls(gpa, response);
+    defer {
+        for (tcs) |tc| {
             gpa.free(tc.id);
             gpa.free(tc.name);
             gpa.free(tc.arguments);
@@ -992,4 +1145,43 @@ test "extractToolCalls tolerates whitespace after colons (spaced JSON)" {
     try std.testing.expectEqualStrings("call_1", calls[0].id);
     try std.testing.expectEqualStrings("bash", calls[0].name);
     try std.testing.expectEqualStrings("{}", calls[0].arguments);
+
+        gpa.free(tcs);
+    }
+    try std.testing.expectEqual(@as(usize, 1), tcs.len);
+    try std.testing.expectEqualStrings("call_abc", tcs[0].id);
+    try std.testing.expectEqualStrings("bash", tcs[0].name);
+    // arguments is unescaped by extractString: {"command":"ls"}
+    try std.testing.expectEqualStrings("{\"command\":\"ls\"}", tcs[0].arguments);
+}
+
+test "extractToolCalls: parses two parallel tool calls preserving order" {
+    const gpa = std.testing.allocator;
+    const response =
+        \\{"choices":[{"message":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{}"}},{"id":"c2","type":"function","function":{"name":"read","arguments":"{\"path\":\"/tmp\"}"}}]}}]}
+    ;
+    const tcs = try extractToolCalls(gpa, response);
+    defer {
+        for (tcs) |tc| {
+            gpa.free(tc.id);
+            gpa.free(tc.name);
+            gpa.free(tc.arguments);
+        }
+        gpa.free(tcs);
+    }
+    try std.testing.expectEqual(@as(usize, 2), tcs.len);
+    try std.testing.expectEqualStrings("c1", tcs[0].id);
+    try std.testing.expectEqualStrings("bash", tcs[0].name);
+    try std.testing.expectEqualStrings("c2", tcs[1].id);
+    try std.testing.expectEqualStrings("read", tcs[1].name);
+}
+
+test "extractToolCalls: returns empty slice when no tool_calls key is present" {
+    const gpa = std.testing.allocator;
+    const response =
+        \\{"choices":[{"message":{"content":"I can help with that."}}]}
+    ;
+    // Returns &.{} (static, not heap-allocated) — do not free.
+    const tcs = try extractToolCalls(gpa, response);
+    try std.testing.expectEqual(@as(usize, 0), tcs.len);
 }
