@@ -145,10 +145,12 @@ pub fn run(
     }
     const tool_infos_slice = try tool_infos.toOwnedSlice(gpa);
     defer gpa.free(tool_infos_slice);
+    const tools_for_api: ?[]const provider_mod.ToolInfo =
+        if (cfg.no_tools) null else tool_infos_slice;
 
     // --- Dry run: one planning turn, report tools that WOULD run, execute none ---
     if (cfg.dry_run) {
-        const resp = try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tool_infos_slice);
+        const resp = try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tools_for_api);
         defer gpa.free(resp.content);
         if (resp.tool_calls.len == 0) {
             try emitFinal(gpa, cfg, resp, false);
@@ -203,9 +205,9 @@ pub fn run(
         // Non-streaming path: blocking full-response.
         // Both return the same Response shape; tool execution is identical either way.
         const response = if (cfg.stream and !cfg.dry_run)
-            try provider_mod.completeStreamWithTools(io, gpa, cfg_with_key, messages.items, tool_infos_slice, goal_active)
+            try provider_mod.completeStreamWithTools(io, gpa, cfg_with_key, messages.items, tools_for_api, goal_active)
         else
-            try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tool_infos_slice);
+            try provider_mod.complete(io, gpa, cfg_with_key, messages.items, tools_for_api);
         defer gpa.free(response.content);
         // Prefer API-reported token count; fall back to content-length estimate.
         tokens_out += response.total_tokens orelse (response.content.len + 3) / 4;
