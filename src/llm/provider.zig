@@ -322,6 +322,20 @@ fn appendRequestBody(
         try body.appendSlice(gpa, "],\"stream\":false");
     }
 
+    if (@hasField(@TypeOf(cfg), "temperature")) {
+        var temp_buf: [32]u8 = undefined;
+        const temp_slice = try std.fmt.bufPrint(&temp_buf, ",\"temperature\":{d}", .{cfg.temperature});
+        try body.appendSlice(gpa, temp_slice);
+    }
+
+    if (@hasField(@TypeOf(cfg), "max_tokens")) {
+        if (cfg.max_tokens) |mt| {
+            var mt_buf: [32]u8 = undefined;
+            const mt_slice = try std.fmt.bufPrint(&mt_buf, ",\"max_tokens\":{d}", .{mt});
+            try body.appendSlice(gpa, mt_slice);
+        }
+    }
+
     if (tools) |t| {
         if (t.len > 0) {
             try body.appendSlice(gpa, ",\"tools\":[");
@@ -1057,9 +1071,14 @@ test "findProvider: unknown and empty names return null" {
 // Unit tests — appendRequestBody (request serialization)
 // ---------------------------------------------------------------------------
 
-// Minimal config struct for testing appendRequestBody — only the two fields
-// the function actually touches (model always, schema via @hasField check).
-const TestCfg = struct { model: []const u8, schema: ?[]const u8 = null };
+// Minimal config struct for testing appendRequestBody — only the fields
+// appendRequestBody touches (model always; others via @hasField checks).
+const TestCfg = struct {
+    model: []const u8,
+    schema: ?[]const u8 = null,
+    temperature: f32 = 0.7,
+    max_tokens: ?u32 = null,
+};
 
 test "appendRequestBody: single user message with no tools" {
     const gpa = std.testing.allocator;
@@ -1082,6 +1101,30 @@ test "appendRequestBody: stream:true flag is serialized" {
     const msgs = [_]Message{.{ .role = "user", .content = "Hi" }};
     try appendRequestBody(gpa, &body, TestCfg{ .model = "m" }, &msgs, null, true);
     try std.testing.expect(std.mem.indexOf(u8, body.items, "\"stream\":true") != null);
+}
+
+test "appendRequestBody: temperature is always serialized" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "user", .content = "Hi" }};
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "m", .temperature = 0.2 }, &msgs, null, false);
+    try std.testing.expect(std.mem.indexOf(u8, body.items, "\"temperature\":0.2") != null);
+}
+
+test "appendRequestBody: max_tokens omitted when null, present when set" {
+    const gpa = std.testing.allocator;
+    const msgs = [_]Message{.{ .role = "user", .content = "Hi" }};
+
+    var body_null = std.ArrayList(u8).empty;
+    defer body_null.deinit(gpa);
+    try appendRequestBody(gpa, &body_null, TestCfg{ .model = "m", .max_tokens = null }, &msgs, null, false);
+    try std.testing.expect(std.mem.indexOf(u8, body_null.items, "\"max_tokens\"") == null);
+
+    var body_set = std.ArrayList(u8).empty;
+    defer body_set.deinit(gpa);
+    try appendRequestBody(gpa, &body_set, TestCfg{ .model = "m", .max_tokens = 1024 }, &msgs, null, false);
+    try std.testing.expect(std.mem.indexOf(u8, body_set.items, "\"max_tokens\":1024") != null);
 }
 
 test "appendRequestBody: special characters in content are JSON-escaped" {
