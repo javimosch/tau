@@ -122,12 +122,46 @@ pub fn coordinatorDirective(gpa: std.mem.Allocator, goal: []const u8) ![]u8 {
     , .{goal});
 }
 
+/// Index of the closing `}` for a balanced `{...}` object starting at `start`.
+/// Respects JSON string literals and backslash escapes.
+fn balancedObjectEnd(s: []const u8, start: usize) ?usize {
+    if (start >= s.len or s[start] != '{') return null;
+    var depth: u32 = 0;
+    var in_string = false;
+    var escape = false;
+    var i: usize = start;
+    while (i < s.len) : (i += 1) {
+        const c = s[i];
+        if (in_string) {
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        switch (c) {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if (depth == 0) return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
 /// Try to extract a JSON object from a coordinator's response. Handles:
 ///  - Markdown fences (```json ... ``` or ``` ... ```)
 ///  - XML-style think blocks (<think> / <thinking> ...) with prose/logic
 ///  - Prose before the JSON (e.g., "Here is the plan:\n{\"items\":[]}")
+///  - Brace literals in prose (e.g., "hint: {key: val}\n{\"items\":[]}")
 /// Returns the JSON slice (caller must dup) or null.
-pub fn extractCoordinatorJson(response: []const u8) ?[]const u8 {
+pub fn extractCoordinatorJson(gpa: std.mem.Allocator, response: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, response, " \t\r\n");
 
     // --- 1. Strip <think> / <thinking> blocks ---
@@ -181,11 +215,35 @@ pub fn extractCoordinatorJson(response: []const u8) ?[]const u8 {
         return std.mem.trim(u8, cleaned[start..end], " \t\r\n");
     }
 
-    // --- 3. Find the outermost {...} ---
-    const lb = std.mem.indexOfScalar(u8, cleaned, '{') orelse return null;
-    const rb = std.mem.lastIndexOfScalar(u8, cleaned, '}') orelse return null;
-    if (rb <= lb) return null;
-    return cleaned[lb .. rb + 1];
+    // --- 3. Brace-balanced scan: prefer parseable objects whose root key is "items" ---
+    var i: usize = 0;
+    var fallback: ?[]const u8 = null;
+    while (i < cleaned.len) {
+        if (cleaned[i] != '{') {
+            i += 1;
+            continue;
+        }
+        const end = balancedObjectEnd(cleaned, i) orelse {
+            i += 1;
+            continue;
+        };
+        const candidate = cleaned[i .. end + 1];
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, candidate, .{}) catch {
+            i = end + 1;
+            continue;
+        };
+        const is_object = parsed.value == .object;
+        const has_items = is_object and parsed.value.object.get("items") != null;
+        parsed.deinit();
+        if (!is_object) {
+            i = end + 1;
+            continue;
+        }
+        if (has_items) return candidate;
+        if (fallback == null) fallback = candidate;
+        i = end + 1;
+    }
+    return fallback;
 }
 
 /// Emit a structured stderr line identifying which work item index and field
@@ -503,7 +561,7 @@ pub fn buildSpec(
         const json_slice = if (@hasField(@TypeOf(cfg), "schema") and cfg.schema != null)
             last_raw.?
         else
-            extractCoordinatorJson(last_raw.?) orelse {
+            extractCoordinatorJson(gpa, last_raw.?) orelse {
                 if (attempt + 1 >= max_attempts) return error.CoordinatorParseFailed;
                 continue;
             };
@@ -567,7 +625,7 @@ pub fn buildSpec(
 /// Parse a pre-supplied items JSON blob (same schema the coordinator
 /// produces) into a slice of WorkItem. Used by the --items CLI flag.
 pub fn parseItemsJson(gpa: std.mem.Allocator, raw_json: []const u8) ![]const WorkItem {
-    const json_slice = extractCoordinatorJson(raw_json) orelse return error.CoordinatorParseFailed;
+    const json_slice = extractCoordinatorJson(gpa, raw_json) orelse return error.CoordinatorParseFailed;
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, json_slice, .{}) catch
         return error.CoordinatorParseFailed;
     defer parsed.deinit();
@@ -914,91 +972,102 @@ fn runCmd(
 
 test "extractCoordinatorJson strips fences" {
     const a = "```json\n{\"items\":[]}\n```";
-    const got = extractCoordinatorJson(a).?;
+    const got = extractCoordinatorJson(std.testing.allocator,a).?;
     try std.testing.expectEqualStrings("{\"items\":[]}", got);
 
     const b = "{\"items\":[]}";
-    try std.testing.expectEqualStrings(b, extractCoordinatorJson(b).?);
+    try std.testing.expectEqualStrings(b, extractCoordinatorJson(std.testing.allocator,b).?);
 
     const c = "   leading\n{\"items\":[]}\ntrailing   ";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(c).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator,c).?);
 
-    try std.testing.expect(extractCoordinatorJson("no braces here") == null);
-    try std.testing.expect(extractCoordinatorJson("") == null);
+    try std.testing.expect(extractCoordinatorJson(std.testing.allocator,"no braces here") == null);
+    try std.testing.expect(extractCoordinatorJson(std.testing.allocator,"") == null);
 }
 
 test "extractCoordinatorJson strips think blocks" {
     // Single think block before JSON
     const a = "<think>Let me plan this carefully</think>\n{\"items\":[]}";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(a).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator,a).?);
 
     // Think block with braces inside (should not confuse the parser)
     const b = "<think>Need to output { and } as JSON</think>\n{\"items\":[{\"id\":\"a\"}]}";
-    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(b).?);
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(std.testing.allocator,b).?);
 
     // Multiple think blocks
     const c = "<think>first</think><think>second</think>{\"items\":[]}";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(c).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator,c).?);
 
     // Think block + markdown fences
     const d = "<think>reasoning</think>```json\n{\"items\":[]}\n```";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(d).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator,d).?);
 
     // Think block with nested braces in reasoning
     const e = "<think>I'll output {\"items\":[{\"id\":\"x\"}]} as the plan</think>\n{\"items\":[{\"id\":\"x\"}]}";
-    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"x\"}]}", extractCoordinatorJson(e).?);
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"x\"}]}", extractCoordinatorJson(std.testing.allocator,e).?);
 
     // Unclosed think tag
     const f = "<think>unclosed";
-    try std.testing.expect(extractCoordinatorJson(f) == null);
+    try std.testing.expect(extractCoordinatorJson(std.testing.allocator,f) == null);
 
     // Only think block, no JSON
     const g = "<think>just reasoning</think>";
-    try std.testing.expect(extractCoordinatorJson(g) == null);
+    try std.testing.expect(extractCoordinatorJson(std.testing.allocator,g) == null);
 
     // --- <thinking> tag (longer variant) ---
 
     // Single <thinking> block before JSON
     const h = "<thinking>planning approach</thinking>\n{\"items\":[]}";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(h).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator,h).?);
 
     // <thinking> with braces inside
     const i = "<thinking>considering { and } output</thinking>\n{\"items\":[{\"id\":\"b\"}]}";
-    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"b\"}]}", extractCoordinatorJson(i).?);
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"b\"}]}", extractCoordinatorJson(std.testing.allocator,i).?);
 
     // Unclosed <thinking> tag
     const j = "<thinking>unclosed";
-    try std.testing.expect(extractCoordinatorJson(j) == null);
+    try std.testing.expect(extractCoordinatorJson(std.testing.allocator,j) == null);
 
     // Only <thinking> block, no JSON
     const k = "<thinking>just planning</thinking>";
-    try std.testing.expect(extractCoordinatorJson(k) == null);
+    try std.testing.expect(extractCoordinatorJson(std.testing.allocator,k) == null);
 
     // Mixed <think> and <thinking> blocks
     const l = "<thinking>high level</thinking><think>details</think>{\"items\":[]}";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(l).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator,l).?);
 
     // <thinking> block with nested braces
     const m = "<thinking>output {\"x\":1} format</thinking>\n{\"items\":[]}";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(m).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator,m).?);
 }
 
 test "extractCoordinatorJson handles prose before JSON" {
     // Prose then JSON
     const a = "Here is the plan:\n{\"items\":[{\"id\":\"a\"}]}";
-    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(a).?);
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(std.testing.allocator, a).?);
 
     // Prose before and after
     const b = "The breakdown is:\n{\"items\":[]}\nThat should work.";
-    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(b).?);
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator, b).?);
 
     // Prose + think block + prose + JSON
     const c = "Let me think...\n<think>analyzing</think>\nHere:\n{\"items\":[{\"id\":\"ok\"}]}\nDone.";
-    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"ok\"}]}", extractCoordinatorJson(c).?);
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"ok\"}]}", extractCoordinatorJson(std.testing.allocator, c).?);
 
     // Prose without any braces
     const d = "I cannot produce a breakdown right now.";
-    try std.testing.expect(extractCoordinatorJson(d) == null);
+    try std.testing.expect(extractCoordinatorJson(std.testing.allocator, d) == null);
+}
+
+test "extractCoordinatorJson skips brace literals in prose (#7)" {
+    const a = "hint: {key: val}\n{\"items\":[{\"id\":\"a\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(std.testing.allocator, a).?);
+
+    const b = "Example shape: {id: x, title: y}\n{\"items\":[]}";
+    try std.testing.expectEqualStrings("{\"items\":[]}", extractCoordinatorJson(std.testing.allocator, b).?);
+
+    const c = "nested {\"partial\": {\"x\": 1}} then real\n{\"items\":[{\"id\":\"z\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"z\"}]}", extractCoordinatorJson(std.testing.allocator, c).?);
 }
 
 test "validId allows safe characters only" {
