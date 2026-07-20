@@ -1175,6 +1175,19 @@ test "appendRequestBody: tool schema is serialized with known parameters" {
     try std.testing.expect(std.mem.indexOf(u8, s, "\"command\":{\"type\":\"string\"") != null);
 }
 
+test "appendRequestBody: response_format is serialized when cfg.schema is set" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "user", .content = "Hi" }};
+    const schema = "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\"}}}";
+    try appendRequestBody(gpa, &body, TestCfg{ .model = "m", .schema = schema }, &msgs, null, false);
+    const s = body.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"response_format\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"type\":\"json_schema\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, schema) != null);
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests — extractToolCalls (response deserialization)
 // ---------------------------------------------------------------------------
