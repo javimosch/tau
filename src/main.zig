@@ -291,7 +291,7 @@ pub fn main(init: std.process.Init) !void {
                 term.out("{\"skills\":[");
                 for (entries, 0..) |e, i| {
                     if (i > 0) term.out(",");
-                    const entry = std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"description\":\"{s}\"}}", .{ e.name, e.description }) catch continue;
+                    const entry = skills.formatEntryJson(arena, e.name, e.description) catch continue;
                     term.out(entry);
                 }
                 term.out("]}\n");
@@ -306,7 +306,7 @@ pub fn main(init: std.process.Init) !void {
                 term.out("{\"skills\":[");
                 for (entries, 0..) |e, i| {
                     if (i > 0) term.out(",");
-                    const entry = std.fmt.allocPrint(arena, "{{\"name\":\"{s}\",\"description\":\"{s}\"}}", .{ e.name, e.description }) catch continue;
+                    const entry = skills.formatEntryJson(arena, e.name, e.description) catch continue;
                     term.out(entry);
                 }
                 term.out("]}\n");

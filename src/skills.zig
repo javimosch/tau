@@ -1,4 +1,5 @@
 const std = @import("std");
+const jsonmod = @import("json.zig");
 
 /// Metadata for a discovered skill from ~/.agents/skills/
 pub const SkillInfo = struct {
@@ -71,6 +72,15 @@ pub fn loadSkill(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ
     return null;
 }
 
+/// Serialize one skill entry as a JSON object with escaped name/description.
+pub fn formatEntryJson(gpa: std.mem.Allocator, name: []const u8, description: []const u8) ![]u8 {
+    const ne = try jsonmod.escapeAlloc(gpa, name);
+    defer gpa.free(ne);
+    const de = try jsonmod.escapeAlloc(gpa, description);
+    defer gpa.free(de);
+    return std.fmt.allocPrint(gpa, "{{\"name\":\"{s}\",\"description\":\"{s}\"}}", .{ ne, de });
+}
+
 /// Search skills by keyword (case-insensitive substring match).
 pub fn searchSkills(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, gpa: std.mem.Allocator, query: []const u8) ![]SkillInfo {
     const skills = try scanSkills(io, arena, env, gpa);
@@ -111,6 +121,23 @@ test "extractDescription handles valid YAML frontmatter" {
 test "extractDescription returns null when no frontmatter" {
     const content = "# Just a markdown file\nNo frontmatter here\n";
     try std.testing.expect(extractDescription(content) == null);
+}
+
+test "formatEntryJson escapes quotes and backslashes in description" {
+    const gpa = std.testing.allocator;
+    const got = try formatEntryJson(gpa, "my-skill", "Use \"quotes\" and \\ backslash");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"name\":\"my-skill\",\"description\":\"Use \\\"quotes\\\" and \\\\ backslash\"}",
+        got,
+    );
+}
+
+test "formatEntryJson escapes control characters" {
+    const gpa = std.testing.allocator;
+    const got = try formatEntryJson(gpa, "n", "line1\nline2");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("{\"name\":\"n\",\"description\":\"line1\\nline2\"}", got);
 }
 
 test "extractDescription returns null when no description field" {
