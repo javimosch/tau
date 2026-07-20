@@ -1,4 +1,5 @@
 const std = @import("std");
+const jsonmod = @import("json.zig");
 
 /// Metadata for a discovered AGENTS.md file.
 pub const AgentsMdFile = struct {
@@ -49,7 +50,36 @@ pub fn loadAgentsMd(io: std.Io, arena: std.mem.Allocator, path: []const u8) ?[]c
     return std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch return null;
 }
 
+/// Serialize one AGENTS.md scan entry as JSON with escaped path and first_line.
+pub fn formatEntryJson(gpa: std.mem.Allocator, path: []const u8, first_line: []const u8, size: u64) ![]u8 {
+    const pe = try jsonmod.escapeAlloc(gpa, path);
+    defer gpa.free(pe);
+    const fe = try jsonmod.escapeAlloc(gpa, first_line);
+    defer gpa.free(fe);
+    return std.fmt.allocPrint(gpa, "{{\"path\":\"{s}\",\"first_line\":\"{s}\",\"size\":{d}}}", .{ pe, fe, size });
+}
+
 test "scanAgentsMd returns empty for bad path" {
     const result = scanAgentsMd(std.testing.io, std.testing.allocator, std.testing.allocator, "/nonexistent") catch return;
     try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "formatEntryJson escapes quotes and backslashes in first_line" {
+    const gpa = std.testing.allocator;
+    const got = try formatEntryJson(gpa, "./AGENTS.md", "Use \"quotes\" and \\ backslash", 42);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"path\":\"./AGENTS.md\",\"first_line\":\"Use \\\"quotes\\\" and \\\\ backslash\",\"size\":42}",
+        got,
+    );
+}
+
+test "formatEntryJson escapes control characters in path and first_line" {
+    const gpa = std.testing.allocator;
+    const got = try formatEntryJson(gpa, "dir/AGENTS.md", "line1\nline2", 100);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"path\":\"dir/AGENTS.md\",\"first_line\":\"line1\\nline2\",\"size\":100}",
+        got,
+    );
 }

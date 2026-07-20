@@ -391,7 +391,7 @@ pub fn main(init: std.process.Init) !void {
         term.out("{\"agents_md_files\":[");
         for (entries, 0..) |e, i| {
             if (i > 0) term.out(",");
-            const entry = std.fmt.allocPrint(arena, "{{\"path\":\"{s}\",\"first_line\":\"{s}\",\"size\":{d}}}", .{ e.path, e.first_line, e.size }) catch continue;
+            const entry = agents_md.formatEntryJson(arena, e.path, e.first_line, e.size) catch continue;
             term.out(entry);
         }
         term.out("]}\n");

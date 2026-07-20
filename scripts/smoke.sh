@@ -65,6 +65,7 @@ ALL_TEST_GROUPS=(
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
+  "scan-agents:test_group_scan_agents"
   "session-validation:test_group_session_name_validation"
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
@@ -538,6 +539,36 @@ test_group_dry_run() {
   else
     ok "error envelope code 110 format invalid" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 110: $err_110_err"
+  fi
+}
+
+# Group: --scan-agents JSON output (Issue: unescaped path/first_line broke machine output)
+test_group_scan_agents() {
+  local out rc tmpdir
+
+  note "--scan-agents JSON validity"
+
+  # Repo root should always contain AGENTS.md; output must be valid JSON.
+  out=$("$BIN" --scan-agents); rc=$?
+  ok "--scan-agents exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert isinstance(d.get("agents_md_files"), list)' 2>/dev/null; then
+    ok "--scan-agents output is valid JSON" 0 0
+  else
+    ok "--scan-agents output is not valid JSON" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "scan-agents output: $out"
+  fi
+
+  # Temp tree with special characters in the title must still produce valid JSON.
+  tmpdir="$(mktemp -d)"
+  register_temp_dir "$tmpdir"
+  printf '# Title with "quotes" and \\ backslash\n\nBody\n' > "$tmpdir/AGENTS.md"
+  out=$(cd "$tmpdir" && "$BIN" --scan-agents); rc=$?
+  ok "--scan-agents special-chars exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); fs=d["agents_md_files"]; assert len(fs)==1; assert "quotes" in fs[0]["first_line"]' 2>/dev/null; then
+    ok "--scan-agents escapes special chars in first_line" 0 0
+  else
+    ok "--scan-agents special-chars JSON invalid" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "scan-agents special-chars output: $out"
   fi
 }
 
