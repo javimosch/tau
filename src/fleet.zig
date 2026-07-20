@@ -474,6 +474,77 @@ pub fn loadManifest(
 }
 
 // ---------------------------------------------------------------------------
+// Model override + worker argv helpers
+// ---------------------------------------------------------------------------
+
+/// Split `--model provider/id` shorthand into components.
+pub fn splitProviderModel(spec: []const u8) struct { provider: ?[]const u8, model: []const u8 } {
+    if (std.mem.indexOfScalar(u8, spec, '/')) |slash| {
+        return .{ .provider = spec[0..slash], .model = spec[slash + 1 ..] };
+    }
+    return .{ .provider = null, .model = spec };
+}
+
+/// Apply a model override string to a config copy (coordinator/worker turns).
+fn applyModelOverride(cfg: anytype, model_spec: []const u8) void {
+    const split = splitProviderModel(model_spec);
+    cfg.model = split.model;
+    if (split.provider) |prov_name| {
+        if (cfgmod.findProvider(prov_name)) |p| {
+            cfg.provider = p.name;
+            cfg.endpoint = p.endpoint;
+        }
+    }
+}
+
+/// Build argv for a fleet worker subprocess. Forwards model/provider/api-key
+/// overrides and caps the worker tool loop via --max-iterations.
+pub fn buildWorkerArgv(
+    arena: std.mem.Allocator,
+    session_name: []const u8,
+    scope: []const u8,
+    cfg: cfgmod.Config,
+    worker_max_iterations: u32,
+) ![]const []const u8 {
+    var argv = std.ArrayList([]const u8).empty;
+    try argv.append(arena, "tau");
+    try argv.append(arena, "--role");
+    try argv.append(arena, "author");
+    try argv.append(arena, "--session");
+    try argv.append(arena, session_name);
+
+    if (cfg.worker_model) |wm| {
+        const split = splitProviderModel(wm);
+        if (split.provider != null) {
+            try argv.append(arena, "--model");
+            try argv.append(arena, wm);
+        } else {
+            try argv.append(arena, "--provider");
+            try argv.append(arena, cfg.provider);
+            try argv.append(arena, "--model");
+            try argv.append(arena, wm);
+        }
+    } else {
+        try argv.append(arena, "--provider");
+        try argv.append(arena, cfg.provider);
+        try argv.append(arena, "--model");
+        try argv.append(arena, cfg.model);
+    }
+
+    if (cfg.api_key) |key| {
+        try argv.append(arena, "--api-key");
+        try argv.append(arena, key);
+    }
+
+    const max_iter_str = try std.fmt.allocPrint(arena, "{d}", .{worker_max_iterations});
+    try argv.append(arena, "--max-iterations");
+    try argv.append(arena, max_iter_str);
+
+    try argv.append(arena, scope);
+    return try argv.toOwnedSlice(arena);
+}
+
+// ---------------------------------------------------------------------------
 // Fleet CLI dispatch
 // ---------------------------------------------------------------------------
 
@@ -511,8 +582,7 @@ pub fn buildSpec(
     coord_cfg.feedback_message = null;
     coord_cfg.role = .coordinator;
     coord_cfg.stream = false;
-    if (cfg.coordinator_model) |m| coord_cfg.model = m;
-    if (cfg.coordinator_model != null) coord_cfg.provider = cfg.coordinator_model.?; // set by args
+    if (cfg.coordinator_model) |m| applyModelOverride(&coord_cfg, m);
 
     const max_attempts: u32 = 3;
     var attempt: u32 = 0;
@@ -810,15 +880,9 @@ fn runCmd(
                 const idx = pending.items[pi];
                 const it = spec.items[idx];
                 if (depsMet(it.depends_on, done_ids.items)) {
-                    // Arena-allocate cmd_argv so it survives past this iteration.
                     const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
-                    const cmd_argv = try arena.alloc([]const u8, 6);
-                    cmd_argv[0] = "tau";
-                    cmd_argv[1] = "--role";
-                    cmd_argv[2] = "author";
-                    cmd_argv[3] = "--session";
-                    cmd_argv[4] = session_name;
-                    cmd_argv[5] = it.scope;
+                    const cmd_argv = try buildWorkerArgv(arena, session_name, it.scope, cfg, spec.worker_max_iterations);
+                    items.items[idx].status = .running;
 
                     const child = std.process.spawn(io, .{
                         .argv = cmd_argv,
@@ -844,6 +908,17 @@ fn runCmd(
                 }
                 break;
             }
+
+            // Persist in-flight status before waiting on workers.
+            const wave_updated = Manifest{
+                .id = id,
+                .spec = spec,
+                .items = items.items,
+                .created_at = manifest.created_at,
+                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+                .global_status = .running,
+            };
+            saveManifest(io, gpa, env, wave_updated) catch {};
 
             // Wait for all children in this wave to complete.
             for (children.items) |*maybe_child| {
@@ -887,12 +962,28 @@ fn runCmd(
         const sorted = topoSort(gpa, spec.items) catch |err| return helpers.fleetErr(arena, "toposort failed", err);
         defer gpa.free(sorted);
         for (sorted) |it| {
-            const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
-            const cmd_argv = [_][]const u8{
-                "tau", "--role", "author", "--session", session_name, it.scope,
+            const item_idx = blk: {
+                for (items.items, 0..) |ir, j| {
+                    if (std.mem.eql(u8, ir.item.id, it.id)) break :blk j;
+                }
+                unreachable;
             };
+
+            const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
+            items.items[item_idx].status = .running;
+            const running_updated = Manifest{
+                .id = id,
+                .spec = spec,
+                .items = items.items,
+                .created_at = manifest.created_at,
+                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+                .global_status = .running,
+            };
+            saveManifest(io, gpa, env, running_updated) catch {};
+
+            const cmd_argv = try buildWorkerArgv(arena, session_name, it.scope, cfg, spec.worker_max_iterations);
             var child = std.process.spawn(io, .{
-                .argv = &cmd_argv,
+                .argv = cmd_argv,
                 .stdin = .ignore,
                 .stdout = .ignore,
                 .stderr = .ignore,
@@ -900,14 +991,6 @@ fn runCmd(
             if (child) |*ch| {
                 _ = ch.wait(io) catch {};
             }
-
-            // Find the original index in items.items (order is topo-sorted).
-            const item_idx = blk: {
-                for (items.items, 0..) |ir, j| {
-                    if (std.mem.eql(u8, ir.item.id, it.id)) break :blk j;
-                }
-                unreachable;
-            };
 
             // Check the worker's session file for the READY_FOR_REVIEW sentinel.
             var status: ItemStatus = .failed;
@@ -1285,6 +1368,76 @@ test "Manifest with global_status: cancelled round-trips through JSON" {
 // ---------------------------------------------------------------------------
 // Regression tests — fleet orchestration bugs found & fixed (June 2026)
 // ---------------------------------------------------------------------------
+
+test "splitProviderModel splits provider/id shorthand" {
+    const s = splitProviderModel("openai/gpt-4o-mini");
+    try std.testing.expectEqualStrings("openai", s.provider.?);
+    try std.testing.expectEqualStrings("gpt-4o-mini", s.model);
+}
+
+test "splitProviderModel bare model has null provider" {
+    const s = splitProviderModel("deepseek-chat");
+    try std.testing.expect(s.provider == null);
+    try std.testing.expectEqualStrings("deepseek-chat", s.model);
+}
+
+test "applyModelOverride resolves coordinator provider/id override" {
+    var cfg = cfgmod.Config{};
+    applyModelOverride(&cfg, "deepseek/deepseek-chat");
+    try std.testing.expectEqualStrings("deepseek", cfg.provider);
+    try std.testing.expectEqualStrings("deepseek-chat", cfg.model);
+    try std.testing.expectEqualStrings(
+        cfgmod.findProvider("deepseek").?.endpoint,
+        cfg.endpoint,
+    );
+}
+
+test "buildWorkerArgv forwards worker model, api key, and max-iterations" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const cfg = cfgmod.Config{
+        .provider = "openai",
+        .model = "gpt-4o-mini",
+        .api_key = "sk-test",
+        .worker_model = "deepseek/deepseek-chat",
+    };
+    const argv = try buildWorkerArgv(arena, "fleet-a-item1", "implement feature", cfg, 8);
+    try std.testing.expectEqual(@as(usize, 12), argv.len);
+    try std.testing.expectEqualStrings("tau", argv[0]);
+    try std.testing.expectEqualStrings("--role", argv[1]);
+    try std.testing.expectEqualStrings("author", argv[2]);
+    try std.testing.expectEqualStrings("--session", argv[3]);
+    try std.testing.expectEqualStrings("fleet-a-item1", argv[4]);
+    try std.testing.expectEqualStrings("--model", argv[5]);
+    try std.testing.expectEqualStrings("deepseek/deepseek-chat", argv[6]);
+    try std.testing.expectEqualStrings("--api-key", argv[7]);
+    try std.testing.expectEqualStrings("sk-test", argv[8]);
+    try std.testing.expectEqualStrings("--max-iterations", argv[9]);
+    try std.testing.expectEqualStrings("8", argv[10]);
+    try std.testing.expectEqualStrings("implement feature", argv[11]);
+}
+
+test "buildWorkerArgv uses provider + bare worker model" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const cfg = cfgmod.Config{
+        .provider = "openai",
+        .model = "gpt-4o-mini",
+        .worker_model = "gpt-4o",
+    };
+    const argv = try buildWorkerArgv(arena, "s1", "scope text", cfg, 12);
+    try std.testing.expectEqualStrings("--provider", argv[5]);
+    try std.testing.expectEqualStrings("openai", argv[6]);
+    try std.testing.expectEqualStrings("--model", argv[7]);
+    try std.testing.expectEqualStrings("gpt-4o", argv[8]);
+    try std.testing.expectEqualStrings("--max-iterations", argv[9]);
+    try std.testing.expectEqualStrings("12", argv[10]);
+    try std.testing.expectEqualStrings("scope text", argv[11]);
+}
 
 test "sanitizeUtf8 passes through valid UTF-8 unchanged" {
     const gpa = std.testing.allocator;
