@@ -982,6 +982,17 @@ test "extractToolCalls tolerates whitespace after colons (spaced JSON)" {
     const calls = try extractToolCalls(gpa, spaced);
     defer {
         for (calls) |tc| {
+            gpa.free(tc.id);
+            gpa.free(tc.name);
+            gpa.free(tc.arguments);
+        }
+        gpa.free(calls);
+    }
+    try std.testing.expectEqual(@as(usize, 1), calls.len);
+    try std.testing.expectEqualStrings("call_1", calls[0].id);
+    try std.testing.expectEqualStrings("bash", calls[0].name);
+    try std.testing.expectEqualStrings("{}", calls[0].arguments);
+}
 
 // ---------------------------------------------------------------------------
 // Unit tests — classifyBody (API error mapping)
@@ -1139,13 +1150,6 @@ test "extractToolCalls: parses a single tool call with id, name, and arguments" 
             gpa.free(tc.name);
             gpa.free(tc.arguments);
         }
-        gpa.free(calls);
-    }
-    try std.testing.expectEqual(@as(usize, 1), calls.len);
-    try std.testing.expectEqualStrings("call_1", calls[0].id);
-    try std.testing.expectEqualStrings("bash", calls[0].name);
-    try std.testing.expectEqualStrings("{}", calls[0].arguments);
-
         gpa.free(tcs);
     }
     try std.testing.expectEqual(@as(usize, 1), tcs.len);
