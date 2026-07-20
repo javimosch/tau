@@ -271,6 +271,25 @@ fn backoff(io: std.Io, attempt: u32) void {
     std.Io.sleep(io, std.Io.Duration.fromMilliseconds(ms), .awake) catch {};
 }
 
+/// Convert timeout_ms to curl --max-time seconds (minimum 1 ms).
+fn curlMaxTimeSeconds(timeout_ms: i64) f64 {
+    const sec = @as(f64, @floatFromInt(timeout_ms)) / 1000.0;
+    return @max(sec, 0.001);
+}
+
+/// curl exit code for operation timeout (CURLE_OPERATION_TIMEDOUT).
+const curl_timeout_exit_code: u8 = 28;
+
+fn checkStreamCurlTerm(curl_term: std.process.Child.Term) !void {
+    switch (curl_term) {
+        .exited => |code| {
+            if (code == curl_timeout_exit_code) return error.Timeout;
+            if (code != 0) return error.HTTPRequestFailed;
+        },
+        else => return error.HTTPRequestFailed,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Request body builder (shared by complete() and completeStreamWithTools())
 // ---------------------------------------------------------------------------
@@ -653,12 +672,26 @@ pub fn completeStreamWithTools(
     const auth = try std.fmt.allocPrint(gpa, "Authorization: Bearer {s}", .{api_key});
     defer gpa.free(auth);
 
+    var max_time_buf: [32]u8 = undefined;
+    const max_time_str = try std.fmt.bufPrint(
+        &max_time_buf,
+        "{d}",
+        .{curlMaxTimeSeconds(cfg.timeout_ms)},
+    );
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(gpa);
+    try argv.appendSlice(gpa, &.{
+        "curl", "-s", "-N", "--max-time", max_time_str,
+        "-X", "POST", cfg.endpoint,
+        "-H", auth, "-H", "Content-Type: application/json",
+        "--data-raw", body.items,
+    });
+    const argv_slice = try argv.toOwnedSlice(gpa);
+    defer gpa.free(argv_slice);
+
     var child = try std.process.spawn(io, .{
-        .argv = &[_][]const u8{
-            "curl", "-s", "-N", "-X", "POST", cfg.endpoint,
-            "-H",   auth, "-H", "Content-Type: application/json",
-            "--data-raw", body.items,
-        },
+        .argv = argv_slice,
         .stdin  = .ignore,
         .stdout = .pipe,
         .stderr = .ignore,
@@ -700,7 +733,8 @@ pub fn completeStreamWithTools(
 
         if (!std.mem.startsWith(u8, line, "data:")) {
             if (!saw_data and std.mem.indexOf(u8, line, "\"error\"") != null) {
-                _ = child.wait(io) catch {};
+                const curl_term = child.wait(io) catch return error.HTTPRequestFailed;
+                try checkStreamCurlTerm(curl_term);
                 return error.HTTPRequestFailed;
             }
             continue;
@@ -779,7 +813,8 @@ pub fn completeStreamWithTools(
         }
     }
 
-    _ = child.wait(io) catch {};
+    const curl_term = child.wait(io) catch return error.HTTPRequestFailed;
+    try checkStreamCurlTerm(curl_term);
 
     // Assemble tool_calls from accumulated fragments.
     var tool_calls: std.ArrayList(ToolCall) = .empty;
@@ -1079,6 +1114,18 @@ const TestCfg = struct {
     temperature: f32 = 0.7,
     max_tokens: ?u32 = null,
 };
+
+test "curlMaxTimeSeconds converts ms to seconds with minimum floor" {
+    try std.testing.expectApproxEqAbs(@as(f64, 120.0), curlMaxTimeSeconds(120_000), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 9.0), curlMaxTimeSeconds(9000), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.001), curlMaxTimeSeconds(1), 0.0001);
+}
+
+test "checkStreamCurlTerm maps curl timeout exit to error.Timeout" {
+    try std.testing.expectError(error.Timeout, checkStreamCurlTerm(.{ .exited = curl_timeout_exit_code }));
+    try checkStreamCurlTerm(.{ .exited = 0 });
+    try std.testing.expectError(error.HTTPRequestFailed, checkStreamCurlTerm(.{ .exited = 7 }));
+}
 
 test "appendRequestBody: single user message with no tools" {
     const gpa = std.testing.allocator;
