@@ -413,9 +413,7 @@ fn emitFinal(gpa: std.mem.Allocator, cfg: anytype, response: provider_mod.Respon
             term.out("\n");
         },
         .json => {
-            const esc = try jsonmod.escapeAlloc(gpa, content);
-            defer gpa.free(esc);
-            const out = try std.fmt.allocPrint(gpa, "{{\"version\":\"{s}\",\"model\":\"{s}\",\"content\":\"{s}\",\"done\":true}}\n", .{ @import("main.zig").version, cfg.model, esc });
+            const out = try formatFinalJson(gpa, @import("main.zig").version, cfg.model, content);
             defer gpa.free(out);
             term.out(out);
         },
@@ -434,6 +432,15 @@ fn stripAll(gpa: std.mem.Allocator, s: []const u8, needle: []const u8) ![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+/// Serialize the non-streaming final JSON response envelope.
+pub fn formatFinalJson(gpa: std.mem.Allocator, version: []const u8, model: []const u8, content: []const u8) ![]u8 {
+    const me = try jsonmod.escapeAlloc(gpa, model);
+    defer gpa.free(me);
+    const ce = try jsonmod.escapeAlloc(gpa, content);
+    defer gpa.free(ce);
+    return std.fmt.allocPrint(gpa, "{{\"version\":\"{s}\",\"model\":\"{s}\",\"content\":\"{s}\",\"done\":true}}\n", .{ version, me, ce });
+}
+
 /// Best-effort session persistence. Failures are reported to stderr but do not
 /// abort the run.
 fn saveSession(
@@ -446,7 +453,11 @@ fn saveSession(
 ) void {
     const st = session_mod.SessionState{ .name = name, .goal = goal, .messages = msgs };
     session_mod.save(io, gpa, env_map, st) catch |err| {
-        const m = std.fmt.allocPrint(gpa, "[WARN] failed to save session {s}: {s}\n", .{ name, @errorName(err) }) catch return;
+        const raw = std.fmt.allocPrint(gpa, "failed to save session {s}: {s}", .{ name, @errorName(err) }) catch return;
+        defer gpa.free(raw);
+        const we = jsonmod.escapeAlloc(gpa, raw) catch return;
+        defer gpa.free(we);
+        const m = std.fmt.allocPrint(gpa, "{{\"warn\":{{\"message\":\"{s}\"}}}}\n", .{we}) catch return;
         defer gpa.free(m);
         term.err(m);
     };
@@ -538,6 +549,16 @@ pub fn buildToolArgs(gpa: std.mem.Allocator, tool_name: []const u8, args_json: [
     }
 
     return args.toOwnedSlice(gpa);
+}
+
+test "formatFinalJson escapes quotes in model and content" {
+    const gpa = std.testing.allocator;
+    const got = try formatFinalJson(gpa, "0.4.0", "openai/gpt\"4o\"", "hello \"world\"");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"version\":\"0.4.0\",\"model\":\"openai/gpt\\\"4o\\\"\",\"content\":\"hello \\\"world\\\"\",\"done\":true}\n",
+        got,
+    );
 }
 
 test "buildToolArgs rejects unsafe paths and empty commands" {

@@ -384,6 +384,13 @@ fn appendRequestBody(
     try body.appendSlice(gpa, "}");
 }
 
+/// Serialize the streaming terminal JSON marker (pure-content turns only).
+pub fn formatStreamDoneJson(gpa: std.mem.Allocator, model: []const u8) ![]u8 {
+    const me = try jsonmod.escapeAlloc(gpa, model);
+    defer gpa.free(me);
+    return std.fmt.allocPrint(gpa, "{{\"model\":\"{s}\",\"done\":true}}\n", .{me});
+}
+
 // ---------------------------------------------------------------------------
 // Non-streaming completion (blocking, full JSON response)
 // ---------------------------------------------------------------------------
@@ -849,7 +856,7 @@ pub fn completeStreamWithTools(
         switch (cfg.mode) {
             .text => term.out("\n"),
             .json => {
-                const done = try std.fmt.allocPrint(gpa, "{{\"model\":\"{s}\",\"done\":true}}\n", .{cfg.model});
+                const done = try formatStreamDoneJson(gpa, cfg.model);
                 defer gpa.free(done);
                 term.out(done);
             },
@@ -1192,6 +1199,13 @@ test "appendRequestBody: tool_call_id is included on tool-role messages" {
     const msgs = [_]Message{.{ .role = "tool", .content = "ok", .tool_call_id = "call_xyz" }};
     try appendRequestBody(gpa, &body, TestCfg{ .model = "m" }, &msgs, null, false);
     try std.testing.expect(std.mem.indexOf(u8, body.items, "\"tool_call_id\":\"call_xyz\"") != null);
+}
+
+test "formatStreamDoneJson escapes quotes in model" {
+    const gpa = std.testing.allocator;
+    const got = try formatStreamDoneJson(gpa, "xiaomi/mimo\"v2\"");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("{\"model\":\"xiaomi/mimo\\\"v2\\\"\",\"done\":true}\n", got);
 }
 
 test "appendRequestBody: assistant tool_calls are echoed in the message" {
