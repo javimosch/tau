@@ -28,14 +28,28 @@ fn writeErr(s: []const u8) void {
     term.err(s);
 }
 
+fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
+    const te = try json.escapeAlloc(gpa, error_type);
+    defer gpa.free(te);
+    const me = try json.escapeAlloc(gpa, message);
+    defer gpa.free(me);
+    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{}}}}}\n", .{ code, te, me, recoverable });
+}
+
 fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
-    const j = std.fmt.allocPrint(std.heap.page_allocator, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{}}}}}\n", .{ code, error_type, message, recoverable }) catch return;
+    const j = formatErrorJson(std.heap.page_allocator, code, error_type, message, recoverable) catch return;
     defer std.heap.page_allocator.free(j);
     writeErr(j);
 }
 
+fn formatWarnJson(gpa: std.mem.Allocator, message: []const u8) ![]u8 {
+    const me = try json.escapeAlloc(gpa, message);
+    defer gpa.free(me);
+    return try std.fmt.allocPrint(gpa, "{{\"warn\":{{\"message\":\"{s}\"}}}}\n", .{me});
+}
+
 fn printWarnJson(message: []const u8) void {
-    const j = std.fmt.allocPrint(std.heap.page_allocator, "{{\"warn\":{{\"message\":\"{s}\"}}}}\n", .{message}) catch return;
+    const j = formatWarnJson(std.heap.page_allocator, message) catch return;
     defer std.heap.page_allocator.free(j);
     writeErr(j);
 }
@@ -452,4 +466,31 @@ test "flag_specs appear in help_text" {
         if (!found) std.debug.print("flag_specs entry '{s}' not found in help_text\n", .{f.long});
         try std.testing.expect(found);
     }
+}
+
+test "formatErrorJson escapes quotes and backslashes in message" {
+    const gpa = std.testing.allocator;
+    const got = try formatErrorJson(gpa, 80, "invalid_argument", "invalid --timeout-ms: \"bad\"", false);
+    defer gpa.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\\\"bad\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"code\":80") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"type\":\"invalid_argument\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"recoverable\":false") != null);
+}
+
+test "formatErrorJson escapes control characters in message and type" {
+    const gpa = std.testing.allocator;
+    const got = try formatErrorJson(gpa, 110, "type\nhere", "line1\nline2", true);
+    defer gpa.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "type\\nhere") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "line1\\nline2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"recoverable\":true") != null);
+}
+
+test "formatWarnJson escapes quotes and control characters" {
+    const gpa = std.testing.allocator;
+    const got = try formatWarnJson(gpa, "config \"broken\" at /path\nfix it");
+    defer gpa.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "config \\\"broken\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "/path\\nfix it") != null);
 }
