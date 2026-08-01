@@ -342,6 +342,14 @@ test_group_issue11_flags() {
     ok "--timeout-ms 5000 rejected" 1 0
   fi
 
+  # --api-key with value accepted by parser (fake key for fast auth fail)
+  "$BIN" --api-key fake --no-tools --no-stream --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--api-key with value accepted (exit $rc)" 0 0
+  else
+    ok "--api-key with value rejected" 1 0
+  fi
+
   # --api-key no value -> exit 80
   "$BIN" --api-key >/dev/null 2>&1; ok "--api-key no value -> exit 80" "$?" 80
 }
