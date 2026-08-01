@@ -90,6 +90,7 @@ ALL_TEST_GROUPS=(
   "goal-strip:test_group_network_goal_sentinel_strip:network"
   "multi-tool:test_group_network_multi_tool_turn:network"
   "ls-tool:test_group_network_ls_tool:network"
+  "role-author:test_group_network_role_author:network"
 )
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -1094,6 +1095,23 @@ test_group_network_ls_tool() {
   ok "ls tool exit" "$rc" 0
   contains "ls tool returns alpha" "$out" "tau-LS-ALPHA"
   contains "ls tool returns beta" "$out" "tau-LS-BETA"
+}
+
+test_group_network_role_author() {
+  local out rc
+
+  note "network: --role author end-to-end"
+
+  # Issue #9: verify --role author can run a real LLM call and (ideally) emit the
+  # <READY_FOR_REVIEW> sentinel. Fall back to validating the output is JSON.
+  out=$("$BIN" --no-stream --role author --tools bash "echo AUTHOR_TEST_OK"); rc=$?
+  ok "--role author exit" "$rc" 0
+
+  if [ "$rc" -eq 0 ] && { printf '%s' "$out" | grep -q '<READY_FOR_REVIEW>' || printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; }; then
+    ok "--role author output contains <READY_FOR_REVIEW> or is valid JSON" 0 0
+  else
+    ok "--role author output missing sentinel and not valid JSON" 1 0
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
