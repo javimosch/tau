@@ -63,7 +63,7 @@ ALL_TEST_GROUPS=(
   "acp:test_group_acp"
   "config-file:test_group_config_file"
   "goal:test_group_goal_offline"
-  "dry-run:test_group_dry_run"
+  "dry-run:test_group_dry_run:network"
   "at-file-system-prompt:test_group_at_file_system_prompt"
   "scan-agents:test_group_scan_agents"
   "session-validation:test_group_session_name_validation"

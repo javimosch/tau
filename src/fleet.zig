@@ -920,17 +920,16 @@ fn runCmd(
             };
             saveManifest(io, gpa, env, wave_updated) catch {};
 
-            // Wait for all children in this wave to complete.
-            for (children.items) |*maybe_child| {
+            // Wait for each child and persist its status immediately. If the
+            // process crashes partway through a wave, the manifest already
+            // reflects every worker that has completed so far.
+            for (children.items, wave_idxs.items) |*maybe_child, idx| {
+                const it = spec.items[idx];
+                const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
+
                 if (maybe_child.*) |*ch| {
                     _ = ch.wait(io) catch {};
                 }
-            }
-
-            // Check results for each completed worker.
-            for (wave_idxs.items) |idx| {
-                const it = spec.items[idx];
-                const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
 
                 var status: ItemStatus = .failed;
                 if (session_mod.load(io, arena, env, session_name)) |maybe_st| {
@@ -944,18 +943,18 @@ fn runCmd(
                 if (status == .approved) {
                     try done_ids.append(gpa, it.id);
                 }
-            }
 
-            // Save manifest incrementally.
-            const updated = Manifest{
-                .id = id,
-                .spec = spec,
-                .items = items.items,
-                .created_at = manifest.created_at,
-                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
-                .global_status = .running,
-            };
-            saveManifest(io, gpa, env, updated) catch {};
+                // Save manifest incrementally after each individual worker.
+                const updated = Manifest{
+                    .id = id,
+                    .spec = spec,
+                    .items = items.items,
+                    .created_at = manifest.created_at,
+                    .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+                    .global_status = .running,
+                };
+                saveManifest(io, gpa, env, updated) catch {};
+            }
         }
     } else {
         // Sequential dispatch (original behavior).
