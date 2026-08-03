@@ -473,6 +473,28 @@ pub fn loadManifest(
     });
 }
 
+/// Build an updated manifest from `base` (id/spec/created_at) and `items`,
+/// timestamp it, and persist it. Intermediate saves are best-effort, so errors
+/// are swallowed; call `saveManifest` directly when persistence must fail hard.
+fn saveManifestSnapshot(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    base: Manifest,
+    items: []const ItemResult,
+    global_status: @TypeOf(base.global_status),
+) void {
+    const updated = Manifest{
+        .id = base.id,
+        .spec = base.spec,
+        .items = items,
+        .created_at = base.created_at,
+        .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+        .global_status = global_status,
+    };
+    saveManifest(io, gpa, env, updated) catch {};
+}
+
 // ---------------------------------------------------------------------------
 // Model override + worker argv helpers
 // ---------------------------------------------------------------------------
@@ -910,28 +932,19 @@ fn runCmd(
             }
 
             // Persist in-flight status before waiting on workers.
-            const wave_updated = Manifest{
-                .id = id,
-                .spec = spec,
-                .items = items.items,
-                .created_at = manifest.created_at,
-                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
-                .global_status = .running,
-            };
-            saveManifest(io, gpa, env, wave_updated) catch {};
+            saveManifestSnapshot(io, gpa, env, manifest, items.items, .running);
 
-            // Wait for all children in this wave to complete.
-            for (children.items) |*maybe_child| {
+            // Wait for each child and, as soon as it finishes, resolve its
+            // status and persist the manifest so partial wave progress is
+            // never lost.
+            for (children.items, wave_idxs.items) |*maybe_child, idx| {
+                const it = spec.items[idx];
+
                 if (maybe_child.*) |*ch| {
                     _ = ch.wait(io) catch {};
                 }
-            }
 
-            // Check results for each completed worker.
-            for (wave_idxs.items) |idx| {
-                const it = spec.items[idx];
                 const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
-
                 var status: ItemStatus = .failed;
                 if (session_mod.load(io, arena, env, session_name)) |maybe_st| {
                     if (maybe_st) |st| {
@@ -944,18 +957,10 @@ fn runCmd(
                 if (status == .approved) {
                     try done_ids.append(gpa, it.id);
                 }
-            }
 
-            // Save manifest incrementally.
-            const updated = Manifest{
-                .id = id,
-                .spec = spec,
-                .items = items.items,
-                .created_at = manifest.created_at,
-                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
-                .global_status = .running,
-            };
-            saveManifest(io, gpa, env, updated) catch {};
+                // Save manifest incrementally after each worker completes.
+                saveManifestSnapshot(io, gpa, env, manifest, items.items, .running);
+            }
         }
     } else {
         // Sequential dispatch (original behavior).
@@ -971,15 +976,7 @@ fn runCmd(
 
             const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
             items.items[item_idx].status = .running;
-            const running_updated = Manifest{
-                .id = id,
-                .spec = spec,
-                .items = items.items,
-                .created_at = manifest.created_at,
-                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
-                .global_status = .running,
-            };
-            saveManifest(io, gpa, env, running_updated) catch {};
+            saveManifestSnapshot(io, gpa, env, manifest, items.items, .running);
 
             const cmd_argv = try buildWorkerArgv(arena, session_name, it.scope, cfg, spec.worker_max_iterations);
             var child = std.process.spawn(io, .{
@@ -1004,15 +1001,7 @@ fn runCmd(
             items.items[item_idx].iterations = if (status == .approved) @as(u32, 1) else @as(u32, 0);
 
             // Save manifest incrementally.
-            const updated = Manifest{
-                .id = id,
-                .spec = spec,
-                .items = items.items,
-                .created_at = manifest.created_at,
-                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
-                .global_status = .running,
-            };
-            saveManifest(io, gpa, env, updated) catch {};
+            saveManifestSnapshot(io, gpa, env, manifest, items.items, .running);
         }
     }
 
@@ -1026,24 +1015,13 @@ fn runCmd(
             else => {},
         }
     }
-    const final_status: []const u8 = if (failed_count == 0 and approved_count == items.items.len) "done"
-        else if (approved_count > 0) "partial"
-        else "failed";
+    const final_global_status: @TypeOf(manifest.global_status) = if (failed_count == 0 and approved_count == items.items.len) .done
+        else if (approved_count > 0) .partial
+        else .failed;
 
-    // Persist final manifest with correct global_status.
-    const final_manifest = Manifest{
-        .id = id,
-        .spec = spec,
-        .items = items.items,
-        .created_at = manifest.created_at,
-        .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
-        .global_status = if (std.mem.eql(u8, final_status, "done")) .done
-            else if (std.mem.eql(u8, final_status, "partial")) .partial
-            else .failed,
-    };
-    saveManifest(io, gpa, env, final_manifest) catch {};
+    saveManifestSnapshot(io, gpa, env, manifest, items.items, final_global_status);
 
-    const final_out = try std.fmt.allocPrint(gpa, "{{\"fleet\":{{\"id\":\"{s}\",\"status\":\"{s}\",\"approved\":{d},\"failed\":{d},\"items\":{d}}}}}\n", .{ id, final_status, approved_count, failed_count, items.items.len });
+    const final_out = try std.fmt.allocPrint(gpa, "{{\"fleet\":{{\"id\":\"{s}\",\"status\":\"{s}\",\"approved\":{d},\"failed\":{d},\"items\":{d}}}}}\n", .{ id, @tagName(final_global_status), approved_count, failed_count, items.items.len });
     defer gpa.free(final_out);
     term.out(final_out);
     return 0;
