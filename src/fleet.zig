@@ -920,15 +920,12 @@ fn runCmd(
             };
             saveManifest(io, gpa, env, wave_updated) catch {};
 
-            // Wait for all children in this wave to complete.
-            for (children.items) |*maybe_child| {
+            // Wait for each child and persist status immediately after it completes.
+            for (children.items, wave_idxs.items) |*maybe_child, idx| {
                 if (maybe_child.*) |*ch| {
                     _ = ch.wait(io) catch {};
                 }
-            }
 
-            // Check results for each completed worker.
-            for (wave_idxs.items) |idx| {
                 const it = spec.items[idx];
                 const session_name = try std.fmt.allocPrint(arena, "{s}-{s}", .{ id, it.id });
 
@@ -944,18 +941,18 @@ fn runCmd(
                 if (status == .approved) {
                     try done_ids.append(gpa, it.id);
                 }
-            }
 
-            // Save manifest incrementally.
-            const updated = Manifest{
-                .id = id,
-                .spec = spec,
-                .items = items.items,
-                .created_at = manifest.created_at,
-                .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
-                .global_status = .running,
-            };
-            saveManifest(io, gpa, env, updated) catch {};
+                // Save manifest incrementally after each individual worker completes.
+                const updated = Manifest{
+                    .id = id,
+                    .spec = spec,
+                    .items = items.items,
+                    .created_at = manifest.created_at,
+                    .updated_at = std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(),
+                    .global_status = .running,
+                };
+                saveManifest(io, gpa, env, updated) catch {};
+            }
         }
     } else {
         // Sequential dispatch (original behavior).
