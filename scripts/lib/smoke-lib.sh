@@ -76,6 +76,28 @@ contains() {
   return 0
 }
 
+# contains_any_of <name> <haystack> <needle>...
+# Pass if haystack contains at least one of the provided needles.
+contains_any_of() {
+  local name="$1"
+  local haystack="$2"
+  shift 2
+  local needle
+  for needle in "$@"; do
+    case "$haystack" in
+      *"$needle"*)
+        printf 'ok  %d - %s (found %s)\n' $((pass + fail + skip + 1)) "$name" "$needle"
+        pass=$((pass + 1))
+        return 0
+        ;;
+    esac
+  done
+  printf 'not ok %d - %s (missing any of %s)\n' $((pass + fail + skip + 1)) "$name" "$*"
+  fail=$((fail + 1))
+  [ "$SMOKE_DEBUG" = "1" ] && diag "expected any of '$*' not found in output (length ${#haystack} chars)"
+  return 1
+}
+
 # skip_test <name> [reason]
 skip_test() {
   local name="$1"

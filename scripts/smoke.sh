@@ -56,7 +56,7 @@ skip=0
 ALL_TEST_GROUPS=(
   "help:test_group_help"
   "flags:test_group_flag_parsing"
-  "role:test_group_role_flag"
+  "role:test_group_role_offline"
   "fleet:test_group_fleet"
   "issue11:test_group_issue11_flags"
   "model:test_group_model_shorthand"
@@ -90,6 +90,7 @@ ALL_TEST_GROUPS=(
   "goal-strip:test_group_network_goal_sentinel_strip:network"
   "multi-tool:test_group_network_multi_tool_turn:network"
   "ls-tool:test_group_network_ls_tool:network"
+  "role-critic:test_group_network_role_critic:network"
 )
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -179,6 +180,20 @@ echo
 # Test Groups
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ok_parser_accepted <name> <exit_code>
+# When a test uses a fake API key, the parser has accepted the arguments as
+# long as the exit code is not 80 (invalid_argument). Auth/network failures
+# downstream exit 106/110 and are still a parser-acceptance pass.
+ok_parser_accepted() {
+  local name="$1"
+  local rc="$2"
+  if [ "$rc" != "80" ]; then
+    ok "$name accepted by parser (downstream exit $rc)" 0 0
+  else
+    ok "$name rejected by parser" 1 0
+  fi
+}
+
 # Group: version and help
 test_group_help() {
   local out
@@ -223,10 +238,10 @@ test_group_flag_parsing() {
   fi
 }
 
-# Group: --role flag
+# Group: --role flag (offline parser check)
 # Use --api-key fake --provider openai so auth fails fast at exit 106 (still != 80).
 # This avoids making slow LLM calls via the configured provider.
-test_group_role_flag() {
+test_group_role_offline() {
   local rc
 
   note "--role flag parsing"
@@ -234,11 +249,7 @@ test_group_role_flag() {
   for r in author critic coordinator none; do
     "$BIN" --role "$r" --no-tools --no-stream --api-key fake --provider openai "x" >/dev/null 2>&1
     rc=$?
-    if [ "$rc" != "80" ]; then
-      ok "--role $r accepted by parser (downstream exit $rc)" 0 0
-    else
-      ok "--role $r rejected by parser" 1 0
-    fi
+    ok_parser_accepted "--role $r" "$rc"
   done
 }
 
@@ -1094,6 +1105,21 @@ test_group_network_ls_tool() {
   ok "ls tool exit" "$rc" 0
   contains "ls tool returns alpha" "$out" "tau-LS-ALPHA"
   contains "ls tool returns beta" "$out" "tau-LS-BETA"
+}
+
+# Group: --role critic network test (Issue #8)
+# Verifies the critic directive is injected and the model emits a verdict sentinel.
+test_group_network_role_critic() {
+  local out rc
+
+  note "network: --role critic directive and verdict sentinel"
+
+  out=$("$BIN" --role critic --tools read,grep,ls \
+    "Audit $ROOT/src/main.zig for bugs"); rc=$?
+  ok "--role critic audit exit" "$rc" 0
+
+  # The Critic directive requires the response to end with exactly one of these.
+  contains_any_of "--role critic audit emits verdict" "$out" "<APPROVED>" "<BLOCKED>"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
