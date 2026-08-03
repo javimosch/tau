@@ -344,6 +344,14 @@ test_group_issue11_flags() {
 
   # --api-key no value -> exit 80
   "$BIN" --api-key >/dev/null 2>&1; ok "--api-key no value -> exit 80" "$?" 80
+
+  # --api-key with value accepted by parser
+  "$BIN" --api-key fake --no-tools --no-stream --provider openai "x" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "--api-key value accepted by parser (exit $rc)" 0 0
+  else
+    ok "--api-key value rejected by parser" 1 0
+  fi
 }
 
 # Group: Issue #12 --model shorthand
