@@ -191,6 +191,15 @@ fn status(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) !
 fn serve(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.process.Environ.Map, socket_opt: ?[]const u8) !u8 {
     var cfg2 = cfg;
     cfg2.api_key = cfgmod.resolveApiKey(cfg, env);
+    // Resolve the API endpoint like the CLI path (args.zig) does: the config file only
+    // carries provider/model/api_key (never the endpoint), and the `acp` subcommand
+    // returns from args.parse before the endpoint-resolution step — so without this,
+    // `tau acp serve` always POSTs to the default (providers[0]) endpoint regardless of
+    // the configured provider. Map provider -> endpoint, then honor a TAU_ENDPOINT override.
+    if (cfgmod.findProvider(cfg2.provider)) |p| cfg2.endpoint = p.endpoint;
+    if (env.get("TAU_ENDPOINT")) |ep| {
+        if (ep.len > 0) cfg2.endpoint = ep;
+    }
 
     const rbuf = try gpa.alloc(u8, 1 << 18);
     defer gpa.free(rbuf);
