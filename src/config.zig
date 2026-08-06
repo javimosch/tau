@@ -44,6 +44,8 @@ pub const Config = struct {
     /// {"done":true}.
     stream: bool = true,
     no_tools: bool = false,
+    /// `tau guide --human` → render the embedded guide as markdown instead of JSON.
+    guide_human: bool = false,
     /// Allowlist of tool names (null = all built-ins enabled). Owned elsewhere.
     tools_allow: ?[]const []const u8 = null,
     /// Denylist of tool names. Owned elsewhere.

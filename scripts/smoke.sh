@@ -55,6 +55,7 @@ skip=0
 # This is the single source of truth — the dispatch loops below derive from it.
 ALL_TEST_GROUPS=(
   "help:test_group_help"
+  "guide:test_group_guide"
   "flags:test_group_flag_parsing"
   "role:test_group_role_flag"
   "fleet:test_group_fleet"
@@ -197,6 +198,25 @@ test_group_help() {
   else
     ok "--help-json is not valid JSON" 1 0
   fi
+}
+
+# guide — the embedded operator manual (cli-guide-spec). JSON default, --human markdown, no runtime fetch.
+test_group_guide() {
+  local out
+
+  out=$("$BIN" guide); ok "guide exit" "$?" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
+    ok "guide is valid JSON" 0 0
+  else
+    ok "guide is not valid JSON" 1 0
+  fi
+  printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); need=["one_liner","model","loop","concepts","commands","examples","gotchas","see_also","version"]; sys.exit(0 if all(k in d for k in need) and d["version"] else 1)' 2>/dev/null
+  ok "guide has all spec keys + version" "$?" 0
+
+  out=$("$BIN" guide --human); ok "guide --human exit" "$?" 0
+  contains "guide --human renders markdown" "$out" "## Commands"
+
+  "$BIN" guide --bogus >/dev/null 2>&1; ok "guide rejects unknown arg (exit 80)" "$?" 80
 }
 
 # Group: basic flag parsing

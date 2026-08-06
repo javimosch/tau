@@ -129,6 +129,7 @@ tau gives agents what they need:
 - **Structured output** — `--schema` constrains model to JSON Schema
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
+- **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -572,6 +573,7 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 | Author↔Critic loop (`--role author\|critic\|coordinator`, `<READY_FOR_REVIEW>` / `<APPROVED>` / `<BLOCKED>` sentinels) | ✅ done |
 | Fleet orchestration (`tau fleet run\|status\|list\|logs\|cancel`, manifests at `~/.config/tau/fleets/`) | ✅ v0 |
 | ACP server (`tau acp start\|stop\|status\|serve`, JSON-RPC over stdio) | ✅ done |
+| Embedded guide (`tau guide` JSON / `tau guide --human` markdown, [cli-guide-spec](https://cli-specs.intrane.fr/)) | ✅ done |
 
 ---
 

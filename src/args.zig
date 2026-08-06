@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -133,6 +133,17 @@ pub fn parse(
     // `tau models` — list available providers and their models.
     if (argv.len > 0 and eq(argv[0], "models")) {
         return .{ .action = .models, .config = base };
+    }
+
+    // `tau guide [--human]` — embedded operator manual (cli-guide-spec, https://cli-specs.intrane.fr/).
+    // JSON to stdout by default; `--human` renders the same content as markdown. Command, not a prompt.
+    if (argv.len > 0 and eq(argv[0], "guide")) {
+        var gcfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResult(arena, "unknown guide argument: {s}", .{argv[j]});
+        }
+        return .{ .action = .guide, .config = gcfg };
     }
 
     // `tau skills <list|search|load> [args]` — parallel to `tau acp` / `tau fleet`.

@@ -155,6 +155,10 @@ const help_text =
     \\
     \\Models:
     \\  tau models                    List available providers and models
+    \\
+    \\Guide (embedded operator manual — read once, drive with no external docs):
+    \\  tau guide                     Print the full guide as JSON (agent-readable)
+    \\  tau guide --human             ...as markdown
     \\\Examples:
     \\  tau "List the files in src/"
     \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
@@ -255,6 +259,165 @@ fn printHelpJson() void {
     writeOut(s);
 }
 
+// ---- guide (cli-guide-spec: embedded operator manual, no runtime fetch) -----
+// Single source of truth: the consts below render to JSON (default) or markdown (--human).
+const GuideItem = struct { a: []const u8, b: []const u8 };
+const guide_one_liner = "tau — a non-interactive, agent-first AI CLI (Zig): single-shot chat with tool-calling, sessions, goal mode, fleet orchestration, and an ACP server. JSON output by default; semantic exit codes.";
+const guide_model = "You (an agent) invoke tau once per task; it runs a single agentic turn (LLM + tools) and exits — no REPL, never blocks on stdin. Output is JSON by default (--mode text for prose; errors are always JSON {err:{code,type,message}}). Provider/model/key resolve from ~/.config/tau/config.json, provider env vars, or TAU_API_KEY; endpoints are OpenAI-compatible /chat/completions (override with TAU_ENDPOINT).";
+const guide_loop = "parse args -> resolve provider/model/endpoint/key -> build messages -> LLM turn -> if the model calls tools, run them (allowlisted via --tools) and loop -> stop when the model stops calling tools or hits --max-iterations -> emit result + semantic exit code. --session <name> persists conversation+goal across calls; /goal <directive> runs autonomously until the <GOAL_MET> sentinel.";
+const guide_concepts = [_]GuideItem{
+    .{ .a = "non-interactive", .b = "one prompt in, one result out; built for scripts and agents, not a REPL." },
+    .{ .a = "json-first", .b = "default output is JSON; pass --mode text for human-readable prose." },
+    .{ .a = "semantic exit codes", .b = "0 ok, 80 invalid arg, 82 missing field, 105 timeout, 106 auth, 110 internal, 111 unimplemented." },
+    .{ .a = "sessions", .b = "--session <name> persists conversation + goal to ~/.config/tau/sessions/<name>.json." },
+    .{ .a = "goal mode", .b = "/goal <directive> works autonomously until <GOAL_MET>; /goal status|pause|resume|clear|complete." },
+    .{ .a = "tools", .b = "built-in bash/read/write/edit/ls/grep/find; enable with --tools <csv>, deny with --exclude-tools." },
+    .{ .a = "fleet", .b = "tau fleet run --goal ... decomposes work via a coordinator turn and dispatches worker tau processes (topo-ordered)." },
+    .{ .a = "acp", .b = "tau acp serve is an Agent Client Protocol server (JSON-RPC over stdio/socket) so hosts drive tau as a coding agent." },
+    .{ .a = "providers", .b = "OpenAI-compatible endpoints (xiaomi default, openai, deepseek, opencode-go); TAU_ENDPOINT overrides the endpoint." },
+};
+const guide_commands = [_]GuideItem{
+    .{ .a = "tau \"<prompt>\"", .b = "single-shot chat (JSON); add --tools bash,read for a tool loop." },
+    .{ .a = "tau --mode text \"<prompt>\"", .b = "human-readable output." },
+    .{ .a = "tau --session <name> \"<prompt>\"", .b = "persistent session." },
+    .{ .a = "tau --session <name> \"/goal <directive>\"", .b = "autonomous goal mode." },
+    .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
+    .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
+    .{ .a = "tau models", .b = "list providers + default models (JSON)." },
+    .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
+    .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
+    .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
+};
+const guide_examples = [_]GuideItem{
+    .{ .a = "tau --tools bash,read \"Count the .zig files under src/\"", .b = "agentic tool loop." },
+    .{ .a = "tau --model openai/gpt-4o-mini --mode text \"Explain build.zig\"", .b = "pick a model, prose output." },
+    .{ .a = "tau --session proj \"/goal add a --foo flag and verify zig build\"", .b = "autonomous goal in a session." },
+    .{ .a = "TAU_ENDPOINT=https://openrouter.ai/api/v1/chat/completions TAU_API_KEY=sk-or-... tau --model deepseek/deepseek-v4-flash \"hi\"", .b = "point at any OpenAI-compatible endpoint (OpenRouter)." },
+};
+const guide_gotchas = [_][]const u8{
+    "JSON is the default; use --mode text for prose. Errors are JSON {err:{code,type,message}} even in text mode.",
+    "Provider endpoint is resolved at parse time — config.json's provider does NOT set the endpoint; TAU_ENDPOINT overrides it.",
+    "API-key precedence: config api_key > keys[provider] > provider env > global api_key > TAU_API_KEY. A stale config api_key silently outranks TAU_API_KEY.",
+    "tau acp serve reads no model env var; the model comes from config.json or --model.",
+    "Requires curl on PATH for LLM HTTP; no other runtime deps.",
+    "The tool loop ends when the model stops calling tools or hits --max-iterations (default backstop).",
+};
+const guide_see_also = [_][]const u8{
+    "tau --help-json (machine-readable command/flag catalog)",
+    "tau --help (human help)",
+    "README.md (ships with the source)",
+    "https://cli-specs.intrane.fr/ (guide spec)",
+};
+
+fn appendJsonStr(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) void {
+    buf.append(alloc, '"') catch return;
+    json.escapeInto(alloc, buf, s) catch return;
+    buf.append(alloc, '"') catch return;
+}
+
+fn printGuideJson() void {
+    const A = std.heap.page_allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(A);
+    buf.appendSlice(A, "{\"one_liner\":") catch return;
+    appendJsonStr(A, &buf, guide_one_liner);
+    buf.appendSlice(A, ",\"model\":") catch return;
+    appendJsonStr(A, &buf, guide_model);
+    buf.appendSlice(A, ",\"loop\":") catch return;
+    appendJsonStr(A, &buf, guide_loop);
+    buf.appendSlice(A, ",\"concepts\":[") catch return;
+    for (guide_concepts, 0..) |c, i| {
+        if (i != 0) buf.append(A, ',') catch return;
+        buf.appendSlice(A, "{\"term\":") catch return;
+        appendJsonStr(A, &buf, c.a);
+        buf.appendSlice(A, ",\"desc\":") catch return;
+        appendJsonStr(A, &buf, c.b);
+        buf.append(A, '}') catch return;
+    }
+    buf.appendSlice(A, "],\"commands\":[") catch return;
+    for (guide_commands, 0..) |c, i| {
+        if (i != 0) buf.append(A, ',') catch return;
+        buf.appendSlice(A, "{\"cmd\":") catch return;
+        appendJsonStr(A, &buf, c.a);
+        buf.appendSlice(A, ",\"desc\":") catch return;
+        appendJsonStr(A, &buf, c.b);
+        buf.append(A, '}') catch return;
+    }
+    buf.appendSlice(A, "],\"examples\":[") catch return;
+    for (guide_examples, 0..) |c, i| {
+        if (i != 0) buf.append(A, ',') catch return;
+        buf.appendSlice(A, "{\"cmd\":") catch return;
+        appendJsonStr(A, &buf, c.a);
+        buf.appendSlice(A, ",\"desc\":") catch return;
+        appendJsonStr(A, &buf, c.b);
+        buf.append(A, '}') catch return;
+    }
+    buf.appendSlice(A, "],\"gotchas\":[") catch return;
+    for (guide_gotchas, 0..) |g, i| {
+        if (i != 0) buf.append(A, ',') catch return;
+        appendJsonStr(A, &buf, g);
+    }
+    buf.appendSlice(A, "],\"see_also\":[") catch return;
+    for (guide_see_also, 0..) |g, i| {
+        if (i != 0) buf.append(A, ',') catch return;
+        appendJsonStr(A, &buf, g);
+    }
+    buf.appendSlice(A, "],\"version\":") catch return;
+    appendJsonStr(A, &buf, version);
+    buf.appendSlice(A, "}\n") catch return;
+    writeOut(buf.items);
+}
+
+fn printGuideHuman() void {
+    const A = std.heap.page_allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(A);
+    buf.appendSlice(A, "# tau — guide\n\n") catch return;
+    buf.appendSlice(A, guide_one_liner) catch return;
+    buf.appendSlice(A, "\n\n## Model\n") catch return;
+    buf.appendSlice(A, guide_model) catch return;
+    buf.appendSlice(A, "\n\n## Loop\n") catch return;
+    buf.appendSlice(A, guide_loop) catch return;
+    buf.appendSlice(A, "\n\n## Concepts\n") catch return;
+    for (guide_concepts) |c| {
+        const line = std.fmt.allocPrint(A, "- **{s}** — {s}\n", .{ c.a, c.b }) catch continue;
+        defer A.free(line);
+        buf.appendSlice(A, line) catch return;
+    }
+    buf.appendSlice(A, "\n## Commands\n") catch return;
+    for (guide_commands) |c| {
+        const line = std.fmt.allocPrint(A, "- `{s}` — {s}\n", .{ c.a, c.b }) catch continue;
+        defer A.free(line);
+        buf.appendSlice(A, line) catch return;
+    }
+    buf.appendSlice(A, "\n## Examples\n") catch return;
+    for (guide_examples) |c| {
+        const line = std.fmt.allocPrint(A, "- `{s}` — {s}\n", .{ c.a, c.b }) catch continue;
+        defer A.free(line);
+        buf.appendSlice(A, line) catch return;
+    }
+    buf.appendSlice(A, "\n## Gotchas\n") catch return;
+    for (guide_gotchas) |g| {
+        const line = std.fmt.allocPrint(A, "- {s}\n", .{g}) catch continue;
+        defer A.free(line);
+        buf.appendSlice(A, line) catch return;
+    }
+    buf.appendSlice(A, "\n## See also\n") catch return;
+    for (guide_see_also) |g| {
+        const line = std.fmt.allocPrint(A, "- {s}\n", .{g}) catch continue;
+        defer A.free(line);
+        buf.appendSlice(A, line) catch return;
+    }
+    const ver = std.fmt.allocPrint(A, "\n_tau {s}_\n", .{version}) catch return;
+    defer A.free(ver);
+    buf.appendSlice(A, ver) catch return;
+    writeOut(buf.items);
+}
+
+fn printGuide(human: bool) void {
+    if (human) printGuideHuman() else printGuideJson();
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -282,6 +445,10 @@ pub fn main(init: std.process.Init) !void {
         },
         .help_json => {
             printHelpJson();
+            return;
+        },
+        .guide => {
+            printGuide(parsed.config.guide_human);
             return;
         },
         .err => {
