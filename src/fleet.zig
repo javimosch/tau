@@ -160,6 +160,8 @@ fn balancedObjectEnd(s: []const u8, start: usize) ?usize {
 ///  - XML-style think blocks (<think> / <thinking> ...) with prose/logic
 ///  - Prose before the JSON (e.g., "Here is the plan:\n{\"items\":[]}")
 ///  - Brace literals in prose (e.g., "hint: {key: val}\n{\"items\":[]}")
+/// Greedily prefers the valid JSON object with an "items" array that has the
+/// most elements, so prose examples before the real plan do not win.
 /// Returns the JSON slice (caller must dup) or null.
 pub fn extractCoordinatorJson(gpa: std.mem.Allocator, response: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, response, " \t\r\n");
@@ -215,9 +217,11 @@ pub fn extractCoordinatorJson(gpa: std.mem.Allocator, response: []const u8) ?[]c
         return std.mem.trim(u8, cleaned[start..end], " \t\r\n");
     }
 
-    // --- 3. Brace-balanced scan: prefer parseable objects whose root key is "items" ---
+    // --- 3. Brace-balanced scan: greedily prefer parseable objects with an "items" array ---
     var i: usize = 0;
     var fallback: ?[]const u8 = null;
+    var best: ?[]const u8 = null;
+    var best_items_len: usize = 0;
     while (i < cleaned.len) {
         if (cleaned[i] != '{') {
             i += 1;
@@ -233,17 +237,23 @@ pub fn extractCoordinatorJson(gpa: std.mem.Allocator, response: []const u8) ?[]c
             continue;
         };
         const is_object = parsed.value == .object;
-        const has_items = is_object and parsed.value.object.get("items") != null;
+        const maybe_items = if (is_object) parsed.value.object.get("items") else null;
+        const is_items_array = is_object and if (maybe_items) |v| v == .array else false;
+        const items_len = if (is_items_array) maybe_items.?.array.items.len else 0;
         parsed.deinit();
         if (!is_object) {
             i = end + 1;
             continue;
         }
-        if (has_items) return candidate;
-        if (fallback == null) fallback = candidate;
+        if (is_items_array and items_len >= best_items_len) {
+            best = candidate;
+            best_items_len = items_len;
+        } else if (fallback == null) {
+            fallback = candidate;
+        }
         i = end + 1;
     }
-    return fallback;
+    return best orelse fallback;
 }
 
 /// Emit a structured stderr line identifying which work item index and field
@@ -1129,6 +1139,20 @@ test "extractCoordinatorJson skips brace literals in prose (#7)" {
 
     const c = "nested {\"partial\": {\"x\": 1}} then real\n{\"items\":[{\"id\":\"z\"}]}";
     try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"z\"}]}", extractCoordinatorJson(std.testing.allocator, c).?);
+}
+
+test "extractCoordinatorJson greedily prefers largest items array" {
+    // A prose example with an empty items array followed by the real plan.
+    const a = "Example: {\"items\":[]}\nReal plan:\n{\"items\":[{\"id\":\"a\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"a\"}]}", extractCoordinatorJson(std.testing.allocator, a).?);
+
+    // Two items arrays; the one with more elements wins.
+    const b = "Small example: {\"items\":[{\"id\":\"x\"}]}\nActual plan: {\"items\":[{\"id\":\"y\"},{\"id\":\"z\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"y\"},{\"id\":\"z\"}]}", extractCoordinatorJson(std.testing.allocator, b).?);
+
+    // Prose with a non-array "items" value should not shadow the real array.
+    const c = "Note: {\"items\":\"not an array\"}\n{\"items\":[{\"id\":\"ok\"}]}";
+    try std.testing.expectEqualStrings("{\"items\":[{\"id\":\"ok\"}]}", extractCoordinatorJson(std.testing.allocator, c).?);
 }
 
 test "validId allows safe characters only" {
