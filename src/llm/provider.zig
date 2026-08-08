@@ -44,6 +44,18 @@ pub const Provider = struct {
     context_window: u32 = 256_000,
 };
 
+/// Serialize a provider entry as a JSON object with escaped string fields.
+/// Caller owns the returned slice.
+pub fn formatProviderJson(gpa: std.mem.Allocator, p: Provider) ![]u8 {
+    const ne = try jsonmod.escapeAlloc(gpa, p.name);
+    defer gpa.free(ne);
+    const de = try jsonmod.escapeAlloc(gpa, p.default_model);
+    defer gpa.free(de);
+    const ee = try jsonmod.escapeAlloc(gpa, p.endpoint);
+    defer gpa.free(ee);
+    return std.fmt.allocPrint(gpa, "{{\"name\":\"{s}\",\"default_model\":\"{s}\",\"endpoint\":\"{s}\",\"context_window\":{d}}}", .{ ne, de, ee, p.context_window });
+}
+
 // Provider table (moved from config.zig as requested)
 pub const providers = [_]Provider{
     .{
@@ -1107,6 +1119,22 @@ test "findProvider: unknown and empty names return null" {
     try std.testing.expect(findProvider("anthropic") == null);
     try std.testing.expect(findProvider("") == null);
     try std.testing.expect(findProvider("OPENAI") == null); // case-sensitive
+}
+
+test "formatProviderJson escapes quotes, backslashes, and control characters" {
+    const gpa = std.testing.allocator;
+    const p = Provider{
+        .name = "test\"provider",
+        .endpoint = "https://example.com/path\\with\\backslash",
+        .default_model = "model\"x\nline",
+        .context_window = 128000,
+    };
+    const got = try formatProviderJson(gpa, p);
+    defer gpa.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"name\":\"test\\\"provider\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"default_model\":\"model\\\"x\\nline\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"endpoint\":\"https://example.com/path\\\\with\\\\backslash\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"context_window\":128000") != null);
 }
 
 // ---------------------------------------------------------------------------

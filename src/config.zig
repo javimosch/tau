@@ -20,6 +20,7 @@ pub const Role = enum { none, author, critic, coordinator };
 pub const Provider = provider_mod.Provider;
 pub const providers = provider_mod.providers;
 pub const findProvider = provider_mod.findProvider;
+pub const formatProviderJson = provider_mod.formatProviderJson;
 
 pub const Config = struct {
     provider: []const u8 = provider_mod.providers[0].name,

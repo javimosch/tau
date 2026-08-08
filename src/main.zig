@@ -54,6 +54,15 @@ fn printWarnJson(message: []const u8) void {
     writeErr(j);
 }
 
+/// Serialize a `tau skills load` response with escaped name and content.
+fn formatSkillLoadJson(gpa: std.mem.Allocator, skill_name: []const u8, content: []const u8) ![]u8 {
+    const ne = try json.escapeAlloc(gpa, skill_name);
+    defer gpa.free(ne);
+    const ce = try json.escapeAlloc(gpa, content);
+    defer gpa.free(ce);
+    return try std.fmt.allocPrint(gpa, "{{\"skill\":\"{s}\",\"content\":\"{s}\"}}\n", .{ ne, ce });
+}
+
 /// Build a recovery hint for a missing API key: names the env var(s) to set.
 fn authHint(arena: std.mem.Allocator, provider: []const u8) []const u8 {
     const p = cfgmod.findProvider(provider) orelse return "use --api-key <key>";
@@ -285,10 +294,7 @@ pub fn main(init: std.process.Init) !void {
             term.out("{\"providers\":[");
             for (provs, 0..) |p, i| {
                 if (i > 0) term.out(",");
-                const entry = std.fmt.allocPrint(arena,
-                    "{{\"name\":\"{s}\",\"default_model\":\"{s}\",\"endpoint\":\"{s}\",\"context_window\":{d}}}",
-                    .{ p.name, p.default_model, p.endpoint, p.context_window },
-                ) catch continue;
+                const entry = cfgmod.formatProviderJson(arena, p) catch continue;
                 term.out(entry);
             }
             term.out("]}\n");
@@ -336,27 +342,12 @@ pub fn main(init: std.process.Init) !void {
                     printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
                     std.process.exit(@intFromEnum(ExitCode.generic_failure));
                 };
-                term.out("{\"skill\":\"");
-                // Escape skill_name for JSON
-                for (skill_name) |c| {
-                    switch (c) {
-                        '\\' => term.out("\\\\"),
-                        '"' => term.out("\\\""),
-                        else => term.out(&[_]u8{c}),
-                    }
-                }
-                term.out("\",\"content\":\"");
-                for (content) |c| {
-                    switch (c) {
-                        '\\' => term.out("\\\\"),
-                        '"' => term.out("\\\""),
-                        '\n' => term.out("\\n"),
-                        '\r' => term.out("\\r"),
-                        '\t' => term.out("\\t"),
-                        else => term.out(&[_]u8{c}),
-                    }
-                }
-                term.out("\"}\n");
+                const out = formatSkillLoadJson(gpa, skill_name, content) catch |err| {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "failed to serialize skill", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                };
+                defer gpa.free(out);
+                term.out(out);
                 return;
             }
             printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", "invalid skills subcommand", false);
@@ -493,4 +484,12 @@ test "formatWarnJson escapes quotes and control characters" {
     defer gpa.free(got);
     try std.testing.expect(std.mem.indexOf(u8, got, "config \\\"broken\\\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "/path\\nfix it") != null);
+}
+
+test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
+    const gpa = std.testing.allocator;
+    const got = try formatSkillLoadJson(gpa, "skill\"name", "Use \"quotes\" and \\ backslash\nline2");
+    defer gpa.free(got);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
 }
