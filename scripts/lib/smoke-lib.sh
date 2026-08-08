@@ -143,9 +143,14 @@ check_binary() {
 }
 
 # check_api_key: returns 0 if any known API key env var or config entry is set
-# Sets $has_key global.
+# Sets $has_key global. Offline smoke runs must not treat a config key as
+# usable, so an API key only counts when network tests are enabled (--net).
 check_api_key() {
   has_key=false
+  if [ "${NET:-0}" != "1" ]; then
+    diag "offline mode: not checking API key"
+    return 1
+  fi
   for v in TAU_API_KEY XIAOMI_API_KEY PIZIG_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY; do
     if [ -n "${!v:-}" ]; then
       has_key=true
