@@ -81,24 +81,19 @@ pub fn formatEntryJson(gpa: std.mem.Allocator, name: []const u8, description: []
     return std.fmt.allocPrint(gpa, "{{\"name\":\"{s}\",\"description\":\"{s}\"}}", .{ ne, de });
 }
 
+/// True if `query` occurs (case-insensitively) in `skill`'s name or description.
+fn skillMatches(skill: SkillInfo, query: []const u8) bool {
+    if (query.len == 0) return true;
+    return std.ascii.findIgnoreCase(skill.name, query) != null or
+        std.ascii.findIgnoreCase(skill.description, query) != null;
+}
+
 /// Search skills by keyword (case-insensitive substring match).
 pub fn searchSkills(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, gpa: std.mem.Allocator, query: []const u8) ![]SkillInfo {
     const skills = try scanSkills(io, arena, env, gpa);
     var results = std.ArrayList(SkillInfo).empty;
     for (skills) |s| {
-        // Simple case-insensitive search: check both name and description
-        const found = blk: {
-            if (std.mem.indexOf(u8, s.name, query) != null) break :blk true;
-            if (std.mem.indexOf(u8, s.description, query) != null) break :blk true;
-            // Try lowercase comparison
-            if (query.len > 0) {
-                const q0 = query[0];
-                const q_lower: u8 = if (q0 >= 'A' and q0 <= 'Z') q0 + 32 else q0;
-                _ = q_lower;
-            }
-            break :blk false;
-        };
-        if (found) {
+        if (skillMatches(s, query)) {
             results.append(arena, s) catch {};
         }
     }
@@ -151,4 +146,16 @@ test "extractDescription returns null when no description field" {
         \\
     ;
     try std.testing.expect(extractDescription(content) == null);
+}
+
+test "skillMatches is case-insensitive and checks name and description" {
+    const s = SkillInfo{ .name = "FooBar-Skill", .description = "Useful for BAR tasks", .path = "." };
+    try std.testing.expect(skillMatches(s, "foo"));
+    try std.testing.expect(skillMatches(s, "BAR"));
+    try std.testing.expect(skillMatches(s, "foobar-skill"));
+    try std.testing.expect(skillMatches(s, "Useful"));
+    try std.testing.expect(!skillMatches(s, "qux"));
+    // An empty query matches everything, preserving the prior behavior of
+    // `std.mem.indexOf` with an empty needle.
+    try std.testing.expect(skillMatches(s, ""));
 }
