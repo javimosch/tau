@@ -31,6 +31,13 @@ pub fn run(
     var cfg_with_key = cfg;
     cfg_with_key.api_key = api_key;
 
+    // Standalone --role author/critic turns should enforce their terminal
+    // sentinels when no explicit sentinel is configured.
+    if (cfg_with_key.goal_action != .set and cfg_with_key.exit_sentinel == null) {
+        if (cfg_with_key.role == .author) cfg_with_key.exit_sentinel = loopmod.READY_SENTINEL;
+        if (cfg_with_key.role == .critic) cfg_with_key.exit_sentinel = loopmod.APPROVED_SENTINEL;
+    }
+
     var messages = std.ArrayList(provider_mod.Message).empty;
     defer messages.deinit(gpa);
 
@@ -196,7 +203,7 @@ pub fn run(
     var budget_hit = false;
 
     loop: while (iteration < max_iterations) : (iteration += 1) {
-        const sentinel = effectiveSentinel(cfg);
+        const sentinel = effectiveSentinel(cfg_with_key);
         // Auto-compaction before each model call (best-effort).
         if (context_mod.shouldCompact(messages.items, cfg_with_key))
             context_mod.compact(io, gpa, cfg_with_key, &messages) catch {};
@@ -223,7 +230,15 @@ pub fn run(
             // Sentinel check: when an effective sentinel is set (goal mode OR
             // Author↔Critic exit_sentinel), a no-tool turn is only terminal if
             // the model emitted the sentinel on its own line. Otherwise nudge.
-            if (sentinel != null and !sentinelMatch(response.content, sentinel.?)) {
+            // Critic turns may terminate with either <APPROVED> or <BLOCKED>.
+            var matched = false;
+            if (sentinel) |s| {
+                matched = sentinelMatch(response.content, s);
+                if (!matched and cfg_with_key.role == .critic and std.mem.eql(u8, s, loopmod.APPROVED_SENTINEL)) {
+                    matched = sentinelMatch(response.content, loopmod.BLOCKED_SENTINEL);
+                }
+            }
+            if (sentinel != null and !matched) {
                 if (cfg.token_budget) |b| if (tokens_out >= b) {
                     budget_hit = true;
                     exit_code = 0;

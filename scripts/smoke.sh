@@ -90,6 +90,7 @@ ALL_TEST_GROUPS=(
   "goal-strip:test_group_network_goal_sentinel_strip:network"
   "multi-tool:test_group_network_multi_tool_turn:network"
   "ls-tool:test_group_network_ls_tool:network"
+  "role-critic:test_group_network_role_critic:network"
 )
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -1102,6 +1103,30 @@ test_group_network_ls_tool() {
   ok "ls tool exit" "$rc" 0
   contains "ls tool returns alpha" "$out" "tau-LS-ALPHA"
   contains "ls tool returns beta" "$out" "tau-LS-BETA"
+}
+
+# Group: --role critic network test (Issue #8)
+# Verifies the Critic directive is injected and the model ends with one of the
+# terminal verdict sentinels when asked to audit code with read-only tools.
+test_group_network_role_critic() {
+  local out rc
+
+  note "network: --role critic sentinel"
+
+  if ! $has_key; then
+    skip_test "--role critic network" "no API key"
+    return
+  fi
+
+  out=$($BIN --role critic --tools read,grep,ls "Audit src/main.zig for bugs"); rc=$?
+  ok "--role critic exit" "$rc" 0
+
+  if printf '%s' "$out" | grep -qE '<APPROVED>|<BLOCKED>'; then
+    ok "--role critic response contains <APPROVED> or <BLOCKED>" 0 0
+  else
+    ok "--role critic response missing <APPROVED>/<BLOCKED>" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "critic output: $out"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
