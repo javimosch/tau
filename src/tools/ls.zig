@@ -5,12 +5,15 @@ pub const ToolResult = bashmod.ToolResult;
 
 /// List files in a directory (or current directory if path is null)
 pub fn ls(io: std.Io, gpa: std.mem.Allocator, path: ?[]const u8, timeout_ms: i64) !ToolResult {
-    const cmd = if (path) |p|
-        try std.fmt.allocPrint(gpa, "ls -la {s}", .{p})
+    const quoted = if (path) |p| try bashmod.shQuote(gpa, p) else null;
+    defer if (quoted) |q| gpa.free(q);
+
+    const cmd = if (quoted) |q|
+        try std.fmt.allocPrint(gpa, "ls -la -- {s}", .{q})
     else
         try std.fmt.allocPrint(gpa, "ls -la", .{});
-
     defer gpa.free(cmd);
+
     return bashmod.execBash(io, gpa, cmd, timeout_ms);
 }
 
@@ -68,4 +71,26 @@ test "ls fails on a nonexistent path" {
 
     try std.testing.expect(!r.success);
     try std.testing.expect(r.exit_code != 0);
+}
+
+test "ls handles paths with spaces and apostrophes" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir = try tmpPath(gpa, &tmp.sub_path, "my dir's");
+    defer gpa.free(dir);
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    const file = try std.fmt.allocPrint(gpa, "{s}/marker.txt", .{dir});
+    defer gpa.free(file);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = "x" });
+
+    const r = try ls(io, gpa, dir, 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "marker.txt") != null);
 }
