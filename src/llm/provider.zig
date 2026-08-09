@@ -384,8 +384,11 @@ fn appendRequestBody(
         }
     }
 
-    // response_format for JSON Schema structured output
-    if (@hasField(@TypeOf(cfg), "schema")) {
+    // response_format for JSON Schema structured output. During a dry-run
+    // planning turn we want the model to propose tool calls, not emit a
+    // constrained schema response, so skip it when cfg.dry_run is true.
+    const is_dry_run = @hasField(@TypeOf(cfg), "dry_run") and cfg.dry_run;
+    if (!is_dry_run and @hasField(@TypeOf(cfg), "schema")) {
         if (cfg.schema) |s| {
             try body.appendSlice(gpa, ",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"response\",\"strict\":true,\"schema\":");
             try body.appendSlice(gpa, s);
@@ -1150,6 +1153,16 @@ const TestCfg = struct {
     max_tokens: ?u32 = null,
 };
 
+// Variant of TestCfg that carries a dry_run flag so we can verify the
+// response_format block is suppressed during --dry-run planning turns.
+const TestDryCfg = struct {
+    model: []const u8,
+    dry_run: bool,
+    schema: ?[]const u8 = null,
+    temperature: f32 = 0.7,
+    max_tokens: ?u32 = null,
+};
+
 test "curlMaxTimeSeconds converts ms to seconds with minimum floor" {
     try std.testing.expectApproxEqAbs(@as(f64, 120.0), curlMaxTimeSeconds(120_000), 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 9.0), curlMaxTimeSeconds(9000), 0.001);
@@ -1275,6 +1288,18 @@ test "appendRequestBody: response_format is serialized when cfg.schema is set" {
     try std.testing.expect(std.mem.indexOf(u8, s, "\"response_format\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, s, "\"type\":\"json_schema\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, s, schema) != null);
+}
+
+test "appendRequestBody: response_format is skipped when cfg.dry_run is true" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "user", .content = "Hi" }};
+    const schema = "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\"}}}";
+    try appendRequestBody(gpa, &body, TestDryCfg{ .model = "m", .dry_run = true, .schema = schema }, &msgs, null, false);
+    const s = body.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"response_format\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, s, schema) == null);
 }
 
 // ---------------------------------------------------------------------------
