@@ -213,38 +213,44 @@ const flag_specs = [_]FlagSpec{
     .{ .long = "--version",              .short = "-v"           },
 };
 
-fn printHelpJson() void {
-    const alloc = std.heap.page_allocator;
+fn formatHelpJson(alloc: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
+    errdefer buf.deinit(alloc);
 
-    buf.appendSlice(alloc, "{\"version\":\"") catch return;
-    buf.appendSlice(alloc, version) catch return;
-    buf.appendSlice(alloc, "\",\"name\":\"") catch return;
-    buf.appendSlice(alloc, name) catch return;
-    buf.appendSlice(alloc, "\",\"description\":\"Agent-first AI CLI - non-interactive Zig implementation of pi\",\"flags\":[") catch return;
+    try buf.appendSlice(alloc, "{\"version\":\"");
+    try buf.appendSlice(alloc, version);
+    try buf.appendSlice(alloc, "\",\"name\":\"");
+    try buf.appendSlice(alloc, name);
+    try buf.appendSlice(alloc, "\",\"description\":\"Agent-first AI CLI - non-interactive Zig implementation of pi\",\"flags\":[");
 
     for (flag_specs, 0..) |f, i| {
-        if (i != 0) buf.append(alloc, ',') catch return;
-        buf.appendSlice(alloc, "{\"name\":\"") catch return;
-        buf.appendSlice(alloc, f.long) catch return;
-        buf.append(alloc, '"') catch return;
+        if (i != 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"name\":\"");
+        try buf.appendSlice(alloc, f.long);
+        try buf.append(alloc, '"');
         if (f.arg) |a| {
-            buf.appendSlice(alloc, ",\"arg\":\"") catch return;
-            buf.appendSlice(alloc, a) catch return;
-            buf.append(alloc, '"') catch return;
+            try buf.appendSlice(alloc, ",\"arg\":\"");
+            try buf.appendSlice(alloc, a);
+            try buf.append(alloc, '"');
         }
-        buf.append(alloc, '}') catch return;
+        try buf.append(alloc, '}');
     }
 
-    buf.appendSlice(alloc,
+    try buf.appendSlice(alloc,
         "],\"goal_commands\":[\"/goal <objective>\",\"/goal status\",\"/goal pause\",\"/goal resume\",\"/goal clear\",\"/goal complete\"]" ++
-        ",\"output_modes\":[\"json\"]" ++
+        ",\"output_modes\":[\"text\",\"json\"]" ++
         ",\"defaults\":{\"mode\":\"json\",\"stream\":true,\"auto_compact\":true}" ++
         ",\"exit_codes\":{\"0\":\"success\",\"80\":\"invalid_argument\",\"82\":\"missing_required_field\",\"105\":\"connection_timeout\",\"106\":\"auth_failed\",\"110\":\"internal_error\",\"111\":\"unimplemented\"}}\n"
-    ) catch return;
+    );
 
-    writeOut(buf.items);
+    return buf.toOwnedSlice(alloc);
+}
+
+fn printHelpJson() void {
+    const alloc = std.heap.page_allocator;
+    const s = formatHelpJson(alloc) catch return;
+    defer alloc.free(s);
+    writeOut(s);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -457,6 +463,14 @@ test "flag_specs appear in help_text" {
         if (!found) std.debug.print("flag_specs entry '{s}' not found in help_text\n", .{f.long});
         try std.testing.expect(found);
     }
+}
+
+test "formatHelpJson lists text and json output modes" {
+    const gpa = std.testing.allocator;
+    const got = try formatHelpJson(gpa);
+    defer gpa.free(got);
+    // The machine-readable help must advertise both supported output modes.
+    try std.testing.expect(std.mem.indexOf(u8, got, "\"output_modes\":[\"text\",\"json\"]") != null);
 }
 
 test "formatErrorJson escapes quotes and backslashes in message" {
