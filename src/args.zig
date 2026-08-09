@@ -394,12 +394,25 @@ pub fn parse(
     if (env.get("TAU_ENDPOINT")) |ep| {
         if (ep.len > 0) cfg.endpoint = try arena.dupe(u8, ep);
     }
-    // Model precedence: --model > config-file model (if non-default) > provider default.
+    // Model precedence:
+    // 1. --model (or the provider/id shorthand).
+    // 2. A config-file model, but only while the provider is not being
+    //    explicitly switched to a different one (a model chosen for the
+    //    previous provider is unlikely to be valid on the new one).
+    // 3. The selected provider's default model.
     if (model_opt) |m| {
         cfg.model = m;
-    } else if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
-        cfg.model = p.default_model;
-    } // else keep base.model (config-file supplied a custom model)
+    } else {
+        const provider_changed = if (provider_opt) |po| !std.mem.eql(u8, po, base.provider) else false;
+        if (provider_changed) {
+            cfg.model = p.default_model;
+        } else if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
+            // The base model is still the initial hardcoded default, so no
+            // model was explicitly configured; use the selected provider's default.
+            cfg.model = p.default_model;
+        }
+        // else keep base.model (config-file supplied a custom model).
+    }
     if (api_key_opt) |k| cfg.api_key = k; // else keep base.api_key (config-file)
 
     // Context window precedence: --context-window > config-file value (if it set
@@ -722,6 +735,32 @@ test "parse: a config-file custom model survives provider defaulting" {
     // --model flag is given (config-file precedence over provider default).
     const p = try parseArgv(a, &.{ "tau", "hi" }, .{ .model = "configured-model" });
     try std.testing.expectEqualStrings("configured-model", p.config.model);
+}
+
+test "parse: switching provider drops a config-file model tied to the old provider" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // The config file has a custom xiaomi model; switching to openai should not
+    // reuse that provider-specific model.
+    const base = Config{ .provider = "xiaomi", .model = "mimo-custom" };
+    const p = try parseArgv(a, &.{ "tau", "--provider", "openai", "hi" }, base);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(provider_mod.findProvider("openai").?.default_model, p.config.model);
+}
+
+test "parse: config-file provider with no model uses that provider's default" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Config only sets provider. base.model is still the in-code default, so it
+    // should be replaced with the configured provider's default model.
+    const base = Config{ .provider = "openai" };
+    const p = try parseArgv(a, &.{ "tau", "hi" }, base);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(provider_mod.findProvider("openai").?.default_model, p.config.model);
 }
 
 test "parse: unknown provider is rejected" {
