@@ -112,7 +112,7 @@ pub fn parse(
         if (env.get("TAU_ENDPOINT")) |ep| {
             if (ep.len > 0) fcfg.endpoint = try arena.dupe(u8, ep);
         }
-        if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
+        if (!base.model_set and std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
             fcfg.model = p.default_model;
         } // else keep base.model (config-file supplied a custom model)
         if (argv.len < 2) return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
@@ -242,11 +242,7 @@ pub fn parse(
         }
         if (eq(a, "--role")) {
             const v = val(argv, &i) orelse return missing(arena, a);
-            if (eq(v, "author")) cfg.role = .author
-            else if (eq(v, "critic")) cfg.role = .critic
-            else if (eq(v, "coordinator")) cfg.role = .coordinator
-            else if (eq(v, "none")) cfg.role = .none
-            else return errResult(arena, "invalid --role (want author|critic|coordinator|none): {s}", .{v});
+            if (eq(v, "author")) cfg.role = .author else if (eq(v, "critic")) cfg.role = .critic else if (eq(v, "coordinator")) cfg.role = .coordinator else if (eq(v, "none")) cfg.role = .none else return errResult(arena, "invalid --role (want author|critic|coordinator|none): {s}", .{v});
             continue;
         }
         if (eq(a, "--compact-keep-recent")) {
@@ -406,21 +402,23 @@ pub fn parse(
         const provider_changed = if (provider_opt) |po| !std.mem.eql(u8, po, base.provider) else false;
         if (provider_changed) {
             cfg.model = p.default_model;
-        } else if (std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
-            // The base model is still the initial hardcoded default, so no
-            // model was explicitly configured; use the selected provider's default.
+        } else if (!base.model_set and std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
+            // The base model is still the initial hardcoded default (and was not
+            // explicitly configured), so use the selected provider's default.
             cfg.model = p.default_model;
         }
         // else keep base.model (config-file supplied a custom model).
     }
     if (api_key_opt) |k| cfg.api_key = k; // else keep base.api_key (config-file)
 
-    // Context window precedence: --context-window > config-file value (if it set
-    // a non-default) > provider/model table default. Wrong values only shift WHEN
-    // compaction triggers, never correctness.
+    // Context window precedence: --context-window > config-file value (if it was
+    // explicitly set to a non-default) > provider/model table default. Wrong
+    // values only shift WHEN compaction triggers, never correctness.
     if (ctx_window_opt) |cw| {
         cfg.context_window = cw;
-    } else if (base.context_window == 256_000) {
+    } else if (!base.context_window_set and base.context_window == 256_000) {
+        // The base window is still the initial hardcoded default (and was not
+        // explicitly configured), so use the selected provider's default.
         cfg.context_window = p.context_window;
     } // else keep base (config-file supplied a custom window)
 
@@ -763,6 +761,43 @@ test "parse: config-file provider with no model uses that provider's default" {
     try std.testing.expectEqualStrings(provider_mod.findProvider("openai").?.default_model, p.config.model);
 }
 
+test "parse: config-file model equal to in-code default is preserved" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Config explicitly sets the same id as the first provider's default model
+    // while selecting a different provider. Without model_set, this value was
+    // indistinguishable from an unset model and was clobbered.
+    const xiaomi_default = cfgmod.providers[0].default_model;
+    const base = Config{
+        .provider = "openai",
+        .model = xiaomi_default,
+        .model_set = true,
+    };
+    const p = try parseArgv(a, &.{ "tau", "hi" }, base);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(xiaomi_default, p.config.model);
+}
+
+test "parse: config-file context_window equal to in-code default is preserved" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Config explicitly sets the in-code default context window while selecting
+    // a provider with a different default. Without context_window_set, this was
+    // indistinguishable from an unset window and was clobbered.
+    const base = Config{
+        .provider = "openai",
+        .context_window = 256_000,
+        .context_window_set = true,
+    };
+    const p = try parseArgv(a, &.{ "tau", "hi" }, base);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqual(@as(u32, 256_000), p.config.context_window);
+}
+
 test "parse: unknown provider is rejected" {
     var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer ar.deinit();
@@ -893,7 +928,6 @@ fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {
         if (i != 0) try buf.appendSlice(arena, ", ");
         try buf.appendSlice(arena, p.name);
     }
-    const msg = try std.fmt.allocPrint(arena,
-        "unknown provider '{s}' — valid providers: {s} (run 'tau models' for details)", .{ given, buf.items });
+    const msg = try std.fmt.allocPrint(arena, "unknown provider '{s}' — valid providers: {s} (run 'tau models' for details)", .{ given, buf.items });
     return .{ .action = .err, .err_msg = msg };
 }

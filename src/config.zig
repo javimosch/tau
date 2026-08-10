@@ -26,6 +26,10 @@ pub const Config = struct {
     provider: []const u8 = provider_mod.providers[0].name,
     endpoint: []const u8 = provider_mod.providers[0].endpoint,
     model: []const u8 = provider_mod.providers[0].default_model,
+    /// True when `model` was explicitly set (e.g. via the config file). Without
+    /// this, a config value that happens to equal the in-code default model is
+    /// indistinguishable from an unset value and can be clobbered.
+    model_set: bool = false,
     api_key: ?[]const u8 = null,
     /// Global api_key from config file (below per-provider keys in precedence).
     config_api_key: ?[]const u8 = null,
@@ -135,6 +139,10 @@ pub const Config = struct {
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.
     context_window: u32 = 256_000,
+    /// True when `context_window` was explicitly set (e.g. via the config file).
+    /// Without this, a config value that happens to equal the in-code default
+    /// window is indistinguishable from an unset value and can be clobbered.
+    context_window_set: bool = false,
     /// Auto-compact the message history when it grows too large.
     auto_compact: bool = true,
     /// Compact when estimated tokens exceed this fraction of context_window.

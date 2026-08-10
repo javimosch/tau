@@ -43,13 +43,15 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     const fc = std.json.parseFromSliceLeaky(FileConfig, arena, bytes, .{
         .ignore_unknown_fields = true,
     }) catch {
-        cfg.config_warning = std.fmt.allocPrint(arena,
-            "config file has invalid JSON and was ignored: {s} — fix the JSON syntax or delete the file", .{p}) catch null;
+        cfg.config_warning = std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s} — fix the JSON syntax or delete the file", .{p}) catch null;
         return cfg;
     };
 
     if (fc.provider) |v| cfg.provider = v;
-    if (fc.model) |v| cfg.model = v;
+    if (fc.model) |v| {
+        cfg.model = v;
+        cfg.model_set = true;
+    }
     if (fc.api_key) |v| cfg.config_api_key = v;
     if (fc.mode) |v| {
         if (std.mem.eql(u8, v, "text")) cfg.mode = .text else if (std.mem.eql(u8, v, "json")) cfg.mode = .json;
@@ -60,7 +62,10 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     if (fc.temperature) |v| cfg.temperature = v;
     if (fc.max_tokens) |v| cfg.max_tokens = v;
     if (fc.timeout_ms) |v| cfg.timeout_ms = v;
-    if (fc.context_window) |v| cfg.context_window = v;
+    if (fc.context_window) |v| {
+        cfg.context_window = v;
+        cfg.context_window_set = true;
+    }
     if (fc.auto_compact) |v| cfg.auto_compact = v;
     if (fc.compact_threshold) |v| cfg.compact_threshold = v;
     if (fc.compact_keep_recent_tokens) |v| cfg.compact_keep_recent_tokens = v;
@@ -176,6 +181,7 @@ test "load: string key overrides (provider, model, api_key)" {
     const cfg = load(testing.io, arena, &th.env);
     try testing.expectEqualStrings("openai", cfg.provider);
     try testing.expectEqualStrings("gpt-x", cfg.model);
+    try testing.expect(cfg.model_set);
     // api_key in the file maps onto config_api_key (not the --api-key flag slot).
     try testing.expectEqualStrings("sk-file", cfg.config_api_key.?);
     try testing.expectEqual(@as(?[]const u8, null), cfg.api_key);
@@ -248,6 +254,7 @@ test "load: bool and numeric key overrides" {
     try testing.expectEqual(@as(?u32, 4096), cfg.max_tokens);
     try testing.expectEqual(@as(i64, 9000), cfg.timeout_ms);
     try testing.expectEqual(@as(u32, 128000), cfg.context_window);
+    try testing.expect(cfg.context_window_set);
     try testing.expectEqual(false, cfg.auto_compact);
     try testing.expectEqual(@as(f32, 0.75), cfg.compact_threshold);
     try testing.expectEqual(@as(u32, 8000), cfg.compact_keep_recent_tokens);
