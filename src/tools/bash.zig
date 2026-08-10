@@ -60,6 +60,24 @@ pub fn execBash(io: std.Io, gpa: std.mem.Allocator, command: []const u8, timeout
     };
 }
 
+/// Quote a string as a single POSIX shell word using single quotes.
+/// Every embedded apostrophe is escaped as `'\''`, so the result can be
+/// safely spliced into a command string passed to `sh -c`.
+pub fn shQuote(gpa: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(gpa);
+    try result.append(gpa, '\'');
+    for (s) |c| {
+        if (c == '\'') {
+            try result.appendSlice(gpa, "'\\''");
+        } else {
+            try result.append(gpa, c);
+        }
+    }
+    try result.append(gpa, '\'');
+    return result.toOwnedSlice(gpa);
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 test "execBash success: echo hello returns exit_code 0 and stdout contains hello" {
@@ -118,4 +136,16 @@ test "execBash timeout: sleep 10 with 1ms timeout returns exit_code 124 and stde
     var lower_buf: [64]u8 = undefined;
     const stderr_lower = std.ascii.lowerString(lower_buf[0..@min(r.stderr.len, lower_buf.len)], r.stderr[0..@min(r.stderr.len, lower_buf.len)]);
     try std.testing.expect(std.mem.indexOf(u8, stderr_lower, "timed out") != null);
+}
+
+test "shQuote wraps words and escapes apostrophes" {
+    const gpa = std.testing.allocator;
+
+    const plain = try shQuote(gpa, "hello world");
+    defer gpa.free(plain);
+    try std.testing.expectEqualStrings("'hello world'", plain);
+
+    const quote = try shQuote(gpa, "it's");
+    defer gpa.free(quote);
+    try std.testing.expectEqualStrings("'it'\\''s'", quote);
 }
