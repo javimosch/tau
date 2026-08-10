@@ -83,13 +83,14 @@ const help_text =
     \\
     \\Options:
     \\  -p, --print                  Non-interactive: process prompt and exit (default)
-    \\      --provider <name>        Provider: xiaomi (default), openai, deepseek
+    \\      --provider <name>        Provider: xiaomi (default), openai, deepseek, opencode-go
     \\      --model <pattern>        Model id, or provider/id (e.g. openai/gpt-4o-mini)
     \\      --api-key <key>          API key (else provider env var, else builtin)
     \\      --system-prompt <text>   Set the system prompt
     \\      --append-system-prompt <text>  Append to the system prompt (repeatable)
     \\      --mode <text|json>       Output mode (default: json)
     \\      --no-stream              Disable streaming (streaming is default)
+    \\      --stream                 Enable streaming (overrides a no-stream config default)
     \\  -t, --tools <csv>            Allowlist of tool names
     \\  -xt, --exclude-tools <csv>   Denylist of tool names
     \\  -nt, --no-tools              Disable all tools
@@ -187,6 +188,7 @@ const flag_specs = [_]FlagSpec{
     .{ .long = "--append-system-prompt", .arg = "text"           },
     .{ .long = "--mode",                 .arg = "text|json"      },
     .{ .long = "--no-stream"                                     },
+    .{ .long = "--stream"                                        },
     .{ .long = "--tools",                .short = "-t",  .arg = "csv" },
     .{ .long = "--exclude-tools",        .short = "-xt", .arg = "csv" },
     .{ .long = "--no-tools",             .short = "-nt"          },
@@ -471,6 +473,17 @@ test "formatHelpJson lists text and json output modes" {
     defer gpa.free(got);
     // The machine-readable help must advertise both supported output modes.
     try std.testing.expect(std.mem.indexOf(u8, got, "\"output_modes\":[\"text\",\"json\"]") != null);
+}
+
+test "formatHelpJson includes every flag from flag_specs" {
+    const gpa = std.testing.allocator;
+    const got = try formatHelpJson(gpa);
+    defer gpa.free(got);
+    for (flag_specs) |f| {
+        const found = std.mem.indexOf(u8, got, f.long) != null;
+        if (!found) std.debug.print("flag '{s}' missing from help-json\n", .{f.long});
+        try std.testing.expect(found);
+    }
 }
 
 test "formatErrorJson escapes quotes and backslashes in message" {
