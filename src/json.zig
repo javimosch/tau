@@ -118,10 +118,10 @@ fn valueStart(json: []const u8, key: []const u8) ?usize {
         var j = ks + key.len;
         if (j >= json.len or json[j] != '"') continue;
         j += 1;
-        while (j < json.len and (json[j] == ' ' or json[j] == '\t')) : (j += 1) {}
+        while (j < json.len and isJsonWs(json[j])) : (j += 1) {}
         if (j >= json.len or json[j] != ':') continue;
         j += 1;
-        while (j < json.len and (json[j] == ' ' or json[j] == '\t')) : (j += 1) {}
+        while (j < json.len and isJsonWs(json[j])) : (j += 1) {}
         return j;
     }
     return null;
@@ -213,6 +213,23 @@ test "tool arg accessors" {
     try std.testing.expect((try getStringArg(gpa, args, "missing")) == null);
     try std.testing.expect(getIntArg(args, "missing") == null);
     try std.testing.expect(getBoolArg(args, "missing") == null);
+}
+
+test "tool arg accessors tolerate CR/LF/CRLF whitespace around the colon" {
+    const gpa = std.testing.allocator;
+
+    const spaced = "{\"command\":\n\"echo hi\",\r\n\"timeout_ms\":\r5000,\n\"force\":\n\r\ntrue}";
+    const cmd = (try getStringArg(gpa, spaced, "command")).?;
+    defer gpa.free(cmd);
+    try std.testing.expectEqualStrings("echo hi", cmd);
+
+    try std.testing.expectEqual(@as(i64, 5000), getIntArg(spaced, "timeout_ms").?);
+    try std.testing.expectEqual(true, getBoolArg(spaced, "force").?);
+
+    const around_colon = "{\"command\"\n:\n\"echo\"}";
+    const around = (try getStringArg(gpa, around_colon, "command")).?;
+    defer gpa.free(around);
+    try std.testing.expectEqualStrings("echo", around);
 }
 
 test "adversarial json: escapes, unicode, malformed, no crash" {
