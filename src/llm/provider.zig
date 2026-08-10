@@ -265,11 +265,19 @@ fn bodyContains(body: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, body, needle) != null;
 }
 
-/// Classify a successful-transport response body. Only bodies carrying an
-/// `"error":` envelope are treated as failures; normal/tool-call responses
-/// (including "content":null) are `.ok`.
-fn classifyBody(body: []const u8) BodyClass {
-    if (!bodyContains(body, "\"error\":")) return .ok;
+/// Classify a successful-transport response body. Only bodies carrying a
+/// top-level `error` field with a non-null value are treated as failures;
+/// normal/tool-call responses (including `"error": null`) are `.ok`.
+fn classifyBody(gpa: std.mem.Allocator, body: []const u8) BodyClass {
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena_state.allocator(), body, .{
+        .ignore_unknown_fields = true,
+    }) catch return .ok;
+    if (parsed != .object) return .ok;
+    const err = parsed.object.get("error") orelse return .ok;
+    if (err == .null) return .ok;
+
     if (bodyContains(body, "invalid_key") or bodyContains(body, "Invalid API Key") or
         bodyContains(body, "401") or bodyContains(body, "nauthorized")) return .auth;
     // 429 / 5xx / overload / rate-limit are transient; unknown error envelopes
@@ -470,7 +478,7 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
             }
             return error.HTTPRequestFailed;
         }
-        switch (classifyBody(res.stdout)) {
+        switch (classifyBody(gpa, res.stdout)) {
             .ok => break res,
             .auth => {
                 gpa.free(res.stdout);
@@ -1075,29 +1083,42 @@ test "extractToolCalls tolerates whitespace after colons (spaced JSON)" {
 
 test "classifyBody: normal response without error envelope is ok" {
     const normal = "{\"choices\":[{\"message\":{\"content\":\"hello\"}}],\"usage\":{\"total_tokens\":5}}";
-    try std.testing.expectEqual(BodyClass.ok, classifyBody(normal));
+    try std.testing.expectEqual(BodyClass.ok, classifyBody(std.testing.allocator, normal));
 }
 
 test "classifyBody: content null on tool-call turn is ok" {
     const tc_turn =
         \\{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1"}]}}]}
     ;
-    try std.testing.expectEqual(BodyClass.ok, classifyBody(tc_turn));
+    try std.testing.expectEqual(BodyClass.ok, classifyBody(std.testing.allocator, tc_turn));
 }
 
 test "classifyBody: invalid_key and Invalid API Key map to auth" {
-    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"message\":\"invalid_key supplied\"}}"));
-    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"message\":\"Invalid API Key\"}}"));
+    try std.testing.expectEqual(BodyClass.auth, classifyBody(std.testing.allocator, "{\"error\":{\"message\":\"invalid_key supplied\"}}"));
+    try std.testing.expectEqual(BodyClass.auth, classifyBody(std.testing.allocator, "{\"error\":{\"message\":\"Invalid API Key\"}}"));
 }
 
 test "classifyBody: 401 and nauthorized substrings map to auth" {
-    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"code\":\"401\",\"message\":\"auth error\"}}"));
-    try std.testing.expectEqual(BodyClass.auth, classifyBody("{\"error\":{\"message\":\"Unauthorized request\"}}"));
+    try std.testing.expectEqual(BodyClass.auth, classifyBody(std.testing.allocator, "{\"error\":{\"code\":\"401\",\"message\":\"auth error\"}}"));
+    try std.testing.expectEqual(BodyClass.auth, classifyBody(std.testing.allocator, "{\"error\":{\"message\":\"Unauthorized request\"}}"));
 }
 
 test "classifyBody: unknown error envelopes are retryable" {
-    try std.testing.expectEqual(BodyClass.retryable, classifyBody("{\"error\":{\"type\":\"rate_limit_exceeded\"}}"));
-    try std.testing.expectEqual(BodyClass.retryable, classifyBody("{\"error\":{\"type\":\"server_error\",\"message\":\"500\"}}"));
+    try std.testing.expectEqual(BodyClass.retryable, classifyBody(std.testing.allocator, "{\"error\":{\"type\":\"rate_limit_exceeded\"}}"));
+    try std.testing.expectEqual(BodyClass.retryable, classifyBody(std.testing.allocator, "{\"error\":{\"type\":\"server_error\",\"message\":\"500\"}}"));
+}
+
+test "classifyBody: top-level error:null is ok" {
+    try std.testing.expectEqual(BodyClass.ok, classifyBody(std.testing.allocator, "{\"choices\":[],\"error\":null}"));
+}
+
+test "classifyBody: nested error key is ok" {
+    const body = "{\"choices\":[{\"message\":{\"error\":{\"message\":\"ignored\"}}}]}";
+    try std.testing.expectEqual(BodyClass.ok, classifyBody(std.testing.allocator, body));
+}
+
+test "classifyBody: top-level error string maps to retryable" {
+    try std.testing.expectEqual(BodyClass.retryable, classifyBody(std.testing.allocator, "{\"error\":\"something went wrong\"}"));
 }
 
 // ---------------------------------------------------------------------------
