@@ -385,10 +385,14 @@ fn appendRequestBody(
     }
 
     // response_format for JSON Schema structured output. During a dry-run
-    // planning turn we want the model to propose tool calls, not emit a
-    // constrained schema response, so skip it when cfg.dry_run is true.
+    // planning turn *with tools*, we want the model to propose tool calls,
+    // not emit a constrained schema response, so skip response_format only
+    // in that combination. A dry-run without tools is a normal structured
+    // output turn and should still respect --schema.
+    const has_tools = tools != null and tools.?.len > 0;
     const is_dry_run = @hasField(@TypeOf(cfg), "dry_run") and cfg.dry_run;
-    if (!is_dry_run and @hasField(@TypeOf(cfg), "schema")) {
+    const suppress_response_format = is_dry_run and has_tools;
+    if (!suppress_response_format and @hasField(@TypeOf(cfg), "schema")) {
         if (cfg.schema) |s| {
             try body.appendSlice(gpa, ",\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"response\",\"strict\":true,\"schema\":");
             try body.appendSlice(gpa, s);
@@ -1290,7 +1294,21 @@ test "appendRequestBody: response_format is serialized when cfg.schema is set" {
     try std.testing.expect(std.mem.indexOf(u8, s, schema) != null);
 }
 
-test "appendRequestBody: response_format is skipped when cfg.dry_run is true" {
+test "appendRequestBody: response_format is skipped during dry-run with tools" {
+    const gpa = std.testing.allocator;
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(gpa);
+    const msgs = [_]Message{.{ .role = "user", .content = "Hi" }};
+    const schema = "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\"}}}";
+    const dry_tools = [_]ToolInfo{.{ .name = "bash", .description = "Run a shell command" }};
+    try appendRequestBody(gpa, &body, TestDryCfg{ .model = "m", .dry_run = true, .schema = schema }, &msgs, &dry_tools, false);
+    const s = body.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"response_format\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, s, schema) == null);
+}
+
+test "appendRequestBody: response_format is still applied during dry-run without tools" {
     const gpa = std.testing.allocator;
     var body = std.ArrayList(u8).empty;
     defer body.deinit(gpa);
@@ -1298,8 +1316,9 @@ test "appendRequestBody: response_format is skipped when cfg.dry_run is true" {
     const schema = "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\"}}}";
     try appendRequestBody(gpa, &body, TestDryCfg{ .model = "m", .dry_run = true, .schema = schema }, &msgs, null, false);
     const s = body.items;
-    try std.testing.expect(std.mem.indexOf(u8, s, "\"response_format\":") == null);
-    try std.testing.expect(std.mem.indexOf(u8, s, schema) == null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"tools\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"response_format\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, schema) != null);
 }
 
 // ---------------------------------------------------------------------------
