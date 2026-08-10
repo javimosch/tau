@@ -23,6 +23,7 @@ const session_mod = @import("session.zig");
 const cfgmod = @import("config.zig");
 const jsonmod = @import("json.zig");
 const context_mod = @import("context.zig");
+const version = @import("version.zig").version;
 
 const builtin = @import("builtin");
 const term = @import("term.zig");
@@ -264,10 +265,12 @@ fn handleMessage(io: std.Io, gpa: std.mem.Allocator, cfg: anytype, env: *std.pro
         };
         // Version negotiation: we support v1, so always answer v1 (== client's
         // version when they request 1; our latest otherwise, per spec).
-        try respondResult(gpa, w, id_val,
-            "{\"protocolVersion\":" ++ std.fmt.comptimePrint("{d}", .{PROTOCOL_VERSION}) ++
-            ",\"agentCapabilities\":{\"loadSession\":true,\"promptCapabilities\":{\"image\":false,\"audio\":false,\"embeddedContext\":true}},\"authMethods\":[]," ++
-            "\"agentInfo\":{\"name\":\"tau\",\"version\":\"0.2.0\"}}");
+        const init_result = try std.fmt.allocPrint(gpa,
+            "{{\"protocolVersion\":{d},\"agentCapabilities\":{{\"loadSession\":true,\"promptCapabilities\":{{\"image\":false,\"audio\":false,\"embeddedContext\":true}}}},\"authMethods\":[]," ++
+            "\"agentInfo\":{{\"name\":\"tau\",\"version\":\"{s}\"}}}}",
+            .{ PROTOCOL_VERSION, version });
+        defer gpa.free(init_result);
+        try respondResult(gpa, w, id_val, init_result);
     } else if (std.mem.eql(u8, method, "authenticate")) {
         try respondResult(gpa, w, id_val, "{}");
     } else if (std.mem.eql(u8, method, "session/new")) {
