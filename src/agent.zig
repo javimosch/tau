@@ -7,6 +7,7 @@ const goalmod = @import("goal.zig");
 const loopmod = @import("loop.zig");
 const context_mod = @import("context.zig");
 const session_mod = @import("session.zig");
+const package_version = @import("version.zig").version;
 
 const term = @import("term.zig");
 
@@ -428,7 +429,7 @@ fn emitFinal(gpa: std.mem.Allocator, cfg: anytype, response: provider_mod.Respon
             term.out("\n");
         },
         .json => {
-            const out = try formatFinalJson(gpa, @import("main.zig").version, cfg.model, content);
+            const out = try formatFinalJson(gpa, package_version, cfg.model, content);
             defer gpa.free(out);
             term.out(out);
         },
