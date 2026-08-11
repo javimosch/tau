@@ -102,7 +102,7 @@ fn extractUsage(json: []const u8) ?u64 {
     const needle = "\"total_tokens\":";
     const at = std.mem.indexOf(u8, json, needle) orelse return null;
     var start = at + needle.len;
-    while (start < json.len and (json[start] == ' ' or json[start] == '\t')) start += 1;
+    while (start < json.len and jsonmod.isJsonWs(json[start])) start += 1;
     var end = start;
     while (end < json.len and json[end] >= '0' and json[end] <= '9') end += 1;
     if (end == start) return null;
@@ -512,11 +512,9 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     const tool_calls = try extractToolCalls(gpa, result.stdout);
 
     const content = (try jsonmod.extractString(gpa, result.stdout, "content")) orelse blk: {
-        // No string content. Fine if this is a tool-call turn. Otherwise, if
-        // the envelope carries an error object, surface it as a failure.
-        if (tool_calls.len == 0 and std.mem.indexOf(u8, result.stdout, "\"error\"") != null) {
-            return error.HTTPRequestFailed;
-        }
+        // No string content. Fine if this is a tool-call turn. The body was
+        // already classified as ok (no non-null top-level error), so an empty
+        // content is a legitimate empty response rather than a failure.
         break :blk try gpa.dupe(u8, "");
     };
 
@@ -572,7 +570,7 @@ fn extractDeltaContent(json: []const u8) ?[]const u8 {
 /// Skip insignificant JSON whitespace (space, tab, CR, LF) from `i`.
 fn skipSseWs(json: []const u8, i: usize) usize {
     var p = i;
-    while (p < json.len and (json[p] == ' ' or json[p] == '\t' or json[p] == '\r' or json[p] == '\n')) p += 1;
+    while (p < json.len and jsonmod.isJsonWs(json[p])) p += 1;
     return p;
 }
 
@@ -1052,6 +1050,10 @@ test "extractUsage parses total_tokens from API response JSON" {
 
     // Empty string.
     try std.testing.expect(extractUsage("") == null);
+
+    // Pretty-printed usage with all JSON whitespace before the number.
+    const f = "{\n  \"usage\": {\n    \"total_tokens\":\n    99\n  }\n}";
+    try std.testing.expectEqual(@as(u64, 99), extractUsage(f).?);
 }
 
 test "extractToolCalls tolerates whitespace after colons (spaced JSON)" {
