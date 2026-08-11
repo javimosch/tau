@@ -32,6 +32,54 @@ fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
+/// Resolve `cfg.provider`/`endpoint`/`model` and `context_window` from CLI
+/// overrides and the provider table. Supports `--model provider/id` shorthand.
+/// Returns `null` on success, or the unknown provider name if the requested
+/// provider is not in the table.
+fn resolveProviderAndModel(
+    cfg: *Config,
+    base: Config,
+    provider_opt: ?[]const u8,
+    model_opt: ?[]const u8,
+    ctx_window_opt: ?u32,
+    env: *std.process.Environ.Map,
+    arena: std.mem.Allocator,
+) !?[]const u8 {
+    var po = provider_opt;
+    var mo = model_opt;
+    if (mo) |m| {
+        if (std.mem.indexOfScalar(u8, m, '/')) |slash| {
+            if (po == null) po = m[0..slash];
+            mo = m[slash + 1 ..];
+        }
+    }
+
+    const prov_name = po orelse cfg.provider;
+    const p = cfgmod.findProvider(prov_name) orelse return prov_name;
+    cfg.provider = p.name;
+    cfg.endpoint = p.endpoint;
+    if (env.get("TAU_ENDPOINT")) |ep| {
+        if (ep.len > 0) cfg.endpoint = try arena.dupe(u8, ep);
+    }
+
+    const provider_changed = if (po) |pn| !std.mem.eql(u8, pn, base.provider) else false;
+    if (mo) |m| {
+        cfg.model = m;
+    } else if (provider_changed) {
+        cfg.model = p.default_model;
+    } else if (!base.model_set and std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
+        cfg.model = p.default_model;
+    }
+
+    if (ctx_window_opt) |cw| {
+        cfg.context_window = cw;
+    } else if (!base.context_window_set and base.context_window == 256_000) {
+        cfg.context_window = p.context_window;
+    }
+
+    return null;
+}
+
 /// Parse argv into an Action + Config. All retained strings are allocated in
 /// `arena` (freed automatically at process exit, so no leak bookkeeping). `io`
 /// is used to read `@file` arguments.
@@ -102,19 +150,8 @@ pub fn parse(
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
     if (argv.len > 0 and eq(argv[0], "fleet")) {
         var fcfg: Config = base;
-        // Resolve provider → endpoint (the non-fleet path does this at the end
-        // of parse; fleet returns early so it must be done here).
-        const p = cfgmod.findProvider(fcfg.provider) orelse
-            return unknownProviderErr(arena, fcfg.provider);
-        fcfg.provider = p.name;
-        fcfg.endpoint = p.endpoint;
-        // TAU_ENDPOINT overrides the provider's endpoint (see non-fleet path).
-        if (env.get("TAU_ENDPOINT")) |ep| {
-            if (ep.len > 0) fcfg.endpoint = try arena.dupe(u8, ep);
-        }
-        if (!base.model_set and std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
-            fcfg.model = p.default_model;
-        } // else keep base.model (config-file supplied a custom model)
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
         if (argv.len < 2) return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
         var j: usize = 1;
         var mode: ?[]const u8 = null;
@@ -135,7 +172,7 @@ pub fn parse(
             } else if (eq(a, "--provider")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
-                fcfg.provider = argv[j];
+                provider_opt = argv[j];
             } else if (eq(a, "--coordinator-model")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -143,7 +180,7 @@ pub fn parse(
             } else if (eq(a, "--model")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
-                fcfg.model = argv[j];
+                model_opt = argv[j];
             } else if (eq(a, "--worker-model")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -178,6 +215,11 @@ pub fn parse(
             }
         }
         const m = mode orelse return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
+        // Resolve provider/model/endpoint now that all fleet flags are known.
+        // --coordinator-model and --worker-model are handled by fleet.zig itself.
+        if (try resolveProviderAndModel(&fcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            return unknownProviderErr(arena, bad);
+        }
         // Stash mode + id + goal on Config so main.zig can dispatch.
         fcfg.fleet_sub = m;
         fcfg.fleet_id = fleet_id;
@@ -373,54 +415,12 @@ pub fn parse(
         try msg_parts.append(arena, a); // positional message part
     }
 
-    // Resolve provider / model / endpoint. Support `--model provider/id`.
-    if (model_opt) |m| {
-        if (std.mem.indexOfScalar(u8, m, '/')) |slash| {
-            if (provider_opt == null) provider_opt = m[0..slash];
-            model_opt = m[slash + 1 ..];
-        }
-    }
-    const prov_name = provider_opt orelse cfg.provider;
-    const p = cfgmod.findProvider(prov_name) orelse
-        return unknownProviderErr(arena, prov_name);
-    cfg.provider = p.name;
-    cfg.endpoint = p.endpoint;
-    // TAU_ENDPOINT overrides the provider's endpoint — point tau at any
-    // OpenAI-compatible server (a local llama.cpp/vllm/machin-colibri, a proxy).
-    if (env.get("TAU_ENDPOINT")) |ep| {
-        if (ep.len > 0) cfg.endpoint = try arena.dupe(u8, ep);
-    }
-    // Model precedence:
-    // 1. --model (or the provider/id shorthand).
-    // 2. A config-file model, but only while the provider is not being
-    //    explicitly switched to a different one (a model chosen for the
-    //    previous provider is unlikely to be valid on the new one).
-    // 3. The selected provider's default model.
-    if (model_opt) |m| {
-        cfg.model = m;
-    } else {
-        const provider_changed = if (provider_opt) |po| !std.mem.eql(u8, po, base.provider) else false;
-        if (provider_changed) {
-            cfg.model = p.default_model;
-        } else if (!base.model_set and std.mem.eql(u8, base.model, cfgmod.providers[0].default_model)) {
-            // The base model is still the initial hardcoded default (and was not
-            // explicitly configured), so use the selected provider's default.
-            cfg.model = p.default_model;
-        }
-        // else keep base.model (config-file supplied a custom model).
+    // Resolve provider / model / endpoint and context window. Supports
+    // `--model provider/id` shorthand and `TAU_ENDPOINT` overrides.
+    if (try resolveProviderAndModel(&cfg, base, provider_opt, model_opt, ctx_window_opt, env, arena)) |bad| {
+        return unknownProviderErr(arena, bad);
     }
     if (api_key_opt) |k| cfg.api_key = k; // else keep base.api_key (config-file)
-
-    // Context window precedence: --context-window > config-file value (if it was
-    // explicitly set to a non-default) > provider/model table default. Wrong
-    // values only shift WHEN compaction triggers, never correctness.
-    if (ctx_window_opt) |cw| {
-        cfg.context_window = cw;
-    } else if (!base.context_window_set and base.context_window == 256_000) {
-        // The base window is still the initial hardcoded default (and was not
-        // explicitly configured), so use the selected provider's default.
-        cfg.context_window = p.context_window;
-    } // else keep base (config-file supplied a custom window)
 
     // Build the system prompt (parts joined by newlines).
     if (sys_parts.items.len > 0) {
@@ -889,6 +889,61 @@ test "parse: fleet run resolves provider and captures goal" {
     try std.testing.expect(!p.config.fleet_parallel);
     // Provider resolution happens inline for the fleet early-return path.
     try std.testing.expectEqualStrings(provider_mod.providers[0].endpoint, p.config.endpoint);
+}
+
+test "parse: fleet run --provider and --model resolve endpoint and default model" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{
+        "tau", "fleet", "run",
+        "--provider", "openai",
+        "--goal", "ship it",
+    }, .{});
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(
+        provider_mod.findProvider("openai").?.default_model,
+        p.config.model,
+    );
+    try std.testing.expectEqualStrings(
+        provider_mod.findProvider("openai").?.endpoint,
+        p.config.endpoint,
+    );
+    try std.testing.expectEqual(@as(u32, 128_000), p.config.context_window);
+}
+
+test "parse: fleet run --model provider/id shorthand sets provider and model" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{
+        "tau", "fleet", "run",
+        "--model", "deepseek/deepseek-chat",
+        "--goal", "ship it",
+    }, .{});
+    try std.testing.expectEqualStrings("deepseek", p.config.provider);
+    try std.testing.expectEqualStrings("deepseek-chat", p.config.model);
+    try std.testing.expectEqualStrings(
+        provider_mod.findProvider("deepseek").?.endpoint,
+        p.config.endpoint,
+    );
+    try std.testing.expectEqual(@as(u32, 65_536), p.config.context_window);
+}
+
+test "parse: fleet run rejects unknown --provider" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{
+        "tau", "fleet", "run",
+        "--provider", "acme",
+        "--goal", "ship it",
+    }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expect(std.mem.indexOf(u8, p.err_msg.?, "unknown provider 'acme'") != null);
 }
 
 test "parse: fleet positional id and validation errors" {
