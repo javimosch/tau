@@ -84,6 +84,18 @@ fn readLivePid(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.M
     return pid;
 }
 
+/// Format the JSON object emitted by `tau acp start` and `tau acp status`.
+/// The socket path is user-supplied (or derived from HOME) and can contain
+/// JSON-special characters, so it is escaped before insertion.
+fn formatAcpDaemonJson(arena: std.mem.Allocator, running: bool, pid: i32, socket: []const u8, note: ?[]const u8) ![]u8 {
+    const se = try jsonmod.escapeAlloc(arena, socket);
+    if (note) |n| {
+        const ne = try jsonmod.escapeAlloc(arena, n);
+        return std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":{},\"pid\":{d},\"socket\":\"{s}\",\"note\":\"{s}\"}}}}\n", .{ running, pid, se, ne });
+    }
+    return std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":{},\"pid\":{d},\"socket\":\"{s}\"}}}}\n", .{ running, pid, se });
+}
+
 // ---- entry -----------------------------------------------------------------
 
 pub fn run(
@@ -122,7 +134,7 @@ fn start(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, so
     const pp = pidPath(arena, env) orelse return 110;
 
     if (readLivePid(io, arena, env)) |pid| {
-        const msg = try std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":true,\"pid\":{d},\"socket\":\"{s}\",\"note\":\"already running\"}}}}\n", .{ pid, sock });
+        const msg = try formatAcpDaemonJson(arena, true, pid, sock, "already running");
         term.out(msg);
         return 0;
     }
@@ -143,7 +155,7 @@ fn start(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, so
     const pidstr = std.fmt.bufPrint(&pbuf, "{d}", .{pid}) catch "0";
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = pp, .data = pidstr });
 
-    const msg = try std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":true,\"pid\":{d},\"socket\":\"{s}\"}}}}\n", .{ pid, sock });
+    const msg = try formatAcpDaemonJson(arena, true, pid, sock, null);
     term.out(msg);
     return 0;
 }
@@ -166,7 +178,7 @@ fn stop(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) !u8
 fn status(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) !u8 {
     if (readLivePid(io, arena, env)) |pid| {
         const sock = defaultSocket(arena, env) orelse "";
-        const msg = try std.fmt.allocPrint(arena, "{{\"acp\":{{\"running\":true,\"pid\":{d},\"socket\":\"{s}\"}}}}\n", .{ pid, sock });
+        const msg = try formatAcpDaemonJson(arena, true, pid, sock, null);
         term.out(msg);
     } else {
         term.out("{\"acp\":{\"running\":false}}\n");
@@ -865,4 +877,28 @@ test "idText: serializes string id with surrounding quotes" {
     const t = try idText(gpa, std.json.Value{ .string = "req-1" });
     defer gpa.free(t);
     try std.testing.expectEqualStrings("\"req-1\"", t);
+}
+
+test "formatAcpDaemonJson escapes socket path with quotes and backslashes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const got = try formatAcpDaemonJson(a, true, 42, "/tmp/acp\"quote\\sock", null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, got, .{});
+    defer parsed.deinit();
+    const acp = parsed.value.object.get("acp").?;
+    try std.testing.expectEqual(true, acp.object.get("running").?.bool);
+    try std.testing.expectEqual(@as(i64, 42), acp.object.get("pid").?.integer);
+    try std.testing.expectEqualStrings("/tmp/acp\"quote\\sock", acp.object.get("socket").?.string);
+}
+
+test "formatAcpDaemonJson includes optional note" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const got = try formatAcpDaemonJson(a, true, 7, "/tmp/sock", "already running");
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, got, .{});
+    defer parsed.deinit();
+    const acp = parsed.value.object.get("acp").?;
+    try std.testing.expectEqualStrings("already running", acp.object.get("note").?.string);
 }
