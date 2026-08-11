@@ -164,7 +164,9 @@ pub const Config = struct {
 /// 6. provider builtin / keyless
 pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
     // 1. --api-key (explicit flag)
-    if (cfg.api_key) |k| return k;
+    if (cfg.api_key) |k| {
+        if (k.len > 0) return k;
+    }
 
     // 2. config keys[selected_provider]
     if (cfg.keys) |keys_map| {
@@ -183,7 +185,9 @@ pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
     }
 
     // 4. config global api_key
-    if (cfg.config_api_key) |k| return k;
+    if (cfg.config_api_key) |k| {
+        if (k.len > 0) return k;
+    }
 
     // 5. TAU_API_KEY
     if (env.get("TAU_API_KEY")) |v| {
@@ -192,7 +196,9 @@ pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
 
     // 6. provider builtin
     if (findProvider(cfg.provider)) |p| {
-        if (p.builtin_key) |bk| return bk;
+        if (p.builtin_key) |bk| {
+            if (bk.len > 0) return bk;
+        }
     }
 
     return null;
@@ -276,4 +282,34 @@ test "resolveApiKey: empty string env values are skipped" {
     try env.put("TAU_API_KEY", "tau-key");
     const cfg = Config{ .provider = "openai" };
     try testing.expectEqualStrings("tau-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: empty explicit --api-key is skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("OPENAI_API_KEY", "env-key");
+    const cfg = Config{ .provider = "openai", .api_key = "" };
+    try testing.expectEqualStrings("env-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: empty config global api_key is skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("TAU_API_KEY", "tau-key");
+    const cfg = Config{ .provider = "openai", .config_api_key = "" };
+    try testing.expectEqualStrings("tau-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKey: empty per-provider map value is skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("OPENAI_API_KEY", "env-key");
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("openai", "");
+    const cfg = Config{ .provider = "openai", .keys = km };
+    try testing.expectEqualStrings("env-key", resolveApiKey(cfg, &env).?);
 }
