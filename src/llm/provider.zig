@@ -254,6 +254,8 @@ fn toolParamsJson(name: []const u8) []const u8 {
         return "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"regex/text to search\"},\"path\":{\"type\":\"string\",\"description\":\"file or dir to search\"}},\"required\":[\"pattern\",\"path\"]}";
     if (std.mem.eql(u8, name, "find"))
         return "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"name/glob to find\"},\"path\":{\"type\":\"string\",\"description\":\"directory to search in\"}},\"required\":[\"pattern\",\"path\"]}";
+    if (std.mem.eql(u8, name, "calculator"))
+        return "{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\",\"description\":\"arithmetic expression to evaluate, e.g. 2*(3+4)\"}},\"required\":[\"expression\"]}";
     return "{\"type\":\"object\",\"properties\":{}}";
 }
 

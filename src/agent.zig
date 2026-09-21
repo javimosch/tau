@@ -531,6 +531,9 @@ const tool_specs = [_]ToolSpec{
         .{ .key = "pattern",    .required = true,  .kind = .pattern },
         .{ .key = "path",       .required = false, .kind = .path },
     }},
+    .{ .name = "calculator", .fields = &.{
+        .{ .key = "expression", .required = true,  .kind = .content },
+    }},
 };
 
 /// Build argument array for a tool based on its name and arguments JSON.

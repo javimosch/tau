@@ -18,6 +18,7 @@ const tools = [_]Tool{
     .{ .name = "edit", .description = "Edit a file by replacing text (sed-based)", .execute = &executeEdit },
     .{ .name = "grep", .description = "Search for a pattern in files", .execute = &executeGrep },
     .{ .name = "find", .description = "Find files by name or pattern", .execute = &executeFind },
+    .{ .name = "calculator", .description = "Evaluate an arithmetic expression (+ - * / parentheses)", .execute = &executeCalc },
 };
 
 /// Get tool by name
@@ -119,11 +120,11 @@ test "getTool miss: unknown name returns null" {
     try std.testing.expect(tool == null);
 }
 
-test "getEnabledTools no-filter: null allowlist and null denylist returns all 7 tools" {
+test "getEnabledTools no-filter: null allowlist and null denylist returns all 8 tools" {
     const gpa = std.testing.allocator;
     const result = try getEnabledTools(gpa, null, null);
     defer gpa.free(result);
-    try std.testing.expectEqual(@as(usize, 7), result.len);
+    try std.testing.expectEqual(@as(usize, 8), result.len);
 }
 
 test "getEnabledTools allowlist: only requested tools are returned in order" {
@@ -141,7 +142,7 @@ test "getEnabledTools denylist: denied tool is excluded from results" {
     const deny = [_][]const u8{"bash"};
     const result = try getEnabledTools(gpa, null, &deny);
     defer gpa.free(result);
-    try std.testing.expectEqual(@as(usize, 6), result.len);
+    try std.testing.expectEqual(@as(usize, 7), result.len);
     for (result) |tool| {
         try std.testing.expect(!std.mem.eql(u8, tool.name, "bash"));
     }
@@ -154,4 +155,12 @@ test "getEnabledTools allowlist with unknown name: unknown names are silently sk
     defer gpa.free(result);
     try std.testing.expectEqual(@as(usize, 1), result.len);
     try std.testing.expectEqualStrings("bash", result[0].name);
+}
+
+fn executeCalc(io: std.Io, gpa: std.mem.Allocator, args: []const []const u8, timeout_ms: i64) error{ MissingArgument, HTTPRequestFailed, Timeout, OutOfMemory }!ToolResult {
+    _ = io;
+    _ = timeout_ms;
+    const calc_mod = @import("calc.zig");
+    if (args.len < 1) return error.MissingArgument;
+    return calc_mod.execCalc(gpa, args[0]);
 }

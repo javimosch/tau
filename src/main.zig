@@ -271,7 +271,7 @@ const guide_concepts = [_]GuideItem{
     .{ .a = "semantic exit codes", .b = "0 ok, 80 invalid arg, 82 missing field, 105 timeout, 106 auth, 110 internal, 111 unimplemented." },
     .{ .a = "sessions", .b = "--session <name> persists conversation + goal to ~/.config/tau/sessions/<name>.json." },
     .{ .a = "goal mode", .b = "/goal <directive> works autonomously until <GOAL_MET>; /goal status|pause|resume|clear|complete." },
-    .{ .a = "tools", .b = "built-in bash/read/write/edit/ls/grep/find; enable with --tools <csv>, deny with --exclude-tools." },
+    .{ .a = "tools", .b = "built-in bash/read/write/edit/ls/grep/find/calculator; enable with --tools <csv>, deny with --exclude-tools." },
     .{ .a = "fleet", .b = "tau fleet run --goal ... decomposes work via a coordinator turn and dispatches worker tau processes (topo-ordered)." },
     .{ .a = "acp", .b = "tau acp serve is an Agent Client Protocol server (JSON-RPC over stdio/socket) so hosts drive tau as a coding agent." },
     .{ .a = "providers", .b = "OpenAI-compatible endpoints (xiaomi default, openai, deepseek, opencode-go); TAU_ENDPOINT overrides the endpoint." },
