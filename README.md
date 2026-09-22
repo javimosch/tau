@@ -66,7 +66,7 @@ export PATH="$PWD/zig-out/bin:$PATH"
 
 ### 3. Configure an API key
 
-tau ships with a built-in key for its default `xiaomi` provider, so the first run works out of the box. To use your own key or a different provider, export the matching environment variable:
+tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
 # Default provider (xiaomi)
@@ -77,7 +77,7 @@ export OPENAI_API_KEY="sk-..."       # use with --model openai/gpt-4o-mini
 export DEEPSEEK_API_KEY="..."        # use with --model deepseek/deepseek-chat
 ```
 
-Key resolution order: `--api-key` flag → provider env var → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the full provider table and config file.
+Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table and [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ### 4. First run
 
@@ -437,20 +437,20 @@ Optional config at `~/.config/tau/config.json`:
 }
 ```
 
-CLI flags override config file values.
+CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md).
 
 ### Providers
 
 | Provider | Endpoint | Env var(s) | Default model |
 |----------|----------|------------|---------------|
-| `xiaomi` (default) | `token-plan-ams.xiaomimimo.com/v1/chat/completions` | `TAU_API_KEY`, `XIAOMI_API_KEY` | `mimo-v2.5` |
+| `xiaomi` (default) | `token-plan-ams.xiaomimimo.com/v1/chat/completions` | `XIAOMI_API_KEY`, `PIZIG_API_KEY` | `mimo-v2.5` |
 | `openai` | `api.openai.com/v1/chat/completions` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `deepseek` | `api.deepseek.com/v1/chat/completions` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | `opencode-go` | `opencode.ai/zen/go/v1/chat/completions` | `OPENCODE_API_KEY` | `deepseek-v4-flash` |
 
 Shorthand: `--model openai/gpt-4o-mini` resolves provider + model in one flag.
 
-Key resolution: `--api-key` → provider env var → `TAU_API_KEY` → provider builtin key.
+Key resolution: `--api-key` → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → provider builtin key.
 
 ---
 

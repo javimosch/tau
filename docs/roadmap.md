@@ -11,7 +11,7 @@ tau is an agent-first AI CLI — a non-interactive, programmatic counterpart to 
 ### Core CLI
 
 - **Providers**: xiaomi (default), openai, deepseek, opencode-go — switchable via `--provider` / `--model`. `--model provider/id` shorthand supported.
-- **API key resolution**: config file > provider env var > `TAU_API_KEY` > `--api-key` flag
+- **API key resolution**: `--api-key` flag > config `keys[provider]` > provider env var > config `api_key` > `TAU_API_KEY` > built-in key ([full reference](configuration.md))
 - **Streaming**: SSE delta streaming by default; `--no-stream` for batch
 - **Output modes**: JSON (default); text with `--mode text`
 - **Structured output**: `--schema <json|@file>` enforces JSON Schema via `response_format`
