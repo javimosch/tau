@@ -593,3 +593,215 @@ test "buildToolArgs rejects unsafe paths and empty commands" {
     const ok = try buildToolArgs(a, "read", "{\"path\":\"/home/u/proj/main.zig\"}");
     try std.testing.expectEqualStrings("/home/u/proj/main.zig", ok[0]);
 }
+
+// === Multi-turn termination decisions =======================================
+
+const SentinelCfg = struct {
+    exit_sentinel: ?[]const u8 = null,
+    goal_action: cfgmod.GoalAction = .none,
+};
+
+test "effectiveSentinel: explicit sentinel wins over goal default" {
+    const cfg = SentinelCfg{ .exit_sentinel = loopmod.READY_SENTINEL, .goal_action = .set };
+    try std.testing.expectEqualStrings(loopmod.READY_SENTINEL, effectiveSentinel(cfg).?);
+}
+
+test "effectiveSentinel: goal set yields GOAL sentinel, otherwise null" {
+    try std.testing.expectEqualStrings(goalmod.SENTINEL, effectiveSentinel(SentinelCfg{ .goal_action = .set }).?);
+    try std.testing.expect(effectiveSentinel(SentinelCfg{}) == null);
+    try std.testing.expect(effectiveSentinel(SentinelCfg{ .goal_action = .status }) == null);
+}
+
+test "sentinelMatch: goal sentinel only on its own line" {
+    try std.testing.expect(sentinelMatch("done.\n<GOAL_MET>\n", goalmod.SENTINEL));
+    try std.testing.expect(sentinelMatch("<GOAL_MET>", goalmod.SENTINEL));
+    // Mid-sentence mentions must not terminate the loop.
+    try std.testing.expect(!sentinelMatch("I will emit <GOAL_MET> soon", goalmod.SENTINEL));
+    try std.testing.expect(!sentinelMatch("prefix <GOAL_MET> suffix", goalmod.SENTINEL));
+    try std.testing.expect(!sentinelMatch("nothing here", goalmod.SENTINEL));
+    try std.testing.expect(!sentinelMatch("", goalmod.SENTINEL));
+}
+
+test "sentinelMatch: role sentinels match on own line incl. whitespace/CRLF" {
+    try std.testing.expect(sentinelMatch("work finished\n<READY_FOR_REVIEW>", loopmod.READY_SENTINEL));
+    try std.testing.expect(sentinelMatch("  <APPROVED>  \r\n", loopmod.APPROVED_SENTINEL));
+    try std.testing.expect(sentinelMatch("issues found\n<BLOCKED>", loopmod.BLOCKED_SENTINEL));
+    try std.testing.expect(!sentinelMatch("<READY_FOR_REVIEW>", loopmod.APPROVED_SENTINEL));
+    try std.testing.expect(!sentinelMatch("looks <BLOCKED>-ish", loopmod.BLOCKED_SENTINEL));
+}
+
+// === Tool-call dispatch ======================================================
+
+test "buildToolArgs: arguments returned in spec field order" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const w = try buildToolArgs(a, "write", "{\"content\":\"hi\",\"path\":\"f.txt\"}");
+    try std.testing.expectEqual(@as(usize, 2), w.len);
+    try std.testing.expectEqualStrings("f.txt", w[0]);
+    try std.testing.expectEqualStrings("hi", w[1]);
+
+    const e = try buildToolArgs(a, "edit", "{\"new_string\":\"B\",\"path\":\"f\",\"old_string\":\"A\"}");
+    try std.testing.expectEqual(@as(usize, 3), e.len);
+    try std.testing.expectEqualStrings("f", e[0]);
+    try std.testing.expectEqualStrings("A", e[1]);
+    try std.testing.expectEqualStrings("B", e[2]);
+}
+
+test "buildToolArgs: optional fields may be omitted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const ls = try buildToolArgs(a, "ls", "{}");
+    try std.testing.expectEqual(@as(usize, 0), ls.len);
+
+    const g = try buildToolArgs(a, "grep", "{\"pattern\":\"TODO\"}");
+    try std.testing.expectEqual(@as(usize, 1), g.len);
+    try std.testing.expectEqualStrings("TODO", g[0]);
+
+    const f = try buildToolArgs(a, "find", "{\"pattern\":\"*.zig\",\"path\":\"src\"}");
+    try std.testing.expectEqual(@as(usize, 2), f.len);
+    try std.testing.expectEqualStrings("*.zig", f[0]);
+    try std.testing.expectEqualStrings("src", f[1]);
+}
+
+test "buildToolArgs: unknown keys in arguments JSON are ignored" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const args = try buildToolArgs(a, "bash", "{\"command\":\"echo hi\",\"timeout_ms\":5000,\"extra\":[1,2]}");
+    try std.testing.expectEqual(@as(usize, 1), args.len);
+    try std.testing.expectEqualStrings("echo hi", args[0]);
+}
+
+test "every registered tool has a dispatch spec in tool_specs" {
+    const gpa = std.testing.allocator;
+    const enabled = try registry_mod.getEnabledTools(gpa, null, null);
+    defer gpa.free(enabled);
+    try std.testing.expect(enabled.len > 0);
+    for (enabled) |t| {
+        var found = false;
+        for (&tool_specs) |*s| {
+            if (std.mem.eql(u8, s.name, t.name)) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+}
+
+// === Malformed tool calls ====================================================
+
+test "buildToolArgs: unknown tool name yields UnknownTool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.UnknownTool, buildToolArgs(a, "not_a_tool", "{}"));
+    try std.testing.expectError(error.UnknownTool, buildToolArgs(a, "", "{}"));
+}
+
+test "buildToolArgs: missing required fields yield MissingArgument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "bash", "{}"));
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "read", "{}"));
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "write", "{\"path\":\"f\"}"));
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "edit", "{\"path\":\"f\",\"old_string\":\"x\"}"));
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "calculator", "{}"));
+}
+
+test "buildToolArgs: non-string or malformed arguments yield MissingArgument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Required field present but not a JSON string.
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "read", "{\"path\":123}"));
+    // Not a JSON object at all.
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "bash", "this is not json"));
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "read", ""));
+    // Unterminated string value.
+    try std.testing.expectError(error.MissingArgument, buildToolArgs(a, "read", "{\"path\":\"unterminated"));
+}
+
+test "buildToolArgs: null bytes in arguments are rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // \u0000 decodes to a literal NUL in the unescaped value.
+    try std.testing.expectError(error.UnsafeArgument, buildToolArgs(a, "bash", "{\"command\":\"a\\u0000b\"}"));
+    try std.testing.expectError(error.UnsafeArgument, buildToolArgs(a, "write", "{\"path\":\"f\",\"content\":\"x\\u0000y\"}"));
+    try std.testing.expectError(error.UnsafeArgument, buildToolArgs(a, "grep", "{\"pattern\":\"\\u0000\"}"));
+}
+
+// === Path / arg safety helpers ===============================================
+
+test "safePath rejects empty, NUL-bearing, and traversal paths" {
+    try std.testing.expect(!safePath(""));
+    try std.testing.expect(!safePath("a\x00b"));
+    try std.testing.expect(!safePath(".."));
+    try std.testing.expect(!safePath("../x"));
+    try std.testing.expect(!safePath("a/../b"));
+    try std.testing.expect(!safePath("a/b/.."));
+    // These are all legal: parent-like but not traversal components.
+    try std.testing.expect(safePath("..x"));
+    try std.testing.expect(safePath("a/..x/b"));
+    try std.testing.expect(safePath("/abs/path"));
+    try std.testing.expect(safePath("a/./b"));
+    try std.testing.expect(safePath("a/"));
+}
+
+test "hasNull detects embedded NUL" {
+    try std.testing.expect(!hasNull(""));
+    try std.testing.expect(!hasNull("plain"));
+    try std.testing.expect(hasNull("a\x00"));
+    try std.testing.expect(hasNull("\x00"));
+}
+
+// === Output shaping ==========================================================
+
+test "stripAll removes every occurrence of the needle" {
+    const gpa = std.testing.allocator;
+    const multi = try stripAll(gpa, "a<X>b<X>c", "<X>");
+    defer gpa.free(multi);
+    try std.testing.expectEqualStrings("abc", multi);
+
+    const adjacent = try stripAll(gpa, "<X><X>", "<X>");
+    defer gpa.free(adjacent);
+    try std.testing.expectEqualStrings("", adjacent);
+
+    const none = try stripAll(gpa, "unchanged", "<X>");
+    defer gpa.free(none);
+    try std.testing.expectEqualStrings("unchanged", none);
+}
+
+test "formatFinalJson escapes newlines and backslashes in content" {
+    const gpa = std.testing.allocator;
+    const got = try formatFinalJson(gpa, "0.4.0", "m", "line1\nline2\\end");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"version\":\"0.4.0\",\"model\":\"m\",\"content\":\"line1\\nline2\\\\end\",\"done\":true}\n",
+        got,
+    );
+}
+
+// === Goal subcommand dispatch guard ==========================================
+
+const GoalSubCfg = struct {
+    session: ?[]const u8 = null,
+    goal_action: cfgmod.GoalAction = .none,
+};
+
+test "goalSubcommand without --session returns 80" {
+    const gpa = std.testing.allocator;
+    var env = std.process.Environ.Map.init(gpa);
+    defer env.deinit();
+    var messages = std.ArrayList(provider_mod.Message).empty;
+    defer messages.deinit(gpa);
+    var stored_goal: ?session_mod.GoalState = null;
+    const code = try goalSubcommand(std.testing.io, gpa, &env, GoalSubCfg{ .goal_action = .status }, &messages, &stored_goal);
+    try std.testing.expectEqual(@as(u8, 80), code);
+}
