@@ -669,6 +669,29 @@ fn extractDeltaTCArgs(json: []const u8) ?[]const u8 {
 // Streaming completion with tool_call reassembly
 // ---------------------------------------------------------------------------
 
+/// Classification of a single SSE line as read from the curl stream.
+const SseEvent = union(enum) {
+    /// Terminal `data: [DONE]` sentinel.
+    done,
+    /// A `data:` payload line — `payload` is the raw bytes after the prefix
+    /// with a single leading space stripped.
+    payload: []const u8,
+    /// Anything else: comments (`:`-prefixed), `event:`/`id:`/`retry:` fields,
+    /// or non-SSE noise (e.g. an error body line).
+    other,
+};
+
+/// Classify one SSE line. The `data:` prefix must match byte-exactly; a single
+/// leading space after the colon is stripped per the SSE spec. `[DONE]` must
+/// match exactly after that strip — extra whitespace makes it a payload.
+fn classifySseLine(line: []const u8) SseEvent {
+    if (!std.mem.startsWith(u8, line, "data:")) return .other;
+    var data = line["data:".len..];
+    if (data.len > 0 and data[0] == ' ') data = data[1..];
+    if (std.mem.eql(u8, data, "[DONE]")) return .done;
+    return .{ .payload = data };
+}
+
 /// Per-index buffer for an in-progress streaming tool_call.
 const InProgressTC = struct {
     id: std.ArrayList(u8) = .empty,
@@ -765,18 +788,21 @@ pub fn completeStreamWithTools(
             term.err(dbg);
         }
 
-        if (!std.mem.startsWith(u8, line, "data:")) {
-            if (!saw_data and std.mem.indexOf(u8, line, "\"error\"") != null) {
-                const curl_term = child.wait(io) catch return error.HTTPRequestFailed;
-                try checkStreamCurlTerm(curl_term);
-                return error.HTTPRequestFailed;
-            }
-            continue;
-        }
+        const data = switch (classifySseLine(line)) {
+            .done => break,
+            .other => {
+                // A non-SSE line carrying an error envelope before any data
+                // frame means the endpoint rejected the request outright.
+                if (!saw_data and std.mem.indexOf(u8, line, "\"error\"") != null) {
+                    const curl_term = child.wait(io) catch return error.HTTPRequestFailed;
+                    try checkStreamCurlTerm(curl_term);
+                    return error.HTTPRequestFailed;
+                }
+                continue;
+            },
+            .payload => |d| d,
+        };
         saw_data = true;
-        var data = line["data:".len..];
-        if (data.len > 0 and data[0] == ' ') data = data[1..];
-        if (std.mem.eql(u8, data, "[DONE]")) break;
 
         // Usage chunk: extract total_tokens from any SSE line that carries it.
         if (stream_usage == null) {
@@ -1027,6 +1053,223 @@ test "tool_call fragment accumulation and unescape round-trip" {
     const result = try jsonmod.unescapeAlloc(gpa, args_raw.items);
     defer gpa.free(result);
     try std.testing.expectEqualStrings("{\"command\": \"ls /tmp\"}", result);
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — SSE frame classification (classifySseLine)
+// ---------------------------------------------------------------------------
+
+test "classifySseLine: data payloads strip exactly one leading space" {
+    switch (classifySseLine("data:{\"a\":1}")) {
+        .payload => |p| try std.testing.expectEqualStrings("{\"a\":1}", p),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (classifySseLine("data: {\"a\":1}")) {
+        .payload => |p| try std.testing.expectEqualStrings("{\"a\":1}", p),
+        else => return error.TestUnexpectedResult,
+    }
+    // Only ONE space is stripped — a second space is part of the payload.
+    switch (classifySseLine("data:  x")) {
+        .payload => |p| try std.testing.expectEqualStrings(" x", p),
+        else => return error.TestUnexpectedResult,
+    }
+    // Bare "data:" yields an empty payload, not .other.
+    switch (classifySseLine("data:")) {
+        .payload => |p| try std.testing.expectEqualStrings("", p),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifySseLine: [DONE] must match exactly after the prefix" {
+    try std.testing.expect(classifySseLine("data: [DONE]") == .done);
+    try std.testing.expect(classifySseLine("data:[DONE]") == .done);
+    // Extra whitespace or trailing bytes make it a payload, not a terminator.
+    try std.testing.expect(classifySseLine("data:  [DONE]") == .payload);
+    try std.testing.expect(classifySseLine("data: [DONE] ") == .payload);
+    try std.testing.expect(classifySseLine("data: [DONE") == .payload);
+}
+
+test "classifySseLine: comments, other fields, and noise are .other" {
+    try std.testing.expect(classifySseLine(":keep-alive") == .other);
+    try std.testing.expect(classifySseLine("event: message") == .other);
+    try std.testing.expect(classifySseLine("id: 42") == .other);
+    try std.testing.expect(classifySseLine("retry: 3000") == .other);
+    // "data" without a colon, a look-alike prefix, and a leading space all miss.
+    try std.testing.expect(classifySseLine("data") == .other);
+    try std.testing.expect(classifySseLine("datax: {}") == .other);
+    try std.testing.expect(classifySseLine(" data: {}") == .other);
+    // A raw error body line (non-SSE) is .other — the stream loop elevates it
+    // to HTTPRequestFailed only when it arrives before the first data frame.
+    try std.testing.expect(classifySseLine("{\"error\":{\"message\":\"bad key\"}}") == .other);
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — malformed SSE frames and mid-stream errors
+// ---------------------------------------------------------------------------
+
+test "delta extractors return null on malformed data frames" {
+    // Non-JSON payload.
+    try std.testing.expect(extractDeltaContent("this is not json") == null);
+    try std.testing.expect(extractDeltaReasoning("this is not json") == null);
+    try std.testing.expect(!hasDeltaToolCall("this is not json"));
+    try std.testing.expect(extractDeltaTCIndex("this is not json") == null);
+    try std.testing.expect(extractUsage("this is not json") == null);
+
+    // Truncated mid-key: colon present but no value follows.
+    try std.testing.expect(extractDeltaContent("{\"delta\":{\"content\":") == null);
+    // Unterminated string (stream cut mid-token).
+    try std.testing.expect(extractDeltaContent("{\"delta\":{\"content\":\"hello") == null);
+    // A trailing backslash escapes the closing quote → still unterminated.
+    try std.testing.expect(extractDeltaContent("{\"delta\":{\"content\":\"abc\\") == null);
+    // content is a number / object / bool, not a string.
+    try std.testing.expect(extractDeltaContent("{\"delta\":{\"content\":42}}") == null);
+    try std.testing.expect(extractDeltaContent("{\"delta\":{\"content\":{}}}") == null);
+    try std.testing.expect(extractDeltaContent("{\"delta\":{\"content\":true}}") == null);
+}
+
+test "tool_call extractors survive malformed tool_calls frames" {
+    // Non-array, empty-array, and non-object-element tool_calls values.
+    try std.testing.expect(!hasDeltaToolCall("{\"delta\":{\"tool_calls\":null}}"));
+    try std.testing.expect(!hasDeltaToolCall("{\"delta\":{\"tool_calls\":[]}}"));
+    try std.testing.expect(!hasDeltaToolCall("{\"delta\":{\"tool_calls\":{}}}"));
+    try std.testing.expect(!hasDeltaToolCall("{\"delta\":{\"tool_calls\":[null]}}"));
+    try std.testing.expect(!hasDeltaToolCall("{\"delta\":{\"tool_calls\":[42]}}"));
+    // Truncated right after the array opener.
+    try std.testing.expect(!hasDeltaToolCall("{\"delta\":{\"tool_calls\":["));
+
+    // Object present but index missing → detection ok, index null, other
+    // fields still extract.
+    const no_index = "{\"delta\":{\"tool_calls\":[{\"id\":\"call_x\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}";
+    try std.testing.expect(hasDeltaToolCall(no_index));
+    try std.testing.expect(extractDeltaTCIndex(no_index) == null);
+    try std.testing.expectEqualStrings("call_x", extractDeltaTCId(no_index).?);
+    try std.testing.expectEqualStrings("bash", extractDeltaTCName(no_index).?);
+
+    // index present but non-numeric → null (only digits are accepted).
+    const bad_index = "{\"delta\":{\"tool_calls\":[{\"index\":\"zero\",\"id\":\"call_x\"}]}}";
+    try std.testing.expect(extractDeltaTCIndex(bad_index) == null);
+}
+
+test "mid-stream error frames are inert to delta extraction" {
+    // Some endpoints emit an error envelope as a data: frame mid-stream.
+    // It must not poison accumulated content, reasoning, or tool_call state.
+    const err = "{\"error\":{\"message\":\"model overloaded\",\"type\":\"server_error\",\"code\":503}}";
+    try std.testing.expect(extractDeltaContent(err) == null);
+    try std.testing.expect(extractDeltaReasoning(err) == null);
+    try std.testing.expect(!hasDeltaToolCall(err));
+    try std.testing.expect(extractUsage(err) == null);
+
+    // Interleaved between real deltas, an error frame contributes nothing.
+    const gpa = std.testing.allocator;
+    var content_raw = std.ArrayList(u8).empty;
+    defer content_raw.deinit(gpa);
+    const chunks = [_][]const u8{
+        "{\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}",
+        err,
+        "{\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}",
+    };
+    for (chunks) |chunk| {
+        if (extractDeltaContent(chunk)) |esc| try content_raw.appendSlice(gpa, esc);
+    }
+    const txt = try jsonmod.unescapeAlloc(gpa, content_raw.items);
+    defer gpa.free(txt);
+    try std.testing.expectEqualStrings("Hello", txt);
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — chunked SSE event reassembly
+// ---------------------------------------------------------------------------
+
+test "content deltas concatenate across chunked SSE events" {
+    const gpa = std.testing.allocator;
+    var content_raw = std.ArrayList(u8).empty;
+    defer content_raw.deinit(gpa);
+    const chunks = [_][]const u8{
+        "{\"choices\":[{\"delta\":{\"content\":\"Hello, \"}}]}",
+        "{\"choices\":[{\"delta\":{\"content\":\"wor\"}}]}",
+        "{\"choices\":[{\"delta\":{\"content\":\"ld!\"}}]}",
+        // A finish_reason frame carries no content and contributes nothing.
+        SSE_TC_FINISH,
+    };
+    for (chunks) |chunk| {
+        if (extractDeltaContent(chunk)) |esc| try content_raw.appendSlice(gpa, esc);
+    }
+    const txt = try jsonmod.unescapeAlloc(gpa, content_raw.items);
+    defer gpa.free(txt);
+    try std.testing.expectEqualStrings("Hello, world!", txt);
+}
+
+test "extractDeltaContent returns the raw escaped slice for later unescape" {
+    // The extractor keeps JSON escapes verbatim; unescapeAlloc runs once on
+    // the concatenated fragments, so \" and \\ survive chunk boundaries.
+    const esc = "{\"choices\":[{\"delta\":{\"content\":\"a\\\"b\\\\c\"}}]}";
+    const raw = extractDeltaContent(esc).?;
+    try std.testing.expectEqualStrings("a\\\"b\\\\c", raw);
+    const txt = try jsonmod.unescapeAlloc(std.testing.allocator, raw);
+    defer std.testing.allocator.free(txt);
+    try std.testing.expectEqualStrings("a\"b\\c", txt);
+}
+
+test "interleaved tool_call chunks reassemble per index" {
+    const gpa = std.testing.allocator;
+    var tc_buf = [_]InProgressTC{.{}} ** 8;
+    defer for (&tc_buf) |*tc| {
+        tc.id.deinit(gpa);
+        tc.name.deinit(gpa);
+        tc.args_raw.deinit(gpa);
+    };
+
+    // Two parallel calls interleaved chunk-by-chunk, as real streams emit.
+    const chunks = [_][]const u8{
+        "{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}",
+        "{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"function\":{\"name\":\"read\",\"arguments\":\"\"}}]}}",
+        "{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":null,\"function\":{\"name\":null,\"arguments\":\"{\\\"command\\\":\"}}]}}",
+        "{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":null,\"function\":{\"name\":null,\"arguments\":\"{\\\"path\\\":\"}}]}}",
+        "{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":null,\"function\":{\"name\":null,\"arguments\":\"\\\"ls\\\"}\"}}]}}",
+        "{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":null,\"function\":{\"name\":null,\"arguments\":\"\\\"/tmp\\\"}\"}}]}}",
+    };
+    for (chunks) |chunk| {
+        if (!hasDeltaToolCall(chunk)) continue;
+        const idx = extractDeltaTCIndex(chunk) orelse continue;
+        if (idx >= tc_buf.len) continue;
+        tc_buf[idx].active = true;
+        if (extractDeltaTCId(chunk)) |id| try tc_buf[idx].id.appendSlice(gpa, id);
+        if (extractDeltaTCName(chunk)) |nm| try tc_buf[idx].name.appendSlice(gpa, nm);
+        if (extractDeltaTCArgs(chunk)) |frag| try tc_buf[idx].args_raw.appendSlice(gpa, frag);
+    }
+
+    try std.testing.expect(tc_buf[0].active);
+    try std.testing.expectEqualStrings("call_a", tc_buf[0].id.items);
+    try std.testing.expectEqualStrings("bash", tc_buf[0].name.items);
+    const args0 = try jsonmod.unescapeAlloc(gpa, tc_buf[0].args_raw.items);
+    defer gpa.free(args0);
+    try std.testing.expectEqualStrings("{\"command\":\"ls\"}", args0);
+
+    try std.testing.expect(tc_buf[1].active);
+    try std.testing.expectEqualStrings("call_b", tc_buf[1].id.items);
+    try std.testing.expectEqualStrings("read", tc_buf[1].name.items);
+    const args1 = try jsonmod.unescapeAlloc(gpa, tc_buf[1].args_raw.items);
+    defer gpa.free(args1);
+    try std.testing.expectEqualStrings("{\"path\":\"/tmp\"}", args1);
+
+    try std.testing.expect(!tc_buf[2].active);
+}
+
+test "tool_call index beyond the accumulation buffer is still extracted" {
+    // extractDeltaTCIndex returns the parsed value; the stream loop bounds it
+    // against tc_buf.len (8) and silently drops out-of-range indices.
+    const hi = "{\"delta\":{\"tool_calls\":[{\"index\":9,\"id\":\"call_hi\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]}}";
+    try std.testing.expectEqual(@as(usize, 9), extractDeltaTCIndex(hi).?);
+    try std.testing.expectEqualStrings("call_hi", extractDeltaTCId(hi).?);
+}
+
+test "usage chunk on a data frame yields total_tokens" {
+    // Providers may send a trailing usage-only SSE frame before [DONE].
+    const usage_frame = "{\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}";
+    try std.testing.expectEqual(@as(u64, 15), extractUsage(usage_frame).?);
+    try std.testing.expect(extractDeltaContent(usage_frame) == null);
+    // A finish_reason frame without usage yields nothing.
+    try std.testing.expect(extractUsage(SSE_TC_FINISH) == null);
 }
 
 test "extractUsage parses total_tokens from API response JSON" {
