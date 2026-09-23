@@ -572,7 +572,7 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 | Auto context compaction (LLM summarization at threshold) | ✅ done |
 | Author↔Critic loop (`--role author\|critic\|coordinator`, `<READY_FOR_REVIEW>` / `<APPROVED>` / `<BLOCKED>` sentinels) | ✅ done |
 | Fleet orchestration (`tau fleet run\|status\|list\|logs\|cancel`, manifests at `~/.config/tau/fleets/`) | ✅ v0 |
-| ACP server (`tau acp start\|stop\|status\|serve`, JSON-RPC over stdio) | ✅ done |
+| ACP server (`tau acp start\|stop\|status\|serve`, JSON-RPC over stdio — [editor setup](docs/acp.md)) | ✅ done |
 | Embedded guide (`tau guide` JSON / `tau guide --human` markdown, [cli-guide-spec](https://cli-specs.intrane.fr/)) | ✅ done |
 
 ---
