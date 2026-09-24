@@ -89,6 +89,72 @@ mechanisms below. An unknown provider name is rejected with exit code `80`.
 
 ---
 
+## Provider setup examples
+
+Each example sets the provider's env var, then verifies the setup with a
+single-shot call. Any of them can be made permanent by writing
+`"provider": "<name>"` into `~/.config/tau/config.json` instead of passing
+`--provider`.
+
+### xiaomi (default)
+
+```bash
+export XIAOMI_API_KEY="..."        # PIZIG_API_KEY also works
+tau --mode text "say hi"           # no flags needed — xiaomi is the default
+```
+
+### openai
+
+```bash
+export OPENAI_API_KEY="sk-..."
+tau --provider openai --mode text "say hi"          # default model: gpt-4o-mini
+tau --model openai/gpt-4o --mode text "say hi"      # provider/id shorthand
+```
+
+### deepseek
+
+```bash
+export DEEPSEEK_API_KEY="sk-..."
+tau --provider deepseek --mode text "say hi"        # default model: deepseek-chat
+```
+
+### opencode-go
+
+```bash
+export OPENCODE_API_KEY="..."
+tau --provider opencode-go --mode text "say hi"     # default model: deepseek-v4-flash
+```
+
+### Custom / self-hosted endpoint
+
+Point any provider at an OpenAI-compatible server (proxy, gateway, or local
+model) with `TAU_ENDPOINT`:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export TAU_ENDPOINT="http://localhost:8080/v1/chat/completions"
+tau --provider openai --mode text "say hi"
+```
+
+`TAU_ENDPOINT` always wins over the provider's built-in endpoint — see
+[endpoint precedence](#provider-model-and-endpoint).
+
+### Keys without environment variables
+
+If you'd rather keep keys out of the environment, put them in the config
+file — per-provider `keys` outrank the global `api_key`:
+
+```json
+{
+  "provider": "deepseek",
+  "keys": { "deepseek": "sk-...", "openai": "sk-..." }
+}
+```
+
+See [API key resolution](#api-key-resolution) for the full precedence order.
+
+---
+
 ## Environment variables
 
 ### Read by tau itself
