@@ -120,6 +120,13 @@ const help_text =
     \\  -h, --help                   Show this help
     \\  -v, --version                Show version
     \\
+    \\Setup:
+    \\  tau init                    Write a commented starter config to
+    \\                              ~/.config/tau/config.json (detects env API keys)
+    \\      --force                 Overwrite an existing config file
+    \\      --provider <name>       Scaffold for a specific provider
+    \\      --stdout                Print the starter config without writing it
+    \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
     \\  /goal [--tokens N] <obj>     ...with a soft output-token budget (e.g. 250K)
@@ -159,7 +166,8 @@ const help_text =
     \\Guide (embedded operator manual — read once, drive with no external docs):
     \\  tau guide                     Print the full guide as JSON (agent-readable)
     \\  tau guide --human             ...as markdown
-    \\\Examples:
+    \\
+    \\Examples:
     \\  tau "List the files in src/"
     \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
     \\  tau --session work1 "Remember: the build uses zig 0.16"
@@ -283,6 +291,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau --session <name> \"/goal <directive>\"", .b = "autonomous goal mode." },
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
+    .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
@@ -298,6 +307,7 @@ const guide_gotchas = [_][]const u8{
     "JSON is the default; use --mode text for prose. Errors are JSON {err:{code,type,message}} even in text mode.",
     "Provider endpoint is resolved at parse time — config.json's provider does NOT set the endpoint; TAU_ENDPOINT overrides it.",
     "API-key precedence: config api_key > keys[provider] > provider env > global api_key > TAU_API_KEY. A stale config api_key silently outranks TAU_API_KEY.",
+    "config.json accepts // and /* */ comments (JSONC) — `tau init` scaffolds a commented starter.",
     "tau acp serve reads no model env var; the model comes from config.json or --model.",
     "Requires curl on PATH for LLM HTTP; no other runtime deps.",
     "The tool loop ends when the model stops calling tools or hits --max-iterations (default backstop).",
@@ -450,6 +460,14 @@ pub fn main(init: std.process.Init) !void {
         .guide => {
             printGuide(parsed.config.guide_human);
             return;
+        },
+        .init => {
+            const initmod = @import("init.zig");
+            const code = initmod.run(io, arena, init.environ_map, parsed.config.init_force, parsed.config.init_stdout, parsed.config.init_provider) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "init failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
         },
         .err => {
             const msg = parsed.err_msg orelse "invalid arguments";
@@ -624,6 +642,7 @@ test {
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
+    _ = @import("init.zig");
 }
 
 test "flag_specs appear in help_text" {

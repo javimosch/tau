@@ -252,6 +252,17 @@ TAU_BIN="$HOME/ai/tau-custom/zig-out/bin/tau" a2a-spawn --cli tau --id custom --
 
 Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations 40 --timeout-ms 300000`.
 
+#### 15. Config Scaffolding
+```bash
+tau init                                 # Write commented starter ~/.config/tau/config.json
+tau init --stdout                        # Preview the scaffold without writing
+tau init --force                         # Overwrite an existing config
+tau init --provider openai               # Scaffold for a specific provider
+# Detects set provider env keys (marks them "*"), picks a matching provider,
+# and never copies secret values into the file. config.json is JSONC:
+# `//` and `/* */` comments are stripped on load.
+```
+
 ### Storage Paths
 
 | Path | Purpose |

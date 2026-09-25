@@ -132,6 +132,14 @@ pub const Config = struct {
     /// If true, auto-inject the root-level AGENTS.md (cwd/AGENTS.md) on startup.
     auto_agents_md: bool = false,
 
+    // --- init (init.zig) ---
+    /// `tau init --force` — overwrite an existing config file.
+    init_force: bool = false,
+    /// `tau init --stdout` — print the starter config instead of writing it.
+    init_stdout: bool = false,
+    /// `tau init --provider <name>` — scaffold for a specific provider.
+    init_provider: ?[]const u8 = null,
+
     // --- Skills autodiscovery ---
     /// `tau skills <list|search|load>` subcommand selector. Null means no skills subcommand.
     skills_sub: ?[]const u8 = null,
