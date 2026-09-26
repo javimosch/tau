@@ -579,6 +579,7 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 
 ## 📝 Changelog
 
+- [CHANGELOG.md](./CHANGELOG.md) — full release history (Keep a Changelog format)
 - [v0.4.0 — JSON Schema + Skills Autodiscovery](./docs/changelog-2026-06-product.md) · [HTML (with technical tab)](./docs/changelog-2026-06.html)
 - [Full index](./docs/changelog.html) · [Roadmap](./docs/roadmap.md)
 
