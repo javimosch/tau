@@ -32,15 +32,67 @@ pub fn path(arena: std.mem.Allocator, env: *std.process.Environ.Map) ?[]u8 {
     return std.fmt.allocPrint(arena, "{s}/.config/tau/config.json", .{home}) catch null;
 }
 
+/// Remove JSONC-style comments (`//` line and `/* */` block) so the strict
+/// std.json parser accepts a commented config file (e.g. one written by
+/// `tau init`). Newlines inside comments are preserved so line numbers stay
+/// stable. Comment markers inside string literals are kept verbatim.
+pub fn stripComments(arena: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    var in_string = false;
+    while (i < bytes.len) {
+        const c = bytes[i];
+        if (in_string) {
+            try out.append(arena, c);
+            if (c == '\\' and i + 1 < bytes.len) {
+                i += 1;
+                try out.append(arena, bytes[i]);
+            } else if (c == '"') {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            try out.append(arena, c);
+            i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < bytes.len) {
+            if (bytes[i + 1] == '/') {
+                // Line comment: drop up to (not including) the newline.
+                i += 2;
+                while (i < bytes.len and bytes[i] != '\n') i += 1;
+                continue;
+            }
+            if (bytes[i + 1] == '*') {
+                // Block comment: keep newlines so line numbers stay stable.
+                i += 2;
+                while (i + 1 < bytes.len and !(bytes[i] == '*' and bytes[i + 1] == '/')) {
+                    if (bytes[i] == '\n') try out.append(arena, '\n');
+                    i += 1;
+                }
+                i = if (i + 1 < bytes.len) i + 2 else bytes.len; // skip */ or EOF
+                continue;
+            }
+        }
+        try out.append(arena, c);
+        i += 1;
+    }
+    return out.toOwnedSlice(arena);
+}
+
 /// Load ~/.config/tau/config.json into a base Config. Missing file / bad JSON /
 /// no HOME all degrade gracefully to defaults (never errors — config file is
-/// optional). The returned Config is meant to be passed to args.parse as `base`
-/// so CLI flags override it.
+/// optional). JSONC-style comments (`//`, `/* */`) are stripped before parsing.
+/// The returned Config is meant to be passed to args.parse as `base` so CLI
+/// flags override it.
 pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Config {
     var cfg: Config = .{};
     const p = path(arena, env) orelse return cfg;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch return cfg;
-    const fc = std.json.parseFromSliceLeaky(FileConfig, arena, bytes, .{
+    const fc = std.json.parseFromSliceLeaky(FileConfig, arena, stripComments(arena, bytes) catch bytes, .{
         .ignore_unknown_fields = true,
     }) catch {
         cfg.config_warning = std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s} — fix the JSON syntax or delete the file", .{p}) catch null;
@@ -311,4 +363,73 @@ test "path: builds <HOME>/.config/tau/config.json and is null without HOME" {
 
     var empty = std.process.Environ.Map.init(arena);
     try testing.expectEqual(@as(?[]u8, null), path(arena, &empty));
+}
+
+test "stripComments removes // and /* */ comments but keeps // inside strings" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const got = try stripComments(arena,
+        \\// leading comment
+        \\{
+        \\  "provider": "openai", // trailing comment
+        \\  "api_key": "https://host//path", /* block
+        \\  comment */ "mode": "text"
+        \\} // tail at EOF
+    );
+    // Comment markers inside the URL string survive; everything else is gone.
+    try testing.expect(std.mem.indexOf(u8, got, "https://host//path") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "leading comment") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "trailing comment") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "block") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "tail at EOF") == null);
+    // And the stripped text is valid JSON with the fields intact.
+    const fc = try std.json.parseFromSliceLeaky(FileConfig, arena, got, .{ .ignore_unknown_fields = true });
+    try testing.expectEqualStrings("openai", fc.provider.?);
+    try testing.expectEqualStrings("https://host//path", fc.api_key.?);
+    try testing.expectEqualStrings("text", fc.mode.?);
+}
+
+test "stripComments respects escaped chars and unterminated comments" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // `\\` inside a string is an escaped backslash, so the following `"` is the
+    // real closer — a naive scanner that ignores escapes would stay in-string.
+    const got = try stripComments(arena, "{ \"a\": \"x\\\\\" } // tail");
+    const fc = try std.json.parseFromSliceLeaky(std.json.Value, arena, got, .{});
+    try testing.expectEqualStrings("x\\", fc.object.get("a").?.string);
+
+    // `//` inside a string value is preserved verbatim.
+    const got2 = try stripComments(arena, "{ \"a\": \"x // inside\" } // outside");
+    const fc2 = try std.json.parseFromSliceLeaky(std.json.Value, arena, got2, .{});
+    try testing.expectEqualStrings("x // inside", fc2.object.get("a").?.string);
+
+    // An unterminated line comment at EOF just truncates.
+    try testing.expectEqualStrings("{} ", try stripComments(arena, "{} // rest is gone"));
+}
+
+test "load: commented (JSONC) config file parses cleanly" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\// starter config
+        \\{
+        \\  "provider": "deepseek", // inline note
+        \\  /* "model": "ignored", */
+        \\  "mode": "text"
+        \\}
+    );
+
+    const cfg = load(testing.io, arena, &th.env);
+    try testing.expectEqualStrings("deepseek", cfg.provider);
+    try testing.expectEqual(cfgmod.OutputMode.text, cfg.mode);
+    // No invalid-JSON warning was produced.
+    try testing.expectEqual(@as(?[]const u8, null), cfg.config_warning);
 }

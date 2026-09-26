@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -156,6 +156,27 @@ pub fn parse(
             return errResult(arena, "invalid skills subcommand (want list|search|load): {s}", .{argv[1]});
         }
         return .{ .action = .skills, .config = scfg };
+    }
+
+    // `tau init [--force] [--stdout] [--provider <name>]` — write a commented
+    // starter ~/.config/tau/config.json seeded from detected provider env keys.
+    if (argv.len > 0 and eq(argv[0], "init")) {
+        var icfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--force")) {
+                icfg.init_force = true;
+            } else if (eq(a, "--stdout")) {
+                icfg.init_stdout = true;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                if (cfgmod.findProvider(argv[j]) == null) return unknownProviderErr(arena, argv[j]);
+                icfg.init_provider = argv[j];
+            } else return errResult(arena, "unknown init argument: {s}", .{a});
+        }
+        return .{ .action = .init, .config = icfg };
     }
 
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
@@ -886,6 +907,36 @@ test "parse: skills subcommand validation" {
     const bad = try parseArgv(a, &.{ "tau", "skills", "frob" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
     try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): frob", bad.err_msg.?);
+}
+
+test "parse: init subcommand and validation" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "init" }, .{});
+    try std.testing.expectEqual(Action.init, bare.action);
+    try std.testing.expect(!bare.config.init_force);
+    try std.testing.expect(!bare.config.init_stdout);
+    try std.testing.expectEqual(@as(?[]const u8, null), bare.config.init_provider);
+
+    const full = try parseArgv(a, &.{ "tau", "init", "--force", "--stdout", "--provider", "openai" }, .{});
+    try std.testing.expectEqual(Action.init, full.action);
+    try std.testing.expect(full.config.init_force);
+    try std.testing.expect(full.config.init_stdout);
+    try std.testing.expectEqualStrings("openai", full.config.init_provider.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "init", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown init argument: --bogus", bad.err_msg.?);
+
+    const badp = try parseArgv(a, &.{ "tau", "init", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.err, badp.action);
+    try std.testing.expect(std.mem.indexOf(u8, badp.err_msg.?, "unknown provider 'acme'") != null);
+
+    const missingv = try parseArgv(a, &.{ "tau", "init", "--provider" }, .{});
+    try std.testing.expectEqual(Action.err, missingv.action);
+    try std.testing.expectEqualStrings("missing value for --provider", missingv.err_msg.?);
 }
 
 test "parse: fleet run resolves provider and captures goal" {

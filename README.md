@@ -66,6 +66,15 @@ export PATH="$PWD/zig-out/bin:$PATH"
 
 ### 3. Configure an API key
 
+Optional — scaffold a commented starter config first (detects which provider
+API keys are already exported, picks a matching provider, never copies secret
+values into the file):
+
+```bash
+./zig-out/bin/tau init          # writes ~/.config/tau/config.json
+./zig-out/bin/tau init --stdout # preview without writing
+```
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
@@ -424,7 +433,8 @@ Streaming output:
 
 ### Config File
 
-Optional config at `~/.config/tau/config.json`:
+Optional config at `~/.config/tau/config.json`. `tau init` writes a commented
+starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 
 ```json
 {

@@ -6,7 +6,7 @@ Tab-complete `tau` flags, options, and subcommands in Bash or Zsh.
 
 | Context | Completions |
 |---|---|
-| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`) |
+| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `init`) |
 | `--provider` | `xiaomi openai deepseek opencode-go` |
 | `--mode` | `text json` |
 | `--role` | `author critic coordinator none` |
@@ -16,6 +16,7 @@ Tab-complete `tau` flags, options, and subcommands in Bash or Zsh.
 | `tau acp` | `start stop status serve` |
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
+| `tau init` | `--force`, `--stdout`, `--provider` |
 
 ---
 

@@ -13,7 +13,18 @@ Each section below lists the exact precedence order used by the code.
 
 Path: `~/.config/tau/config.json` (built from `$HOME`).
 
-The file is **optional** — tau runs fine without it. Behavior on load:
+The file is **optional** — tau runs fine without it. `tau init` scaffolds a
+commented starter: it detects which provider API keys are already in your
+environment, selects a matching `provider`, and lists every provider's env var
+in comments. It never copies secret values into the file, and refuses to
+overwrite an existing config unless `--force` is passed (`--stdout` previews
+without writing, `--provider <name>` picks a provider explicitly).
+
+The file is **JSONC**: `//` line comments and `/* */` block comments are
+stripped before parsing, so a commented config (like the one `tau init`
+writes) loads cleanly.
+
+Behavior on load:
 
 - Missing file, unreadable file, or unset `HOME` → all defaults are used.
 - Invalid JSON → a warning is printed to stderr and defaults are used; tau does

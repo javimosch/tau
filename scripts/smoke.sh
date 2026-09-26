@@ -63,6 +63,7 @@ ALL_TEST_GROUPS=(
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
   "config-file:test_group_config_file"
+  "init:test_group_init"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -472,6 +473,95 @@ test_group_config_file() {
   else
     ok "invalid config JSON degrades gracefully" 1 0
   fi
+}
+
+# Group: tau init — commented starter config scaffold
+test_group_init() {
+  local mock_home warn
+
+  note "tau init scaffolds a commented config seeded from detected env keys"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+
+  # Fresh HOME -> creates ~/.config/tau/config.json, reports created:true.
+  capture init_write env HOME="$mock_home" "$BIN" init
+  ok "init on fresh HOME exits 0" "$init_write_rc" 0
+  if printf '%s' "$init_write_out" | grep -q '"created":true'; then
+    ok "init reports created:true" 0 0
+  else
+    ok "init reports created:true" 1 0
+  fi
+  if [ -f "$mock_home/.config/tau/config.json" ]; then
+    ok "init wrote ~/.config/tau/config.json" 0 0
+  else
+    ok "init wrote ~/.config/tau/config.json" 1 0
+  fi
+  if grep -q '^// ' "$mock_home/.config/tau/config.json" 2>/dev/null && grep -q '"provider"' "$mock_home/.config/tau/config.json"; then
+    ok "config has comments + provider key" 0 0
+  else
+    ok "config has comments + provider key" 1 0
+  fi
+
+  # Generated (commented) config must load without the invalid-JSON warning.
+  warn=$(HOME="$mock_home" "$BIN" --version 2>&1 1>/dev/null)
+  if printf '%s' "$warn" | grep -q 'invalid JSON'; then
+    ok "generated JSONC config loads without warning" 1 0
+  else
+    ok "generated JSONC config loads without warning" 0 0
+  fi
+
+  # Existing config -> refused without --force (exit 1, JSON err envelope).
+  capture init_again env HOME="$mock_home" "$BIN" init
+  ok "init on existing config exits 1" "$init_again_rc" 1
+  if printf '%s' "$init_again_err" | grep -q '"already_exists"'; then
+    ok "init existing -> already_exists envelope" 0 0
+  else
+    ok "init existing -> already_exists envelope" 1 0
+  fi
+
+  # --force overwrites and reports it.
+  capture init_force env HOME="$mock_home" "$BIN" init --force
+  ok "init --force exits 0" "$init_force_rc" 0
+  if printf '%s' "$init_force_out" | grep -q '"overwritten":true'; then
+    ok "init --force reports overwritten:true" 0 0
+  else
+    ok "init --force reports overwritten:true" 1 0
+  fi
+
+  # --stdout prints the scaffold without writing; detected env key selects the
+  # provider and is named in a comment, but the secret value never appears.
+  rm -f "$mock_home/.config/tau/config.json"
+  capture init_stdout env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY \
+    -u OPENCODE_API_KEY -u TAU_API_KEY HOME="$mock_home" OPENAI_API_KEY=smoke-secret "$BIN" init --stdout
+  ok "init --stdout exits 0" "$init_stdout_rc" 0
+  if printf '%s' "$init_stdout_out" | grep -q '"provider": "openai"'; then
+    ok "init --stdout picks detected provider (openai)" 0 0
+  else
+    ok "init --stdout picks detected provider (openai)" 1 0
+  fi
+  if printf '%s' "$init_stdout_out" | grep -q 'smoke-secret'; then
+    ok "init --stdout never leaks the key value" 1 0
+  else
+    ok "init --stdout never leaks the key value" 0 0
+  fi
+  if [ -f "$mock_home/.config/tau/config.json" ]; then
+    ok "init --stdout does not write a file" 1 0
+  else
+    ok "init --stdout does not write a file" 0 0
+  fi
+
+  # --provider overrides detection.
+  capture init_prov env HOME="$mock_home" "$BIN" init --provider deepseek --stdout
+  if printf '%s' "$init_prov_out" | grep -q '"provider": "deepseek"'; then
+    ok "init --provider selects the given provider" 0 0
+  else
+    ok "init --provider selects the given provider" 1 0
+  fi
+
+  # Bad arguments.
+  "$BIN" init --bogus >/dev/null 2>&1; ok "init --bogus -> exit 80" "$?" 80
+  "$BIN" init --provider acme >/dev/null 2>&1; ok "init --provider acme -> exit 80" "$?" 80
 }
 
 # Group: Issue #17 goal mode subcommands offline
