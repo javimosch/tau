@@ -28,7 +28,9 @@ pub fn run(
     cfg: anytype,
     env_map: *std.process.Environ.Map,
 ) !struct { exit_code: u8, tokens_out: u64 } {
-    const api_key = cfgmod.resolveApiKey(cfg, env_map) orelse return .{ .exit_code = 106, .tokens_out = 0 };
+    // Missing key: surface error.AuthFailed so main emits the actionable
+    // envelope (env var names + --api-key hint) instead of a bare exit 106.
+    const api_key = cfgmod.resolveApiKey(cfg, env_map) orelse return error.AuthFailed;
     var cfg_with_key = cfg;
     cfg_with_key.api_key = api_key;
 
@@ -804,4 +806,16 @@ test "goalSubcommand without --session returns 80" {
     var stored_goal: ?session_mod.GoalState = null;
     const code = try goalSubcommand(std.testing.io, gpa, &env, GoalSubCfg{ .goal_action = .status }, &messages, &stored_goal);
     try std.testing.expectEqual(@as(u8, 80), code);
+}
+
+test "run without any API key fails with error.AuthFailed" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    // No --api-key, no keys map, no provider env vars, no TAU_API_KEY.
+    try std.testing.expectError(
+        error.AuthFailed,
+        run(std.testing.io, std.testing.allocator, arena_inst.allocator(), cfgmod.Config{}, &env),
+    );
 }
