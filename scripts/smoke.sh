@@ -65,6 +65,7 @@ ALL_TEST_GROUPS=(
   "config-file:test_group_config_file"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
+  "error-paths:test_group_error_paths"
   "at-file-system-prompt:test_group_at_file_system_prompt"
   "scan-agents:test_group_scan_agents"
   "session-validation:test_group_session_name_validation"
@@ -568,6 +569,56 @@ test_group_dry_run() {
   else
     ok "error envelope code 110 format invalid" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 110: $err_110_err"
+  fi
+}
+
+# Group: error paths must emit actionable messages, not silent exits
+# - missing API key -> exit 106 + err envelope naming env vars and --api-key
+# - malformed config.json -> warn envelope (invalid JSON + how to fix), run continues
+test_group_error_paths() {
+  local mock_home
+
+  note "error paths emit actionable messages (missing API key, config parse failure)"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+  mkdir -p "$mock_home/.config/tau"
+
+  # Fully keyless env: unset every provider env var + TAU_API_KEY, and use a
+  # fresh HOME so no config file can supply a key.
+  capture no_key env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY \
+    -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" --provider openai --no-tools --no-stream "hi"
+  ok "missing API key exits 106" "$no_key_rc" 106
+  if printf '%s' "$no_key_err" | python3 -c 'import sys,json; d=json.load(sys.stdin); e=d.get("err",{}); assert e.get("code") == 106' 2>/dev/null; then
+    ok "missing API key -> err envelope with code 106" 0 0
+  else
+    ok "missing API key -> err envelope with code 106" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "missing-key stderr: $no_key_err"
+  fi
+  contains "missing-key message names the provider env var" "$no_key_err" "OPENAI_API_KEY"
+  contains "missing-key message suggests --api-key" "$no_key_err" "--api-key"
+
+  # Malformed config.json -> warn envelope on stderr; the run still proceeds.
+  printf 'this is not valid json' > "$mock_home/.config/tau/config.json"
+  capture bad_cfg env HOME="$mock_home" "$BIN" --version
+  ok "malformed config does not block --version" "$bad_cfg_rc" 0
+  if printf '%s' "$bad_cfg_err" | python3 -c 'import sys,json; d=json.load(sys.stdin); m=d.get("warn",{}).get("message",""); assert "invalid JSON" in m' 2>/dev/null; then
+    ok "malformed config -> warn envelope mentions invalid JSON" 0 0
+  else
+    ok "malformed config -> warn envelope mentions invalid JSON" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "config-warning stderr: $bad_cfg_err"
+  fi
+  contains "config-parse warning tells the user how to fix it" "$bad_cfg_err" "fix the JSON syntax"
+
+  # Well-formed config -> no warning at all.
+  printf '{"provider":"openai"}' > "$mock_home/.config/tau/config.json"
+  capture good_cfg env HOME="$mock_home" "$BIN" --version
+  ok "valid config exits 0" "$good_cfg_rc" 0
+  if printf '%s' "$good_cfg_err" | grep -q '"warn"'; then
+    ok "valid config emits no warning" 1 0
+  else
+    ok "valid config emits no warning" 0 0
   fi
 }
 

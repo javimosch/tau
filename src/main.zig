@@ -687,3 +687,24 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
 }
+
+test "authHint names the provider env vars and the --api-key fallback" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+    for (cfgmod.providers) |p| {
+        if (p.env_keys.len == 0) continue;
+        const hint = authHint(arena, p.name);
+        for (p.env_keys) |ek| {
+            try std.testing.expect(std.mem.indexOf(u8, hint, ek) != null);
+        }
+        try std.testing.expect(std.mem.indexOf(u8, hint, "--api-key") != null);
+    }
+}
+
+test "authHint falls back to --api-key for unknown providers" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const hint = authHint(arena_inst.allocator(), "no-such-provider");
+    try std.testing.expectEqualStrings("use --api-key <key>", hint);
+}
