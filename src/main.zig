@@ -28,12 +28,14 @@ fn writeErr(s: []const u8) void {
     term.err(s);
 }
 
+const doc_url = @import("version.zig").troubleshooting_doc_url;
+
 fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
     const te = try json.escapeAlloc(gpa, error_type);
     defer gpa.free(te);
     const me = try json.escapeAlloc(gpa, message);
     defer gpa.free(me);
-    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{}}}}}\n", .{ code, te, me, recoverable });
+    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"docs\":\"{s}\"}}}}\n", .{ code, te, me, recoverable, doc_url });
 }
 
 fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
@@ -306,6 +308,7 @@ const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
     "tau --help (human help)",
     "README.md (ships with the source)",
+    "docs/troubleshooting.md — " ++ doc_url ++ " (error-message → fix FAQ)",
     "https://cli-specs.intrane.fr/ (guide spec)",
 };
 

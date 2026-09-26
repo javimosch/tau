@@ -118,7 +118,7 @@ pub fn run(
         .status => status(io, arena, env),
         .serve => unreachable,
     };
-    writeErr("{\"err\":{\"code\":111,\"message\":\"acp daemon (start/stop/status) is unsupported on this platform; use `tau acp serve` over stdio\"}}\n");
+    writeErr("{\"err\":{\"code\":111,\"message\":\"acp daemon (start/stop/status) is unsupported on this platform; use `tau acp serve` over stdio\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
     return 111;
 }
 
@@ -126,7 +126,7 @@ pub fn run(
 
 fn start(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, socket_opt: ?[]const u8) !u8 {
     const dir = configDir(arena, env) orelse {
-        writeErr("{\"err\":{\"code\":82,\"message\":\"HOME not set\"}}\n");
+        writeErr("{\"err\":{\"code\":82,\"message\":\"HOME not set\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
         return 82;
     };
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};

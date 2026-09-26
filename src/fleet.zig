@@ -263,13 +263,13 @@ fn logInvalidWorkItem(idx: usize, field: []const u8) void {
     var buf: [512]u8 = undefined;
     if (std.fmt.bufPrint(
         &buf,
-        "{{\"err\":{{\"code\":110,\"message\":\"InvalidWorkItem at index {d}: missing or non-string field '{s}'\"}}}}\n",
+        "{{\"err\":{{\"code\":110,\"message\":\"InvalidWorkItem at index {d}: missing or non-string field '{s}'\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}}}\n",
         .{ idx, field },
     )) |msg| {
         term.err(msg);
     } else |_| {
         // Fallback when 512-byte buffer is too small for the field name.
-        term.err("{\"err\":{\"code\":110,\"message\":\"InvalidWorkItem (overflow)\"}}\n");
+        term.err("{\"err\":{\"code\":110,\"message\":\"InvalidWorkItem (overflow)\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
     }
 }
 
@@ -817,11 +817,11 @@ fn cancelCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: 
     // than silently lying to the caller.
     if (try loadManifest(io, arena, env, id)) |reloaded| {
         if (reloaded.global_status != .cancelled) {
-            term.out("{\"err\":{\"code\":110,\"message\":\"cancel did not persist global_status\"}}\n");
+            term.out("{\"err\":{\"code\":110,\"message\":\"cancel did not persist global_status\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
             return 110;
         }
     } else {
-        term.out("{\"err\":{\"code\":110,\"message\":\"cancel persisted but reload failed\"}}\n");
+        term.out("{\"err\":{\"code\":110,\"message\":\"cancel persisted but reload failed\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
         return 110;
     }
     try helpers.fleetPrintJson(gpa, updated);
