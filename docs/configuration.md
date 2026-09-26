@@ -64,6 +64,22 @@ The file is **optional** — tau runs fine without it. Behavior on load:
 }
 ```
 
+### Schema and examples
+
+The repo ships [`config.schema.json`](../config.schema.json), a JSON Schema
+(draft-07) describing every key above. Add a `"$schema"` line to your
+`config.json` for editor autocomplete and validation:
+
+```json
+{ "$schema": "https://raw.githubusercontent.com/javimosch/tau/master/config.schema.json" }
+```
+
+`"$schema"` is ignored by tau itself. The schema is stricter than the loader on
+purpose: it rejects unknown keys so typos surface in your editor even though
+tau would silently ignore them. Ready-to-copy examples live in
+[`examples/config/`](../examples/config/) and are validated against the schema
+by `scripts/check-config-schema.py` (the `config-schema` smoke group and CI).
+
 Not everything is file-configurable. Flag-only settings include `--session`,
 `--system-prompt` / `--append-system-prompt`, `--tools` / `--exclude-tools` /
 `--no-tools`, `--dry-run`, `--role`, `--schema`, `--max-iterations`, and the
