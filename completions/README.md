@@ -1,21 +1,30 @@
 # Shell Completions
 
-Tab-complete `tau` flags, options, and subcommands in Bash or Zsh.
+Tab-complete `tau` flags, options, and subcommands in Bash, Zsh, Fish, or
+PowerShell.
+
+| File | Shell |
+|---|---|
+| `tau.bash` | Bash |
+| `_tau` | Zsh |
+| `tau.fish` | Fish |
+| `tau.ps1` | PowerShell |
 
 ## What gets completed
 
 | Context | Completions |
 |---|---|
-| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`) |
+| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `guide`) |
 | `--provider` | `xiaomi openai deepseek opencode-go` |
 | `--mode` | `text json` |
 | `--role` | `author critic coordinator none` |
-| `--tools` / `--exclude-tools` | `bash ls read write edit grep find` |
+| `--tools` / `--exclude-tools` | `bash ls read write edit grep find calculator` |
 | `--load-agents-md` / `--schema` | File paths |
 | `@…` prefix | File paths with `@` prepended |
 | `tau acp` | `start stop status serve` |
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
+| `tau guide` | `--human` |
 
 ---
 
@@ -88,6 +97,54 @@ cp completions/_tau ~/.oh-my-zsh/completions/_tau
 ```
 
 Then restart your shell or run `exec zsh`.
+
+---
+
+## Fish
+
+Fish autoloads `tau.fish` from `~/.config/fish/completions` (or any directory
+in `$fish_complete_path`), so the filename must match the command name.
+
+### One-time (current session)
+
+```fish
+source completions/tau.fish
+```
+
+### Permanent install
+
+```fish
+mkdir -p ~/.config/fish/completions
+cp completions/tau.fish ~/.config/fish/completions/tau.fish
+```
+
+New shells pick it up automatically; no cache rebuild needed.
+
+---
+
+## PowerShell
+
+Works in Windows PowerShell 5.1 and pwsh 7+ (Linux/macOS/Windows).
+
+### One-time (current session)
+
+```powershell
+. ./completions/tau.ps1        # or: . .\completions\tau.ps1 on Windows
+```
+
+### Permanent install
+
+Dot-source the file from your profile:
+
+```powershell
+Add-Content $PROFILE ". '$PWD/completions/tau.ps1'"
+```
+
+Then restart the shell or run `. $PROFILE`.
+
+> **Note:** In PowerShell, bare `@name` is splat syntax — `@file` arguments
+> must be quoted: `tau '@file.txt'`. The completer still expands
+> `tau '@<TAB>` to quoted `@path` candidates.
 
 ---
 
