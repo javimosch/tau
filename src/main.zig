@@ -732,3 +732,54 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
 }
+
+// Golden tests: any change to user-visible help output must be deliberate.
+// Regenerate goldens after an intentional change:
+//   zig build && ./zig-out/bin/tau --help > src/golden/help.txt
+//   ./zig-out/bin/tau --help-json | sed 's/"version":"[^"]*"/"version":"<version>"/' > src/golden/help-json.txt
+test "help_text matches golden snapshot" {
+    try std.testing.expectEqualStrings(@embedFile("golden/help.txt"), help_text);
+}
+
+test "formatHelpJson matches golden snapshot with version normalized" {
+    const gpa = std.testing.allocator;
+    const got = try formatHelpJson(gpa);
+    defer gpa.free(got);
+    // The version field changes per release; pin everything else byte-for-byte.
+    const normalized = try std.mem.replaceOwned(u8, gpa, got, version, "<version>");
+    defer gpa.free(normalized);
+    try std.testing.expectEqualStrings(@embedFile("golden/help-json.txt"), normalized);
+}
+
+test "help_text keeps the grouped section headers" {
+    const headers = [_][]const u8{
+        "Model & provider:",
+        "Output:",
+        "Tools & agent loop:",
+        "System prompt & context files:",
+        "Sessions & compaction:",
+        "Diagnostics:",
+        "Help:",
+        "Environment:",
+        "Files:",
+        "Subcommands:",
+        "Examples:",
+    };
+    for (headers) |h| {
+        const found = std.mem.indexOf(u8, help_text, h) != null;
+        if (!found) std.debug.print("help_text section header '{s}' missing\n", .{h});
+        try std.testing.expect(found);
+    }
+}
+
+test "help_text documents every provider env key in the Environment section" {
+    for (cfgmod.providers) |p| {
+        for (p.env_keys) |ek| {
+            const found = std.mem.indexOf(u8, help_text, ek) != null;
+            if (!found) std.debug.print("provider '{s}' env key '{s}' missing from help_text\n", .{ p.name, ek });
+            try std.testing.expect(found);
+        }
+    }
+    try std.testing.expect(std.mem.indexOf(u8, help_text, "TAU_API_KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help_text, "TAU_ENDPOINT") != null);
+}
