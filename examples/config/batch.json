@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/javimosch/tau/master/config.schema.json",
+  "mode": "json",
+  "stream": false,
+  "temperature": 0.2,
+  "max_tokens": 4096,
+  "timeout_ms": 300000
+}

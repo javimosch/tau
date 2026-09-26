@@ -299,6 +299,38 @@ test "load: unknown keys are ignored, known keys still applied" {
     try testing.expectEqual(cfgmod.OutputMode.json, cfg.mode);
 }
 
+test "shipped examples/config/*.json parse as FileConfig" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // zig build test runs from the repo root, so cwd-relative paths work.
+    var dir = try std.Io.Dir.cwd().openDir(testing.io, "examples/config", .{ .iterate = true });
+    defer dir.close(testing.io);
+
+    var names: std.ArrayList([]const u8) = .empty;
+    var it = dir.iterate();
+    while (try it.next(testing.io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.endsWith(u8, entry.name, ".json"))
+            try names.append(arena, try arena.dupe(u8, entry.name));
+    }
+    try testing.expect(names.items.len > 0);
+
+    for (names.items) |name| {
+        const p = try std.fmt.allocPrint(arena, "examples/config/{s}", .{name});
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, p, arena, .unlimited);
+        // Same parse path as load(): ignore_unknown_fields keeps "$schema" and
+        // other editor metadata harmless, exactly like a real config.json.
+        _ = std.json.parseFromSliceLeaky(FileConfig, arena, bytes, .{
+            .ignore_unknown_fields = true,
+        }) catch |e| {
+            std.debug.print("example config {s} failed FileConfig parse: {s}\n", .{ name, @errorName(e) });
+            return e;
+        };
+    }
+}
+
 test "path: builds <HOME>/.config/tau/config.json and is null without HOME" {
     var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_inst.deinit();

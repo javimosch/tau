@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/javimosch/tau/master/config.schema.json",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "mode": "json",
+  "stream": true,
+  "thinking": false,
+  "debug": false,
+  "temperature": 0.7,
+  "max_tokens": 8192,
+  "timeout_ms": 120000,
+  "context_window": 128000,
+  "auto_compact": true,
+  "compact_threshold": 0.5,
+  "compact_keep_recent_tokens": 20000,
+  "goal_max_iterations": 50,
+  "goal_max_continues": 500,
+  "keys": {
+    "openai": "sk-your-openai-key"
+  }
+}
