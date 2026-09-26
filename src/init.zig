@@ -326,3 +326,102 @@ test "renderConfig with no detected keys notes that none were found" {
     try testing.expect(std.mem.indexOf(u8, body, "none detected") != null);
     try testing.expect(std.mem.indexOf(u8, body, "* set") == null);
 }
+
+/// A throwaway HOME rooted at a fresh tmp dir. `run` resolves the config path
+/// from the env map, so HOME pointing into .zig-cache/tmp keeps tests hermetic
+/// (same convention as configfile.zig's TestHome).
+const InitHome = struct {
+    tmp: testing.TmpDir,
+    env: std.process.Environ.Map,
+    home: []const u8,
+
+    fn init(arena: std.mem.Allocator) !InitHome {
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+        var env = std.process.Environ.Map.init(arena);
+        try env.put("HOME", home);
+        return .{ .tmp = tmp, .env = env, .home = home };
+    }
+
+    fn configPath(self: *InitHome, arena: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(arena, "{s}/.config/tau/config.json", .{self.home});
+    }
+
+    fn readConfig(self: *InitHome, arena: std.mem.Allocator) ?[]u8 {
+        const p = self.configPath(arena) catch return null;
+        return std.Io.Dir.cwd().readFileAlloc(testing.io, p, arena, .unlimited) catch null;
+    }
+
+    fn deinit(self: *InitHome) void {
+        self.tmp.cleanup();
+    }
+};
+
+test "run writes a commented config on a fresh HOME and it loads cleanly" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var th = try InitHome.init(a);
+    defer th.deinit();
+
+    const code = try run(testing.io, a, &th.env, false, false, null);
+    try testing.expectEqual(@as(u8, 0), code);
+
+    const body = th.readConfig(a) orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, body, "//") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"provider\"") != null);
+
+    // The scaffolded JSONC file parses without a config warning.
+    const cfg = configfile.load(testing.io, a, &th.env);
+    try testing.expectEqualStrings(cfgmod.providers[0].name, cfg.provider);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.config_warning);
+}
+
+test "run refuses to clobber an existing config without --force" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var th = try InitHome.init(a);
+    defer th.deinit();
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/tau", .{th.home}));
+    const p = try th.configPath(a);
+    const original = "{\"provider\":\"deepseek\"}";
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = p, .data = original });
+
+    // Existing file -> exit 1, contents untouched.
+    const code = try run(testing.io, a, &th.env, false, false, null);
+    try testing.expectEqual(@as(u8, 1), code);
+    try testing.expectEqualStrings(original, th.readConfig(a).?);
+
+    // --force regenerates the scaffold over it.
+    const forced = try run(testing.io, a, &th.env, true, false, null);
+    try testing.expectEqual(@as(u8, 0), forced);
+    const new_body = th.readConfig(a) orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.indexOf(u8, new_body, "//") != null);
+}
+
+test "run --stdout does not write a file" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var th = try InitHome.init(a);
+    defer th.deinit();
+
+    const code = try run(testing.io, a, &th.env, false, true, null);
+    try testing.expectEqual(@as(u8, 0), code);
+    try testing.expect(th.readConfig(a) == null);
+}
+
+test "run without HOME fails with exit 110" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var env = std.process.Environ.Map.init(a);
+    const code = try run(testing.io, a, &env, false, false, null);
+    try testing.expectEqual(@as(u8, 110), code);
+}
