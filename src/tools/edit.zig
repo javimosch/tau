@@ -3,42 +3,44 @@ const bashmod = @import("bash.zig");
 
 pub const ToolResult = bashmod.ToolResult;
 
-/// Edit a file by replacing old_string with new_string (sed-based)
+/// Edit a file by replacing every occurrence of old_string with new_string.
+/// Performs a literal byte-for-byte replacement through the Io filesystem API,
+/// so any content (apostrophes, quotes, regex metacharacters, backslashes,
+/// newlines) is treated literally and written verbatim.
 pub fn editFile(io: std.Io, gpa: std.mem.Allocator, path: []const u8, old_string: []const u8, new_string: []const u8, timeout_ms: i64) !ToolResult {
-    // Escape special characters for sed
-    const old_escaped = try escapeForSed(gpa, old_string);
-    defer gpa.free(old_escaped);
+    _ = timeout_ms;
 
-    const new_escaped = try escapeForSed(gpa, new_string);
-    defer gpa.free(new_escaped);
-
-    const cmd = try std.fmt.allocPrint(gpa, "sed -i 's/{s}/{s}/g' {s}", .{ old_escaped, new_escaped, path });
-
-    defer gpa.free(cmd);
-    return bashmod.execBash(io, gpa, cmd, timeout_ms);
-}
-
-/// Escape special characters for sed pattern
-fn escapeForSed(gpa: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var result = std.ArrayList(u8).empty;
-    defer result.deinit(gpa);
-
-    for (input) |c| {
-        switch (c) {
-            '\\', '/', '[', ']', '.', '*', '^', '$', '&', '|', '{', '}', '?', '+', '(', ')' => {
-                try result.append(gpa, '\\');
-                try result.append(gpa, c);
-            },
-            '\n' => {
-                try result.appendSlice(gpa, "\\n");
-            },
-            else => {
-                try result.append(gpa, c);
-            },
-        }
+    if (old_string.len == 0) {
+        const m = try std.fmt.allocPrint(gpa, "edit: old_string cannot be empty", .{});
+        return ToolResult{ .success = false, .stdout = "", .stderr = m, .exit_code = 1 };
     }
 
-    return result.toOwnedSlice(gpa);
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch |err| {
+        const m = try std.fmt.allocPrint(gpa, "edit failed ({s}): {s}", .{ @errorName(err), path });
+        return ToolResult{ .success = false, .stdout = "", .stderr = m, .exit_code = 1 };
+    };
+    defer gpa.free(data);
+
+    const count = std.mem.count(u8, data, old_string);
+    var out_len = data.len;
+    if (new_string.len > old_string.len) {
+        out_len += count * (new_string.len - old_string.len);
+    } else if (old_string.len > new_string.len) {
+        out_len -= count * (old_string.len - new_string.len);
+    }
+
+    const out = try gpa.alloc(u8, out_len);
+    errdefer gpa.free(out);
+    _ = std.mem.replace(u8, data, old_string, new_string, out);
+
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = out }) catch |err| {
+        const m = try std.fmt.allocPrint(gpa, "edit failed ({s}): {s}", .{ @errorName(err), path });
+        return ToolResult{ .success = false, .stdout = "", .stderr = m, .exit_code = 1 };
+    };
+    gpa.free(out);
+
+    const ok = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s}", .{ count, path });
+    return ToolResult{ .success = true, .stdout = ok, .stderr = "", .exit_code = 0 };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -80,8 +82,7 @@ test "editFile treats regex metacharacters in old_string literally" {
 
     const path = try tmpPath(gpa, &tmp.sub_path, "regex.txt");
     defer gpa.free(path);
-    // "a.c" must match only the literal dotted token, NOT "abc" — this exercises
-    // escapeForSed. Without escaping, sed's '.' would match the 'b' too.
+    // "a.c" must match only the literal dotted token, NOT "abc".
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "a.c and abc\n" });
 
     const r = try editFile(io, gpa, path, "a.c", "X", 5000);
@@ -92,6 +93,81 @@ test "editFile treats regex metacharacters in old_string literally" {
     const got = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
     defer gpa.free(got);
     try std.testing.expectEqualStrings("X and abc\n", got);
+}
+
+test "editFile handles BRE metacharacters and apostrophes literally" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try tmpPath(gpa, &tmp.sub_path, "special.txt");
+    defer gpa.free(path);
+    // Chars that were mis-escaped or shell-broken under sed: | + ? { } ( ) ' \
+    const content = "a|b + c? d{e} (f) it's \\ back\n";
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = content });
+
+    const r = try editFile(io, gpa, path, "a|b", "X", 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("X + c? d{e} (f) it's \\ back\n", got);
+
+    const r2 = try editFile(io, gpa, path, "it's", "it is", 5000);
+    defer gpa.free(r2.stdout);
+    defer gpa.free(r2.stderr);
+
+    try std.testing.expect(r2.success);
+    const got2 = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
+    defer gpa.free(got2);
+    try std.testing.expectEqualStrings("X + c? d{e} (f) it is \\ back\n", got2);
+}
+
+test "editFile preserves newlines in new_string" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try tmpPath(gpa, &tmp.sub_path, "newline.txt");
+    defer gpa.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "foo\n" });
+
+    const r = try editFile(io, gpa, path, "foo", "line1\nline2", 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("line1\nline2\n", got);
+}
+
+test "editFile works on paths with spaces and apostrophes" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const parent = try tmpPath(gpa, &tmp.sub_path, "my dir's");
+    defer gpa.free(parent);
+    try std.Io.Dir.cwd().createDirPath(io, parent);
+
+    const path = try std.fmt.allocPrint(gpa, "{s}/file.txt", .{parent});
+    defer gpa.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "hello world\n" });
+
+    const r = try editFile(io, gpa, path, "world", "tau", 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("hello tau\n", got);
 }
 
 test "editFile fails on a nonexistent file" {
@@ -111,10 +187,20 @@ test "editFile fails on a nonexistent file" {
     try std.testing.expect(r.exit_code != 0);
 }
 
-test "escapeForSed escapes special characters and newlines" {
+test "editFile fails when old_string is empty" {
+    const io = std.testing.io;
     const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    const out = try escapeForSed(gpa, "a.b/[c]\n");
-    defer gpa.free(out);
-    try std.testing.expectEqualStrings("a\\.b\\/\\[c\\]\\n", out);
+    const path = try tmpPath(gpa, &tmp.sub_path, "empty.txt");
+    defer gpa.free(path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "x" });
+
+    const r = try editFile(io, gpa, path, "", "bar", 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(!r.success);
+    try std.testing.expectEqual(@as(u8, 1), r.exit_code);
 }

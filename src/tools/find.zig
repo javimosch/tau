@@ -5,12 +5,17 @@ pub const ToolResult = bashmod.ToolResult;
 
 /// Find files by name or pattern
 pub fn find(io: std.Io, gpa: std.mem.Allocator, pattern: []const u8, path: ?[]const u8, timeout_ms: i64) !ToolResult {
-    const cmd = if (path) |p|
-        try std.fmt.allocPrint(gpa, "find {s} -name '*{s}*'", .{ p, pattern })
-    else
-        try std.fmt.allocPrint(gpa, "find . -name '*{s}*'", .{ pattern });
+    const qpath = try bashmod.shQuote(gpa, if (path) |p| p else ".");
+    defer gpa.free(qpath);
 
+    const star_pattern = try std.fmt.allocPrint(gpa, "*{s}*", .{pattern});
+    defer gpa.free(star_pattern);
+    const qpattern = try bashmod.shQuote(gpa, star_pattern);
+    defer gpa.free(qpattern);
+
+    const cmd = try std.fmt.allocPrint(gpa, "find -- {s} -name {s}", .{ qpath, qpattern });
     defer gpa.free(cmd);
+
     return bashmod.execBash(io, gpa, cmd, timeout_ms);
 }
 
@@ -77,4 +82,26 @@ test "find fails on a nonexistent search path" {
 
     try std.testing.expect(!r.success);
     try std.testing.expect(r.exit_code != 0);
+}
+
+test "find handles patterns and paths with apostrophes and spaces" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir = try tmpPath(gpa, &tmp.sub_path, "my dir's");
+    defer gpa.free(dir);
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    const file = try std.fmt.allocPrint(gpa, "{s}/needle's log.txt", .{dir});
+    defer gpa.free(file);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = "x" });
+
+    const r = try find(io, gpa, "needle's", dir, 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "needle's log.txt") != null);
 }
