@@ -80,93 +80,131 @@ const help_text =
     \\
     \\Usage:
     \\  tau [options] [@files...] [prompt...]
+    \\  tau acp|fleet|models|skills|guide ...   (subcommands below)
+    \\
+    \\  Each positional arg is a user message; @path injects that file's
+    \\  contents as a separate user message.
     \\
     \\Options:
-    \\  -p, --print                  Non-interactive: process prompt and exit (default)
+    \\
+    \\  Model & provider:
     \\      --provider <name>        Provider: xiaomi (default), openai, deepseek, opencode-go
     \\      --model <pattern>        Model id, or provider/id (e.g. openai/gpt-4o-mini)
-    \\      --api-key <key>          API key (else provider env var, else builtin)
-    \\      --system-prompt <text>   Set the system prompt
-    \\      --append-system-prompt <text>  Append to the system prompt (repeatable)
-    \\      --mode <text|json>       Output mode (default: json)
-    \\      --no-stream              Disable streaming (streaming is default)
-    \\      --stream                 Enable streaming (overrides a no-stream config default)
-    \\  -t, --tools <csv>            Allowlist of tool names
-    \\  -xt, --exclude-tools <csv>   Denylist of tool names
-    \\  -nt, --no-tools              Disable all tools
-    \\      --thinking               Enable thinking chunks (show model reasoning)
-    \\      --debug                  Show perf stats and tool calls (input+output)
-    \\      --dry-run                Report the tools that would be called; execute none
+    \\      --api-key <key>          API key (see Environment below for full resolution order)
     \\      --temperature <f>        Sampling temperature (default: 0.7)
     \\      --max-tokens <n>         Max output tokens
     \\      --timeout-ms <n>         Request timeout in ms (default: 120000)
+    \\
+    \\  Output:
+    \\  -p, --print                  Non-interactive: process prompt and exit (default)
+    \\      --mode <text|json>       Output mode (default: json)
+    \\      --no-stream              Disable streaming (streaming is default)
+    \\      --stream                 Enable streaming (overrides a no-stream config default)
+    \\      --schema <json|@file>    JSON Schema for structured output. Model must
+    \\                               produce valid JSON matching this schema.
+    \\                               Inline: --schema '{"type":"object",...}'
+    \\                               File:   --schema @path/to/schema.json
+    \\      --thinking               Enable thinking chunks (show model reasoning)
+    \\
+    \\  Tools & agent loop:
+    \\  -t, --tools <csv>            Allowlist of tool names
+    \\  -xt, --exclude-tools <csv>   Denylist of tool names
+    \\  -nt, --no-tools              Disable all tools
+    \\      --role <author|critic|coordinator|none>
+    \\                               Set the agent role (default: none)
+    \\      --max-iterations <n>     Tool-loop runaway backstop (default: 100; forces a final answer)
+    \\
+    \\  System prompt & context files:
+    \\      --system-prompt <text>   Set the system prompt
+    \\      --append-system-prompt <text>  Append to the system prompt (repeatable)
+    \\      --scan-agents            Scan CWD for AGENTS.md files and list them
+    \\      --load-agents-md <path>  Load an AGENTS.md file into system context
+    \\      --auto-agents-md         Auto-load cwd/AGENTS.md on startup
+    \\
+    \\  Sessions & compaction:
     \\      --session <name>         Persist conversation + goal to ~/.config/tau/sessions/<name>.json
     \\      --context-window <n>     Model context window in tokens (default: per-provider)
     \\      --compact-threshold <f>  Auto-compact above this fraction of the window (default: 0.5)
     \\      --compact-keep-recent <n>  Tokens of recent history kept verbatim (default: 20000)
     \\      --no-compact             Disable automatic context compaction
-    \\      --role <author|critic|coordinator|none>
-    \\                          Set the agent role (default: none)
-    \\      --schema <json|@file>    JSON Schema for structured output. Model must
-    \\                          produce valid JSON matching this schema.
-    \\                          Inline: --schema '{\"type\":\"object\",...}'
-    \\                          File:   --schema @path/to/schema.json
-    \\      --max-iterations <n>     Tool-loop runaway backstop (default: 100; forces a final answer)
-    \\      --scan-agents            Scan CWD for AGENTS.md files and list them
-    \\      --load-agents-md <path>  Load an AGENTS.md file into system context
-    \\      --auto-agents-md         Auto-load cwd/AGENTS.md on startup
     \\      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
+    \\
+    \\  Diagnostics:
+    \\      --debug                  Show perf stats and tool calls (input+output)
+    \\      --dry-run                Report the tools that would be called; execute none
+    \\
+    \\  Help:
     \\      --help-json              Machine-readable help as JSON
     \\  -h, --help                   Show this help
     \\  -v, --version                Show version
     \\
-    \\Goal mode (in the prompt):
-    \\  /goal <objective>            Work autonomously until the objective is audited-complete
-    \\  /goal [--tokens N] <obj>     ...with a soft output-token budget (e.g. 250K)
-    \\  /goal status|pause|resume|clear|complete   Manage the session's goal (needs --session)
+    \\Environment:
+    \\  TAU_API_KEY                Fallback API key for any provider
+    \\  TAU_ENDPOINT               Override the provider's API endpoint URL
+    \\  XIAOMI_API_KEY, PIZIG_API_KEY
+    \\                             API key for provider "xiaomi"
+    \\  OPENAI_API_KEY             API key for provider "openai"
+    \\  DEEPSEEK_API_KEY           API key for provider "deepseek"
+    \\  OPENCODE_API_KEY           API key for provider "opencode-go"
     \\
-    \\ACP (Agent Client Protocol) server:
-    \\  tau acp serve [--acp-socket P] Run the JSON-RPC agent server (stdio, or a Unix socket)
-    \\  tau acp start                 Start the ACP server as a background daemon
-    \\  tau acp stop                  Stop the background ACP daemon
-    \\  tau acp status                Report ACP daemon status (JSON)
+    \\  API-key precedence: --api-key > config "keys"[provider] > provider env
+    \\  var > config "api_key" > TAU_API_KEY.
     \\
-    \\Author<->Critic loop:
-    \\  --role <author|critic|coordinator|none>  Set the agent role (default: none)
+    \\Files:
+    \\  ~/.config/tau/config.json          Defaults (provider, model, api_key, keys,
+    \\                                     mode, ...). Optional; CLI flags override it.
+    \\  ~/.config/tau/sessions/<name>.json Saved sessions (see --session)
+    \\  ~/.config/tau/fleets/<id>.json     Fleet manifests (see tau fleet)
+    \\  ~/.config/tau/acp.{sock,pid,log}   ACP daemon socket, pid, and log
+    \\  ~/.agents/skills/                  Skill library (see tau skills)
     \\
-    \\Fleet orchestration:
-    \\  tau fleet run --goal <text>   Decompose goal into work items and dispatch workers
-    \\      --coordinator-model <model> Override coordinator LLM model
-    \\      --worker-model <model>      Override worker LLM model
-    \\      --sequential                Run workers sequentially (default: parallel)
-    \\      --items <json>              Pre-supplied items JSON (skip coordinator)
-    \\      --schema <json|@file>        JSON Schema for the coordinator response
-    \\  tau fleet status <id>         Show fleet manifest (spec + per-item status)
-    \\  tau fleet list                List active fleet ids
-    \\  tau fleet logs <id>           Show per-worker session hint
-    \\  tau fleet cancel <id>         Cancel a running fleet
+    \\Subcommands:
     \\
-    \\Skills (autodiscover ~/.agents/skills/):
-    \\  tau skills list               List all discoverable skills
-    \\  tau skills search <query>     Search skills by keyword
-    \\  tau skills load <name>        Load a skill into system context
+    \\  Goal mode (in the prompt):
+    \\    /goal <objective>          Work autonomously until the objective is audited-complete
+    \\    /goal [--tokens N] <obj>   ...with a soft output-token budget (e.g. 250K)
+    \\    /goal status|pause|resume|clear|complete   Manage the session's goal (needs --session)
     \\
+    \\  ACP (Agent Client Protocol) server:
+    \\    tau acp serve [--acp-socket P]  Run the JSON-RPC agent server (stdio, or a Unix socket)
+    \\    tau acp start                 Start the ACP server as a background daemon
+    \\    tau acp stop                  Stop the background ACP daemon
+    \\    tau acp status                Report ACP daemon status (JSON)
     \\
+    \\  Fleet orchestration:
+    \\    tau fleet run --goal <text>   Decompose goal into work items and dispatch workers
+    \\        --coordinator-model <model> Override coordinator LLM model
+    \\        --worker-model <model>      Override worker LLM model
+    \\        --sequential                Run workers sequentially (default: parallel)
+    \\        --items <json>              Pre-supplied items JSON (skip coordinator)
+    \\        --schema <json|@file>       JSON Schema for the coordinator response
+    \\    tau fleet status <id>         Show fleet manifest (spec + per-item status)
+    \\    tau fleet list                List active fleet ids
+    \\    tau fleet logs <id>           Show per-worker session hint
+    \\    tau fleet cancel <id>         Cancel a running fleet
     \\
-    \\Models:
-    \\  tau models                    List available providers and models
+    \\  Skills (autodiscover ~/.agents/skills/):
+    \\    tau skills list               List all discoverable skills
+    \\    tau skills search <query>     Search skills by keyword
+    \\    tau skills load <name>        Load a skill into system context
     \\
-    \\Guide (embedded operator manual — read once, drive with no external docs):
-    \\  tau guide                     Print the full guide as JSON (agent-readable)
-    \\  tau guide --human             ...as markdown
-    \\\Examples:
+    \\  Models:
+    \\    tau models                    List available providers and models
+    \\
+    \\  Guide (embedded operator manual — read once, drive with no external docs):
+    \\    tau guide                     Print the full guide as JSON (agent-readable)
+    \\    tau guide --human             ...as markdown
+    \\
+    \\Examples:
     \\  tau "List the files in src/"
-    \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
+    \\  tau --tools bash,read "Count the .zig files under src/"
+    \\  tau --mode text --model openai/gpt-4o-mini "Explain this error" @log.txt
     \\  tau --session work1 "Remember: the build uses zig 0.16"
     \\  tau --session work1 "/goal add a --version flag and verify it builds"
     \\  tau --session work1 "/goal status"
     \\  tau --role author --tools bash,write "add version flag"
     \\  tau fleet run --goal "add OAuth and write tests"
+    \\  TAU_API_KEY=sk-... tau --provider deepseek "Say hi"
     \\
 ;
 
@@ -246,6 +284,13 @@ fn formatHelpJson(alloc: std.mem.Allocator) ![]u8 {
         "],\"goal_commands\":[\"/goal <objective>\",\"/goal status\",\"/goal pause\",\"/goal resume\",\"/goal clear\",\"/goal complete\"]" ++
         ",\"output_modes\":[\"text\",\"json\"]" ++
         ",\"defaults\":{\"mode\":\"json\",\"stream\":true,\"auto_compact\":true}" ++
+        ",\"env\":{\"TAU_API_KEY\":\"fallback API key for any provider\",\"TAU_ENDPOINT\":\"override the provider's API endpoint URL\"" ++
+        ",\"XIAOMI_API_KEY\":\"API key for provider xiaomi\",\"PIZIG_API_KEY\":\"API key for provider xiaomi\"" ++
+        ",\"OPENAI_API_KEY\":\"API key for provider openai\",\"DEEPSEEK_API_KEY\":\"API key for provider deepseek\"" ++
+        ",\"OPENCODE_API_KEY\":\"API key for provider opencode-go\"}" ++
+        ",\"api_key_precedence\":[\"--api-key\",\"config keys[provider]\",\"provider env var\",\"config api_key\",\"TAU_API_KEY\"]" ++
+        ",\"paths\":{\"config\":\"~/.config/tau/config.json\",\"sessions\":\"~/.config/tau/sessions/<name>.json\"" ++
+        ",\"fleets\":\"~/.config/tau/fleets/<id>.json\",\"acp\":\"~/.config/tau/acp.{sock,pid,log}\",\"skills\":\"~/.agents/skills/\"}" ++
         ",\"exit_codes\":{\"0\":\"success\",\"80\":\"invalid_argument\",\"82\":\"missing_required_field\",\"105\":\"connection_timeout\",\"106\":\"auth_failed\",\"110\":\"internal_error\",\"111\":\"unimplemented\"}}\n"
     );
 
@@ -686,4 +731,55 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     defer gpa.free(got);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
+}
+
+// Golden tests: any change to user-visible help output must be deliberate.
+// Regenerate goldens after an intentional change:
+//   zig build && ./zig-out/bin/tau --help > src/golden/help.txt
+//   ./zig-out/bin/tau --help-json | sed 's/"version":"[^"]*"/"version":"<version>"/' > src/golden/help-json.txt
+test "help_text matches golden snapshot" {
+    try std.testing.expectEqualStrings(@embedFile("golden/help.txt"), help_text);
+}
+
+test "formatHelpJson matches golden snapshot with version normalized" {
+    const gpa = std.testing.allocator;
+    const got = try formatHelpJson(gpa);
+    defer gpa.free(got);
+    // The version field changes per release; pin everything else byte-for-byte.
+    const normalized = try std.mem.replaceOwned(u8, gpa, got, version, "<version>");
+    defer gpa.free(normalized);
+    try std.testing.expectEqualStrings(@embedFile("golden/help-json.txt"), normalized);
+}
+
+test "help_text keeps the grouped section headers" {
+    const headers = [_][]const u8{
+        "Model & provider:",
+        "Output:",
+        "Tools & agent loop:",
+        "System prompt & context files:",
+        "Sessions & compaction:",
+        "Diagnostics:",
+        "Help:",
+        "Environment:",
+        "Files:",
+        "Subcommands:",
+        "Examples:",
+    };
+    for (headers) |h| {
+        const found = std.mem.indexOf(u8, help_text, h) != null;
+        if (!found) std.debug.print("help_text section header '{s}' missing\n", .{h});
+        try std.testing.expect(found);
+    }
+}
+
+test "help_text documents every provider env key in the Environment section" {
+    for (cfgmod.providers) |p| {
+        for (p.env_keys) |ek| {
+            const found = std.mem.indexOf(u8, help_text, ek) != null;
+            if (!found) std.debug.print("provider '{s}' env key '{s}' missing from help_text\n", .{ p.name, ek });
+            try std.testing.expect(found);
+        }
+    }
+    try std.testing.expect(std.mem.indexOf(u8, help_text, "TAU_API_KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help_text, "TAU_ENDPOINT") != null);
 }
