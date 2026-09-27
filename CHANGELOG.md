@@ -27,6 +27,9 @@ are backward compatible.
 - `docs/configuration.md` — configuration reference covering config keys, env
   vars, and precedence, including per-provider setup examples (#109, #120)
 - `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114)
+- `examples/04-json-event-stream.py` — minimal consumer for tau's NDJSON
+  stdout event stream — and `examples/ci/` — a non-interactive CI pattern
+  with a copy-paste GitHub Actions workflow (#148)
 - `tau models` subcommand — list providers and their default models
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 

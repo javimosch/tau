@@ -1,0 +1,55 @@
+# Example: run tau non-interactively in GitHub Actions.
+#
+# To adopt this in your own repository:
+#   1. Copy this file to .github/workflows/tau.yml
+#   2. Copy examples/ci/run.sh into your repo (or inline its tau command)
+#   3. Add a provider API key under Settings → Secrets and variables → Actions:
+#        XIAOMI_API_KEY · OPENAI_API_KEY · DEEPSEEK_API_KEY · TAU_API_KEY
+#
+# The job below drafts release notes from recent commits on every PR,
+# uploads them as a build artifact, and appends them to the job summary.
+name: tau-ci-example
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  draft-release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # tau is a single Zig binary. Build it from source (~1 min) — the
+      # version must be 0.16.0, matching the repo's pinned toolchain.
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build tau
+        run: |
+          git clone --depth 1 https://github.com/javimosch/tau /tmp/tau-src
+          cd /tmp/tau-src && zig build -Doptimize=ReleaseSafe
+          echo "TAU_BIN=/tmp/tau-src/zig-out/bin/tau" >> "$GITHUB_ENV"
+
+      # Faster alternative once you track a tagged release: download the
+      # prebuilt binary with the repo's install script instead of building:
+      #   curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+
+      - name: Draft release notes with tau
+        env:
+          XIAOMI_API_KEY: ${{ secrets.XIAOMI_API_KEY }}
+          TAU_OUT: tau-output.md
+        run: bash examples/ci/run.sh
+
+      - name: Upload tau output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tau-output
+          path: tau-output.md
+          if-no-files-found: ignore
