@@ -28,6 +28,9 @@ are backward compatible.
   vars, and precedence, including per-provider setup examples (#109, #120)
 - `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114)
 - `tau models` subcommand — list providers and their default models
+- `tau config show` — print the resolved effective config (config file + env +
+  CLI flags merged) as JSON with API keys redacted and their source reported
+  (#140)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed

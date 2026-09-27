@@ -66,6 +66,7 @@ _tau() {
                 'models:list available providers and models'
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+                'config:inspect the resolved effective config (show)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -121,6 +122,12 @@ _tau() {
                         'load:load a skill into the system context by name'
                     )
                     _arguments '1: :_describe skill_subcommand skill_cmds'
+                    ;;
+
+                config)
+                    # `config show` accepts the normal override flags so the
+                    # merged result can be previewed.
+                    _arguments '1: :(show)' $global_opts
                     ;;
 
                 models)
