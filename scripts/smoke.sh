@@ -1191,6 +1191,13 @@ test_group_release() {
   out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version v1.2.3 2>&1)
   contains "dry-run --version strips leading v" "$out" "releases/download/v1.2.3/"
 
+  # ── TAU_BASE_URL override (the release workflow's smoke job relies on it) ──
+  out=$(TAU_BASE_URL=http://127.0.0.1:18923 TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "TAU_BASE_URL overrides download base" "$out" "http://127.0.0.1:18923/latest/download/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_BASE_URL=file:///tmp/staged TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run --version 2.0.0 2>&1)
+  contains "TAU_BASE_URL composes with --version" "$out" "file:///tmp/staged/download/v2.0.0/tau-macos-aarch64.tar.gz"
+
   # ── error paths ──
   TAU_OS=plan9 TAU_ARCH=x "$inst" --dry-run >/dev/null 2>&1
   ok "dry-run rejects unsupported OS" "$?" 1
@@ -1212,10 +1219,76 @@ test_group_release() {
     contains "workflow pins zig 0.16.0" "$(cat "$wf")" "0.16.0"
     contains "workflow guards tag vs version.zig" "$(cat "$wf")" "version.zig"
     contains "workflow publishes checksums" "$(cat "$wf")" "SHA256SUMS"
+
+    # ── smoke job drift guards ──
+    contains "workflow has a smoke job" "$(cat "$wf")" "  smoke:"
+    contains "smoke job needs build" "$(cat "$wf")" "needs: build"
+    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke]"
+    contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
+    contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
+    contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
+    contains "smoke covers macos-aarch64" "$(cat "$wf")" "artifact: macos-aarch64"
+    contains "smoke installs via install.sh" "$(cat "$wf")" "install.sh --dir"
+    contains "smoke redirects install base URL" "$(cat "$wf")" "TAU_BASE_URL"
+    contains "smoke verifies --version" "$(cat "$wf")" "tau --version"
+    contains "smoke verifies --help" "$(cat "$wf")" "tau --help"
   fi
 
   # ── asset-name contract between workflow and installer ──
   contains "installer emits workflow-style asset names" "$(cat "$inst")" 'tau-$PLATFORM.tar.gz'
+
+  # ── offline end-to-end install via file:// (needs a built binary) ──
+  # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
+  # install through install.sh against TAU_BASE_URL=file://…, run the binary.
+  if [ -x "$ROOT/zig-out/bin/tau" ]; then
+    local asset_os asset_arch
+    case "$(uname -s)" in
+      Linux)  asset_os=linux ;;
+      Darwin) asset_os=macos ;;
+      *)      asset_os="" ;;
+    esac
+    asset_arch="$(uname -m)"
+    case "$asset_arch" in
+      amd64) asset_arch=x86_64 ;;
+      arm64) asset_arch=aarch64 ;;
+      x86_64|aarch64) ;;
+      *) asset_arch="" ;;
+    esac
+
+    if [ -n "$asset_os" ] && [ -n "$asset_arch" ]; then
+      local e2e asset
+      e2e="$(mktemp -d)"
+      asset="tau-$asset_os-$asset_arch.tar.gz"
+      mkdir -p "$e2e/srv/latest/download"
+      tar -czf "$e2e/srv/latest/download/$asset" -C "$ROOT/zig-out/bin" tau
+      (cd "$e2e/srv/latest/download" && \
+        { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
+
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin" 2>&1); rc=$?
+      ok "e2e file:// install exit" "$rc" 0
+      contains "e2e install reports dest" "$out" "installed tau -> $e2e/bin/tau"
+      [ -x "$e2e/bin/tau" ]; ok "e2e installed binary is executable" "$?" 0
+
+      out=$("$e2e/bin/tau" --version 2>&1); rc=$?
+      ok "e2e installed tau --version exit" "$rc" 0
+      contains "e2e tau --version shape" "$out" "tau "
+      out=$("$e2e/bin/tau" --help 2>&1); rc=$?
+      ok "e2e installed tau --help exit" "$rc" 0
+      contains "e2e tau --help shows usage" "$out" "Usage:"
+
+      # corrupted checksum must abort the install
+      printf '%064d  %s\n' 0 "$asset" > "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin2" 2>&1); rc=$?
+      ok "e2e rejects checksum mismatch" "$rc" 1
+      contains "e2e checksum failure message" "$out" "checksum verification failed"
+
+      rm -rf "$e2e"
+    else
+      note "release: skipping e2e install (unsupported host platform)"
+    fi
+  else
+    note "release: skipping e2e install (no zig-out/bin/tau build present)"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

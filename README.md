@@ -52,7 +52,10 @@ downloads the matching `tau-<os>-<arch>.tar.gz` from the latest GitHub release,
 verifies it against `SHA256SUMS.txt`, and installs to `~/.local/bin`. Options:
 `--version X.Y.Z` to pin a release, `--dir DIR` to change the install location,
 `--dry-run` to see the plan. All assets are built by
-[`.github/workflows/release.yml`](.github/workflows/release.yml) on version tags.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) on version
+tags — and before publish, each tarball is smoke-tested on its matching
+OS/arch runner by installing it through `install.sh` and running
+`tau --version`/`--help`.
 
 **From source:**
 

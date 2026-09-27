@@ -32,9 +32,17 @@ are backward compatible.
 - CI release workflow (`.github/workflows/release.yml`) publishing prebuilt
   `tau-<os>-<arch>.tar.gz` binaries for Linux and macOS on `v*` tags, plus a
   curl-able `install.sh` so adopters don't need a Zig toolchain (#143)
+- Release smoke gate: every built tarball is installed through `install.sh`
+  on its matching OS/arch runner and verified with `--version`/`--help`
+  before the release is published (#147)
+- `install.sh` `TAU_BASE_URL` env override — point the installer at a staging
+  dir (`file://…`) or mirror instead of GitHub releases (#147)
 
 ### Fixed
 
+- `install.sh` checksum matching now tolerates `./`-prefixed filenames in
+  `SHA256SUMS.txt`, and the release workflow emits clean filenames — a
+  mismatch that would have made every real install abort (#147)
 - Streaming: honor `--timeout-ms` on SSE requests (#76); tolerate whitespace in
   SSE tool-call and reasoning parsers (#68)
 - Provider response parsing: whitespace after JSON colons (#66) and before
