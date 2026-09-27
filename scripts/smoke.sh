@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "release:test_group_release"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -1147,6 +1148,74 @@ test_group_network_role_critic() {
     ok "--role critic response missing <APPROVED>/<BLOCKED>" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "critic output: $out"
   fi
+}
+
+# Group: release surface — install.sh installer + release workflow drift guards.
+# Fully offline: uses --dry-run and TAU_OS/TAU_ARCH overrides, never downloads.
+test_group_release() {
+  local out rc
+  local inst="$ROOT/install.sh"
+  local wf="$ROOT/.github/workflows/release.yml"
+
+  note "release: install.sh + workflow surface"
+
+  # ── install.sh basics ──
+  [ -f "$inst" ];  ok "install.sh exists" "$?" 0
+  [ -x "$inst" ];  ok "install.sh is executable" "$?" 0
+  sh -n "$inst" 2>/dev/null;   ok "install.sh passes sh -n syntax check" "$?" 0
+  bash -n "$inst" 2>/dev/null; ok "install.sh passes bash -n syntax check" "$?" 0
+
+  out=$("$inst" --help 2>&1); rc=$?
+  ok "install.sh --help exit" "$rc" 0
+  contains "install.sh --help shows usage" "$out" "--version"
+
+  # ── platform → asset name mapping (dry-run, no network) ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1); rc=$?
+  ok "dry-run linux/x86_64 exit" "$rc" 0
+  contains "dry-run linux/x86_64 asset" "$out" "tau-linux-x86_64.tar.gz"
+  contains "dry-run default hits latest" "$out" "releases/latest/download/"
+
+  out=$(TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/arm64 → macos-aarch64" "$out" "tau-macos-aarch64.tar.gz"
+
+  out=$(TAU_OS=darwin TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/x86_64 → macos-x86_64" "$out" "tau-macos-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=aarch64 "$inst" --dry-run 2>&1)
+  contains "dry-run linux/aarch64 asset" "$out" "tau-linux-aarch64.tar.gz"
+
+  # ── version pinning ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version 1.2.3 2>&1)
+  contains "dry-run --version pins tag URL" "$out" "releases/download/v1.2.3/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version v1.2.3 2>&1)
+  contains "dry-run --version strips leading v" "$out" "releases/download/v1.2.3/"
+
+  # ── error paths ──
+  TAU_OS=plan9 TAU_ARCH=x "$inst" --dry-run >/dev/null 2>&1
+  ok "dry-run rejects unsupported OS" "$?" 1
+
+  "$inst" --bogus-flag >/dev/null 2>&1
+  ok "install.sh rejects unknown flag" "$?" 1
+
+  TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version notaversion >/dev/null 2>&1
+  ok "install.sh rejects malformed --version" "$?" 1
+
+  # ── workflow drift guards ──
+  [ -f "$wf" ]; ok "release workflow exists" "$?" 0
+  if [ -f "$wf" ]; then
+    contains "workflow triggers on v* tags" "$(cat "$wf")" 'tags:'
+    contains "workflow builds linux-x86_64" "$(cat "$wf")" "linux-x86_64"
+    contains "workflow builds linux-aarch64" "$(cat "$wf")" "linux-aarch64"
+    contains "workflow builds macos-x86_64" "$(cat "$wf")" "macos-x86_64"
+    contains "workflow builds macos-aarch64" "$(cat "$wf")" "macos-aarch64"
+    contains "workflow pins zig 0.16.0" "$(cat "$wf")" "0.16.0"
+    contains "workflow guards tag vs version.zig" "$(cat "$wf")" "version.zig"
+    contains "workflow publishes checksums" "$(cat "$wf")" "SHA256SUMS"
+  fi
+
+  # ── asset-name contract between workflow and installer ──
+  contains "installer emits workflow-style asset names" "$(cat "$inst")" 'tau-$PLATFORM.tar.gz'
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

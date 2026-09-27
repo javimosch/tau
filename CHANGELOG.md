@@ -29,6 +29,9 @@ are backward compatible.
 - `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114)
 - `tau models` subcommand — list providers and their default models
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
+- CI release workflow (`.github/workflows/release.yml`) publishing prebuilt
+  `tau-<os>-<arch>.tar.gz` binaries for Linux and macOS on `v*` tags, plus a
+  curl-able `install.sh` so adopters don't need a Zig toolchain (#143)
 
 ### Fixed
 

@@ -1,0 +1,109 @@
+name: release
+
+# Publishes prebuilt tau binaries as a GitHub release so adopters don't need a
+# Zig toolchain. Triggered by pushing a v* tag (e.g. `git tag v0.5.0 && git
+# push origin v0.5.0`), or manually via workflow_dispatch for a build-only
+# dry run (artifacts are uploaded, no release is created).
+#
+# Assets: tau-<os>-<arch>.tar.gz for linux/macos × x86_64/aarch64, plus a
+# SHA256SUMS.txt manifest. install.sh consumes exactly these names.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # All targets are cross-compiled on one runner — Zig needs no
+          # per-platform toolchain or SDK.
+          - { zig_target: x86_64-linux-gnu,  artifact: linux-x86_64 }
+          - { zig_target: aarch64-linux-gnu, artifact: linux-aarch64 }
+          - { zig_target: x86_64-macos,      artifact: macos-x86_64 }
+          - { zig_target: aarch64-macos,     artifact: macos-aarch64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches src/version.zig
+        if: github.ref_type == 'tag'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          src="$(sed -n 's/.*version = "\([^"]*\)".*/\1/p' src/version.zig | head -n1)"
+          if [ "$src" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match src/version.zig ($src) — bump the version first"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches src/version.zig ($src)"
+
+      - name: Install Zig 0.16.0
+        run: |
+          curl -fsSL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      - name: Build tau (${{ matrix.zig_target }})
+        run: zig build --release=safe -Dtarget=${{ matrix.zig_target }}
+
+      - name: Run unit tests (native target only)
+        if: matrix.zig_target == 'x86_64-linux-gnu'
+        run: zig build test --summary all
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          tar -czf "dist/tau-${{ matrix.artifact }}.tar.gz" -C zig-out/bin tau
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.artifact }}
+          path: dist/*.tar.gz
+          retention-days: 30
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: (cd dist && sha256sum ./*.tar.gz > SHA256SUMS.txt)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set --  # tags carrying a suffix (e.g. v1.0.0-rc.1) publish as pre-releases
+          case "$TAG" in *-*) set -- --prerelease ;; esac
+          cat > /tmp/release-notes.md <<'EOF'
+          Prebuilt binaries for Linux and macOS (x86_64 and aarch64).
+
+          ## Install
+
+              curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+
+          Or download `tau-<os>-<arch>.tar.gz` below, verify it against
+          `SHA256SUMS.txt`, extract, and put `tau` on your PATH.
+          EOF
+          gh release create "$TAG" \
+            --title "tau $TAG" \
+            --notes-file /tmp/release-notes.md \
+            "$@" \
+            dist/*.tar.gz dist/SHA256SUMS.txt
