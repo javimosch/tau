@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "release:test_group_release"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -1146,6 +1147,147 @@ test_group_network_role_critic() {
   else
     ok "--role critic response missing <APPROVED>/<BLOCKED>" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "critic output: $out"
+  fi
+}
+
+# Group: release surface — install.sh installer + release workflow drift guards.
+# Fully offline: uses --dry-run and TAU_OS/TAU_ARCH overrides, never downloads.
+test_group_release() {
+  local out rc
+  local inst="$ROOT/install.sh"
+  local wf="$ROOT/.github/workflows/release.yml"
+
+  note "release: install.sh + workflow surface"
+
+  # ── install.sh basics ──
+  [ -f "$inst" ];  ok "install.sh exists" "$?" 0
+  [ -x "$inst" ];  ok "install.sh is executable" "$?" 0
+  sh -n "$inst" 2>/dev/null;   ok "install.sh passes sh -n syntax check" "$?" 0
+  bash -n "$inst" 2>/dev/null; ok "install.sh passes bash -n syntax check" "$?" 0
+
+  out=$("$inst" --help 2>&1); rc=$?
+  ok "install.sh --help exit" "$rc" 0
+  contains "install.sh --help shows usage" "$out" "--version"
+
+  # ── platform → asset name mapping (dry-run, no network) ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1); rc=$?
+  ok "dry-run linux/x86_64 exit" "$rc" 0
+  contains "dry-run linux/x86_64 asset" "$out" "tau-linux-x86_64.tar.gz"
+  contains "dry-run default hits latest" "$out" "releases/latest/download/"
+
+  out=$(TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/arm64 → macos-aarch64" "$out" "tau-macos-aarch64.tar.gz"
+
+  out=$(TAU_OS=darwin TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/x86_64 → macos-x86_64" "$out" "tau-macos-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=aarch64 "$inst" --dry-run 2>&1)
+  contains "dry-run linux/aarch64 asset" "$out" "tau-linux-aarch64.tar.gz"
+
+  # ── version pinning ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version 1.2.3 2>&1)
+  contains "dry-run --version pins tag URL" "$out" "releases/download/v1.2.3/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version v1.2.3 2>&1)
+  contains "dry-run --version strips leading v" "$out" "releases/download/v1.2.3/"
+
+  # ── TAU_BASE_URL override (the release workflow's smoke job relies on it) ──
+  out=$(TAU_BASE_URL=http://127.0.0.1:18923 TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "TAU_BASE_URL overrides download base" "$out" "http://127.0.0.1:18923/latest/download/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_BASE_URL=file:///tmp/staged TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run --version 2.0.0 2>&1)
+  contains "TAU_BASE_URL composes with --version" "$out" "file:///tmp/staged/download/v2.0.0/tau-macos-aarch64.tar.gz"
+
+  # ── error paths ──
+  TAU_OS=plan9 TAU_ARCH=x "$inst" --dry-run >/dev/null 2>&1
+  ok "dry-run rejects unsupported OS" "$?" 1
+
+  "$inst" --bogus-flag >/dev/null 2>&1
+  ok "install.sh rejects unknown flag" "$?" 1
+
+  TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version notaversion >/dev/null 2>&1
+  ok "install.sh rejects malformed --version" "$?" 1
+
+  # ── workflow drift guards ──
+  [ -f "$wf" ]; ok "release workflow exists" "$?" 0
+  if [ -f "$wf" ]; then
+    contains "workflow triggers on v* tags" "$(cat "$wf")" 'tags:'
+    contains "workflow builds linux-x86_64" "$(cat "$wf")" "linux-x86_64"
+    contains "workflow builds linux-aarch64" "$(cat "$wf")" "linux-aarch64"
+    contains "workflow builds macos-x86_64" "$(cat "$wf")" "macos-x86_64"
+    contains "workflow builds macos-aarch64" "$(cat "$wf")" "macos-aarch64"
+    contains "workflow pins zig 0.16.0" "$(cat "$wf")" "0.16.0"
+    contains "workflow guards tag vs version.zig" "$(cat "$wf")" "version.zig"
+    contains "workflow publishes checksums" "$(cat "$wf")" "SHA256SUMS"
+
+    # ── smoke job drift guards ──
+    contains "workflow has a smoke job" "$(cat "$wf")" "  smoke:"
+    contains "smoke job needs build" "$(cat "$wf")" "needs: build"
+    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke]"
+    contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
+    contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
+    contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
+    contains "smoke covers macos-aarch64" "$(cat "$wf")" "artifact: macos-aarch64"
+    contains "smoke installs via install.sh" "$(cat "$wf")" "install.sh --dir"
+    contains "smoke redirects install base URL" "$(cat "$wf")" "TAU_BASE_URL"
+    contains "smoke verifies --version" "$(cat "$wf")" "tau --version"
+    contains "smoke verifies --help" "$(cat "$wf")" "tau --help"
+  fi
+
+  # ── asset-name contract between workflow and installer ──
+  contains "installer emits workflow-style asset names" "$(cat "$inst")" 'tau-$PLATFORM.tar.gz'
+
+  # ── offline end-to-end install via file:// (needs a built binary) ──
+  # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
+  # install through install.sh against TAU_BASE_URL=file://…, run the binary.
+  if [ -x "$ROOT/zig-out/bin/tau" ]; then
+    local asset_os asset_arch
+    case "$(uname -s)" in
+      Linux)  asset_os=linux ;;
+      Darwin) asset_os=macos ;;
+      *)      asset_os="" ;;
+    esac
+    asset_arch="$(uname -m)"
+    case "$asset_arch" in
+      amd64) asset_arch=x86_64 ;;
+      arm64) asset_arch=aarch64 ;;
+      x86_64|aarch64) ;;
+      *) asset_arch="" ;;
+    esac
+
+    if [ -n "$asset_os" ] && [ -n "$asset_arch" ]; then
+      local e2e asset
+      e2e="$(mktemp -d)"
+      asset="tau-$asset_os-$asset_arch.tar.gz"
+      mkdir -p "$e2e/srv/latest/download"
+      tar -czf "$e2e/srv/latest/download/$asset" -C "$ROOT/zig-out/bin" tau
+      (cd "$e2e/srv/latest/download" && \
+        { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
+
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin" 2>&1); rc=$?
+      ok "e2e file:// install exit" "$rc" 0
+      contains "e2e install reports dest" "$out" "installed tau -> $e2e/bin/tau"
+      [ -x "$e2e/bin/tau" ]; ok "e2e installed binary is executable" "$?" 0
+
+      out=$("$e2e/bin/tau" --version 2>&1); rc=$?
+      ok "e2e installed tau --version exit" "$rc" 0
+      contains "e2e tau --version shape" "$out" "tau "
+      out=$("$e2e/bin/tau" --help 2>&1); rc=$?
+      ok "e2e installed tau --help exit" "$rc" 0
+      contains "e2e tau --help shows usage" "$out" "Usage:"
+
+      # corrupted checksum must abort the install
+      printf '%064d  %s\n' 0 "$asset" > "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin2" 2>&1); rc=$?
+      ok "e2e rejects checksum mismatch" "$rc" 1
+      contains "e2e checksum failure message" "$out" "checksum verification failed"
+
+      rm -rf "$e2e"
+    else
+      note "release: skipping e2e install (unsupported host platform)"
+    fi
+  else
+    note "release: skipping e2e install (no zig-out/bin/tau build present)"
   fi
 }
 
