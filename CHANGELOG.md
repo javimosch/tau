@@ -37,6 +37,9 @@ are backward compatible.
   before the release is published (#147)
 - `install.sh` `TAU_BASE_URL` env override — point the installer at a staging
   dir (`file://…`) or mirror instead of GitHub releases (#147)
+- `setup-tau` composite GitHub Action (repo-root `action.yml`) — install tau
+  in CI with a single `uses: javimosch/tau@<ref>` line; wraps `install.sh`,
+  puts `tau` on `PATH`, and exposes `tau-path`/`version` outputs (#151)
 
 ### Fixed
 

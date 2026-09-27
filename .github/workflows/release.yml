@@ -134,9 +134,53 @@ jobs:
           tau --help > /dev/null
           tau --help | grep 'Usage:'
 
+  smoke-action:
+    # Exercises the repo-root action.yml the way adopters consume it —
+    # `uses: ./` — against a staged local release tree (same TAU_BASE_URL
+    # trick as the smoke job, via the action's base-url input). Pins the
+    # action↔install.sh contract: inputs, PATH wiring, and outputs.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-x86_64
+          path: dist
+
+      - name: Stage and serve a local release tree
+        run: |
+          mkdir -p srv/latest/download
+          cp dist/tau-linux-x86_64.tar.gz srv/latest/download/
+          (cd srv/latest/download && sha256sum *.tar.gz > SHA256SUMS.txt)
+          (cd srv && python3 -m http.server 18924 --bind 127.0.0.1 >/tmp/tau-action-srv.log 2>&1 &)
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            curl -fsS -o /dev/null "http://127.0.0.1:18924/latest/download/SHA256SUMS.txt" && exit 0
+            sleep 1
+          done
+          echo "::error::local release server did not come up"
+          cat /tmp/tau-action-srv.log || true
+          exit 1
+
+      - name: Install tau via the setup-tau action
+        id: setup
+        uses: ./
+        with:
+          install-dir: ${{ runner.temp }}/tau-action-bin
+          base-url: http://127.0.0.1:18924
+
+      - name: Verify action outputs and PATH wiring
+        run: |
+          set -euo pipefail
+          test "${{ steps.setup.outputs.tau-path }}" = "${{ runner.temp }}/tau-action-bin/tau"
+          echo "${{ steps.setup.outputs.version }}" | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
+          tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
+          tau --help | grep 'Usage:'
+
   release:
     if: github.ref_type == 'tag'
-    needs: [build, smoke]
+    needs: [build, smoke, smoke-action]
     runs-on: ubuntu-latest
     permissions:
       contents: write

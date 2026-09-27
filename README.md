@@ -57,6 +57,19 @@ tags — and before publish, each tarball is smoke-tested on its matching
 OS/arch runner by installing it through `install.sh` and running
 `tau --version`/`--help`.
 
+**In GitHub Actions (one `uses:` line):**
+
+```yaml
+- uses: javimosch/tau@master        # or pin a release tag, e.g. @v0.5.0
+  with:
+    version: "0.4.0"                # optional — defaults to the latest release
+```
+
+The repo-root [`action.yml`](action.yml) is a composite action wrapping
+`install.sh`: it puts `tau` on `PATH` for later steps and exposes
+`tau-path`/`version` outputs. The same smoke suite verifies the action
+end-to-end via `uses: ./` before every release.
+
 **From source:**
 
 - **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against

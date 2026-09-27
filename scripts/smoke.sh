@@ -1223,7 +1223,7 @@ test_group_release() {
     # ── smoke job drift guards ──
     contains "workflow has a smoke job" "$(cat "$wf")" "  smoke:"
     contains "smoke job needs build" "$(cat "$wf")" "needs: build"
-    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke]"
+    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-action]"
     contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
     contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
     contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
@@ -1232,6 +1232,39 @@ test_group_release() {
     contains "smoke redirects install base URL" "$(cat "$wf")" "TAU_BASE_URL"
     contains "smoke verifies --version" "$(cat "$wf")" "tau --version"
     contains "smoke verifies --help" "$(cat "$wf")" "tau --help"
+
+    # ── smoke-action job drift guards (exercises action.yml via uses: ./) ──
+    contains "workflow has a smoke-action job" "$(cat "$wf")" "  smoke-action:"
+    contains "smoke-action needs build" "$(cat "$wf")" "needs: build"
+    contains "smoke-action uses the local action" "$(cat "$wf")" "uses: ./"
+    contains "smoke-action passes base-url" "$(cat "$wf")" "base-url: http://127.0.0.1:"
+    contains "smoke-action checks outputs" "$(cat "$wf")" "steps.setup.outputs.tau-path"
+  fi
+
+  # ── setup-tau composite action (repo-root action.yml) ──
+  local act="$ROOT/action.yml"
+  [ -f "$act" ]; ok "action.yml exists at repo root" "$?" 0
+  if [ -f "$act" ]; then
+    contains "action.yml is a composite action" "$(cat "$act")" "using: composite"
+    contains "action.yml invokes repo install.sh" "$(cat "$act")" 'GITHUB_ACTION_PATH/install.sh'
+    contains "action.yml exposes version input" "$(cat "$act")" "version:"
+    contains "action.yml exposes install-dir input" "$(cat "$act")" "install-dir:"
+    contains "action.yml exposes base-url input" "$(cat "$act")" "base-url:"
+    contains "action.yml maps version input to TAU_VERSION" "$(cat "$act")" "TAU_VERSION"
+    contains "action.yml maps install-dir input to TAU_INSTALL_DIR" "$(cat "$act")" "TAU_INSTALL_DIR"
+    contains "action.yml maps base-url input to TAU_BASE_URL" "$(cat "$act")" "TAU_BASE_URL"
+    contains "action.yml puts install dir on PATH" "$(cat "$act")" "GITHUB_PATH"
+    contains "action.yml emits step outputs" "$(cat "$act")" "GITHUB_OUTPUT"
+    contains "action.yml surfaces tau-path output" "$(cat "$act")" "tau-path"
+    contains "action.yml surfaces version output" "$(cat "$act")" "steps.install.outputs.version"
+    contains "action.yml uses bash for the run step" "$(cat "$act")" "shell: bash"
+
+    if python3 -c 'import yaml' 2>/dev/null; then
+      python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$act" 2>/dev/null
+      ok "action.yml parses as YAML" "$?" 0
+    else
+      note "release: skipping action.yml YAML parse (PyYAML unavailable)"
+    fi
   fi
 
   # ── asset-name contract between workflow and installer ──
