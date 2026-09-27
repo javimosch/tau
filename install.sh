@@ -15,6 +15,8 @@
 #   TAU_INSTALL_DIR   same as --dir
 #   TAU_OS            override `uname -s` detection (linux|darwin)
 #   TAU_ARCH          override `uname -m` detection (x86_64|aarch64|arm64)
+#   TAU_BASE_URL      override the releases base URL — useful for testing
+#                     installs against a staging dir (file://…) or mirror
 #
 # Release assets are produced by .github/workflows/release.yml and named
 # tau-<os>-<arch>.tar.gz alongside a SHA256SUMS.txt manifest.
@@ -22,7 +24,7 @@
 set -eu
 
 REPO="javimosch/tau"
-BASE="https://github.com/$REPO/releases"
+BASE="${TAU_BASE_URL:-https://github.com/$REPO/releases}"
 
 VERSION="${TAU_VERSION:-}"
 DEST="${TAU_INSTALL_DIR:-$HOME/.local/bin}"
@@ -48,6 +50,7 @@ Environment overrides:
   TAU_INSTALL_DIR   same as --dir
   TAU_OS            override `uname -s` detection (linux|darwin)
   TAU_ARCH          override `uname -m` detection (x86_64|aarch64|arm64)
+  TAU_BASE_URL      override the releases base URL (test/staging/mirror)
 EOF
 }
 
@@ -127,10 +130,10 @@ curl -fsSL "$ASSET_URL" -o "$TMP/$ASSET" \
 
 if curl -fsSL "$SUMS_URL" -o "$TMP/$SUMS" 2>/dev/null; then
   if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$TMP" && grep " $ASSET\$" "$SUMS" | sha256sum -c - >/dev/null) \
+    (cd "$TMP" && grep -E " (\./)?$ASSET\$" "$SUMS" | sha256sum -c - >/dev/null) \
       || fail "checksum verification failed for $ASSET — aborting"
   elif command -v shasum >/dev/null 2>&1; then
-    (cd "$TMP" && grep " $ASSET\$" "$SUMS" | shasum -a 256 -c - >/dev/null) \
+    (cd "$TMP" && grep -E " (\./)?$ASSET\$" "$SUMS" | shasum -a 256 -c - >/dev/null) \
       || fail "checksum verification failed for $ASSET — aborting"
   else
     echo "install.sh: warning: no sha256sum/shasum available — skipping checksum verification" >&2
