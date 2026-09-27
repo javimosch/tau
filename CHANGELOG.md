@@ -27,6 +27,9 @@ are backward compatible.
 - `docs/configuration.md` — configuration reference covering config keys, env
   vars, and precedence, including per-provider setup examples (#109, #120)
 - `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114)
+- `docs/integration.md` — stable integration contract: JSON stdout event
+  schema, error/warn envelopes, and exit codes, pinned by `src/contract.zig`
+  and a new `contract` smoke group (#144)
 - `tau models` subcommand — list providers and their default models
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 

@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "contract:test_group_contract"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -745,6 +746,122 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: integration contract — pins the exact JSON shapes documented in
+# docs/integration.md that agent consumers parse. All offline: discovery
+# commands, error/warn envelopes, and fleet/goal edge outputs.
+test_group_contract() {
+  local out rc tmp_home
+
+  note "integration contract (docs/integration.md)"
+
+  # tau models -> {"providers":[{name,default_model,endpoint,context_window}]}
+  out=$("$BIN" models); rc=$?
+  ok "models exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); ps=d["providers"]; assert len(ps)>0; assert all(set(["name","default_model","endpoint","context_window"]) <= set(p) for p in ps)' 2>/dev/null; then
+    ok "models providers entries have contract fields" 0 0
+  else
+    ok "models providers entries have contract fields" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "models output: $out"
+  fi
+
+  # tau --help-json -> pinned keys incl. exit_codes map and defaults
+  out=$("$BIN" --help-json); rc=$?
+  ok "--help-json exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d["name"]=="tau"; assert d["output_modes"]==["text","json"]; assert d["defaults"]["mode"]=="json"; ec=d["exit_codes"]; assert all(c in ec for c in ["0","80","82","105","106","110","111"]); assert isinstance(d["flags"],list) and len(d["flags"])>0' 2>/dev/null; then
+    ok "--help-json exposes flags, modes, defaults, exit_codes" 0 0
+  else
+    ok "--help-json exposes flags, modes, defaults, exit_codes" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "help-json output: $out"
+  fi
+
+  # Full error envelope on stderr: {"err":{code,type,message,recoverable}}
+  capture cerr "$BIN" --bogus
+  ok "unknown flag -> exit 80" "$cerr_rc" 80
+  if printf '%s' "$cerr_err" | grep '"err"' | head -1 | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e["code"]==80; assert "type" in e and "message" in e and "recoverable" in e' 2>/dev/null; then
+    ok "stderr err envelope has code/type/message/recoverable" 0 0
+  else
+    ok "stderr err envelope has code/type/message/recoverable" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "stderr: $cerr_err"
+  fi
+
+  # Fleet errors go to STDOUT (documented channel caveat) — minimal shape.
+  # --api-key fake so auth resolves and we deterministically reach the
+  # missing-goal guard (keyless envs exit 106 before it).
+  capture ferr "$BIN" fleet run --api-key fake
+  ok "fleet run without --goal -> exit 82" "$ferr_rc" 82
+  if printf '%s' "$ferr_out" | grep '"err"' | head -1 | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e["code"]==82 and "message" in e' 2>/dev/null; then
+    ok "fleet err envelope on stdout carries code+message" 0 0
+  else
+    ok "fleet err envelope on stdout carries code+message" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "stdout: $ferr_out"
+  fi
+
+  # tau fleet list -> {"fleets":[...]}
+  out=$("$BIN" fleet list); rc=$?
+  ok "fleet list exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json; assert isinstance(json.load(sys.stdin)["fleets"],list)' 2>/dev/null; then
+    ok "fleet list -> {fleets:[...]}" 0 0
+  else
+    ok "fleet list -> {fleets:[...]}" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "output: $out"
+  fi
+
+  # tau fleet status <nonexistent> -> {"fleet":null}
+  out=$("$BIN" fleet status "contract-nonexistent-$$"); rc=$?
+  ok "fleet status nonexistent exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json; assert json.load(sys.stdin)["fleet"] is None' 2>/dev/null; then
+    ok "fleet status nonexistent -> {fleet:null}" 0 0
+  else
+    ok "fleet status nonexistent -> {fleet:null}" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "output: $out"
+  fi
+
+  # tau skills list -> {"skills":[...]}
+  out=$("$BIN" skills list); rc=$?
+  ok "skills list exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json; assert isinstance(json.load(sys.stdin)["skills"],list)' 2>/dev/null; then
+    ok "skills list -> {skills:[...]}" 0 0
+  else
+    ok "skills list -> {skills:[...]}" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "output: $out"
+  fi
+
+  # tau skills load <unknown> -> exit 1 + not_found envelope on stderr
+  capture serr "$BIN" skills load "contract-nonexistent-skill-$$"
+  ok "skills load unknown -> exit 1" "$serr_rc" 1
+  if printf '%s' "$serr_err" | grep '"err"' | head -1 | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e["code"]==1 and e["type"]=="not_found"' 2>/dev/null; then
+    ok "skills load unknown -> err code 1, type not_found" 0 0
+  else
+    ok "skills load unknown -> err code 1, type not_found" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "stderr: $serr_err"
+  fi
+
+  # /goal subcommand without --session -> exit 80 + err envelope on stderr
+  # (--api-key fake skips the silent 106 so we reach the goal guard)
+  capture gerr "$BIN" --api-key fake "/goal status"
+  ok "/goal status without --session -> exit 80" "$gerr_rc" 80
+  if printf '%s' "$gerr_err" | grep '"err"' | head -1 | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e["code"]==80' 2>/dev/null; then
+    ok "/goal guard emits err envelope on stderr" 0 0
+  else
+    ok "/goal guard emits err envelope on stderr" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "stderr: $gerr_err"
+  fi
+
+  # Invalid config file -> {"warn":{"message"}} on stderr, exit stays 0
+  tmp_home="$(mktemp -d)"
+  register_temp_dir "$tmp_home"
+  mkdir -p "$tmp_home/.config/tau"
+  printf 'not json' > "$tmp_home/.config/tau/config.json"
+  capture warn env HOME="$tmp_home" "$BIN" --version
+  ok "--version with broken config -> exit 0" "$warn_rc" 0
+  if printf '%s' "$warn_err" | grep '"warn"' | head -1 | python3 -c 'import sys,json; w=json.load(sys.stdin)["warn"]; assert isinstance(w.get("message"),str) and len(w["message"])>0' 2>/dev/null; then
+    ok "broken config -> warn envelope on stderr" 0 0
+  else
+    ok "broken config -> warn envelope on stderr" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "stderr: $warn_err"
+  fi
 }
 
 # Group: --bench regression guard

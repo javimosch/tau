@@ -394,6 +394,10 @@ v0.4 known issues (see `.agents/skills/tau-maintenance/SKILL.md` for the full ga
 
 ## 📤 Output Envelope + Exit Codes
 
+The stable machine-readable contract — every JSON event shape, envelope, and
+exit code — is documented in [docs/integration.md](docs/integration.md) and
+pinned by tests (`zig build test`, `scripts/smoke.sh --group contract`).
+
 ### Output Modes
 
 | Mode | Command | Output |

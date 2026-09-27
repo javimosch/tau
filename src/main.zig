@@ -10,7 +10,7 @@ pub const name = "tau";
 pub const version = @import("version.zig").version;
 
 // Semantic exit codes (Square-style).
-const ExitCode = enum(u8) {
+pub const ExitCode = enum(u8) {
     success = 0,
     generic_failure = 1,
     invalid_argument = 80,
@@ -28,7 +28,7 @@ fn writeErr(s: []const u8) void {
     term.err(s);
 }
 
-fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
+pub fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
     const te = try json.escapeAlloc(gpa, error_type);
     defer gpa.free(te);
     const me = try json.escapeAlloc(gpa, message);
@@ -42,7 +42,7 @@ fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recover
     writeErr(j);
 }
 
-fn formatWarnJson(gpa: std.mem.Allocator, message: []const u8) ![]u8 {
+pub fn formatWarnJson(gpa: std.mem.Allocator, message: []const u8) ![]u8 {
     const me = try json.escapeAlloc(gpa, message);
     defer gpa.free(me);
     return try std.fmt.allocPrint(gpa, "{{\"warn\":{{\"message\":\"{s}\"}}}}\n", .{me});
@@ -55,7 +55,7 @@ fn printWarnJson(message: []const u8) void {
 }
 
 /// Serialize a `tau skills load` response with escaped name and content.
-fn formatSkillLoadJson(gpa: std.mem.Allocator, skill_name: []const u8, content: []const u8) ![]u8 {
+pub fn formatSkillLoadJson(gpa: std.mem.Allocator, skill_name: []const u8, content: []const u8) ![]u8 {
     const ne = try json.escapeAlloc(gpa, skill_name);
     defer gpa.free(ne);
     const ce = try json.escapeAlloc(gpa, content);
@@ -219,7 +219,7 @@ const flag_specs = [_]FlagSpec{
     .{ .long = "--version",              .short = "-v"           },
 };
 
-fn formatHelpJson(alloc: std.mem.Allocator) ![]u8 {
+pub fn formatHelpJson(alloc: std.mem.Allocator) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
 
@@ -624,6 +624,7 @@ test {
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
+    _ = @import("contract.zig");
 }
 
 test "flag_specs appear in help_text" {
