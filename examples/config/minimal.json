@@ -1,0 +1,5 @@
+{
+  "$schema": "https://raw.githubusercontent.com/javimosch/tau/master/config.schema.json",
+  "provider": "openai",
+  "model": "gpt-4o-mini"
+}

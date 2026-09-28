@@ -438,6 +438,8 @@ Optional config at `~/.config/tau/config.json`:
 ```
 
 CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md).
+JSON Schema for editor validation: [`config.schema.json`](config.schema.json);
+ready-to-copy examples: [`examples/config/`](examples/config/).
 
 ### Providers
 

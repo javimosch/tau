@@ -298,6 +298,7 @@ zig build test               # Full unit test suite
 ./scripts/smoke.sh --list-groups       # List all test groups
 ./scripts/smoke.sh --bench             # Smoke + resource benchmarks
 ./scripts/benchmark-resources.sh       # Standalone resource benchmarks
+./scripts/check-config-schema.py       # Validate examples/config/*.json + doc config blocks vs config.schema.json
 ./zig-out/bin/tau --help               # Verify help text
 ./zig-out/bin/tau --help-json          # Verify JSON schema
 ```

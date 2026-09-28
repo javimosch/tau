@@ -97,6 +97,28 @@ What it demonstrates:
 
 CLI flags always override the config file.
 
+### `config/` — ready-to-copy `config.json` files
+
+Starter configs for `~/.config/tau/config.json`, each carrying a `"$schema"`
+line so editors validate them against
+[`config.schema.json`](../config.schema.json):
+
+| File | Shows |
+|------|-------|
+| `config/minimal.json` | Provider + model defaults only |
+| `config/per-provider-keys.json` | Per-provider API keys via the `keys` map |
+| `config/batch.json` | Non-streaming, capped-output setup for scripted use |
+| `config/full.json` | Every supported key with a realistic value |
+
+```bash
+mkdir -p ~/.config/tau
+cp examples/config/minimal.json ~/.config/tau/config.json
+```
+
+All of them are validated against the schema by
+`scripts/check-config-schema.py` (also run as the `config-schema` smoke group
+and in CI).
+
 ---
 
 ## Quick reference

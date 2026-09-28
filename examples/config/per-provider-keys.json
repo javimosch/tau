@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/javimosch/tau/master/config.schema.json",
+  "provider": "deepseek",
+  "keys": {
+    "deepseek": "sk-your-deepseek-key",
+    "openai": "sk-your-openai-key",
+    "xiaomi": "your-xiaomi-key"
+  }
+}

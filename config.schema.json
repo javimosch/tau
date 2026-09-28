@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/config.schema.json",
+  "title": "tau configuration",
+  "description": "Schema for ~/.config/tau/config.json. All keys are optional; unknown keys are rejected here so typos surface in editors, even though tau itself ignores them. See docs/configuration.md for the full reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional editor binding for this schema. Ignored by tau."
+    },
+    "provider": {
+      "type": "string",
+      "description": "LLM provider name; must match an entry in the built-in provider table (tau models).",
+      "enum": ["xiaomi", "openai", "deepseek", "opencode-go"]
+    },
+    "model": {
+      "type": "string",
+      "description": "Model id, or 'provider/id' shorthand. Defaults to the provider's default model."
+    },
+    "api_key": {
+      "type": "string",
+      "description": "Global fallback API key. Sits below per-provider 'keys' in precedence; prefer env vars to keep secrets out of files."
+    },
+    "keys": {
+      "type": "object",
+      "description": "Per-provider API keys: provider name -> key string. Outranks the global api_key. Non-string values are skipped by tau.",
+      "additionalProperties": { "type": "string" }
+    },
+    "mode": {
+      "type": "string",
+      "description": "Output format.",
+      "enum": ["text", "json"]
+    },
+    "stream": {
+      "type": "boolean",
+      "description": "SSE token streaming. Set false for batch/non-interactive use (--no-stream)."
+    },
+    "thinking": {
+      "type": "boolean",
+      "description": "Emit model reasoning/thinking chunks (--thinking)."
+    },
+    "debug": {
+      "type": "boolean",
+      "description": "Log perf stats and tool I/O to stderr (--debug)."
+    },
+    "temperature": {
+      "type": "number",
+      "description": "Sampling temperature (--temperature)."
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Cap on output tokens (--max-tokens). Omit for uncapped."
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "description": "HTTP request timeout in milliseconds (--timeout-ms)."
+    },
+    "context_window": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Token capacity used for the compaction threshold (--context-window). Defaults per provider."
+    },
+    "auto_compact": {
+      "type": "boolean",
+      "description": "Auto-compact history when it grows too large (--no-compact disables)."
+    },
+    "compact_threshold": {
+      "type": "number",
+      "description": "Fraction of context_window that triggers compaction (--compact-threshold)."
+    },
+    "compact_keep_recent_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Recent tokens kept verbatim during compaction (--compact-keep-recent)."
+    },
+    "goal_max_iterations": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Per-run agentic loop cap in /goal mode (--goal-max-iterations)."
+    },
+    "goal_max_continues": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Cross-invocation continuation cap for goal mode (no CLI flag)."
+    }
+  }
+}

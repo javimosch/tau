@@ -63,6 +63,7 @@ ALL_TEST_GROUPS=(
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
   "config-file:test_group_config_file"
+  "config-schema:test_group_config_schema"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -472,6 +473,32 @@ test_group_config_file() {
   else
     ok "invalid config JSON degrades gracefully" 1 0
   fi
+}
+
+# Group: config.schema.json validates every shipped example config
+test_group_config_schema() {
+  local out rc badcfg
+
+  note "config.schema.json validation of shipped example configs"
+
+  out=$(python3 "$ROOT/scripts/check-config-schema.py" 2>&1); rc=$?
+  ok "check-config-schema.py exit" "$rc" 0
+  contains "schema check reports all valid" "$out" "config example(s) valid against config.schema.json"
+
+  # Negative: a config with an unknown key + wrong type must be rejected.
+  badcfg="$(mktemp "${TMPDIR:-/tmp}/tau-badcfg-XXXXXX.json")"
+  register_temp_file "$badcfg"
+  printf '{"temprature":0.5,"timeout_ms":"fast"}' > "$badcfg"
+  python3 "$ROOT/scripts/check-config-schema.py" --file "$badcfg" >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "0" ]; then
+    ok "--file rejects invalid config" 0 0
+  else
+    ok "--file rejects invalid config (accepted a bad config)" 1 0
+  fi
+
+  # Positive: every shipped example passes --file validation.
+  python3 "$ROOT/scripts/check-config-schema.py" --file "$ROOT/examples/config/full.json" >/dev/null 2>&1
+  ok "--file accepts examples/config/full.json" "$?" 0
 }
 
 # Group: Issue #17 goal mode subcommands offline
