@@ -998,3 +998,90 @@ test "formatEffectiveConfig emits null for non-finite floats (valid JSON)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"temperature\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "nan") == null);
 }
+
+test "formatEffectiveConfig reports config keys[<provider>] source and leaks no losing secret" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+    // Three lower levels are all populated — provider env, config global, and
+    // TAU_API_KEY all lose to the per-provider config key.
+    try env.put("OPENAI_API_KEY", "sk-env-loser-1a2b");
+    try env.put("TAU_API_KEY", "sk-tau-loser-3c4d");
+
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("openai", "sk-map-winner-5e6f");
+    const cfg = Config{
+        .provider = "openai",
+        .keys = km,
+        .config_api_key = "sk-global-loser-7g8h",
+    };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+
+    // The winner is reported with its exact source label and masked tail.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"api_key\":{\"set\":true,\"value\":\"***5e6f\",\"source\":\"config keys[openai]\"}") != null);
+    // The keys section echoes the same file key, masked again.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"keys\":{\"openai\":\"***5e6f\"}") != null);
+    // No raw secret — winner's or any loser's — appears anywhere in the output.
+    const secrets = [_][]const u8{ "sk-map-winner-5e6f", "sk-env-loser-1a2b", "sk-tau-loser-3c4d", "sk-global-loser-7g8h" };
+    for (secrets) |s| {
+        try std.testing.expect(std.mem.indexOf(u8, out, s) == null);
+    }
+}
+
+test "formatEffectiveConfig: --api-key flag outranks file keys, env, and TAU_API_KEY" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("OPENAI_API_KEY", "sk-env-loser-1a2b");
+    try env.put("TAU_API_KEY", "sk-tau-loser-3c4d");
+
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("openai", "sk-map-loser-5e6f");
+    const cfg = Config{
+        .provider = "openai",
+        .api_key = "sk-flag-winner-9i0j",
+        .keys = km,
+        .config_api_key = "sk-global-loser-7g8h",
+    };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"api_key\":{\"set\":true,\"value\":\"***9i0j\",\"source\":\"--api-key\"}") != null);
+    // Every losing secret stays out of the output (the map entry is still
+    // echoed in "keys", but only masked).
+    const secrets = [_][]const u8{ "sk-flag-winner-9i0j", "sk-map-loser-5e6f", "sk-env-loser-1a2b", "sk-tau-loser-3c4d", "sk-global-loser-7g8h" };
+    for (secrets) |s| {
+        try std.testing.expect(std.mem.indexOf(u8, out, s) == null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"keys\":{\"openai\":\"***5e6f\"}") != null);
+}
+
+test "formatEffectiveConfig fully masks a short resolved key" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+    // 8 chars or fewer get no tail at all — "***" only.
+    try env.put("TAU_API_KEY", "k3y-shrt");
+
+    const cfg = Config{ .provider = "openai" };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"api_key\":{\"set\":true,\"value\":\"***\",\"source\":\"env TAU_API_KEY\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "k3y-shrt") == null);
+}
+
+test "formatEffectiveConfig escapes the masked key tail as valid JSON" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+    // Last-4 tail contains a quote and a backslash: masked value is `***"f\g`
+    // which must be JSON-escaped, and the raw key must never appear.
+    try env.put("TAU_API_KEY", "abcde\"f\\g");
+
+    const cfg = Config{ .provider = "openai" };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"value\":\"***\\\"f\\\\g\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "abcde\"f\\g") == null);
+}
