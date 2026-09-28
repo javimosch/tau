@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "completions:test_group_completions"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -1147,6 +1148,54 @@ test_group_network_role_critic() {
     ok "--role critic response missing <APPROVED>/<BLOCKED>" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "critic output: $out"
   fi
+}
+
+# Group: shell completions coverage (offline drift guard)
+# Every flag advertised by --help-json and every subcommand/enum value must
+# appear in each shipped completion file (bash, zsh, fish, PowerShell).
+test_group_completions() {
+  local out flags f missing fl word
+  local files="completions/tau.bash completions/_tau completions/tau.fish completions/tau.ps1"
+
+  out=$("$BIN" --help-json)
+  flags=$(printf '%s' "$out" | python3 -c 'import sys,json; print("\n".join(f["name"].lstrip("-") for f in json.load(sys.stdin)["flags"]))' 2>/dev/null)
+  if [ -n "$flags" ]; then
+    ok "--help-json flag list extracted" 0 0
+  else
+    ok "--help-json flag list extracted" 1 0
+    return
+  fi
+
+  for f in $files; do
+    if [ ! -f "$ROOT/$f" ]; then
+      ok "$f exists" 1 0
+      continue
+    fi
+    ok "$f exists" 0 0
+
+    missing=""
+    for fl in $flags; do
+      grep -Fq -- "$fl" "$ROOT/$f" || missing="$missing $fl"
+    done
+    if [ -z "$missing" ]; then
+      ok "$f covers every --help-json flag" 0 0
+    else
+      ok "$f missing flags:$missing" 1 0
+    fi
+
+    missing=""
+    for word in acp fleet skills models guide \
+                xiaomi openai deepseek opencode-go text json \
+                author critic coordinator none \
+                bash ls read write edit grep find calculator; do
+      grep -Fqw -- "$word" "$ROOT/$f" || missing="$missing $word"
+    done
+    if [ -z "$missing" ]; then
+      ok "$f covers subcommands and enum values" 0 0
+    else
+      ok "$f missing words:$missing" 1 0
+    fi
+  done
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -33,8 +33,8 @@ _tau() {
         '--api-key=[API key (overrides env vars)]:key:'
         '--system-prompt=[set (replace) system prompt]:prompt:'
         '--append-system-prompt=[append to system prompt (repeatable)]:prompt:'
-        '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
-        '--exclude-tools=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
+        '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
+        '--exclude-tools=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
         '(-nt --no-tools)'{-nt,--no-tools}'[disable all built-in tools]'
         '--temperature=[sampling temperature (0.0–2.0)]:float:'
         '--max-tokens=[maximum output tokens]:n:'
@@ -66,6 +66,7 @@ _tau() {
                 'models:list available providers and models'
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+                'guide:print the embedded operator manual'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -83,6 +84,19 @@ _tau() {
 
                 fleet)
                     local curcontext="$curcontext" state line
+                    local -a fleet_flags=(
+                        '--goal=[fleet objective (natural language)]:text:'
+                        '--id=[fleet identifier]:id:'
+                        '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)'
+                        '--model=[model ID]:model:'
+                        '--api-key=[API key]:key:'
+                        '--coordinator-model=[coordinator agent model override]:model:'
+                        '--worker-model=[worker agent model override]:model:'
+                        '--sequential[run worker agents sequentially]'
+                        '--parallel[run worker agents in parallel (default)]'
+                        '--items=[pre-supplied work items, skips coordinator (JSON)]:json:'
+                        '--schema=[JSON Schema for work-item breakdown]:schema:_files'
+                    )
                     _arguments -C \
                         '1: :->fleet_sub' \
                         '*:: :->fleet_opts'
@@ -95,21 +109,11 @@ _tau() {
                                 'logs:stream worker session logs for a fleet ID'
                                 'cancel:cancel a running fleet by ID'
                             )
-                            _describe 'fleet subcommand' fleet_cmds
+                            # Flags are valid before the sub-subcommand too.
+                            _arguments '1: :_describe "fleet subcommand" fleet_cmds' $fleet_flags
                             ;;
                         fleet_opts)
-                            _arguments \
-                                '--goal=[fleet objective (natural language)]:text:' \
-                                '--id=[fleet identifier]:id:' \
-                                '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)' \
-                                '--model=[model ID]:model:' \
-                                '--api-key=[API key]:key:' \
-                                '--coordinator-model=[coordinator agent model override]:model:' \
-                                '--worker-model=[worker agent model override]:model:' \
-                                '--sequential[run worker agents sequentially]' \
-                                '--parallel[run worker agents in parallel (default)]' \
-                                '--items=[pre-supplied work items, skips coordinator (JSON)]:json:' \
-                                '--schema=[JSON Schema for work-item breakdown]:schema:_files'
+                            _arguments $fleet_flags
                             ;;
                     esac
                     ;;
@@ -121,6 +125,10 @@ _tau() {
                         'load:load a skill into the system context by name'
                     )
                     _arguments '1: :_describe skill_subcommand skill_cmds'
+                    ;;
+
+                guide)
+                    _arguments '--human[render the guide as markdown]'
                     ;;
 
                 models)

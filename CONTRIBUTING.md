@@ -106,7 +106,7 @@ src/
     provider.zig    # provider routing and HTTP serialization
 build.zig           # Zig build script
 scripts/            # smoke.sh, benchmark-resources.sh
-completions/        # bash (tau.bash) and zsh (_tau) completion scripts
+completions/        # bash (tau.bash), zsh (_tau), fish (tau.fish), PowerShell (tau.ps1)
 examples/           # annotated real-world workflow scripts
 docs/               # changelog, roadmap, architecture notes
 ```

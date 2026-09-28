@@ -473,6 +473,12 @@ zig build test
 
 Requires Zig 0.16.0 and `curl` on PATH.
 
+### Shell Completions
+
+Tab-completion scripts for Bash (`tau.bash`), Zsh (`_tau`), Fish (`tau.fish`),
+and PowerShell (`tau.ps1`) live in [`completions/`](completions/README.md) with
+per-shell install instructions.
+
 ---
 
 ## 🔧 Troubleshooting
