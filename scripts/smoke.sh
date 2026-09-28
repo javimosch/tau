@@ -1239,6 +1239,12 @@ test_group_release() {
     contains "smoke-action uses the local action" "$(cat "$wf")" "uses: ./"
     contains "smoke-action passes base-url" "$(cat "$wf")" "base-url: http://127.0.0.1:"
     contains "smoke-action checks outputs" "$(cat "$wf")" "steps.setup.outputs.tau-path"
+
+    # ── checksum chain drift guards (task #161) ──
+    contains "build emits per-asset checksums" "$(cat "$wf")" ".tar.gz.sha256"
+    contains "smoke verifies artifact checksum" "$(cat "$wf")" "Verify artifact checksum"
+    contains "smoke checks tarball against .sha256" "$(cat "$wf")" 'sha256sum -c "tau-'
+    contains "release self-verifies SHA256SUMS.txt" "$(cat "$wf")" "sha256sum -c SHA256SUMS.txt"
   fi
 
   # ── setup-tau composite action (repo-root action.yml) ──
@@ -1269,6 +1275,11 @@ test_group_release() {
 
   # ── asset-name contract between workflow and installer ──
   contains "installer emits workflow-style asset names" "$(cat "$inst")" 'tau-$PLATFORM.tar.gz'
+
+  # ── fail-closed checksum contract (task #161) ──
+  contains "installer documents TAU_SKIP_CHECKSUM" "$(cat "$inst")" "TAU_SKIP_CHECKSUM"
+  contains "installer fail-closes on missing manifest" "$(cat "$inst")" "refusing to install an unverified binary"
+  contains "installer reports asset absent from manifest" "$(cat "$inst")" "not listed in \$SUMS"
 
   # ── offline end-to-end install via file:// (needs a built binary) ──
   # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
@@ -1314,6 +1325,24 @@ test_group_release() {
       out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin2" 2>&1); rc=$?
       ok "e2e rejects checksum mismatch" "$rc" 1
       contains "e2e checksum failure message" "$out" "checksum verification failed"
+
+      # asset absent from the manifest must abort (fail closed)
+      printf '%064d  %s\n' 0 "tau-other-thing.tar.gz" > "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin3" 2>&1); rc=$?
+      ok "e2e rejects asset missing from manifest" "$rc" 1
+      contains "e2e manifest-miss message" "$out" "not listed in SHA256SUMS.txt"
+
+      # no manifest at all must abort (an attacker could strip it to hide tampering)
+      rm -f "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin4" 2>&1); rc=$?
+      ok "e2e rejects missing checksum manifest" "$rc" 1
+      contains "e2e missing-manifest message" "$out" "unverified binary"
+
+      # documented opt-out: bypass installs anyway, with a loud warning
+      out=$(TAU_SKIP_CHECKSUM=1 TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin5" 2>&1); rc=$?
+      ok "e2e TAU_SKIP_CHECKSUM bypass exit" "$rc" 0
+      contains "e2e skip-checksum warns" "$out" "TAU_SKIP_CHECKSUM=1"
+      [ -x "$e2e/bin5/tau" ]; ok "e2e skip-checksum installed binary" "$?" 0
 
       rm -rf "$e2e"
     else
