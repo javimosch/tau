@@ -539,6 +539,62 @@ test_group_config_show() {
   fi
   contains "config show reports flag source" "$out" '"source":"--api-key"'
 
+  # Full precedence ladder: seed a key at every level and peel the winner off
+  # one rung at a time — file keys[provider] > provider env > file api_key >
+  # TAU_API_KEY, with --api-key above them all. Losers' raw secrets must never
+  # appear in the output.
+  local ladder_home; ladder_home="$(mktemp -d)"; register_temp_dir "$ladder_home"
+  mkdir -p "$ladder_home/.config/tau"
+  printf '{"provider":"openai","api_key":"global-secret-3333","keys":{"openai":"map-secret-4444"}}' > "$ladder_home/.config/tau/config.json"
+
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY OPENAI_API_KEY="env-secret-5555" TAU_API_KEY="tau-secret-6666" HOME="$ladder_home" "$BIN" config show)
+  contains "config show keys[provider] beats env+file+tau" "$out" '"source":"config keys[openai]"'
+  contains "config show keys[provider] masked value" "$out" '"value":"***4444"'
+  for secret in map-secret-4444 env-secret-5555 tau-secret-6666 global-secret-3333; do
+    if printf '%s' "$out" | grep -q "$secret"; then
+      ok "config show leaks secret $secret" 1 0
+    else
+      ok "config show hides secret $secret" 0 0
+    fi
+  done
+
+  # --api-key outranks every level below it at once.
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY OPENAI_API_KEY="env-secret-5555" TAU_API_KEY="tau-secret-6666" HOME="$ladder_home" "$BIN" config show --api-key flag-secret-7777)
+  contains "config show flag beats all levels" "$out" '"source":"--api-key"'
+  contains "config show flag masked value" "$out" '"value":"***7777"'
+  for secret in flag-secret-7777 map-secret-4444 env-secret-5555 tau-secret-6666 global-secret-3333; do
+    if printf '%s' "$out" | grep -q "$secret"; then
+      ok "config show leaks secret $secret under --api-key" 1 0
+    else
+      ok "config show hides secret $secret under --api-key" 0 0
+    fi
+  done
+
+  # Drop keys[provider]: the provider env var now beats file api_key + TAU_API_KEY.
+  printf '{"provider":"openai","api_key":"global-secret-3333"}' > "$ladder_home/.config/tau/config.json"
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY OPENAI_API_KEY="env-secret-5555" TAU_API_KEY="tau-secret-6666" HOME="$ladder_home" "$BIN" config show)
+  contains "config show provider env beats file api_key" "$out" '"source":"env OPENAI_API_KEY"'
+  contains "config show provider env masked value" "$out" '"value":"***5555"'
+  for secret in env-secret-5555 global-secret-3333 tau-secret-6666; do
+    if printf '%s' "$out" | grep -q "$secret"; then
+      ok "config show leaks secret $secret under env" 1 0
+    else
+      ok "config show hides secret $secret under env" 0 0
+    fi
+  done
+
+  # Drop provider env: file api_key beats TAU_API_KEY.
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY TAU_API_KEY="tau-secret-6666" HOME="$ladder_home" "$BIN" config show)
+  contains "config show file api_key beats TAU_API_KEY" "$out" '"source":"config api_key"'
+  contains "config show file api_key masked value" "$out" '"value":"***3333"'
+  for secret in global-secret-3333 tau-secret-6666; do
+    if printf '%s' "$out" | grep -q "$secret"; then
+      ok "config show leaks secret $secret under file" 1 0
+    else
+      ok "config show hides secret $secret under file" 0 0
+    fi
+  done
+
   # No key anywhere -> set:false (read-only diagnostic, still exits 0).
   out=$(env -u TAU_API_KEY -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY HOME="$empty_home" "$BIN" config show); rc=$?
   ok "config show no key still exits 0" "$rc" 0

@@ -429,6 +429,63 @@ test "resolveApiKeyInfo: reports config_global, env_tau, and null" {
     }
 }
 
+test "resolveApiKeyInfo: precedence ladder peels each level in order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Seed every level at once: flag > keys[provider] > provider env >
+    // config global api_key > TAU_API_KEY.
+    var env = std.process.Environ.Map.init(a);
+    try env.put("OPENAI_API_KEY", "env-key");
+    try env.put("TAU_API_KEY", "tau-key");
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("openai", "map-key");
+
+    var cfg = Config{
+        .provider = "openai",
+        .api_key = "flag-key",
+        .keys = km,
+        .config_api_key = "global-key",
+    };
+
+    // 1. --api-key flag beats every lower level.
+    var rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqual(ApiKeySource.flag, rk.source);
+    try testing.expectEqualStrings("flag-key", rk.key);
+
+    // 2. Without the flag, the per-provider config key wins.
+    cfg.api_key = null;
+    rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqual(ApiKeySource.config_keys, rk.source);
+    try testing.expectEqualStrings("map-key", rk.key);
+
+    // 3. Without the map entry, the provider env var wins over both config
+    // global and TAU_API_KEY.
+    _ = cfg.keys.?.remove("openai");
+    rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqual(ApiKeySource.env_provider, rk.source);
+    try testing.expectEqualStrings("env-key", rk.key);
+    try testing.expectEqualStrings("OPENAI_API_KEY", rk.env_name.?);
+
+    // 4. Without provider env, config-file api_key wins over TAU_API_KEY.
+    _ = env.orderedRemove("OPENAI_API_KEY");
+    rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqual(ApiKeySource.config_global, rk.source);
+    try testing.expectEqualStrings("global-key", rk.key);
+
+    // 5. Last resort: TAU_API_KEY.
+    cfg.config_api_key = null;
+    rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqual(ApiKeySource.env_tau, rk.source);
+    try testing.expectEqualStrings("tau-key", rk.key);
+
+    // 6. With nothing left the resolution is null — no provider in the table
+    // sets a builtin key.
+    _ = env.orderedRemove("TAU_API_KEY");
+    try testing.expect(resolveApiKeyInfo(cfg, &env) == null);
+}
+
 test "redactApiKey: long keys keep only the last 4 chars" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
