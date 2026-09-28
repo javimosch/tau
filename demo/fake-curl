@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Fake `curl` for the tau demo recording (demo.tape).
+
+tau shells out to the `curl` binary on PATH for all provider HTTP calls
+(see src/llm/provider.zig). During demo recording this shim is placed earlier
+on PATH so the run is deterministic and needs no API key. Every command tau
+runs is still real — only the network leg is stubbed.
+
+It understands the two request shapes tau sends:
+
+  - non-streaming body ("stream":false)  -> prints one OpenAI-style JSON body
+  - streaming body ("stream":true)       -> prints SSE `data:` frames,
+                                            ending in `data: [DONE]`
+
+Response selection:
+  - request already carries a tool result (`"role":"tool"` message)
+        -> stream a final assistant answer about src/
+  - request carries a "tools" array (and no tool result yet)
+        -> stream a single `ls` tool_call for path "src"
+  - otherwise -> stream a canned chat completion
+
+To record demo.tape against a live provider instead, delete the PATH override
+in the tape's hidden setup and export a real key (README > Getting Started).
+Requires python3. Not part of the tau binary or test suite.
+"""
+import json
+import sys
+import time
+
+CHUNK_DELAY = 0.12  # seconds between SSE deltas — reads like real streaming
+
+
+def request_body(argv):
+    for i, arg in enumerate(argv):
+        if arg == "--data-raw" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--data-raw="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
+def emit_sse(payload):
+    sys.stdout.write("data: " + payload + "\n\n")
+    sys.stdout.flush()
+    time.sleep(CHUNK_DELAY)
+
+
+def sse_done():
+    sys.stdout.write("data: [DONE]\n\n")
+    sys.stdout.flush()
+
+
+def sse_content(text):
+    # Split into word-ish deltas so the GIF shows token streaming.
+    frags = text.split(" ")
+    for i, word in enumerate(frags):
+        piece = word + (" " if i < len(frags) - 1 else "")
+        emit_sse(json.dumps({"choices": [{"delta": {"content": piece}}]}))
+    sse_done()
+
+
+def sse_tool_call(name, arguments):
+    delta = {
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_9x7f2",
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    emit_sse(json.dumps(delta))
+    sse_done()
+
+
+def nonstream_response(content=None, tool_calls=None):
+    msg = {"role": "assistant", "content": content}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    out = {
+        "id": "chatcmpl-8v3r1",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": msg,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+            }
+        ],
+        "usage": {"total_tokens": 42},
+    }
+    sys.stdout.write(json.dumps(out))
+    return 0
+
+
+def pick_answer(messages):
+    prompt = " ".join(
+        m.get("content", "")
+        for m in messages
+        if m.get("role") == "user" and isinstance(m.get("content"), str)
+    ).lower()
+    if "hello" in prompt or "hi" in prompt:
+        return "Hello! This reply traveled one command in, one JSON envelope out — exactly how agents like it."
+    return (
+        "tau is a non-interactive, agent-first AI CLI written in Zig — "
+        "JSON output by default, built-in tools, sessions, and goal mode."
+    )
+
+
+def main():
+    body = request_body(sys.argv[1:])
+    try:
+        req = json.loads(body) if body else {}
+    except Exception:
+        req = {}
+    stream = bool(req.get("stream")) or "-N" in sys.argv
+    messages = req.get("messages") or []
+    has_tool_result = any(
+        m.get("role") == "tool" for m in messages if isinstance(m, dict)
+    )
+    has_tools = bool(req.get("tools"))
+
+    if not stream:
+        # Non-streaming path (complete()): single JSON body on stdout.
+        if has_tool_result:
+            return nonstream_response(
+                "src/ holds tau's Zig sources: main.zig (CLI), agent.zig "
+                "(tool loop), llm/ (provider HTTP), and tools/ (built-ins)."
+            )
+        if has_tools:
+            return nonstream_response(
+                tool_calls=[
+                    {
+                        "id": "call_9x7f2",
+                        "type": "function",
+                        "function": {
+                            "name": "ls",
+                            "arguments": json.dumps({"path": "src"}),
+                        },
+                    }
+                ]
+            )
+        return nonstream_response(pick_answer(messages))
+
+    # Streaming path (completeStreamWithTools()): SSE frames on stdout.
+    if has_tool_result:
+        sse_content(
+            "src/ holds tau's Zig sources: main.zig wires the CLI, agent.zig "
+            "runs the tool-calling loop, llm/ handles provider HTTP + SSE, "
+            "and tools/ implements bash, read, write, edit, ls, grep, find."
+        )
+    elif has_tools:
+        sse_tool_call("ls", json.dumps({"path": "src"}))
+    else:
+        sse_content(pick_answer(messages))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
