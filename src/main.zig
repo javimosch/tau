@@ -151,6 +151,11 @@ const help_text =
     \\  tau skills search <query>     Search skills by keyword
     \\  tau skills load <name>        Load a skill into system context
     \\
+    \\Diagnostics:
+    \\  tau doctor                    Validate setup (config file, provider, API key, connectivity)
+    \\      --offline                 Skip network checks
+    \\      --deep                    Also run an authenticated probe (spends ~1 token)
+    \\      --provider/--model/--api-key   Diagnose an override instead of the configured default
     \\
     \\
     \\Models:
@@ -451,6 +456,14 @@ pub fn main(init: std.process.Init) !void {
             printGuide(parsed.config.guide_human);
             return;
         },
+        .doctor => {
+            const doctor = @import("doctor.zig");
+            const code = doctor.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "doctor failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
         .err => {
             const msg = parsed.err_msg orelse "invalid arguments";
             printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", msg, false);
@@ -624,6 +637,7 @@ test {
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
+    _ = @import("doctor.zig");
 }
 
 test "flag_specs appear in help_text" {

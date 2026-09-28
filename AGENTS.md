@@ -239,6 +239,16 @@ tau --auto-agents-md \
   --mode text "follow project rules"     # Auto-load cwd/AGENTS.md
 ```
 
+#### 15. Diagnostics
+```bash
+tau doctor                             # JSON setup report; exit 0 ok/warn, 1 on any fail
+tau doctor --offline                   # Skip network checks (reported as "skip")
+tau doctor --deep                      # Also run an authenticated probe (max_tokens=1)
+tau doctor --provider openai           # Diagnose an override instead of the configured default
+tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
+# → {"ok":bool,"version":..,"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
@@ -277,6 +287,7 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `src/fleet.zig` | Fleet orchestration | Fleet command changes |
 | `src/config.zig` | `Config` struct + `Role` enum + key resolution | Adding config fields |
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
+| `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |
 | `src/llm/provider.zig` | LLM providers, HTTP, streaming | Adding providers |

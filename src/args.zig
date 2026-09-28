@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, doctor, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -133,6 +133,40 @@ pub fn parse(
     // `tau models` — list available providers and their models.
     if (argv.len > 0 and eq(argv[0], "models")) {
         return .{ .action = .models, .config = base };
+    }
+
+    // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]`
+    // — setup diagnostics; a command, not a prompt. An unknown provider is
+    // carried into the report as a failed check instead of exiting 80.
+    if (argv.len > 0 and eq(argv[0], "doctor")) {
+        var dcfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                dcfg.api_key = argv[j];
+            } else if (eq(a, "--offline")) {
+                dcfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                dcfg.doctor_deep = true;
+            } else return errResult(arena, "unknown doctor argument: {s}", .{a});
+        }
+        if (try resolveProviderAndModel(&dcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            dcfg.doctor_bad_provider = bad;
+        }
+        return .{ .action = .doctor, .config = dcfg };
     }
 
     // `tau guide [--human]` — embedded operator manual (cli-guide-spec, https://cli-specs.intrane.fr/).
@@ -900,6 +934,71 @@ test "parse: fleet run resolves provider and captures goal" {
     try std.testing.expect(!p.config.fleet_parallel);
     // Provider resolution happens inline for the fleet early-return path.
     try std.testing.expectEqualStrings(provider_mod.providers[0].endpoint, p.config.endpoint);
+}
+
+// ── `tau doctor` ────────────────────────────────────────────────────────────
+
+test "parse: doctor selects the doctor action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(!p.config.doctor_offline);
+    try std.testing.expect(!p.config.doctor_deep);
+    try std.testing.expect(p.config.doctor_bad_provider == null);
+    // Default provider resolved like a normal run.
+    try std.testing.expectEqualStrings(provider_mod.providers[0].name, p.config.provider);
+}
+
+test "parse: doctor accepts --offline/--deep and provider/model/api-key overrides" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "openai", "--offline", "--deep" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_offline);
+    try std.testing.expect(p.config.doctor_deep);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(provider_mod.findProvider("openai").?.default_model, p.config.model);
+
+    // --model provider/id shorthand resolves provider + model.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--model", "deepseek/deepseek-reasoner", "--api-key", "sk-x" }, .{});
+    try std.testing.expectEqualStrings("deepseek", q.config.provider);
+    try std.testing.expectEqualStrings("deepseek-reasoner", q.config.model);
+    try std.testing.expectEqualStrings("sk-x", q.config.api_key.?);
+}
+
+test "parse: doctor rejects unknown arguments and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "doctor", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown doctor argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "doctor", "--provider" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --provider", missing_val.err_msg.?);
+}
+
+test "parse: doctor carries an unknown provider as a failed check, not exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // From a flag override...
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expectEqualStrings("acme", p.config.doctor_bad_provider.?);
+
+    // ...and from a config-file provider with no flag override.
+    const q = try parseArgv(a, &.{ "tau", "doctor" }, .{ .provider = "acme" });
+    try std.testing.expectEqual(Action.doctor, q.action);
+    try std.testing.expectEqualStrings("acme", q.config.doctor_bad_provider.?);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {
