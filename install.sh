@@ -17,9 +17,14 @@
 #   TAU_ARCH          override `uname -m` detection (x86_64|aarch64|arm64)
 #   TAU_BASE_URL      override the releases base URL — useful for testing
 #                     installs against a staging dir (file://…) or mirror
+#   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (NOT recommended —
+#                     verification is what protects you from tampered or
+#                     corrupted downloads)
 #
 # Release assets are produced by .github/workflows/release.yml and named
-# tau-<os>-<arch>.tar.gz alongside a SHA256SUMS.txt manifest.
+# tau-<os>-<arch>.tar.gz alongside a SHA256SUMS.txt manifest. Verification is
+# mandatory by default: the install aborts if the manifest is unreachable, the
+# asset is not listed in it, no checksum tool exists, or the digest mismatches.
 
 set -eu
 
@@ -51,6 +56,7 @@ Environment overrides:
   TAU_OS            override `uname -s` detection (linux|darwin)
   TAU_ARCH          override `uname -m` detection (x86_64|aarch64|arm64)
   TAU_BASE_URL      override the releases base URL (test/staging/mirror)
+  TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (not recommended)
 EOF
 }
 
@@ -128,18 +134,27 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 curl -fsSL "$ASSET_URL" -o "$TMP/$ASSET" \
   || fail "download failed — check that release $RELEASE_DESC ships $ASSET ($ASSET_URL)"
 
-if curl -fsSL "$SUMS_URL" -o "$TMP/$SUMS" 2>/dev/null; then
-  if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$TMP" && grep -E " (\./)?$ASSET\$" "$SUMS" | sha256sum -c - >/dev/null) \
-      || fail "checksum verification failed for $ASSET — aborting"
-  elif command -v shasum >/dev/null 2>&1; then
-    (cd "$TMP" && grep -E " (\./)?$ASSET\$" "$SUMS" | shasum -a 256 -c - >/dev/null) \
-      || fail "checksum verification failed for $ASSET — aborting"
-  else
-    echo "install.sh: warning: no sha256sum/shasum available — skipping checksum verification" >&2
-  fi
+if [ "${TAU_SKIP_CHECKSUM:-0}" = "1" ]; then
+  echo "install.sh: warning: TAU_SKIP_CHECKSUM=1 — installing WITHOUT integrity verification" >&2
 else
-  echo "install.sh: warning: $SUMS not published for $RELEASE_DESC — skipping checksum verification" >&2
+  # Fail closed: a missing manifest or checksum tool means the binary cannot
+  # be proven intact, so the install aborts rather than silently trusting it.
+  curl -fsSL "$SUMS_URL" -o "$TMP/$SUMS" \
+    || fail "could not download $SUMS for $RELEASE_DESC — refusing to install an unverified binary (set TAU_SKIP_CHECKSUM=1 to bypass)"
+
+  grep -E " (\./)?$ASSET\$" "$TMP/$SUMS" > "$TMP/checksum-entry.txt" 2>/dev/null \
+    || fail "$ASSET is not listed in $SUMS for $RELEASE_DESC — refusing to install an unverified binary"
+
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$TMP" && sha256sum -c checksum-entry.txt >/dev/null) \
+      || fail "checksum verification failed for $ASSET — the download is corrupted or tampered; aborting"
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$TMP" && shasum -a 256 -c checksum-entry.txt >/dev/null) \
+      || fail "checksum verification failed for $ASSET — the download is corrupted or tampered; aborting"
+  else
+    fail "no sha256sum/shasum on PATH — install coreutils (or set TAU_SKIP_CHECKSUM=1 to bypass verification)"
+  fi
+  echo "install.sh: checksum verified against $SUMS"
 fi
 
 tar -xzf "$TMP/$ASSET" -C "$TMP" || fail "failed to extract $ASSET"

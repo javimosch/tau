@@ -51,10 +51,14 @@ The installer detects your OS/arch (Linux and macOS, x86_64 and aarch64),
 downloads the matching `tau-<os>-<arch>.tar.gz` from the latest GitHub release,
 verifies it against `SHA256SUMS.txt`, and installs to `~/.local/bin`. Options:
 `--version X.Y.Z` to pin a release, `--dir DIR` to change the install location,
-`--dry-run` to see the plan. All assets are built by
-[`.github/workflows/release.yml`](.github/workflows/release.yml) on version
-tags — and before publish, each tarball is smoke-tested on its matching
-OS/arch runner by installing it through `install.sh` and running
+`--dry-run` to see the plan. Checksum verification is mandatory and fail-fast:
+the install aborts if the `SHA256SUMS.txt` manifest is unreachable, the asset
+isn't listed in it, no `sha256sum`/`shasum` is available, or the digest
+mismatches — so a tampered or corrupted binary can never be installed
+(`TAU_SKIP_CHECKSUM=1` opts out, e.g. for air-gapped mirrors). All assets are
+built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on
+version tags — and before publish, each tarball is smoke-tested on its
+matching OS/arch runner by installing it through `install.sh` and running
 `tau --version`/`--help`.
 
 **In GitHub Actions (one `uses:` line):**

@@ -12,6 +12,11 @@ name: release
 # install.sh on the matching OS/arch runner (against a local stand-in for the
 # releases URL via TAU_BASE_URL) and verifies `tau --version`/`--help` run, so
 # a broken binary can never reach the published release.
+#
+# Integrity: the build job emits a .sha256 next to each tarball; the smoke
+# jobs verify it before staging; the release job re-checks SHA256SUMS.txt
+# before publish; install.sh then verifies downloads against it and aborts
+# on any mismatch (fail closed — set TAU_SKIP_CHECKSUM=1 to opt out).
 
 on:
   push:
@@ -63,15 +68,21 @@ jobs:
         run: zig build test --summary all
 
       - name: Package tarball
+        # A per-asset .sha256 travels with the tarball so the smoke jobs can
+        # verify the artifact survived the artifact store intact before they
+        # re-publish it to the staged release tree.
         run: |
           mkdir -p dist
           tar -czf "dist/tau-${{ matrix.artifact }}.tar.gz" -C zig-out/bin tau
+          (cd dist && sha256sum "tau-${{ matrix.artifact }}.tar.gz" > "tau-${{ matrix.artifact }}.tar.gz.sha256")
           ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.artifact }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
           retention-days: 30
 
   smoke:
@@ -97,6 +108,17 @@ jobs:
         with:
           name: dist-${{ matrix.artifact }}
           path: dist
+
+      - name: Verify artifact checksum
+        # Catch corruption between the build job and this runner before the
+        # tarball is ever staged for install. macOS runners lack sha256sum.
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "tau-${{ matrix.artifact }}.tar.gz.sha256"
+          else
+            shasum -a 256 -c "tau-${{ matrix.artifact }}.tar.gz.sha256"
+          fi
 
       - name: Stage a local release tree
         run: |
@@ -149,6 +171,9 @@ jobs:
           name: dist-linux-x86_64
           path: dist
 
+      - name: Verify artifact checksum
+        run: (cd dist && sha256sum -c tau-linux-x86_64.tar.gz.sha256)
+
       - name: Stage and serve a local release tree
         run: |
           mkdir -p srv/latest/download
@@ -194,6 +219,11 @@ jobs:
       - name: Generate checksums
         # Clean filenames (no ./ prefix) so install.sh's per-asset grep matches.
         run: (cd dist && sha256sum *.tar.gz > SHA256SUMS.txt)
+
+      - name: Verify published checksums
+        # Self-check the manifest the release ships — a malformed SHA256SUMS.txt
+        # would make every install.sh run abort (verification is fail-closed).
+        run: (cd dist && sha256sum -c SHA256SUMS.txt)
 
       - name: Create GitHub release
         env:

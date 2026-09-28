@@ -39,6 +39,12 @@ are backward compatible.
   before the release is published (#147)
 - `install.sh` `TAU_BASE_URL` env override — point the installer at a staging
   dir (`file://…`) or mirror instead of GitHub releases (#147)
+- Fail-closed SHA256 verification in `install.sh`: installs now abort when the
+  `SHA256SUMS.txt` manifest is unreachable, the asset isn't listed in it, or no
+  checksum tool is available — previously these only warned and continued
+  (#161). `TAU_SKIP_CHECKSUM=1` opts out. The release workflow also emits
+  per-asset `.sha256` files verified by the smoke jobs, and re-checks
+  `SHA256SUMS.txt` before publishing
 - `setup-tau` composite GitHub Action (repo-root `action.yml`) — install tau
   in CI with a single `uses: javimosch/tau@<ref>` line; wraps `install.sh`,
   puts `tau` on `PATH`, and exposes `tau-path`/`version` outputs (#151)
