@@ -39,7 +39,22 @@ tau --session myproject "/goal status"
 
 Zero to your first response in five steps. Every command below is copy-pasteable.
 
-### 1. Prerequisites
+### 1. Get tau
+
+**Prebuilt binary (recommended — no Zig toolchain needed):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+```
+
+The installer detects your OS/arch (Linux and macOS, x86_64 and aarch64),
+downloads the matching `tau-<os>-<arch>.tar.gz` from the latest GitHub release,
+verifies it against `SHA256SUMS.txt`, and installs to `~/.local/bin`. Options:
+`--version X.Y.Z` to pin a release, `--dir DIR` to change the install location,
+`--dry-run` to see the plan. All assets are built by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) on version tags.
+
+**From source:**
 
 - **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against
 - **`curl`** on your `PATH` — tau shells out to it for HTTP
@@ -51,6 +66,8 @@ curl --version | head -1
 ```
 
 ### 2. Clone and build
+
+(Skip this step if you installed a prebuilt binary above.)
 
 ```bash
 git clone https://github.com/javimosch/tau.git
@@ -471,7 +488,8 @@ zig build test
 ./scripts/smoke.sh --net
 ```
 
-Requires Zig 0.16.0 and `curl` on PATH.
+Requires Zig 0.16.0 and `curl` on PATH. To install a prebuilt binary instead,
+run `./install.sh` (no Zig needed — see [Getting Started](#-getting-started)).
 
 ---
 
