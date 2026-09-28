@@ -32,6 +32,8 @@ are backward compatible.
 - Startup stderr warning for unknown/misspelled config keys — names each
   unknown top-level key (and `keys.<name>` entries matching no provider) with
   "did you mean" suggestions; keys are still ignored, stdout stays pure JSON
+- Tests pinning the unknown-config-key warning's exact wording and the
+  `{"warn":{"message":...}}` stderr envelope (#155)
 
 ### Fixed
 

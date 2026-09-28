@@ -495,6 +495,22 @@ test_group_config_file() {
   else
     ok "valid config emits no warn line" 0 0
   fi
+
+  # Test 6: warn envelope shape is {"warn":{"message":...}} and fires even on --help
+  printf '{"temprature":0.2}' > "$mock_config/config.json"
+  help_err="$(HOME="$mock_home" "$BIN" --help 2>&1 >/dev/null)"
+  contains "warn line uses the {\"warn\":{\"message\":...}} envelope" "$help_err" '{"warn":{"message":'
+  contains "warn fires on --help invocation" "$help_err" 'did you mean \"temperature\"'
+
+  # Test 7: unrelated key warns but gets no suggestion
+  printf '{"zztopp":1}' > "$mock_config/config.json"
+  distant_err="$(HOME="$mock_home" "$BIN" --api-key fake "x" 2>&1 >/dev/null)"
+  contains "unrelated key still warns" "$distant_err" 'zztopp'
+  if printf '%s' "$distant_err" | grep -q 'did you mean'; then
+    ok "unrelated key gets no did-you-mean" 1 0
+  else
+    ok "unrelated key gets no did-you-mean" 0 0
+  fi
 }
 
 # Group: Issue #17 goal mode subcommands offline

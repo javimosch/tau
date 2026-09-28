@@ -680,6 +680,15 @@ test "formatWarnJson escapes quotes and control characters" {
     try std.testing.expect(std.mem.indexOf(u8, got, "/path\\nfix it") != null);
 }
 
+test "formatWarnJson emits the exact warn envelope shape" {
+    const gpa = std.testing.allocator;
+    const got = try formatWarnJson(gpa, "config file has unknown keys (ignored): \"temprature\"");
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"warn\":{\"message\":\"config file has unknown keys (ignored): \\\"temprature\\\"\"}}\n",
+        got);
+}
+
 test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     const gpa = std.testing.allocator;
     const got = try formatSkillLoadJson(gpa, "skill\"name", "Use \"quotes\" and \\ backslash\nline2");

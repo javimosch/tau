@@ -553,6 +553,86 @@ test "known_keys covers every FileConfig field" {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Exact-output pins for the unknown-key warning (#155)
+// ---------------------------------------------------------------------------
+
+test "pin: single typo produces the exact advisory sentence" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "provider": "openai", "temprature": 0.2 }
+    );
+
+    const expected = try std.fmt.allocPrint(arena,
+        "config file has unknown keys (ignored): \"temprature\" (did you mean \"temperature\"?) — fix or remove them in {s}/.config/tau/config.json",
+        .{th.home});
+    try testing.expectEqualStrings(expected, load(testing.io, arena, &th.env).config_warning.?);
+}
+
+test "pin: mixed unknown keys render sorted with exact qualifiers" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "zzz": 1, "temprature": 0.2, "keys": { "opnai": "x" } }
+    );
+
+    const expected = try std.fmt.allocPrint(arena,
+        "config file has unknown keys (ignored): \"keys.opnai\" (unknown provider — did you mean \"openai\"?), \"temprature\" (did you mean \"temperature\"?), \"zzz\" — fix or remove them in {s}/.config/tau/config.json",
+        .{th.home});
+    try testing.expectEqualStrings(expected, load(testing.io, arena, &th.env).config_warning.?);
+}
+
+test "pin: invalid JSON warns about syntax, not unknown keys" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena, "{ \"bogus\": ");
+
+    const expected = try std.fmt.allocPrint(arena,
+        "config file has invalid JSON and was ignored: {s}/.config/tau/config.json — fix the JSON syntax or delete the file",
+        .{th.home});
+    try testing.expectEqualStrings(expected, load(testing.io, arena, &th.env).config_warning.?);
+}
+
+test "load: non-object keys value produces no warning" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "keys": "oops" }
+    );
+
+    try testing.expectEqual(@as(?[]const u8, null), load(testing.io, arena, &th.env).config_warning);
+}
+
+test "suggest: two-edit typos still resolve, three-edit do not" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // Transposition = 2 edits → still inside the suggestion threshold.
+    try testing.expectEqual(@as(?usize, 2), editDistance(arena, "proivder", "provider"));
+    try testing.expectEqualStrings("provider", suggest(arena, "proivder", &known_keys).?);
+    // 3 edits is over the threshold → no suggestion.
+    try testing.expectEqual(@as(?usize, 3), editDistance(arena, "prvdr", "provider"));
+    try testing.expectEqual(@as(?[]const u8, null), suggest(arena, "prvdr", &known_keys));
+}
+
 test "path: builds <HOME>/.config/tau/config.json and is null without HOME" {
     var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_inst.deinit();
