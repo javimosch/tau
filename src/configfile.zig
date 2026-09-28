@@ -83,7 +83,136 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
             cfg.keys = km;
         }
     }
+    cfg.config_warning = buildUnknownKeyWarning(arena, bytes, p);
     return cfg;
+}
+
+// ---------------------------------------------------------------------------
+// Unknown-key warning ("did you mean")
+// ---------------------------------------------------------------------------
+
+/// Known top-level config keys, derived from FileConfig at comptime so the
+/// list can never drift from the schema. Parsing itself still uses
+/// .ignore_unknown_fields — the warning is purely advisory.
+const known_keys = blk: {
+    const fields = @typeInfo(FileConfig).@"struct".fields;
+    var names: [fields.len][]const u8 = undefined;
+    for (fields, 0..) |f, i| names[i] = f.name;
+    break :blk names;
+};
+
+/// Provider names, for validating `keys.<name>` entries.
+const provider_names = blk: {
+    var names: [cfgmod.providers.len][]const u8 = undefined;
+    for (cfgmod.providers, 0..) |p, i| names[i] = p.name;
+    break :blk names;
+};
+
+const UnknownKey = struct {
+    /// Display name: the raw key, or "keys.<name>" for keys entries.
+    name: []const u8,
+    /// Closest known key within 2 edits, if any.
+    suggestion: ?[]const u8 = null,
+    /// Extra qualifier rendered before the suggestion ("unknown provider").
+    qualifier: ?[]const u8 = null,
+};
+
+fn isKnownKey(key: []const u8) bool {
+    for (known_keys) |k| {
+        if (std.mem.eql(u8, k, key)) return true;
+    }
+    return false;
+}
+
+fn unknownKeyLess(_: void, a: UnknownKey, b: UnknownKey) bool {
+    return std.mem.order(u8, a.name, b.name) == .lt;
+}
+
+/// Levenshtein edit distance — config keys and provider names are short, so a
+/// two-row O(n·m) DP is plenty. Returns null on allocation failure.
+fn editDistance(arena: std.mem.Allocator, a: []const u8, b: []const u8) ?usize {
+    var p = arena.alloc(usize, b.len + 1) catch return null;
+    var c = arena.alloc(usize, b.len + 1) catch return null;
+    for (p, 0..) |*cell, j| cell.* = j;
+    for (a, 0..) |ca, i| {
+        c[0] = i + 1;
+        for (b, 0..) |cb, j| {
+            const sub = p[j] + @intFromBool(ca != cb);
+            c[j + 1] = @min(@min(c[j] + 1, p[j + 1] + 1), sub);
+        }
+        std.mem.swap([]usize, &p, &c);
+    }
+    return p[b.len];
+}
+
+/// Nearest candidate within 2 edits, else null — a 1–2 char typo always
+/// produces a suggestion, an unrelated name (e.g. "zztopp") never does.
+fn suggest(arena: std.mem.Allocator, name: []const u8, candidates: []const []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_d: usize = std.math.maxInt(usize);
+    for (candidates) |c| {
+        const d = editDistance(arena, name, c) orelse continue;
+        if (d <= 2 and d < best_d) {
+            best = c;
+            best_d = d;
+        }
+    }
+    return best;
+}
+
+/// Re-scan the raw file bytes (the FileConfig parse swallows unknown keys via
+/// .ignore_unknown_fields) and build a warning naming every top-level key that
+/// is not in the schema, plus `keys.<name>` entries matching no provider —
+/// resolveApiKey only ever looks up keys[cfg.provider], so a misspelled
+/// provider key silently fails auth. Returns null when the file is clean.
+fn buildUnknownKeyWarning(arena: std.mem.Allocator, bytes: []const u8, file_path: []const u8) ?[]const u8 {
+    const raw = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{}) catch return null;
+    if (raw != .object) return null;
+
+    var found: std.ArrayList(UnknownKey) = .empty;
+    for (raw.object.keys()) |key| {
+        if (isKnownKey(key)) continue;
+        found.append(arena, .{
+            .name = key,
+            .suggestion = suggest(arena, key, &known_keys),
+        }) catch {};
+    }
+    if (raw.object.get("keys")) |kv| {
+        if (kv == .object) {
+            for (kv.object.keys()) |pname| {
+                if (cfgmod.findProvider(pname) != null) continue;
+                const display = std.fmt.allocPrint(arena, "keys.{s}", .{pname}) catch continue;
+                found.append(arena, .{
+                    .name = display,
+                    .suggestion = suggest(arena, pname, &provider_names),
+                    .qualifier = "unknown provider",
+                }) catch {};
+            }
+        }
+    }
+    if (found.items.len == 0) return null;
+
+    std.mem.sort(UnknownKey, found.items, {}, unknownKeyLess);
+
+    var parts: std.ArrayList([]const u8) = .empty;
+    for (found.items) |uk| {
+        const frag: ?[]const u8 = if (uk.suggestion) |s|
+            if (uk.qualifier) |q|
+                std.fmt.allocPrint(arena, "\"{s}\" ({s} — did you mean \"{s}\"?)", .{ uk.name, q, s }) catch null
+            else
+                std.fmt.allocPrint(arena, "\"{s}\" (did you mean \"{s}\"?)", .{ uk.name, s }) catch null
+        else if (uk.qualifier) |q|
+            std.fmt.allocPrint(arena, "\"{s}\" ({s})", .{ uk.name, q }) catch null
+        else
+            std.fmt.allocPrint(arena, "\"{s}\"", .{uk.name}) catch null;
+        if (frag) |f| parts.append(arena, f) catch {};
+    }
+    if (parts.items.len == 0) return null;
+
+    const joined = std.mem.join(arena, ", ", parts.items) catch return null;
+    return std.fmt.allocPrint(arena,
+        "config file has unknown keys (ignored): {s} — fix or remove them in {s}",
+        .{ joined, file_path }) catch null;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +426,211 @@ test "load: unknown keys are ignored, known keys still applied" {
     try testing.expectEqualStrings("groq", cfg.provider);
     // Unrecognized fields don't disturb defaults.
     try testing.expectEqual(cfgmod.OutputMode.json, cfg.mode);
+    // ...but they are named in a warning now.
+    const w = cfg.config_warning.?;
+    try testing.expect(std.mem.indexOf(u8, w, "\"totally_unknown_field\"") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "\"nested\"") != null);
+}
+
+test "load: misspelled key warns with a did-you-mean suggestion" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "provider": "openai", "temprature": 0.2 }
+    );
+
+    const cfg = load(testing.io, arena, &th.env);
+    // The typo'd key is ignored (default preserved) but called out on stderr.
+    try testing.expectEqual(@as(f32, 0.7), cfg.temperature);
+    const w = cfg.config_warning.?;
+    try testing.expect(std.mem.indexOf(u8, w, "\"temprature\"") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "did you mean \"temperature\"?") != null);
+}
+
+test "load: unrelated unknown key warns without a suggestion" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "zztopp": 1 }
+    );
+
+    const w = load(testing.io, arena, &th.env).config_warning.?;
+    try testing.expect(std.mem.indexOf(u8, w, "\"zztopp\"") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "did you mean") == null);
+}
+
+test "load: multiple unknown keys are listed once, sorted alphabetically" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "zztopp": 1, "aaa": 2, "temprature": 0.2 }
+    );
+
+    const w = load(testing.io, arena, &th.env).config_warning.?;
+    const ia = std.mem.indexOf(u8, w, "\"aaa\"").?;
+    const it = std.mem.indexOf(u8, w, "\"temprature\"").?;
+    const iz = std.mem.indexOf(u8, w, "\"zztopp\"").?;
+    try testing.expect(ia < it and it < iz);
+    // Each key appears exactly once.
+    try testing.expectEqual(@as(?usize, null), std.mem.indexOf(u8, w[ia + 1 ..], "\"aaa\""));
+}
+
+test "load: keys entry matching no provider warns with provider suggestion" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "keys": { "opnai": "x" } }
+    );
+
+    const w = load(testing.io, arena, &th.env).config_warning.?;
+    try testing.expect(std.mem.indexOf(u8, w, "\"keys.opnai\"") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "did you mean \"openai\"?") != null);
+}
+
+test "load: all-valid config produces no warning" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "provider": "openai", "mode": "text", "stream": false,
+        \\   "keys": { "openai": "sk-1", "deepseek": "sk-2" } }
+    );
+
+    const cfg = load(testing.io, arena, &th.env);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.config_warning);
+}
+
+test "editDistance: exact, typo, and unrelated distances" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    try testing.expectEqual(@as(?usize, 0), editDistance(arena, "mode", "mode"));
+    try testing.expectEqual(@as(?usize, 1), editDistance(arena, "temprature", "temperature"));
+    try testing.expectEqual(@as(?usize, 1), editDistance(arena, "opnai", "openai"));
+    try testing.expectEqual(@as(?usize, 0), editDistance(arena, "", ""));
+    try testing.expectEqual(@as(?usize, 3), editDistance(arena, "", "abc"));
+    try testing.expect(editDistance(arena, "zztopp", "temperature").? > 2);
+}
+
+test "suggest: typos resolve to nearest key, unrelated names get none" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    try testing.expectEqualStrings("temperature", suggest(arena, "temprature", &known_keys).?);
+    try testing.expectEqualStrings("openai", suggest(arena, "opnai", &provider_names).?);
+    try testing.expectEqual(@as(?[]const u8, null), suggest(arena, "zztopp", &known_keys));
+    // Exact matches are never "unknown", but suggest still resolves them.
+    try testing.expectEqualStrings("mode", suggest(arena, "mode", &known_keys).?);
+}
+
+test "known_keys covers every FileConfig field" {
+    // Guard: the comptime-derived list must match the schema exactly.
+    const fields = @typeInfo(FileConfig).@"struct".fields;
+    try testing.expectEqual(fields.len, known_keys.len);
+    inline for (fields) |f| {
+        try testing.expect(isKnownKey(f.name));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Exact-output pins for the unknown-key warning (#155)
+// ---------------------------------------------------------------------------
+
+test "pin: single typo produces the exact advisory sentence" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "provider": "openai", "temprature": 0.2 }
+    );
+
+    const expected = try std.fmt.allocPrint(arena,
+        "config file has unknown keys (ignored): \"temprature\" (did you mean \"temperature\"?) — fix or remove them in {s}/.config/tau/config.json",
+        .{th.home});
+    try testing.expectEqualStrings(expected, load(testing.io, arena, &th.env).config_warning.?);
+}
+
+test "pin: mixed unknown keys render sorted with exact qualifiers" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "zzz": 1, "temprature": 0.2, "keys": { "opnai": "x" } }
+    );
+
+    const expected = try std.fmt.allocPrint(arena,
+        "config file has unknown keys (ignored): \"keys.opnai\" (unknown provider — did you mean \"openai\"?), \"temprature\" (did you mean \"temperature\"?), \"zzz\" — fix or remove them in {s}/.config/tau/config.json",
+        .{th.home});
+    try testing.expectEqualStrings(expected, load(testing.io, arena, &th.env).config_warning.?);
+}
+
+test "pin: invalid JSON warns about syntax, not unknown keys" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena, "{ \"bogus\": ");
+
+    const expected = try std.fmt.allocPrint(arena,
+        "config file has invalid JSON and was ignored: {s}/.config/tau/config.json — fix the JSON syntax or delete the file",
+        .{th.home});
+    try testing.expectEqualStrings(expected, load(testing.io, arena, &th.env).config_warning.?);
+}
+
+test "load: non-object keys value produces no warning" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena,
+        \\{ "keys": "oops" }
+    );
+
+    try testing.expectEqual(@as(?[]const u8, null), load(testing.io, arena, &th.env).config_warning);
+}
+
+test "suggest: two-edit typos still resolve, three-edit do not" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // Transposition = 2 edits → still inside the suggestion threshold.
+    try testing.expectEqual(@as(?usize, 2), editDistance(arena, "proivder", "provider"));
+    try testing.expectEqualStrings("provider", suggest(arena, "proivder", &known_keys).?);
+    // 3 edits is over the threshold → no suggestion.
+    try testing.expectEqual(@as(?usize, 3), editDistance(arena, "prvdr", "provider"));
+    try testing.expectEqual(@as(?[]const u8, null), suggest(arena, "prvdr", &known_keys));
 }
 
 test "path: builds <HOME>/.config/tau/config.json and is null without HOME" {

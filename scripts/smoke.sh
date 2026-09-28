@@ -472,6 +472,45 @@ test_group_config_file() {
   else
     ok "invalid config JSON degrades gracefully" 1 0
   fi
+
+  # Test 4: unknown/misspelled keys warn on stderr; stdout stays pure JSON
+  printf '{"provider":"openai","temprature":0.2,"keys":{"opnai":"x"}}' > "$mock_config/config.json"
+  warn_err="$(HOME="$mock_home" "$BIN" --api-key fake "x" 2>&1 >/dev/null)"
+  contains "unknown config key emits {\"warn\"} on stderr" "$warn_err" '"warn"'
+  contains "warning names the typo'd key" "$warn_err" 'temprature'
+  contains "warning suggests the correct key" "$warn_err" 'did you mean \"temperature\"'
+  contains "warning flags keys.<unknown-provider>" "$warn_err" 'keys.opnai'
+  warn_out="$(HOME="$mock_home" "$BIN" --api-key fake "x" 2>/dev/null)"
+  if printf '%s' "$warn_out" | grep -q '"warn"'; then
+    ok "warning keeps stdout clean" 1 0
+  else
+    ok "warning keeps stdout clean" 0 0
+  fi
+
+  # Test 5: all-valid config emits no warning
+  printf '{"provider":"openai","keys":{"openai":"x"}}' > "$mock_config/config.json"
+  ok_err="$(HOME="$mock_home" "$BIN" --api-key fake "x" 2>&1 >/dev/null)"
+  if printf '%s' "$ok_err" | grep -q '"warn"'; then
+    ok "valid config emits no warn line" 1 0
+  else
+    ok "valid config emits no warn line" 0 0
+  fi
+
+  # Test 6: warn envelope shape is {"warn":{"message":...}} and fires even on --help
+  printf '{"temprature":0.2}' > "$mock_config/config.json"
+  help_err="$(HOME="$mock_home" "$BIN" --help 2>&1 >/dev/null)"
+  contains "warn line uses the {\"warn\":{\"message\":...}} envelope" "$help_err" '{"warn":{"message":'
+  contains "warn fires on --help invocation" "$help_err" 'did you mean \"temperature\"'
+
+  # Test 7: unrelated key warns but gets no suggestion
+  printf '{"zztopp":1}' > "$mock_config/config.json"
+  distant_err="$(HOME="$mock_home" "$BIN" --api-key fake "x" 2>&1 >/dev/null)"
+  contains "unrelated key still warns" "$distant_err" 'zztopp'
+  if printf '%s' "$distant_err" | grep -q 'did you mean'; then
+    ok "unrelated key gets no did-you-mean" 1 0
+  else
+    ok "unrelated key gets no did-you-mean" 0 0
+  fi
 }
 
 # Group: Issue #17 goal mode subcommands offline
