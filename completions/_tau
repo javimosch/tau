@@ -66,6 +66,7 @@ _tau() {
                 'models:list available providers and models'
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+                'init:write a commented starter config (~/.config/tau/config.json)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -121,6 +122,13 @@ _tau() {
                         'load:load a skill into the system context by name'
                     )
                     _arguments '1: :_describe skill_subcommand skill_cmds'
+                    ;;
+
+                init)
+                    _arguments \
+                        '--force[overwrite an existing config file]' \
+                        '--stdout[print the starter config without writing it]' \
+                        '--provider=[scaffold for a specific provider]:provider:(xiaomi openai deepseek opencode-go)'
                     ;;
 
                 models)
