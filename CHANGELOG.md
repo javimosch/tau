@@ -30,6 +30,9 @@ are backward compatible.
   expanded with copy-pasteable configs for JetBrains, VS Code, Neovim
   (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
+- `tau config show` — print the resolved effective config (config file + env +
+  CLI flags merged) as JSON with API keys redacted and their source reported
+  (#140)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed

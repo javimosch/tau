@@ -250,6 +250,32 @@ it on. There are no `--no-thinking`/`--no-debug` flags.
 
 ---
 
+## Inspecting the resolved config
+
+`tau config show` prints the effective configuration as JSON — the same merge
+a run would see: config file → environment → CLI flags. It's a read-only
+diagnostic; it makes no network calls and never requires an API key.
+
+```bash
+tau config show                       # effective config right now
+tau config show --provider openai     # preview overrides without running
+```
+
+Secrets are never printed. The resolved key is masked (`"***"` plus the last
+four characters) and `api_key.source` reports which precedence level supplied
+it — `"--api-key"`, `"config keys[<provider>]"`, `"env <VAR>"`,
+`"config api_key"`, `"env TAU_API_KEY"`, or `"builtin"`. The `keys` map lists
+each configured per-provider key, also masked. `endpoint_source` says whether
+the endpoint came from the provider table or `env:TAU_ENDPOINT`, and
+`config_file` reports the probed path, whether a file was found, and any parse
+warning.
+
+Subcommand discipline matches `tau fleet`/`tau skills`: bare `tau config` and
+unknown subcommands exit `80`; `tau config show` takes no prompt and rejects
+positional arguments.
+
+---
+
 ## Storage paths
 
 All paths derive from `$HOME`:

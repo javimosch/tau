@@ -439,6 +439,13 @@ Optional config at `~/.config/tau/config.json`:
 
 CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md).
 
+Inspect the resolved effective config (config file + env + CLI flags merged) with `tau config show` — output is JSON and API keys are always redacted:
+
+```bash
+tau config show                          # what tau would use right now
+tau config show --provider openai        # preview flag overrides without running
+```
+
 ### Providers
 
 | Provider | Endpoint | Env var(s) | Default model |
