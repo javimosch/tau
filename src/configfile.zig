@@ -40,6 +40,9 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     var cfg: Config = .{};
     const p = path(arena, env) orelse return cfg;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch return cfg;
+    // File exists and was read; record the path even if the JSON below fails
+    // to parse (config_warning carries that) so diagnostics can report it.
+    cfg.config_path = p;
     const fc = std.json.parseFromSliceLeaky(FileConfig, arena, bytes, .{
         .ignore_unknown_fields = true,
     }) catch {

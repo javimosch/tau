@@ -155,25 +155,67 @@ pub const Config = struct {
     /// Set by configfile.load() when the config file exists but has invalid JSON.
     /// main.zig emits a warning and continues with defaults.
     config_warning: ?[]const u8 = null,
+    /// Set by configfile.load() to the path of the config file that was read
+    /// (set even when the JSON is invalid — config_warning covers that case).
+    config_path: ?[]const u8 = null,
+
+    // --- Doctor (src/doctor.zig) ---
+    /// `tau doctor --offline` — skip network checks (reported as "skip").
+    doctor_offline: bool = false,
+    /// `tau doctor --deep` — run an authenticated probe (spends ~1 token).
+    doctor_deep: bool = false,
+    /// Provider name that failed table lookup while parsing `tau doctor` args.
+    /// Doctor reports it as a failed check instead of exiting 80 so the report
+    /// still carries diagnostics for the rest of the setup chain.
+    doctor_bad_provider: ?[]const u8 = null,
 };
 
-/// Resolve the effective API key. Precedence:
+/// Where the resolved API key came from. Surfaced by `tau doctor` so the
+/// key's provenance can be reported without printing the key itself.
+pub const ApiKeySource = enum {
+    /// `--api-key` CLI flag.
+    flag,
+    /// Config file `keys["<provider>"]` (per-provider key).
+    config_keys,
+    /// A provider-specific environment variable (env_name says which).
+    env_provider,
+    /// Config file global `api_key`.
+    config_global,
+    /// `TAU_API_KEY` environment variable.
+    env_tau,
+    /// Provider built-in key compiled into the binary.
+    builtin,
+};
+
+/// The resolved API key plus provenance for diagnostics.
+pub const ResolvedKey = struct {
+    key: []const u8,
+    source: ApiKeySource,
+    /// Populated for .env_provider (e.g. "OPENAI_API_KEY") and .env_tau
+    /// ("TAU_API_KEY"); null otherwise.
+    env_name: ?[]const u8 = null,
+};
+
+/// Resolve the effective API key with provenance. Precedence:
 /// 1. `--api-key` (explicit flag)
 /// 2. config `keys[selected_provider]`
 /// 3. provider env var(s)
 /// 4. config global `api_key`
 /// 5. `TAU_API_KEY`
 /// 6. provider builtin / keyless
-pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
+/// `source` reports which level supplied the key and, for env-var sources,
+/// `env_name` says which variable. `tau doctor` uses this to report key
+/// provenance without printing the key.
+pub fn resolveApiKeyInfo(cfg: Config, env: *std.process.Environ.Map) ?ResolvedKey {
     // 1. --api-key (explicit flag)
     if (cfg.api_key) |k| {
-        if (k.len > 0) return k;
+        if (k.len > 0) return .{ .key = k, .source = .flag };
     }
 
     // 2. config keys[selected_provider]
     if (cfg.keys) |keys_map| {
         if (keys_map.get(cfg.provider)) |k| {
-            if (k.len > 0) return k;
+            if (k.len > 0) return .{ .key = k, .source = .config_keys };
         }
     }
 
@@ -181,29 +223,34 @@ pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
     if (findProvider(cfg.provider)) |p| {
         for (p.env_keys) |ek| {
             if (env.get(ek)) |v| {
-                if (v.len > 0) return v;
+                if (v.len > 0) return .{ .key = v, .source = .env_provider, .env_name = ek };
             }
         }
     }
 
     // 4. config global api_key
     if (cfg.config_api_key) |k| {
-        if (k.len > 0) return k;
+        if (k.len > 0) return .{ .key = k, .source = .config_global };
     }
 
     // 5. TAU_API_KEY
     if (env.get("TAU_API_KEY")) |v| {
-        if (v.len > 0) return v;
+        if (v.len > 0) return .{ .key = v, .source = .env_tau, .env_name = "TAU_API_KEY" };
     }
 
     // 6. provider builtin
     if (findProvider(cfg.provider)) |p| {
         if (p.builtin_key) |bk| {
-            if (bk.len > 0) return bk;
+            if (bk.len > 0) return .{ .key = bk, .source = .builtin };
         }
     }
 
     return null;
+}
+
+pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
+    const rk = resolveApiKeyInfo(cfg, env) orelse return null;
+    return rk.key;
 }
 
 const testing = std.testing;

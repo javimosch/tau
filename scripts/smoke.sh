@@ -63,6 +63,7 @@ ALL_TEST_GROUPS=(
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
   "config-file:test_group_config_file"
+  "doctor:test_group_doctor"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -472,6 +473,96 @@ test_group_config_file() {
   else
     ok "invalid config JSON degrades gracefully" 1 0
   fi
+}
+
+# Group: tau doctor — offline-first setup diagnostics (issue #127)
+# All assertions run with --offline (or keyless --deep) so no real network or
+# API key is needed; ambient keys/config are scrubbed via env -u + mock HOME.
+test_group_doctor() {
+  local rc mock_home mock_config
+
+  note "tau doctor (offline diagnostics)"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+  mock_config="$mock_home/.config/tau"
+  mkdir -p "$mock_config"
+
+  # 1. Keyless env + no config file: api_key fails, exit 1, network checks skip.
+  capture doc_keyless env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  ok "doctor --offline keyless exit 1" "$doc_keyless_rc" 1
+  if printf '%s' "$doc_keyless_out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
+    ok "doctor report is valid JSON" 0 0
+  else
+    ok "doctor report is valid JSON" 1 0
+  fi
+  contains "keyless report is not ok" "$doc_keyless_out" '"ok":false'
+  contains "api_key check fails" "$doc_keyless_out" '"name":"api_key","status":"fail"'
+  contains "api_key hint names provider env vars" "$doc_keyless_out" 'XIAOMI_API_KEY'
+  contains "missing config file is ok" "$doc_keyless_out" '"name":"config_file","status":"ok"'
+  contains "provider_resolution ok" "$doc_keyless_out" '"name":"provider_resolution","status":"ok"'
+  contains "endpoint_reachable skipped offline" "$doc_keyless_out" '"name":"endpoint_reachable","status":"skip"'
+  contains "auth_probe skipped offline" "$doc_keyless_out" '"name":"auth_probe","status":"skip"'
+  contains "curl check present" "$doc_keyless_out" '"name":"curl"'
+  contains "report has summary" "$doc_keyless_out" '"summary":{'
+
+  # 2. Key via env + --provider override: local checks pass -> exit 0.
+  capture doc_openai env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-doctor-secret HOME="$mock_home" "$BIN" doctor --offline --provider openai
+  ok "doctor --offline --provider openai with key exit 0" "$doc_openai_rc" 0
+  contains "report ok:true" "$doc_openai_out" '"ok":true'
+  contains "provider override reported" "$doc_openai_out" 'provider=openai'
+  contains "key source attributed to env" "$doc_openai_out" 'env:OPENAI_API_KEY'
+  if printf '%s' "$doc_openai_out" | grep -qF 'sk-doctor-secret'; then
+    ok "key material never printed" 1 0
+  else
+    ok "key material never printed" 0 0
+  fi
+
+  # 3. --model provider/id shorthand resolves the provider.
+  capture doc_shorthand env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --model deepseek/deepseek-reasoner
+  contains "--model provider/id shorthand resolves" "$doc_shorthand_out" 'provider=deepseek'
+  contains "shorthand model reported" "$doc_shorthand_out" 'model=deepseek-reasoner'
+
+  # 4. Malformed config.json: config_file fails with the path; the remaining
+  #    checks still run (no early abort).
+  printf 'this is not valid json' > "$mock_config/config.json"
+  capture doc_badcfg env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  ok "malformed config exit 1" "$doc_badcfg_rc" 1
+  contains "config_file fails" "$doc_badcfg_out" '"name":"config_file","status":"fail"'
+  contains "config_file message names path" "$doc_badcfg_out" '.config/tau/config.json'
+  contains "api_key check still ran" "$doc_badcfg_out" '"name":"api_key"'
+  contains "endpoint check still ran" "$doc_badcfg_out" '"name":"endpoint_reachable"'
+
+  # 5. Config file naming an unknown provider: config_file warns and
+  #    provider_resolution fails (exit 1, not the parse-error 80).
+  printf '{"provider":"nope"}' > "$mock_config/config.json"
+  capture doc_badprov env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  ok "unknown config provider exit 1" "$doc_badprov_rc" 1
+  contains "config_file warns on unknown provider" "$doc_badprov_out" '"name":"config_file","status":"warn"'
+  contains "provider_resolution fails" "$doc_badprov_out" '"name":"provider_resolution","status":"fail"'
+  contains "provider_resolution names the bad provider" "$doc_badprov_out" "unknown provider 'nope'"
+
+  # 6. Unknown --provider flag: also a report-level fail, not exit 80.
+  rm -f "$mock_config/config.json"
+  capture doc_flagprov env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --provider nope
+  ok "unknown --provider exit 1" "$doc_flagprov_rc" 1
+  contains "flag provider_resolution fails" "$doc_flagprov_out" '"name":"provider_resolution","status":"fail"'
+
+  # 7. --deep with no key: auth_probe still skips (nothing to probe).
+  capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --deep
+  contains "--deep keyless auth_probe skips" "$doc_deep_out" '"name":"auth_probe","status":"skip"'
+
+  # 8. Argument validation.
+  "$BIN" doctor --bogus >/dev/null 2>&1; ok "doctor --bogus -> exit 80" "$?" 80
+  "$BIN" doctor --provider >/dev/null 2>&1; ok "doctor --provider missing value -> exit 80" "$?" 80
+  "$BIN" --help 2>&1 | grep -q "tau doctor" && ok "--help mentions tau doctor" 0 0 || ok "--help mentions tau doctor" 1 0
 }
 
 # Group: Issue #17 goal mode subcommands offline

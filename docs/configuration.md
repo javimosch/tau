@@ -7,6 +7,12 @@ Resolution model: **CLI flags > environment > config file > in-code defaults.**
 The config file is loaded first as the base, then command-line flags override it.
 Each section below lists the exact precedence order used by the code.
 
+> **Tip:** `tau doctor` validates this whole chain end-to-end and prints a JSON
+> report — config file parse, resolved provider/model/endpoint, which source
+> supplied the API key (never the key itself), curl availability, endpoint
+> reachability, and (with `--deep`) an authenticated probe. Exit code is `0`
+> when no check fails, `1` otherwise; `--offline` skips network checks.
+
 ---
 
 ## Config file
