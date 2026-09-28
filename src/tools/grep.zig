@@ -5,12 +5,18 @@ pub const ToolResult = bashmod.ToolResult;
 
 /// Search for a pattern in files using grep
 pub fn grep(io: std.Io, gpa: std.mem.Allocator, pattern: []const u8, path: ?[]const u8, timeout_ms: i64) !ToolResult {
-    const cmd = if (path) |p|
-        try std.fmt.allocPrint(gpa, "grep -r '{s}' {s}", .{ pattern, p })
-    else
-        try std.fmt.allocPrint(gpa, "grep -r '{s}'", .{ pattern });
+    const qpattern = try bashmod.shQuote(gpa, pattern);
+    defer gpa.free(qpattern);
 
+    const qpath = if (path) |p| try bashmod.shQuote(gpa, p) else null;
+    defer if (qpath) |q| gpa.free(q);
+
+    const cmd = if (qpath) |q|
+        try std.fmt.allocPrint(gpa, "grep -r -e {s} -- {s}", .{ qpattern, q })
+    else
+        try std.fmt.allocPrint(gpa, "grep -r -e {s}", .{qpattern});
     defer gpa.free(cmd);
+
     return bashmod.execBash(io, gpa, cmd, timeout_ms);
 }
 
@@ -83,4 +89,26 @@ test "grep fails on a nonexistent search path" {
 
     try std.testing.expect(!r.success);
     try std.testing.expect(r.exit_code != 0);
+}
+
+test "grep handles patterns and paths with apostrophes and spaces" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dir = try tmpPath(gpa, &tmp.sub_path, "my dir's");
+    defer gpa.free(dir);
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+
+    const file = try std.fmt.allocPrint(gpa, "{s}/haystack.txt", .{dir});
+    defer gpa.free(file);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = "it's a needle\n" });
+
+    const r = try grep(io, gpa, "it's", dir, 5000);
+    defer gpa.free(r.stdout);
+    defer gpa.free(r.stderr);
+
+    try std.testing.expect(r.success);
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "it's a needle") != null);
 }
