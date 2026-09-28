@@ -359,7 +359,7 @@ fn goalSubcommand(
     stored_goal: *?session_mod.GoalState,
 ) !u8 {
     const name = cfg.session orelse {
-        const msg = "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\"}}\n";
+        const msg = "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n";
         term.err(msg);
         return 80;
     };
