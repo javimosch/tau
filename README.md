@@ -39,6 +39,10 @@ tau --session myproject "/goal status"
 
 Zero to your first response in five steps. Every command below is copy-pasteable.
 
+![Terminal demo: clone, build, and run tau for the first time](demo/demo.gif)
+
+<sub>Recorded with [VHS](https://github.com/charmbracelet/vhs) from [demo.tape](demo.tape) — replay it yourself with `vhs demo.tape`.</sub>
+
 ### 1. Prerequisites
 
 - **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against

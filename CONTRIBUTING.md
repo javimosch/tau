@@ -173,6 +173,25 @@ gh pr create \
 
 ---
 
+## Updating the README demo GIF
+
+`demo/demo.gif` is generated from `demo.tape`, a [VHS](https://github.com/charmbracelet/vhs)
+script. Every visible command runs for real (clone, build, `tau`); only the
+provider HTTP leg is stubbed — tau shells out to `curl`, and the tape's hidden
+setup puts `demo/fake-curl` on PATH so recording is deterministic and needs no
+API key.
+
+Prerequisites: `vhs` + `ttyd` + `ffmpeg` + `python3`.
+
+```bash
+vhs demo.tape    # writes demo/demo.gif; run from the repo root
+```
+
+To record against a live provider instead, remove the PATH override in the
+tape's hidden block and export a real `TAU_API_KEY`.
+
+---
+
 ## Code guidelines
 
 - **No stray `git add -A`.** Stage only the files relevant to your task.
