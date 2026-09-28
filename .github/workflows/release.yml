@@ -1,0 +1,219 @@
+name: release
+
+# Publishes prebuilt tau binaries as a GitHub release so adopters don't need a
+# Zig toolchain. Triggered by pushing a v* tag (e.g. `git tag v0.5.0 && git
+# push origin v0.5.0`), or manually via workflow_dispatch for a build-only
+# dry run (artifacts are uploaded, no release is created).
+#
+# Assets: tau-<os>-<arch>.tar.gz for linux/macos × x86_64/aarch64, plus a
+# SHA256SUMS.txt manifest. install.sh consumes exactly these names.
+#
+# Jobs: build → smoke → release. The smoke job installs every tarball through
+# install.sh on the matching OS/arch runner (against a local stand-in for the
+# releases URL via TAU_BASE_URL) and verifies `tau --version`/`--help` run, so
+# a broken binary can never reach the published release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # All targets are cross-compiled on one runner — Zig needs no
+          # per-platform toolchain or SDK.
+          - { zig_target: x86_64-linux-gnu,  artifact: linux-x86_64 }
+          - { zig_target: aarch64-linux-gnu, artifact: linux-aarch64 }
+          - { zig_target: x86_64-macos,      artifact: macos-x86_64 }
+          - { zig_target: aarch64-macos,     artifact: macos-aarch64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches src/version.zig
+        if: github.ref_type == 'tag'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          src="$(sed -n 's/.*version = "\([^"]*\)".*/\1/p' src/version.zig | head -n1)"
+          if [ "$src" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match src/version.zig ($src) — bump the version first"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches src/version.zig ($src)"
+
+      - name: Install Zig 0.16.0
+        run: |
+          curl -fsSL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      - name: Build tau (${{ matrix.zig_target }})
+        run: zig build --release=safe -Dtarget=${{ matrix.zig_target }}
+
+      - name: Run unit tests (native target only)
+        if: matrix.zig_target == 'x86_64-linux-gnu'
+        run: zig build test --summary all
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          tar -czf "dist/tau-${{ matrix.artifact }}.tar.gz" -C zig-out/bin tau
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.artifact }}
+          path: dist/*.tar.gz
+          retention-days: 30
+
+  smoke:
+    # Installs each built tarball end-to-end through install.sh on the matching
+    # platform runner and verifies the binary runs. The GitHub releases URL is
+    # replaced by a local file server via install.sh's TAU_BASE_URL override,
+    # so the full download → checksum → extract → install path is exercised
+    # before anything is published.
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    artifact: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, artifact: linux-aarch64 }
+          - { os: macos-15-intel,   artifact: macos-x86_64 }  # macos-13 was retired; last Intel image
+          - { os: macos-latest,     artifact: macos-aarch64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ matrix.artifact }}
+          path: dist
+
+      - name: Stage a local release tree
+        run: |
+          mkdir -p srv/latest/download
+          cp "dist/tau-${{ matrix.artifact }}.tar.gz" srv/latest/download/
+          cd srv/latest/download
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum *.tar.gz > SHA256SUMS.txt
+          else
+            shasum -a 256 *.tar.gz > SHA256SUMS.txt
+          fi
+          cat SHA256SUMS.txt
+
+      - name: Serve the staged release over HTTP
+        shell: bash
+        run: |
+          (cd srv && python3 -m http.server 18923 --bind 127.0.0.1 >/tmp/tau-srv.log 2>&1 &)
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            curl -fsS -o /dev/null "http://127.0.0.1:18923/latest/download/SHA256SUMS.txt" && exit 0
+            sleep 1
+          done
+          echo "::error::local release server did not come up"
+          cat /tmp/tau-srv.log || true
+          exit 1
+
+      - name: Install via install.sh
+        run: |
+          TAU_BASE_URL="http://127.0.0.1:18923" sh ./install.sh --dir "$RUNNER_TEMP/tau-bin"
+          echo "$RUNNER_TEMP/tau-bin" >> "$GITHUB_PATH"
+
+      - name: Verify the installed binary
+        run: |
+          tau --version
+          tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
+          tau --help > /dev/null
+          tau --help | grep 'Usage:'
+
+  smoke-action:
+    # Exercises the repo-root action.yml the way adopters consume it —
+    # `uses: ./` — against a staged local release tree (same TAU_BASE_URL
+    # trick as the smoke job, via the action's base-url input). Pins the
+    # action↔install.sh contract: inputs, PATH wiring, and outputs.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-x86_64
+          path: dist
+
+      - name: Stage and serve a local release tree
+        run: |
+          mkdir -p srv/latest/download
+          cp dist/tau-linux-x86_64.tar.gz srv/latest/download/
+          (cd srv/latest/download && sha256sum *.tar.gz > SHA256SUMS.txt)
+          (cd srv && python3 -m http.server 18924 --bind 127.0.0.1 >/tmp/tau-action-srv.log 2>&1 &)
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            curl -fsS -o /dev/null "http://127.0.0.1:18924/latest/download/SHA256SUMS.txt" && exit 0
+            sleep 1
+          done
+          echo "::error::local release server did not come up"
+          cat /tmp/tau-action-srv.log || true
+          exit 1
+
+      - name: Install tau via the setup-tau action
+        id: setup
+        uses: ./
+        with:
+          install-dir: ${{ runner.temp }}/tau-action-bin
+          base-url: http://127.0.0.1:18924
+
+      - name: Verify action outputs and PATH wiring
+        run: |
+          set -euo pipefail
+          test "${{ steps.setup.outputs.tau-path }}" = "${{ runner.temp }}/tau-action-bin/tau"
+          echo "${{ steps.setup.outputs.version }}" | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
+          tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
+          tau --help | grep 'Usage:'
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [build, smoke, smoke-action]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        # Clean filenames (no ./ prefix) so install.sh's per-asset grep matches.
+        run: (cd dist && sha256sum *.tar.gz > SHA256SUMS.txt)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set --  # tags carrying a suffix (e.g. v1.0.0-rc.1) publish as pre-releases
+          case "$TAG" in *-*) set -- --prerelease ;; esac
+          cat > /tmp/release-notes.md <<'EOF'
+          Prebuilt binaries for Linux and macOS (x86_64 and aarch64).
+
+          ## Install
+
+              curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+
+          Or download `tau-<os>-<arch>.tar.gz` below, verify it against
+          `SHA256SUMS.txt`, extract, and put `tau` on your PATH.
+          EOF
+          gh release create "$TAG" \
+            --title "tau $TAG" \
+            --notes-file /tmp/release-notes.md \
+            "$@" \
+            dist/*.tar.gz dist/SHA256SUMS.txt
