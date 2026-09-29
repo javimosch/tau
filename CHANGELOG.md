@@ -26,7 +26,9 @@ are backward compatible.
 - GitHub issue and PR templates (#63)
 - `docs/configuration.md` — configuration reference covering config keys, env
   vars, and precedence, including per-provider setup examples (#109, #120)
-- `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114)
+- `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114);
+  expanded with copy-pasteable configs for JetBrains, VS Code, Neovim
+  (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
 - `tau doctor` — JSON setup diagnostics (config file parse, provider
   resolution, API key provenance, curl on PATH, endpoint reachability, and an
@@ -70,7 +72,8 @@ are backward compatible.
   (#39), ACP (#47), JSON helpers (#50), bash tool (#51), tool registry (#53),
   provider module (#58), `resolveApiKey` precedence (#59), goal + session
   (#63), AGENTS.md scanning (#110), agent loop tool dispatch (#112), SSE
-  streaming frames (#117), context compaction boundaries (#121)
+  streaming frames (#117), context compaction boundaries (#121), `tau doctor`
+  diagnostics incl. live-probe stub coverage (#165)
 - Smoke suite: `--role critic` network check (#88), `--api-key` parsing (#89)
 - Fixed SIGABRT in `scanAgentsMd` bad-path test (#55); restored truncated
   `extractToolCalls` test (#69)

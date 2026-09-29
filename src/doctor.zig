@@ -536,3 +536,180 @@ test "checkEndpoint/checkAuthProbe: offline and dependency gates skip" {
     try testing.expectEqual(CheckStatus.skip, ap_nokey.status);
     try testing.expect(std.mem.indexOf(u8, ap_nokey.message, "no API key") != null);
 }
+
+/// A throwaway HOME under .zig-cache/tmp so checkConfigFile exercises its real
+/// file I/O (same pattern as the TestHome helper in configfile.zig).
+const TestHome = struct {
+    tmp: testing.TmpDir,
+    env: std.process.Environ.Map,
+    home: []const u8,
+
+    fn init(arena: std.mem.Allocator) !TestHome {
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+        try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{home}));
+        var env = std.process.Environ.Map.init(arena);
+        try env.put("HOME", home);
+        return .{ .tmp = tmp, .env = env, .home = home };
+    }
+
+    fn writeConfig(self: *TestHome, arena: std.mem.Allocator, content: []const u8) !void {
+        try std.Io.Dir.cwd().writeFile(testing.io, .{
+            .sub_path = try std.fmt.allocPrint(arena, "{s}/.config/tau/config.json", .{self.home}),
+            .data = content,
+        });
+    }
+
+    fn deinit(self: *TestHome) void {
+        self.tmp.cleanup();
+    }
+};
+
+test "checkConfigFile: no HOME and missing file are ok, valid file parses" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> path() returns null -> defaults are fine.
+    var env_no_home = std.process.Environ.Map.init(a);
+    const c_nohome = checkConfigFile(testing.io, a, &env_no_home);
+    try testing.expectEqual(CheckStatus.ok, c_nohome.status);
+    try testing.expect(std.mem.indexOf(u8, c_nohome.message, "using defaults") != null);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // HOME set but no config.json -> ok, and the message names the path.
+    const c_missing = checkConfigFile(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_missing.status);
+    try testing.expect(std.mem.indexOf(u8, c_missing.message, "config.json") != null);
+    try testing.expect(std.mem.indexOf(u8, c_missing.message, "using defaults") != null);
+
+    // Valid file -> ok "config file parsed: <path>".
+    try home.writeConfig(a, "{\"provider\":\"openai\",\"model\":\"gpt-4o-mini\"}");
+    const c_ok = checkConfigFile(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+    try testing.expect(std.mem.indexOf(u8, c_ok.message, "config file parsed") != null);
+    try testing.expect(std.mem.indexOf(u8, c_ok.message, ".config/tau/config.json") != null);
+}
+
+test "checkConfigFile: invalid JSON fails with path and fix hint" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    try home.writeConfig(a, "{ not json ");
+
+    const c = checkConfigFile(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.fail, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "invalid JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, ".config/tau/config.json") != null);
+    try testing.expect(std.mem.indexOf(u8, c.hint.?, "fix the JSON") != null);
+}
+
+test "checkConfigFile: unreadable file fails with a permissions hint" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // A directory where config.json belongs makes readFileAlloc fail
+    // deterministically (IsDir), regardless of the test user's privileges.
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home}));
+
+    const c = checkConfigFile(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.fail, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "cannot read config file") != null);
+    try testing.expect(std.mem.indexOf(u8, c.hint.?, "permissions") != null);
+}
+
+test "checkEndpoint: refused connection fails with an actionable hint" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Port 1 requires privileges to bind, so nothing is ever listening — the
+    // connect is refused instantly (curl exit != 0 -> curlHttpCode null).
+    const c = checkEndpoint(testing.io, testing.allocator, a, .{
+        .provider = "openai",
+        .endpoint = "http://127.0.0.1:1/",
+    }, true);
+    try testing.expectEqual(CheckStatus.fail, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "endpoint unreachable") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "127.0.0.1:1") != null);
+    try testing.expect(std.mem.indexOf(u8, c.hint.?, "TAU_ENDPOINT") != null);
+}
+
+test "checkAuthProbe: deep-mode gates and unreachable-endpoint failure" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const rk = cfgmod.ResolvedKey{ .key = "sk-test", .source = .flag };
+
+    // Unresolved provider gates the probe even with --deep and a key.
+    const ap_badprov = checkAuthProbe(testing.io, testing.allocator, a, .{ .doctor_deep = true, .doctor_bad_provider = "acme" }, rk, true);
+    try testing.expectEqual(CheckStatus.skip, ap_badprov.status);
+    try testing.expect(std.mem.indexOf(u8, ap_badprov.message, "provider did not resolve") != null);
+
+    // No curl gates the probe.
+    const ap_nocurl = checkAuthProbe(testing.io, testing.allocator, a, .{ .doctor_deep = true }, rk, false);
+    try testing.expectEqual(CheckStatus.skip, ap_nocurl.status);
+    try testing.expect(std.mem.indexOf(u8, ap_nocurl.message, "curl unavailable") != null);
+
+    // Refused connection -> request failure, hint points at endpoint_reachable.
+    const ap_fail = checkAuthProbe(testing.io, testing.allocator, a, .{
+        .doctor_deep = true,
+        .provider = "openai",
+        .model = "gpt-4o-mini",
+        .endpoint = "http://127.0.0.1:1/",
+    }, rk, true);
+    try testing.expectEqual(CheckStatus.fail, ap_fail.status);
+    try testing.expect(std.mem.indexOf(u8, ap_fail.message, "auth probe request failed") != null);
+    try testing.expect(std.mem.indexOf(u8, ap_fail.hint.?, "endpoint_reachable") != null);
+}
+
+test "keyHint: names env vars for known providers, falls back to --api-key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const openai = keyHint(a, "openai");
+    try testing.expect(std.mem.indexOf(u8, openai, "OPENAI_API_KEY") != null);
+    try testing.expect(std.mem.indexOf(u8, openai, "--api-key") != null);
+
+    // Unknown provider -> generic flag hint.
+    try testing.expectEqualStrings("use --api-key <key>", keyHint(a, "bogus-provider"));
+}
+
+test "providerListHint: lists providers and points at tau models" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const h = providerListHint(arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, h, "valid providers:") != null);
+    try testing.expect(std.mem.indexOf(u8, h, "tau models") != null);
+    try testing.expect(std.mem.indexOf(u8, h, cfgmod.providers[0].name) != null);
+}
+
+test "formatReportJson: warns do not flip the ok flag" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .warn, .message = "unknown provider" },
+        .{ .name = "api_key", .status = .ok, .message = "resolved" },
+        .{ .name = "auth_probe", .status = .skip, .message = "skipped" },
+    };
+    const got = try formatReportJson(a, &checks);
+    try testing.expect(std.mem.startsWith(u8, got, "{\"ok\":true,"));
+    try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{\"ok\":1,\"warn\":1,\"fail\":0,\"skip\":1}") != null);
+}
+
+test "curlHttpCode: spawn failure returns null" {
+    const got = curlHttpCode(testing.io, testing.allocator, &.{"definitely-not-a-tau-binary-xyz"}, 1000);
+    try testing.expect(got == null);
+}
