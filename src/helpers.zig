@@ -6,8 +6,8 @@ const term = @import("term.zig");
 pub fn fleetRequires(cmd: []const u8, what: []const u8, code: u8) u8 {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf,
-        "{{\"err\":{{\"code\":{d},\"message\":\"fleet {s} requires {s}\"}}}}\n",
-        .{ code, cmd, what }) catch "{\"err\":{\"code\":80}}\n";
+        "{{\"err\":{{\"code\":{d},\"message\":\"fleet {s} requires {s}\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}}}\n",
+        .{ code, cmd, what }) catch "{\"err\":{\"code\":80,\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n";
     term.out(msg);
     return code;
 }
@@ -35,12 +35,12 @@ pub fn fleetPrintJson(gpa: std.mem.Allocator, value: anytype) !void {
     term.out("\n");
 }
 
-/// Emit a "{\"err\":{\"code\":110,\"message\":\"<prefix>: <err>\"}}\n" and return 110.
+/// Emit a "{\"err\":{\"code\":110,\"message\":\"<prefix>: <err>\",\"docs\":<url>}}\n" and return 110.
 pub fn fleetErr(arena: std.mem.Allocator, prefix: []const u8, err: anyerror) u8 {
     const msg = std.fmt.allocPrint(arena,
-        "{{\"err\":{{\"code\":110,\"message\":\"{s}: {s}\"}}}}\n",
+        "{{\"err\":{{\"code\":110,\"message\":\"{s}: {s}\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}}}\n",
         .{ prefix, @errorName(err) }) catch {
-        term.out("{\"err\":{\"code\":110,\"message\":\"fleet error (OOM)\"}}\n");
+        term.out("{\"err\":{\"code\":110,\"message\":\"fleet error (OOM)\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
         return 110;
     };
     term.out(msg);

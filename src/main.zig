@@ -28,12 +28,14 @@ fn writeErr(s: []const u8) void {
     term.err(s);
 }
 
+const doc_url = @import("version.zig").troubleshooting_doc_url;
+
 fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
     const te = try json.escapeAlloc(gpa, error_type);
     defer gpa.free(te);
     const me = try json.escapeAlloc(gpa, message);
     defer gpa.free(me);
-    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{}}}}}\n", .{ code, te, me, recoverable });
+    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"docs\":\"{s}\"}}}}\n", .{ code, te, me, recoverable, doc_url });
 }
 
 fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
@@ -306,6 +308,7 @@ const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
     "tau --help (human help)",
     "README.md (ships with the source)",
+    "docs/troubleshooting.md — " ++ doc_url ++ " (error-message → fix FAQ)",
     "https://cli-specs.intrane.fr/ (guide spec)",
 };
 
@@ -686,4 +689,55 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     defer gpa.free(got);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
+}
+
+// Golden tests for the {"err":...} envelope (task #134): the envelope shape
+// and the docs link are a user-visible contract — changes must be deliberate.
+test "formatErrorJson emits the golden envelope including docs link" {
+    const gpa = std.testing.allocator;
+    const got = try formatErrorJson(gpa, 80, "invalid_argument", "bad flag --nope", false);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"bad flag --nope\",\"recoverable\":false,\"docs\":\"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md\"}}\n",
+        got,
+    );
+}
+
+test "every literal err emitter in src carries a docs link" {
+    // Hand-rolled {"err":...} literals live outside formatErrorJson in these
+    // files; scan each emission site so a new one can't forget the docs field.
+    const sources = [_][]const u8{
+        @embedFile("main.zig"),
+        @embedFile("agent.zig"),
+        @embedFile("acp.zig"),
+        @embedFile("fleet.zig"),
+        @embedFile("helpers.zig"),
+    };
+    for (sources) |src| {
+        var pos: usize = 0;
+        while (std.mem.indexOfPos(u8, src, pos, "err\\\":{")) |i| {
+            const window = src[i..@min(src.len, i + 600)];
+            try std.testing.expect(std.mem.indexOf(u8, window, "docs\\\":") != null);
+            pos = i + 1;
+        }
+    }
+}
+
+test "troubleshooting doc exists and indexes every exit code" {
+    const gpa = std.testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "docs/troubleshooting.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    for ([_][]const u8{ "| `80`", "| `82`", "| `105`", "| `106`", "| `110`", "| `111`" }) |row| {
+        const found = std.mem.indexOf(u8, doc, row) != null;
+        if (!found) std.debug.print("troubleshooting.md missing exit-code row '{s}'\n", .{row});
+        try std.testing.expect(found);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, doc, @import("version.zig").troubleshooting_doc_url) != null);
+}
+
+test "README links to the troubleshooting doc" {
+    const gpa = std.testing.allocator;
+    const readme = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "README.md", gpa, .unlimited);
+    defer gpa.free(readme);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "docs/troubleshooting.md") != null);
 }
