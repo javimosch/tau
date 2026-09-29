@@ -911,3 +911,598 @@ test "formatAcpDaemonJson includes optional note" {
     const acp = parsed.value.object.get("acp").?;
     try std.testing.expectEqualStrings("already running", acp.object.get("note").?.string);
 }
+
+// ---- NDJSON / JSON-RPC line parser tests -------------------------------------
+//
+// serveConn feeds one stdin line at a time into handleMessage — tau's NDJSON
+// event parser. The tests below pin the parser's contract and throw random and
+// fuzz-generated lines at it. Everything stays offline: the cfg used has no
+// api_key, so session/prompt stops at the -32000 guard before any LLM call,
+// and the env maps carry no HOME unless a test deliberately provides one
+// (session save/load then no-ops or lands in a tmp dir).
+
+/// Snapshot of the process cwd as a NUL-terminated slice into `buf` (Linux
+/// only — chdirBestEffort is a no-op on other platforms, so there is nothing
+/// to restore there). `buf` must outlive the returned slice.
+fn saveCwd(buf: []u8) ?[:0]const u8 {
+    if (comptime builtin.os.tag != .linux) return null;
+    const rc = std.os.linux.getcwd(buf.ptr, buf.len);
+    if (std.os.linux.errno(rc) != .SUCCESS) return null;
+    const n: usize = @intCast(rc); // includes the trailing NUL
+    return buf[0 .. n - 1 :0];
+}
+
+fn restoreCwd(saved: ?[:0]const u8) void {
+    if (comptime builtin.os.tag != .linux) return;
+    if (saved) |s| _ = std.os.linux.chdir(s.ptr);
+}
+
+/// Feed one (already trimmed) line through handleMessage and capture whatever
+/// it writes. The reader is an empty fixed buffer — only reachable by the
+/// editor-fs client calls inside session/prompt's tool loop, which require an
+/// api_key the test cfg never has. cwd is saved/restored so a fuzzed
+/// params.cwd string can never move the test process, and the client-capability
+/// globals are reset to keep iterations independent.
+fn handleMessageCapture(env: *std.process.Environ.Map, cfg: cfgmod.Config, line: []const u8) ![]u8 {
+    const gpa = std.testing.allocator;
+    var r: std.Io.Reader = .fixed("");
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var cwd_buf: [4096]u8 = undefined;
+    const saved = saveCwd(&cwd_buf);
+    defer restoreCwd(saved);
+    client_fs_read = false;
+    client_fs_write = false;
+    try handleMessage(std.testing.io, gpa, cfg, env, &r, line, &aw.writer);
+    client_fs_read = false;
+    client_fs_write = false;
+    return try gpa.dupe(u8, aw.writer.buffer[0..aw.writer.end]);
+}
+
+/// Assert `out` consists solely of whole newline-terminated JSON-RPC response
+/// objects ({\"jsonrpc\":\"2.0\",\"id\":...,\"result\"|\"error\":...}) and
+/// return the number of lines.
+fn expectJsonRpcLines(gpa: std.mem.Allocator, out: []const u8) !usize {
+    if (out.len == 0) return 0;
+    try std.testing.expectEqual(@as(u8, '\n'), out[out.len - 1]);
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, out[0 .. out.len - 1], '\n');
+    while (it.next()) |line| {
+        count += 1;
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, line, .{}) catch {
+            std.debug.print("acp wrote non-JSON line: {s}\n", .{line});
+            return error.TestExpectedJsonRpc;
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.TestExpectedJsonRpc;
+        const obj = parsed.value.object;
+        const jr = obj.get("jsonrpc") orelse return error.TestExpectedJsonRpc;
+        if (jr != .string or !std.mem.eql(u8, jr.string, "2.0")) return error.TestExpectedJsonRpc;
+        if (obj.get("id") == null) return error.TestExpectedJsonRpc;
+        const has_result = obj.get("result") != null;
+        const has_error = obj.get("error") != null;
+        if (has_result == has_error) return error.TestExpectedJsonRpc;
+    }
+    return count;
+}
+
+/// The response contract, restated independently: a line only gets a response
+/// when it is a JSON object carrying a string "method" (other than the
+/// notification-only "session/cancel") AND an "id" member.
+fn oracleResponseCount(gpa: std.mem.Allocator, line: []const u8) !usize {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, line, .{}) catch return 0;
+    defer parsed.deinit();
+    if (parsed.value != .object) return 0;
+    const obj = parsed.value.object;
+    const m = obj.get("method") orelse return 0;
+    if (m != .string) return 0;
+    if (std.mem.eql(u8, m.string, "session/cancel")) return 0;
+    if (obj.get("id") == null) return 0;
+    return 1;
+}
+
+/// Assert the response line's "id" echoes the request line's "id" verbatim
+/// (compared via canonical serialization, so any JSON value type works).
+fn expectIdEcho(gpa: std.mem.Allocator, line: []const u8, resp_line: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const req = try std.json.parseFromSliceLeaky(std.json.Value, a, line, .{});
+    const resp = try std.json.parseFromSliceLeaky(std.json.Value, a, resp_line, .{});
+    const req_id = try std.json.Stringify.valueAlloc(a, req.object.get("id").?, .{});
+    const resp_id = try std.json.Stringify.valueAlloc(a, resp.object.get("id").?, .{});
+    try std.testing.expectEqualStrings(req_id, resp_id);
+}
+
+fn expectSilent(env: *std.process.Environ.Map, line: []const u8) !void {
+    const out = try handleMessageCapture(env, .{}, line);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqual(@as(usize, 0), try expectJsonRpcLines(std.testing.allocator, out));
+}
+
+test "handleMessage: non-JSON and non-object lines are ignored" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    for ([_][]const u8{
+        "not json at all",
+        "{\"unterminated",
+        "[1,2,3]",
+        "\"just a string\"",
+        "42",
+        "null",
+        "true",
+        "{}",
+        "{\"id\":1}",
+        "{\"method\":42}",
+        "{\"method\":null}",
+        "{\"method\":{\"nested\":true}}",
+        "\x00\x01\x02binary\xff\xfe",
+    }) |line| {
+        try expectSilent(&env, line);
+    }
+}
+
+test "handleMessage: requests without an id are notifications and get no reply" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"authenticate\"}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"session/new\",\"params\":{\"cwd\":\"/tmp\"}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"session/load\",\"params\":{\"sessionId\":\"s1\"}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\",\"prompt\":\"hi\"}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"session/cancel\",\"params\":{\"sessionId\":\"s\"}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"bogus/method\"}",
+    }) |line| {
+        try expectSilent(&env, line);
+    }
+}
+
+test "handleMessage: session/cancel stays silent even when an id is present" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    try expectSilent(&env, "{\"id\":5,\"method\":\"session/cancel\",\"params\":{\"sessionId\":\"s\"}}");
+}
+
+test "handleMessage: unknown method with id gets error -32601" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const line = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"bogus/method\"}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    const err_obj = parsed.value.object.get("error").?.object;
+    try std.testing.expectEqual(@as(i64, -32601), err_obj.get("code").?.integer);
+    try expectIdEcho(a, line, std.mem.trim(u8, out, "\n"));
+}
+
+test "handleMessage: initialize negotiates protocolVersion and advertises agentInfo" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{\"fs\":{\"readTextFile\":true,\"writeTextFile\":true}}}}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result").?.object;
+    try std.testing.expectEqual(@as(i64, PROTOCOL_VERSION), result.get("protocolVersion").?.integer);
+    try std.testing.expectEqualStrings("tau", result.get("agentInfo").?.object.get("name").?.string);
+    // The advertised fs capabilities were consumed during the call; the harness
+    // resets them afterwards so tests stay independent.
+    try std.testing.expect(client_fs_read == false and client_fs_write == false);
+}
+
+test "handleMessage: authenticate resolves to an empty result object" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const line = "{\"jsonrpc\":\"2.0\",\"id\":\"auth-1\",\"method\":\"authenticate\"}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    const result = parsed.value.object.get("result").?;
+    try std.testing.expectEqual(@as(usize, 0), result.object.count());
+}
+
+test "handleMessage: session/new returns a sessionId even with no HOME" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const line = "{\"id\":3,\"method\":\"session/new\",\"params\":{\"cwd\":123}}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    const sid = parsed.value.object.get("result").?.object.get("sessionId").?.string;
+    try std.testing.expect(std.mem.startsWith(u8, sid, "acp-"));
+}
+
+test "handleMessage: session/new persists a session file under HOME" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    var env = std.process.Environ.Map.init(a);
+    try env.put("HOME", home);
+
+    const line = "{\"id\":4,\"method\":\"session/new\",\"params\":{}}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    const sid = parsed.value.object.get("result").?.object.get("sessionId").?.string;
+
+    // The ACP session must exist on disk so next turns can pick it up.
+    const p = try std.fmt.allocPrint(a, "{s}/.config/tau/sessions/{s}.json", .{ home, sid });
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, p, a, .unlimited);
+    const st = try std.json.parseFromSliceLeaky(session_mod.SessionState, a, bytes, .{ .ignore_unknown_fields = true });
+    try std.testing.expectEqualStrings(sid, st.name);
+    try std.testing.expectEqual(@as(usize, 0), st.messages.len);
+}
+
+test "handleMessage: session/load echoes the requested sessionId" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const line = "{\"id\":6,\"method\":\"session/load\",\"params\":{\"sessionId\":\"abc-123\",\"cwd\":false}}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("abc-123", parsed.value.object.get("result").?.object.get("sessionId").?.string);
+}
+
+test "handleMessage: session/prompt without an API key fails with -32000" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const line = "{\"id\":7,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\",\"prompt\":[{\"text\":\"hi\"}]}}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    const err_obj = parsed.value.object.get("error").?.object;
+    try std.testing.expectEqual(@as(i64, -32000), err_obj.get("code").?.integer);
+    try std.testing.expect(std.mem.indexOf(u8, err_obj.get("message").?.string, "no API key") != null);
+}
+
+test "handleMessage: an explicit null id still counts as a request" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const line = "{\"id\":null,\"method\":\"bogus\"}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    const a = std.testing.allocator;
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+    var parsed = try std.json.parseFromSlice(std.json.Value, a, std.mem.trim(u8, out, "\n"), .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("id").? == .null);
+    try expectIdEcho(a, line, std.mem.trim(u8, out, "\n"));
+}
+
+test "handleMessage: object and array ids echo back verbatim" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    const a = std.testing.allocator;
+    for ([_][]const u8{
+        "{\"id\":{\"k\":[1,2]},\"method\":\"bogus\"}",
+        "{\"id\":[1,{\"x\":true}],\"method\":\"bogus\"}",
+        "{\"id\":true,\"method\":\"bogus\"}",
+    }) |line| {
+        const out = try handleMessageCapture(&env, .{}, line);
+        defer a.free(out);
+        try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(a, out));
+        try expectIdEcho(a, line, std.mem.trim(u8, out, "\n"));
+    }
+}
+
+test "handleMessage: session/new with a nonexistent cwd does not move the process" {
+    var env = std.process.Environ.Map.init(std.testing.allocator);
+    defer env.deinit();
+    var before_buf: [4096]u8 = undefined;
+    const before = saveCwd(&before_buf);
+    const line = "{\"id\":8,\"method\":\"session/new\",\"params\":{\"cwd\":\"/definitely/no/such/tau-dir-9f3a\"}}";
+    const out = try handleMessageCapture(&env, .{}, line);
+    defer std.testing.allocator.free(out);
+    var after_buf: [4096]u8 = undefined;
+    const after = saveCwd(&after_buf);
+    try std.testing.expectEqual(@as(usize, 1), try expectJsonRpcLines(std.testing.allocator, out));
+    if (before != null and after != null) try std.testing.expectEqualStrings(before.?, after.?);
+}
+
+test "handleMessage: session/new honors a real params.cwd" {
+    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const gpa = std.testing.allocator;
+    var env = std.process.Environ.Map.init(gpa);
+    defer env.deinit();
+    var r: std.Io.Reader = .fixed("");
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+
+    var cwd_buf: [4096]u8 = undefined;
+    const saved = saveCwd(&cwd_buf).?;
+    const abs_tmp = try std.fmt.allocPrint(a, "{s}/.zig-cache/tmp/{s}", .{ saved, tmp.sub_path[0..] });
+    const line = try std.fmt.allocPrint(a, "{{\"id\":11,\"method\":\"session/new\",\"params\":{{\"cwd\":\"{s}\"}}}}", .{abs_tmp});
+
+    var after_buf: [4096]u8 = undefined;
+    handleMessage(std.testing.io, gpa, cfgmod.Config{}, &env, &r, line, &aw.writer) catch {};
+    const moved = saveCwd(&after_buf).?;
+    restoreCwd(saved);
+    try std.testing.expectEqualStrings(abs_tmp, moved);
+}
+
+test "serveConn: line-framed NDJSON stream isolates each message" {
+    const gpa = std.testing.allocator;
+    var env = std.process.Environ.Map.init(gpa);
+    defer env.deinit();
+    const input =
+        "\n" ++ // blank line skipped
+        "   \t \r\n" ++ // whitespace-only line skipped
+        "this is not json\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n" ++
+        "{\"method\":\"unknown\"}\n" ++ // notification: no reply
+        "  {\"id\":2,\"method\":\"authenticate\"}   \r\n" ++ // leading/trailing ws trimmed
+        "{\"id\":3,\"method\":\"unknown\"}\n" ++
+        "{\"id\":4,\"method\":\"session/cancel\"}\n" ++ // notification-only method
+        "{\"id\":5,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\",\"prompt\":\"hi\"}}\n" ++
+        "{\"id\":6,\"method\":\"authenticate\"}"; // final line without trailing newline
+    var r: std.Io.Reader = .fixed(input);
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try serveConn(std.testing.io, gpa, cfgmod.Config{}, &env, &r, &aw.writer);
+    const out = aw.writer.buffer[0..aw.writer.end];
+
+    // Exactly five replies, in order: ids 1, 2, 3, 5, 6.
+    var it = std.mem.splitScalar(u8, std.mem.trim(u8, out, "\n"), '\n');
+    var ids: std.ArrayList(std.json.Value) = .empty;
+    defer ids.deinit(gpa);
+    while (it.next()) |line| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, gpa, line, .{});
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value == .object);
+        try ids.append(gpa, parsed.value.object.get("id").?);
+    }
+    try std.testing.expectEqual(@as(usize, 5), ids.items.len);
+    const expected_ids = [_]i64{ 1, 2, 3, 5, 6 };
+    for (expected_ids, ids.items) |e, idv| {
+        try std.testing.expectEqual(@as(i64, e), idv.integer);
+    }
+}
+
+/// Random JSON string fragment for generated messages — hostile alphabet of
+/// quotes, backslashes, control bytes, and multi-byte UTF-8.
+fn appendJsonString(gpa: std.mem.Allocator, rng: std.Random, out: *std.ArrayList(u8)) !void {
+    const alphabet = "abcXYZ09-_. \\\"\n\t\r{}}[,]:/é€~";
+    var sb: [24]u8 = undefined;
+    const len = rng.uintLessThan(usize, sb.len + 1);
+    for (sb[0..len]) |*b| b.* = alphabet[rng.uintLessThan(usize, alphabet.len)];
+    const esc = try jsonmod.escapeAlloc(gpa, sb[0..len]);
+    defer gpa.free(esc);
+    try out.append(gpa, '"');
+    try out.appendSlice(gpa, esc);
+    try out.append(gpa, '"');
+}
+
+/// Random JSON value (no floats — keeps serialization round-trips exact).
+fn genJsonValue(gpa: std.mem.Allocator, rng: std.Random, out: *std.ArrayList(u8), depth: u32) anyerror!void {
+    const choice = rng.uintLessThan(u32, if (depth >= 3) 5 else 8);
+    switch (choice) {
+        0 => try out.appendSlice(gpa, "null"),
+        1 => try out.appendSlice(gpa, if (rng.boolean()) "true" else "false"),
+        2 => {
+            var nb: [24]u8 = undefined;
+            const s = std.fmt.bufPrint(&nb, "{d}", .{rng.int(i32)}) catch unreachable;
+            try out.appendSlice(gpa, s);
+        },
+        3 => {
+            var nb: [24]u8 = undefined;
+            const s = std.fmt.bufPrint(&nb, "{d}", .{rng.int(u64)}) catch unreachable;
+            try out.appendSlice(gpa, s);
+        },
+        4 => try appendJsonString(gpa, rng, out),
+        5 => {
+            try out.append(gpa, '[');
+            const n = rng.uintLessThan(usize, 4);
+            for (0..n) |i| {
+                if (i > 0) try out.append(gpa, ',');
+                try genJsonValue(gpa, rng, out, depth + 1);
+            }
+            try out.append(gpa, ']');
+        },
+        6, 7 => {
+            try out.append(gpa, '{');
+            const keys = [_][]const u8{ "method", "id", "params", "sessionId", "prompt", "cwd", "clientCapabilities", "fs", "text", "jsonrpc", "x", "k" };
+            const n = rng.uintLessThan(usize, 4);
+            for (0..n) |i| {
+                if (i > 0) try out.append(gpa, ',');
+                try out.append(gpa, '"');
+                try out.appendSlice(gpa, keys[rng.uintLessThan(usize, keys.len)]);
+                try out.appendSlice(gpa, "\":");
+                try genJsonValue(gpa, rng, out, depth + 1);
+            }
+            try out.append(gpa, '}');
+        },
+        else => unreachable,
+    }
+}
+
+/// params specifically: mixes the members the dispatch actually reads
+/// (sessionId, prompt, cwd, clientCapabilities) with arbitrary junk. "cwd" is
+/// only ever a guaranteed-nonexistent path or a non-string so chdirBestEffort
+/// can never relocate the test process.
+fn genParams(gpa: std.mem.Allocator, rng: std.Random, out: *std.ArrayList(u8)) !void {
+    try out.append(gpa, '{');
+    var n = rng.uintLessThan(usize, 5);
+    var first = true;
+    while (n > 0) : (n -= 1) {
+        if (!first) try out.append(gpa, ',');
+        first = false;
+        switch (rng.uintLessThan(u32, 6)) {
+            0 => {
+                try out.appendSlice(gpa, "\"sessionId\":");
+                try appendJsonString(gpa, rng, out);
+            },
+            1 => {
+                try out.appendSlice(gpa, "\"prompt\":");
+                if (rng.boolean()) {
+                    try appendJsonString(gpa, rng, out);
+                } else {
+                    try out.appendSlice(gpa, "[{\"text\":");
+                    try appendJsonString(gpa, rng, out);
+                    try out.appendSlice(gpa, "},{\"text\":");
+                    try appendJsonString(gpa, rng, out);
+                    try out.appendSlice(gpa, "}]");
+                }
+            },
+            2 => {
+                try out.appendSlice(gpa, "\"cwd\":");
+                if (rng.boolean()) {
+                    var nb: [48]u8 = undefined;
+                    const s = std.fmt.bufPrint(&nb, "\"/nonexistent-t169-{d}\"", .{rng.int(u32)}) catch unreachable;
+                    try out.appendSlice(gpa, s);
+                } else {
+                    try out.appendSlice(gpa, "42");
+                }
+            },
+            3 => try out.appendSlice(gpa, "\"clientCapabilities\":{\"fs\":{\"readTextFile\":true,\"writeTextFile\":true}}"),
+            else => {
+                try out.appendSlice(gpa, "\"junk\":");
+                try genJsonValue(gpa, rng, out, 1);
+            },
+        }
+    }
+    try out.append(gpa, '}');
+}
+
+/// Build a random line for the property test: well-formed JSON-RPC-ish
+/// requests, notifications, malformed objects, arbitrary JSON values, raw
+/// garbage, and truncated/corrupted variants.
+fn genRpcLine(gpa: std.mem.Allocator, rng: std.Random) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    const methods = [_][]const u8{ "initialize", "authenticate", "session/new", "session/load", "session/prompt", "session/cancel", "bogus", "bogus/method", "", "initialize", "session/prompt", "session/cancel" };
+    switch (rng.uintLessThan(u32, 12)) {
+        0...6 => {
+            try out.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",");
+            if (rng.boolean()) {
+                try out.appendSlice(gpa, "\"id\":");
+                try genJsonValue(gpa, rng, &out, 0);
+                try out.append(gpa, ',');
+            }
+            try out.appendSlice(gpa, "\"method\":\"");
+            const esc = try jsonmod.escapeAlloc(gpa, methods[rng.uintLessThan(usize, methods.len)]);
+            defer gpa.free(esc);
+            try out.appendSlice(gpa, esc);
+            try out.append(gpa, '"');
+            if (rng.boolean()) {
+                try out.appendSlice(gpa, ",\"params\":");
+                try genParams(gpa, rng, &out);
+            }
+            try out.append(gpa, '}');
+        },
+        7 => { // object without a method member
+            try out.appendSlice(gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
+            try genJsonValue(gpa, rng, &out, 0);
+            try out.append(gpa, '}');
+        },
+        8 => { // method present but not a string
+            try out.appendSlice(gpa, "{\"id\":1,\"method\":");
+            switch (rng.uintLessThan(u32, 3)) {
+                0 => try out.appendSlice(gpa, "42"),
+                1 => try out.appendSlice(gpa, "[\"initialize\"]"),
+                else => try out.appendSlice(gpa, "null"),
+            }
+            try out.append(gpa, '}');
+        },
+        9, 10 => try genJsonValue(gpa, rng, &out, 0), // arbitrary JSON value
+        else => { // raw garbage bytes
+            const n = rng.uintLessThan(usize, 64);
+            for (0..n) |_| try out.append(gpa, rng.int(u8));
+        },
+    }
+    if (out.items.len > 0) {
+        switch (rng.uintLessThan(u32, 6)) {
+            0 => out.shrinkRetainingCapacity(rng.uintLessThan(usize, out.items.len + 1)), // truncated
+            1 => out.items[rng.uintLessThan(usize, out.items.len)] ^= 0xFF, // corrupted byte
+            else => {},
+        }
+    }
+    return try out.toOwnedSlice(gpa);
+}
+
+test "property: handleMessage honours the response contract on random lines" {
+    const gpa = std.testing.allocator;
+    var env = std.process.Environ.Map.init(gpa);
+    defer env.deinit();
+    var prng = std.Random.DefaultPrng.init(0xac9);
+    const rng = prng.random();
+    for (0..1500) |_| {
+        const line = try genRpcLine(gpa, rng);
+        defer gpa.free(line);
+        const want = try oracleResponseCount(gpa, line);
+        const out = try handleMessageCapture(&env, .{}, line);
+        defer gpa.free(out);
+        const got = try expectJsonRpcLines(gpa, out);
+        try std.testing.expectEqual(want, got);
+        if (want == 1) try expectIdEcho(gpa, line, std.mem.trim(u8, out, "\n"));
+    }
+}
+
+fn fuzzAcpLine(_: void, smith: *std.testing.Smith) anyerror!void {
+    const gpa = std.testing.allocator;
+    var env = std.process.Environ.Map.init(gpa);
+    defer env.deinit();
+    var buf: [8192]u8 = undefined;
+    const input: []const u8 = if (smith.in) |in| blk: {
+        const n = @min(in.len, buf.len);
+        @memcpy(buf[0..n], in[0..n]);
+        break :blk buf[0..n];
+    } else buf[0..smith.slice(&buf)];
+    // Same framing as serveConn: split on '\n', trim, skip empties.
+    var it = std.mem.splitScalar(u8, input, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        const want = try oracleResponseCount(gpa, line);
+        const out = try handleMessageCapture(&env, .{}, line);
+        defer gpa.free(out);
+        const got = try expectJsonRpcLines(gpa, out);
+        try std.testing.expectEqual(want, got);
+    }
+}
+
+test "fuzz: handleMessage tolerates arbitrary input lines" {
+    try std.testing.fuzz({}, fuzzAcpLine, .{ .corpus = &.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{\"fs\":{\"readTextFile\":true,\"writeTextFile\":false}}}}",
+        "{\"id\":9,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\",\"prompt\":[{\"text\":\"hi\"}]}}",
+        "{\"id\":\"x\",\"method\":\"session/new\",\"params\":{\"cwd\":42}}",
+        "{\"id\":0,\"method\":\"session/cancel\",\"params\":{}}",
+        "{\"id\":6,\"method\":\"session/load\",\"params\":{\"sessionId\":\"s1\",\"cwd\":\"/nonexistent\"}}",
+        "{\"method\":[]}",
+        "not json{",
+        "[1,2,3]",
+        "{\"id\":1,\"method\":\"initialize\"}\n{\"id\":2,\"method\":\"bogus\"}\ngarbage\n{\"method\":\"authenticate\"}",
+        "",
+        "{\"id\":{\"a\":[1,2]},\"method\":\"bogus\",\"params\":{\"x\":{\"y\":{\"z\":[null,true,42]}}}}",
+        "\"line with unicode é€🎉 inside\"",
+    }});
+}
