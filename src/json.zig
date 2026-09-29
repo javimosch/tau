@@ -432,3 +432,71 @@ test "nested-structure round-trip: string value containing json" {
     defer gpa.free(extracted);
     try std.testing.expectEqualStrings(inner, extracted);
 }
+
+test "property: unescapeAlloc inverts escapeAlloc for arbitrary byte strings" {
+    const gpa = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x1eaf);
+    const rng = prng.random();
+    var buf: [256]u8 = undefined;
+    for (0..2000) |_| {
+        const len = rng.uintLessThan(usize, buf.len + 1);
+        for (buf[0..len]) |*b| b.* = rng.int(u8);
+        const raw = buf[0..len];
+        {
+            const esc = try escapeAlloc(gpa, raw);
+            defer gpa.free(esc);
+            // Escaped output must be embeddable verbatim inside a JSON string:
+            // no control bytes or raw quotes, and every backslash introduces a
+            // valid escape sequence (never a dangling literal).
+            var i: usize = 0;
+            while (i < esc.len) : (i += 1) {
+                const c = esc[i];
+                try std.testing.expect(c != '"' and c >= 0x20);
+                if (c == '\\') {
+                    i += 1;
+                    try std.testing.expect(i < esc.len);
+                    try std.testing.expect(std.mem.indexOfScalar(u8, "\"\\/bfnrtu", esc[i]) != null);
+                }
+            }
+            const back = try unescapeAlloc(gpa, esc);
+            defer gpa.free(back);
+            try std.testing.expectEqualStrings(raw, back);
+        }
+    }
+}
+
+test "property: unescapeAlloc never traps on arbitrary escaped bytes" {
+    const gpa = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const rng = prng.random();
+    var buf: [256]u8 = undefined;
+    // Alphabet weighted toward backslashes and escape-ish characters.
+    const alphabet = "\\\\\\\"nnrrttbbffuu00123456789abcdefABCDEF\"/xz\"";
+    for (0..2000) |_| {
+        const len = rng.uintLessThan(usize, buf.len + 1);
+        for (buf[0..len]) |*b| b.* = alphabet[rng.uintLessThan(usize, alphabet.len)];
+        const v = try unescapeAlloc(gpa, buf[0..len]);
+        gpa.free(v);
+    }
+}
+
+test "property: extractString recovers escapeAlloc'd payloads (NDJSON emit/parse loop)" {
+    const gpa = std.testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0x7a11);
+    const rng = prng.random();
+    var buf: [128]u8 = undefined;
+    for (0..2000) |_| {
+        const len = rng.uintLessThan(usize, buf.len + 1);
+        for (buf[0..len]) |*b| b.* = rng.int(u8);
+        const raw = buf[0..len];
+        const esc = try escapeAlloc(gpa, raw);
+        defer gpa.free(esc);
+        const json = try std.fmt.allocPrint(gpa, "{{\"chunk\":\"{s}\",\"done\":false}}", .{esc});
+        defer gpa.free(json);
+        const got = (try extractString(gpa, json, "chunk")).?;
+        defer gpa.free(got);
+        try std.testing.expectEqualStrings(raw, got);
+        // `done` is a bare bool in the emitted NDJSON line — not a string field.
+        try std.testing.expect((try extractString(gpa, json, "done")) == null);
+    }
+}
