@@ -562,7 +562,124 @@ test_group_doctor() {
   # 8. Argument validation.
   "$BIN" doctor --bogus >/dev/null 2>&1; ok "doctor --bogus -> exit 80" "$?" 80
   "$BIN" doctor --provider >/dev/null 2>&1; ok "doctor --provider missing value -> exit 80" "$?" 80
+  capture doc_pos "$BIN" doctor extra
+  ok "doctor positional arg -> exit 80" "$doc_pos_rc" 80
+  contains "positional error names the arg" "$doc_pos_err" 'unknown doctor argument'
   "$BIN" --help 2>&1 | grep -q "tau doctor" && ok "--help mentions tau doctor" 0 0 || ok "--help mentions tau doctor" 1 0
+
+  # 9. curl missing from PATH: curl check fails with an install hint and the
+  #    two network checks cascade-skip (env -i + empty PATH dir). --deep (not
+  #    --offline) so both skips report the curl gate, not the offline gate.
+  local empty_bin
+  empty_bin="$(mktemp -d)"
+  register_temp_dir "$empty_bin"
+  capture doc_nocurl env -i PATH="$empty_bin" HOME="$mock_home" "$BIN" doctor --deep
+  ok "no curl on PATH -> exit 1" "$doc_nocurl_rc" 1
+  contains "curl check fails" "$doc_nocurl_out" '"name":"curl","status":"fail"'
+  contains "curl failure message" "$doc_nocurl_out" 'curl not found on PATH'
+  contains "curl hint is actionable" "$doc_nocurl_out" 'install curl'
+  contains "endpoint skipped without curl" "$doc_nocurl_out" '"name":"endpoint_reachable","status":"skip","message":"skipped (curl unavailable)"'
+  contains "auth_probe skipped without curl" "$doc_nocurl_out" '"name":"auth_probe","status":"skip","message":"skipped (curl unavailable)"'
+
+  # 10. Warn does not fail the run: config file names an unknown provider but a
+  #     valid --provider flag + key resolve everything else -> exit 0.
+  printf '{"provider":"nope"}' > "$mock_config/config.json"
+  capture doc_warn env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-warn HOME="$mock_home" "$BIN" doctor --offline --provider openai
+  ok "warn-only report exits 0" "$doc_warn_rc" 0
+  contains "config_file warns on unknown provider" "$doc_warn_out" '"name":"config_file","status":"warn"'
+  contains "flag provider wins over config" "$doc_warn_out" 'provider=openai'
+  contains "warn does not flip ok" "$doc_warn_out" '"ok":true'
+  rm -f "$mock_config/config.json"
+
+  # 11. Live probe paths against a local stub HTTP server: endpoint_reachable
+  #     treats ANY HTTP response as reachable, and --deep maps the auth probe's
+  #     HTTP status to ok/fail/warn. Requires python3 + curl.
+  if command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    local stub_dir stub_port stub_pid doc_stub doc_deep
+    stub_dir="$(mktemp -d)"
+    register_temp_dir "$stub_dir"
+    echo 401 > "$stub_dir/code"
+    cat > "$stub_dir/stub.py" <<'PYEOF'
+import http.server, socketserver, sys
+code_file, port = sys.argv[1], int(sys.argv[2])
+class H(http.server.BaseHTTPRequestHandler):
+    def _respond(self):
+        try:
+            code = int(open(code_file).read().strip())
+        except Exception:
+            code = 500
+        body = b'{}'
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_GET = _respond
+    do_POST = _respond
+    def log_message(self, *args):
+        pass
+socketserver.TCPServer(('127.0.0.1', port), H).serve_forever()
+PYEOF
+    stub_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+    python3 "$stub_dir/stub.py" "$stub_dir/code" "$stub_port" &
+    stub_pid=$!
+    # Wait until the stub accepts TCP connections (HTTP status doesn't matter).
+    local _i
+    for _i in $(seq 1 50); do
+      python3 -c "import socket; s=socket.create_connection(('127.0.0.1',$stub_port),1); s.close()" 2>/dev/null && break
+      sleep 0.1
+    done
+
+    # a) 401 still counts as reachable; TAU_ENDPOINT drives the probe target.
+    capture doc_stub env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai
+    ok "stub endpoint run exits 0" "$doc_stub_rc" 0
+    contains "TAU_ENDPOINT override honored" "$doc_stub_out" "endpoint=http://127.0.0.1:$stub_port"
+    contains "401 still counts as reachable" "$doc_stub_out" '"name":"endpoint_reachable","status":"ok"'
+    contains "reachable reports HTTP status" "$doc_stub_out" 'endpoint reachable (HTTP 401)'
+    contains "auth_probe skips without --deep" "$doc_stub_out" '"name":"auth_probe","status":"skip"'
+
+    # b) --deep + 401 -> auth_probe fails with an actionable hint; exit 1.
+    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --deep
+    ok "deep probe 401 -> exit 1" "$doc_deep_rc" 1
+    contains "auth_probe fails on 401" "$doc_deep_out" '"name":"auth_probe","status":"fail"'
+    contains "auth rejection is actionable" "$doc_deep_out" 'API key rejected (HTTP 401)'
+    contains "auth hint names the fix" "$doc_deep_out" 'verify the key'
+    contains "report not ok" "$doc_deep_out" '"ok":false'
+    if printf '%s' "$doc_deep_out" | grep -qF 'sk-stub'; then
+      ok "auth probe never prints key material" 1 0
+    else
+      ok "auth probe never prints key material" 0 0
+    fi
+
+    # c) --deep + 200 -> auth_probe ok; exit 0.
+    echo 200 > "$stub_dir/code"
+    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --deep
+    ok "deep probe 200 -> exit 0" "$doc_deep_rc" 0
+    contains "auth_probe ok on 200" "$doc_deep_out" '"name":"auth_probe","status":"ok"'
+    contains "auth success reports HTTP" "$doc_deep_out" 'authenticated probe succeeded (HTTP 200)'
+
+    # d) --deep + 429 -> warn, not fail; exit 0.
+    echo 429 > "$stub_dir/code"
+    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --deep
+    ok "deep probe 429 warn -> exit 0" "$doc_deep_rc" 0
+    contains "auth_probe warns on 429" "$doc_deep_out" '"name":"auth_probe","status":"warn"'
+    contains "429 message explains undetermined" "$doc_deep_out" 'rate limited'
+    contains "warn keeps report ok" "$doc_deep_out" '"ok":true'
+
+    kill "$stub_pid" 2>/dev/null
+    wait "$stub_pid" 2>/dev/null
+  else
+    skip_test "doctor live-probe checks" "python3 or curl not available"
+  fi
 }
 
 # Group: Issue #17 goal mode subcommands offline
