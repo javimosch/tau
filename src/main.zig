@@ -4,6 +4,7 @@ const cfgmod = @import("config.zig");
 const argsmod = @import("args.zig");
 const json = @import("json.zig");
 const agent = @import("agent.zig");
+const debuglog = @import("debuglog.zig");
 const Config = cfgmod.Config;
 
 pub const name = "tau";
@@ -35,7 +36,10 @@ fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, mes
     defer gpa.free(te);
     const me = try json.escapeAlloc(gpa, message);
     defer gpa.free(me);
-    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"docs\":\"{s}\"}}}}\n", .{ code, te, me, recoverable, doc_url });
+    // When --debug opened a diagnostic log, link it so bug reports can attach it.
+    const suf = debuglog.envelopeSuffix(gpa) orelse "";
+    defer if (suf.len > 0) gpa.free(suf);
+    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"docs\":\"{s}\"{s}}}}}\n", .{ code, te, me, recoverable, doc_url, suf });
 }
 
 fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
@@ -97,7 +101,10 @@ const help_text =
     \\  -xt, --exclude-tools <csv>   Denylist of tool names
     \\  -nt, --no-tools              Disable all tools
     \\      --thinking               Enable thinking chunks (show model reasoning)
-    \\      --debug                  Show perf stats and tool calls (input+output)
+    \\      --debug                  Show perf stats and tool calls (input+output) on
+    \\                          stderr, and write a redacted diagnostic log to
+    \\                          ~/.config/tau/debug/ for bug reports
+    \\                          (override the path with TAU_DEBUG_LOG)
     \\      --dry-run                Report the tools that would be called; execute none
     \\      --temperature <f>        Sampling temperature (default: 0.7)
     \\      --max-tokens <n>         Max output tokens
@@ -303,6 +310,7 @@ const guide_gotchas = [_][]const u8{
     "tau acp serve reads no model env var; the model comes from config.json or --model.",
     "Requires curl on PATH for LLM HTTP; no other runtime deps.",
     "The tool loop ends when the model stops calling tools or hits --max-iterations (default backstop).",
+    "--debug mirrors its stderr output into a redacted log under ~/.config/tau/debug/ (TAU_DEBUG_LOG overrides) — error envelopes link it via debug_log.",
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
@@ -603,13 +611,29 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // --debug: open the redacted diagnostic log before the run so every error
+    // path below can link to it and [DEBUG] lines land in the file.
+    if (cfg.debug) {
+        if (debuglog.open(io, arena, init.environ_map, cfg)) |lp| {
+            if (json.escapeAlloc(arena, lp) catch null) |pe| {
+                if (std.fmt.allocPrint(arena, "{{\"debug_log\":\"{s}\"}}\n", .{pe}) catch null) |line| {
+                    term.err(line);
+                }
+            }
+        } else {
+            printWarnJson("--debug: could not create diagnostic log (set TAU_DEBUG_LOG to a writable path, or check ~/.config/tau)");
+        }
+    }
+
     // Run the agent (replaces temporary runOnce)
+    const run_started = std.Io.Timestamp.now(io, .real);
     const result = agent.run(io, gpa, arena, cfg, init.environ_map) catch |err| {
         const code: ExitCode = switch (err) {
             error.Timeout => .connection_timeout,
             error.AuthFailed => .auth_failed,
             else => .internal_error,
         };
+        if (cfg.debug) debuglog.emitPerf(io, run_started, 0, @intFromEnum(code));
         const detail = if (err == error.AuthFailed) blk: {
             const hint = authHint(arena, cfg.provider);
             break :blk std.fmt.allocPrint(arena,
@@ -618,12 +642,14 @@ pub fn main(init: std.process.Init) !void {
         printErrorJson(@intFromEnum(code), @errorName(err), detail, false);
         std.process.exit(@intFromEnum(code));
     };
+    if (cfg.debug) debuglog.emitPerf(io, run_started, result.tokens_out, result.exit_code);
     std.process.exit(result.exit_code);
 }
 
 test {
     std.testing.refAllDecls(@This());
     _ = json;
+    _ = debuglog;
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");

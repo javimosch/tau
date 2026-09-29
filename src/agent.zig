@@ -10,6 +10,7 @@ const session_mod = @import("session.zig");
 const package_version = @import("version.zig").version;
 
 const term = @import("term.zig");
+const debuglog = @import("debuglog.zig");
 
 /// The exit sentinel for the current run. Priority:
 ///   1. cfg.exit_sentinel (Author↔Critic loop overrides)
@@ -281,7 +282,7 @@ pub fn run(
             if (cfg.debug) {
                 const debug_input = try std.fmt.allocPrint(gpa, "[DEBUG] Tool: {s}, Args: {s}\n", .{ tool_call.name, tool_call.arguments });
                 defer gpa.free(debug_input);
-                term.err(debug_input);
+                debuglog.emit(debug_input);
             }
 
             const args = try buildToolArgs(gpa, tool_call.name, tool_call.arguments);
@@ -301,11 +302,11 @@ pub fn run(
             if (cfg.debug) {
                 const debug_output = try std.fmt.allocPrint(gpa, "[DEBUG] Tool result (success={}): {s}\n", .{ tool_result.success, tool_result.stdout });
                 defer gpa.free(debug_output);
-                term.err(debug_output);
+                debuglog.emit(debug_output);
                 if (!tool_result.success and tool_result.stderr.len > 0) {
                     const debug_err = try std.fmt.allocPrint(gpa, "[DEBUG] Tool stderr: {s}\n", .{tool_result.stderr});
                     defer gpa.free(debug_err);
-                    term.err(debug_err);
+                    debuglog.emit(debug_err);
                 }
             }
 
@@ -359,8 +360,17 @@ fn goalSubcommand(
     stored_goal: *?session_mod.GoalState,
 ) !u8 {
     const name = cfg.session orelse {
-        const msg = "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n";
-        term.err(msg);
+        const suf = debuglog.envelopeSuffix(gpa);
+        defer if (suf) |s| gpa.free(s);
+        if (std.fmt.allocPrint(gpa,
+            "{{\"err\":{{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"{s}}}}}\n",
+            .{suf orelse ""},
+        )) |msg| {
+            defer gpa.free(msg);
+            term.err(msg);
+        } else |_| {
+            term.err("{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
+        }
         return 80;
     };
 
