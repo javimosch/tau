@@ -1273,19 +1273,15 @@ test "serveConn: line-framed NDJSON stream isolates each message" {
 
     // Exactly five replies, in order: ids 1, 2, 3, 5, 6.
     var it = std.mem.splitScalar(u8, std.mem.trim(u8, out, "\n"), '\n');
-    var ids: std.ArrayList(std.json.Value) = .empty;
+    var ids: std.ArrayList(i64) = .empty;
     defer ids.deinit(gpa);
     while (it.next()) |line| {
         var parsed = try std.json.parseFromSlice(std.json.Value, gpa, line, .{});
         defer parsed.deinit();
         try std.testing.expect(parsed.value == .object);
-        try ids.append(gpa, parsed.value.object.get("id").?);
+        try ids.append(gpa, parsed.value.object.get("id").?.integer);
     }
-    try std.testing.expectEqual(@as(usize, 5), ids.items.len);
-    const expected_ids = [_]i64{ 1, 2, 3, 5, 6 };
-    for (expected_ids, ids.items) |e, idv| {
-        try std.testing.expectEqual(@as(i64, e), idv.integer);
-    }
+    try std.testing.expectEqualSlices(i64, &.{ 1, 2, 3, 5, 6 }, ids.items);
 }
 
 /// Random JSON string fragment for generated messages — hostile alphabet of
