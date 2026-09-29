@@ -31,6 +31,9 @@ are backward compatible.
   (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
+- `--debug` now writes a redacted diagnostic log to
+  `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and
+  `{"err":...}` envelopes carry a `debug_log` link when a log is active (#167)
 
 ### Fixed
 

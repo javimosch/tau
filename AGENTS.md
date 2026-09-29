@@ -38,7 +38,7 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `-xt, --exclude-tools <csv>` | string | — | Denylist tool names |
 | `-nt, --no-tools` | flag | — | Disable all tools |
 | `--thinking` | flag | off | Show thinking/reasoning chunks |
-| `--debug` | flag | off | Log perf stats + tool I/O to stderr |
+| `--debug` | flag | off | Perf stats + tool I/O to stderr; also writes a redacted diagnostic log to `~/.config/tau/debug/` (override: `TAU_DEBUG_LOG`) |
 | `--dry-run` | flag | off | Plan tool calls, execute none |
 | `--temperature <f>` | float | 0.7 | Sampling temperature |
 | `--max-tokens <n>` | int | — | Cap output tokens |
@@ -191,7 +191,8 @@ tau --append-system-prompt "A" --append-system-prompt "B" "x"  # Repeatable
 #### 9. Dry-Run & Debugging
 ```bash
 tau --dry-run --tools bash "touch /tmp/x"   # Plan only, no execution
-tau --debug "test"                          # Stderr: perf stats + tool I/O
+tau --debug "test"                          # Stderr: perf stats + tool I/O;
+                                            # plus redacted ~/.config/tau/debug/<ts>.log
 tau --thinking "complex reasoning task"     # Show model's thinking chunks
 tau --max-iterations 1 --tools bash "x"     # Cap tool loops
 ```
@@ -262,6 +263,7 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `~/.config/tau/acp.sock` | ACP Unix socket (daemon mode) |
 | `~/.config/tau/acp.pid` | ACP daemon PID file |
 | `~/.config/tau/acp.log` | ACP daemon log |
+| `~/.config/tau/debug/<ts>.log` | Redacted diagnostic log written by `--debug` (override: `TAU_DEBUG_LOG`) |
 
 ### How to Extend Tau
 
@@ -284,6 +286,7 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `src/tools/*.zig` | Built-in tools (bash,read,write,edit,ls,grep,find) | Adding/modifying tools |
 | `src/tools/registry.zig` | Tool registry + allowlist/denylist | Registering new tools |
 | `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
+| `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
 | `src/term.zig` | Portable stdout/stderr | Terminal output changes |
 
 #### Validation Commands

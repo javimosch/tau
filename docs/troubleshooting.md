@@ -230,7 +230,7 @@ any of them.
 
 | Command | Use it to |
 |---------|-----------|
-| `tau --debug "<prompt>"` | Perf stats, tool-call I/O, raw API response on stderr |
+| `tau --debug "<prompt>"` | Perf stats, tool-call I/O, raw API response on stderr — plus a redacted log under `~/.config/tau/debug/` |
 | `tau --dry-run --tools bash,read "<prompt>"` | See planned tool calls, execute none |
 | `tau --thinking "<prompt>"` | Show model reasoning chunks |
 | `tau models` | List providers + default models (JSON) |
@@ -239,5 +239,10 @@ any of them.
 | `tau acp status` | Is the ACP daemon running? |
 | `echo $?` after a failure | Semantic exit code for scripting |
 
-Still stuck? Re-run with `--debug`, copy the full `{"err":...}` envelope, and
-open an issue: <https://github.com/javimosch/tau/issues>
+Still stuck? Re-run with `--debug` — stderr prints a `{"debug_log":"<path>"}`
+line pointing at a redacted diagnostic log under `~/.config/tau/debug/`
+(`TAU_DEBUG_LOG` overrides the path), and `{"err":...}` envelopes carry the
+same path in a `debug_log` field. Credentials are masked
+(`***REDACTED***`), but review the file before sharing — it still contains
+tool I/O and endpoint details. Attach it to a bug report:
+<https://github.com/javimosch/tau/issues>
