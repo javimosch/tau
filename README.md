@@ -61,6 +61,17 @@ version tags — and before publish, each tarball is smoke-tested on its
 matching OS/arch runner by installing it through `install.sh` and running
 `tau --version`/`--help`.
 
+**Homebrew (macOS and Linux — `brew upgrade` tracks new releases):**
+
+```bash
+brew install javimosch/tap/tau
+```
+
+The [`javimosch/homebrew-tap`](https://github.com/javimosch/homebrew-tap)
+formula is regenerated with the correct per-platform checksums and pushed by
+the release workflow on every stable version tag, so `brew update && brew
+upgrade tau` always lands on the latest release.
+
 **In GitHub Actions (one `uses:` line):**
 
 ```yaml

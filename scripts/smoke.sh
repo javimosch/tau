@@ -1245,7 +1245,68 @@ test_group_release() {
     contains "smoke verifies artifact checksum" "$(cat "$wf")" "Verify artifact checksum"
     contains "smoke checks tarball against .sha256" "$(cat "$wf")" 'sha256sum -c "tau-'
     contains "release self-verifies SHA256SUMS.txt" "$(cat "$wf")" "sha256sum -c SHA256SUMS.txt"
+
+    # ── homebrew tap job drift guards (task #175) ──
+    contains "workflow has a homebrew job" "$(cat "$wf")" "  homebrew:"
+    contains "homebrew job runs after release" "$(cat "$wf")" "needs: release"
+    contains "homebrew job gates on tags" "$(cat "$wf")" "github.ref_type == 'tag'"
+    contains "homebrew job runs the formula generator" "$(cat "$wf")" "generate-homebrew-formula.sh"
+    contains "homebrew job pushes to the tap repo" "$(cat "$wf")" "javimosch/homebrew-tap"
+    contains "homebrew job writes Formula/tau.rb" "$(cat "$wf")" "Formula/tau.rb"
+    contains "homebrew job uses the tap token secret" "$(cat "$wf")" "HOMEBREW_TAP_TOKEN"
+    contains "homebrew job skips pre-release tags" "$(cat "$wf")" 'is a pre-release'
+    contains "release notes mention brew install" "$(cat "$wf")" "brew install javimosch/tap/tau"
   fi
+
+  # ── Homebrew formula generator ──
+  local gen="$ROOT/scripts/generate-homebrew-formula.sh"
+  [ -f "$gen" ];  ok "formula generator exists" "$?" 0
+  [ -x "$gen" ];  ok "formula generator is executable" "$?" 0
+  sh -n "$gen" 2>/dev/null;   ok "formula generator passes sh -n syntax check" "$?" 0
+  bash -n "$gen" 2>/dev/null; ok "formula generator passes bash -n syntax check" "$?" 0
+
+  out=$("$gen" --help 2>&1); rc=$?
+  ok "formula generator --help exit" "$rc" 0
+  contains "formula generator --help shows usage" "$out" "--version"
+
+  local fdir
+  fdir="$(mktemp -d)"
+  printf '%064d  %s\n' 11 tau-macos-aarch64.tar.gz  > "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 22 tau-macos-x86_64.tar.gz  >> "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 33 tau-linux-x86_64.tar.gz  >> "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 44 tau-linux-aarch64.tar.gz >> "$fdir/SHA256SUMS.txt"
+
+  out=$("$gen" --version 1.2.3 --sums "$fdir/SHA256SUMS.txt" 2>&1); rc=$?
+  ok "formula generator renders" "$rc" 0
+  contains "formula class is Tau" "$out" "class Tau < Formula"
+  contains "formula carries the version" "$out" 'version "1.2.3"'
+  contains "formula is MIT licensed" "$out" 'license "MIT"'
+  contains "formula has macos arm block" "$out" "on_arm do"
+  contains "formula has macos intel block" "$out" "on_intel do"
+  contains "formula has linux block" "$out" "on_linux do"
+  contains "formula macos-arm url" "$out" "releases/download/v1.2.3/tau-macos-aarch64.tar.gz"
+  contains "formula macos-intel url" "$out" "releases/download/v1.2.3/tau-macos-x86_64.tar.gz"
+  contains "formula linux-x86_64 url" "$out" "releases/download/v1.2.3/tau-linux-x86_64.tar.gz"
+  contains "formula linux-aarch64 url" "$out" "releases/download/v1.2.3/tau-linux-aarch64.tar.gz"
+  contains "formula macos-arm sha" "$out" 'sha256 "0000000000000000000000000000000000000000000000000000000000000011"'
+  contains "formula linux-aarch64 sha" "$out" 'sha256 "0000000000000000000000000000000000000000000000000000000000000044"'
+  contains "formula installs the tau binary" "$out" 'bin.install "tau"'
+  contains "formula test runs --version" "$out" 'tau --version'
+
+  out=$("$gen" --version v2.0.0 --sums "$fdir/SHA256SUMS.txt" 2>&1)
+  contains "leading v is stripped from version" "$out" 'version "2.0.0"'
+
+  # fail-closed paths: no blank checksums, no malformed versions
+  "$gen" --version 1.0.0 --sums "$fdir/missing.txt" >/dev/null 2>&1
+  ok "generator rejects missing manifest" "$?" 1
+  printf 'deadbeef  tau-macos-aarch64.tar.gz\n' > "$fdir/partial.txt"
+  "$gen" --version 1.0.0 --sums "$fdir/partial.txt" >/dev/null 2>&1
+  ok "generator rejects manifest missing assets" "$?" 1
+  "$gen" --version notaversion --sums "$fdir/SHA256SUMS.txt" >/dev/null 2>&1
+  ok "generator rejects malformed version" "$?" 1
+  "$gen" --bogus >/dev/null 2>&1
+  ok "generator rejects unknown flag" "$?" 1
+  rm -rf "$fdir"
 
   # ── setup-tau composite action (repo-root action.yml) ──
   local act="$ROOT/action.yml"

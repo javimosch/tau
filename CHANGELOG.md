@@ -48,6 +48,12 @@ are backward compatible.
 - `setup-tau` composite GitHub Action (repo-root `action.yml`) — install tau
   in CI with a single `uses: javimosch/tau@<ref>` line; wraps `install.sh`,
   puts `tau` on `PATH`, and exposes `tau-path`/`version` outputs (#151)
+- Homebrew tap — `brew install javimosch/tap/tau` on macOS and Linux. A
+  `homebrew` job in the release workflow regenerates `Formula/tau.rb`
+  (`scripts/generate-homebrew-formula.sh` + the published `SHA256SUMS.txt`)
+  and pushes it to `javimosch/homebrew-tap` on every stable tag, so
+  `brew upgrade` tracks releases (#175). Requires a `HOMEBREW_TAP_TOKEN`
+  repository secret to publish; releases proceed without it
 
 ### Fixed
 
