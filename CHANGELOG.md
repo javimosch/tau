@@ -34,6 +34,11 @@ are backward compatible.
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and
   `{"err":...}` envelopes carry a `debug_log` link when a log is active (#167)
+- Stable error catalog (`src/errors.zig`): every `{"err":...}` envelope now
+  carries `code`, `type`, `message`, `recoverable`, a remediation `hint`, and
+  the `docs` link — emitted from one shared formatter across main/agent/acp/
+  fleet/helpers. Codes and `type` tags are documented as stable in
+  docs/troubleshooting.md (#171)
 
 ### Fixed
 

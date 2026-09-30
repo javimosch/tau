@@ -5,6 +5,7 @@ const argsmod = @import("args.zig");
 const json = @import("json.zig");
 const agent = @import("agent.zig");
 const debuglog = @import("debuglog.zig");
+const errs = @import("errors.zig");
 const Config = cfgmod.Config;
 
 pub const name = "tau";
@@ -32,20 +33,17 @@ fn writeErr(s: []const u8) void {
 const doc_url = @import("version.zig").troubleshooting_doc_url;
 
 fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
-    const te = try json.escapeAlloc(gpa, error_type);
-    defer gpa.free(te);
-    const me = try json.escapeAlloc(gpa, message);
-    defer gpa.free(me);
-    // When --debug opened a diagnostic log, link it so bug reports can attach it.
-    const suf = debuglog.envelopeSuffix(gpa) orelse "";
-    defer if (suf.len > 0) gpa.free(suf);
-    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"docs\":\"{s}\"{s}}}}}\n", .{ code, te, me, recoverable, doc_url, suf });
+    return errs.format(gpa, errs.specFor(code), message, .{ .type_name = error_type, .recoverable = recoverable });
 }
 
 fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
-    const j = formatErrorJson(std.heap.page_allocator, code, error_type, message, recoverable) catch return;
-    defer std.heap.page_allocator.free(j);
-    writeErr(j);
+    printErrorJsonHint(code, error_type, message, recoverable, null);
+}
+
+/// printErrorJson with a dynamic remediation hint (e.g. authHint names the
+/// provider's env var); null falls back to the catalog hint for `code`.
+fn printErrorJsonHint(code: u8, error_type: []const u8, message: []const u8, recoverable: bool, hint: ?[]const u8) void {
+    errs.printErr(std.heap.page_allocator, errs.specFor(code), message, .{ .type_name = error_type, .recoverable = recoverable, .hint = hint });
 }
 
 fn formatWarnJson(gpa: std.mem.Allocator, message: []const u8) ![]u8 {
@@ -272,7 +270,7 @@ fn printHelpJson() void {
 // Single source of truth: the consts below render to JSON (default) or markdown (--human).
 const GuideItem = struct { a: []const u8, b: []const u8 };
 const guide_one_liner = "tau — a non-interactive, agent-first AI CLI (Zig): single-shot chat with tool-calling, sessions, goal mode, fleet orchestration, and an ACP server. JSON output by default; semantic exit codes.";
-const guide_model = "You (an agent) invoke tau once per task; it runs a single agentic turn (LLM + tools) and exits — no REPL, never blocks on stdin. Output is JSON by default (--mode text for prose; errors are always JSON {err:{code,type,message}}). Provider/model/key resolve from ~/.config/tau/config.json, provider env vars, or TAU_API_KEY; endpoints are OpenAI-compatible /chat/completions (override with TAU_ENDPOINT).";
+const guide_model = "You (an agent) invoke tau once per task; it runs a single agentic turn (LLM + tools) and exits — no REPL, never blocks on stdin. Output is JSON by default (--mode text for prose; errors are always JSON {err:{code,type,message,hint,docs}}). Provider/model/key resolve from ~/.config/tau/config.json, provider env vars, or TAU_API_KEY; endpoints are OpenAI-compatible /chat/completions (override with TAU_ENDPOINT).";
 const guide_loop = "parse args -> resolve provider/model/endpoint/key -> build messages -> LLM turn -> if the model calls tools, run them (allowlisted via --tools) and loop -> stop when the model stops calling tools or hits --max-iterations -> emit result + semantic exit code. --session <name> persists conversation+goal across calls; /goal <directive> runs autonomously until the <GOAL_MET> sentinel.";
 const guide_concepts = [_]GuideItem{
     .{ .a = "non-interactive", .b = "one prompt in, one result out; built for scripts and agents, not a REPL." },
@@ -304,7 +302,7 @@ const guide_examples = [_]GuideItem{
     .{ .a = "TAU_ENDPOINT=https://openrouter.ai/api/v1/chat/completions TAU_API_KEY=sk-or-... tau --model deepseek/deepseek-v4-flash \"hi\"", .b = "point at any OpenAI-compatible endpoint (OpenRouter)." },
 };
 const guide_gotchas = [_][]const u8{
-    "JSON is the default; use --mode text for prose. Errors are JSON {err:{code,type,message}} even in text mode.",
+    "JSON is the default; use --mode text for prose. Errors are JSON {err:{code,type,message,hint,docs}} even in text mode.",
     "Provider endpoint is resolved at parse time — config.json's provider does NOT set the endpoint; TAU_ENDPOINT overrides it.",
     "API-key precedence: config api_key > keys[provider] > provider env > global api_key > TAU_API_KEY. A stale config api_key silently outranks TAU_API_KEY.",
     "tau acp serve reads no model env var; the model comes from config.json or --model.",
@@ -557,7 +555,7 @@ pub fn main(init: std.process.Init) !void {
                     const hint = authHint(arena, fleet_cfg.provider);
                     const msg = std.fmt.allocPrint(arena,
                         "no API key for provider '{s}' — {s}", .{ fleet_cfg.provider, hint }) catch "missing API key";
-                    printErrorJson(@intFromEnum(ExitCode.auth_failed), "AuthFailed", msg, false);
+                    printErrorJsonHint(@intFromEnum(ExitCode.auth_failed), "AuthFailed", msg, false, hint);
                     std.process.exit(@intFromEnum(ExitCode.auth_failed));
                 }
             }
@@ -634,12 +632,13 @@ pub fn main(init: std.process.Init) !void {
             else => .internal_error,
         };
         if (cfg.debug) debuglog.emitPerf(io, run_started, 0, @intFromEnum(code));
+        var hint: ?[]const u8 = null;
         const detail = if (err == error.AuthFailed) blk: {
-            const hint = authHint(arena, cfg.provider);
+            hint = authHint(arena, cfg.provider);
             break :blk std.fmt.allocPrint(arena,
-                "no API key for provider '{s}' — {s}", .{ cfg.provider, hint }) catch "missing API key";
+                "no API key for provider '{s}' — {s}", .{ cfg.provider, hint.? }) catch "missing API key";
         } else "request failed";
-        printErrorJson(@intFromEnum(code), @errorName(err), detail, false);
+        printErrorJsonHint(@intFromEnum(code), @errorName(err), detail, false, hint);
         std.process.exit(@intFromEnum(code));
     };
     if (cfg.debug) debuglog.emitPerf(io, run_started, result.tokens_out, result.exit_code);
@@ -650,6 +649,7 @@ test {
     std.testing.refAllDecls(@This());
     _ = json;
     _ = debuglog;
+    _ = errs;
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
@@ -719,30 +719,50 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
 
 // Golden tests for the {"err":...} envelope (task #134): the envelope shape
 // and the docs link are a user-visible contract — changes must be deliberate.
-test "formatErrorJson emits the golden envelope including docs link" {
+test "formatErrorJson emits the golden envelope including hint and docs link" {
     const gpa = std.testing.allocator;
     const got = try formatErrorJson(gpa, 80, "invalid_argument", "bad flag --nope", false);
     defer gpa.free(got);
     try std.testing.expectEqualStrings(
-        "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"bad flag --nope\",\"recoverable\":false,\"docs\":\"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md\"}}\n",
+        "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"bad flag --nope\",\"recoverable\":false,\"hint\":\"run `tau --help` (or `tau --help-json`) for the valid flags and values\",\"docs\":\"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md\"}}\n",
         got,
     );
 }
 
-test "every literal err emitter in src carries a docs link" {
-    // Hand-rolled {"err":...} literals live outside formatErrorJson in these
-    // files; scan each emission site so a new one can't forget the docs field.
+test "every catalog error code is advertised in --help-json exit_codes" {
+    const gpa = std.testing.allocator;
+    const got = try formatHelpJson(gpa);
+    defer gpa.free(got);
+    for (errs.specs) |s| {
+        // Exit code 1 (not_found) is intentionally absent from the advertised
+        // map — the integration contract documents it as the unlisted generic.
+        if (s.code == 1) continue;
+        var buf: [16]u8 = undefined;
+        const entry = std.fmt.bufPrint(&buf, "\"{d}\":\"", .{s.code}) catch unreachable;
+        if (std.mem.indexOf(u8, got, entry) == null) {
+            std.debug.print("--help-json exit_codes missing code {d} ({s})\n", .{ s.code, s.type_name });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "every literal err emitter in src carries a hint and docs link" {
+    // Hand-rolled {"err":...} literals live outside errors.format in these
+    // files; scan each emission site so a new one can't forget the hint/docs
+    // fields (the catalog's snapshot tests live in errors.zig).
     const sources = [_][]const u8{
         @embedFile("main.zig"),
         @embedFile("agent.zig"),
         @embedFile("acp.zig"),
         @embedFile("fleet.zig"),
         @embedFile("helpers.zig"),
+        @embedFile("errors.zig"),
     };
     for (sources) |src| {
         var pos: usize = 0;
         while (std.mem.indexOfPos(u8, src, pos, "err\\\":{")) |i| {
-            const window = src[i..@min(src.len, i + 600)];
+            const window = src[i..@min(src.len, i + 700)];
+            try std.testing.expect(std.mem.indexOf(u8, window, "hint\\\":") != null);
             try std.testing.expect(std.mem.indexOf(u8, window, "docs\\\":") != null);
             pos = i + 1;
         }

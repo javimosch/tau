@@ -552,14 +552,35 @@ test_group_dry_run() {
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope: $err_env_err"
   fi
 
-  # Error envelope for missing required field (exit 82)
-  # fleet run without --goal writes to stdout via fleetRequires (term.out, not term.err)
-  capture err_82 "$BIN" fleet run 2>&1 >/dev/null
-  if printf '%s' "$err_82_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 82' 2>/dev/null; then
-    ok "error envelope code 82 exists" 0 0
+  # Standardized envelope (task #171): every code carries recoverable, a
+  # remediation hint, and the docs link — on both channels.
+  if printf '%s' "$err_env_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("recoverable") == False; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 80 has recoverable + hint + docs" 0 0
   else
-    ok "error envelope code 82 format invalid" 1 0
-    [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 82: $err_82_out"
+    ok "envelope 80 missing recoverable/hint/docs" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 80: $err_env_err"
+  fi
+
+  # Error envelope for missing required field (exit 82)
+  # fleet run without --goal writes to stdout via fleetRequires (term.out, not
+  # term.err). Unreachable without a key: fleet's auth check fires first (106).
+  if $has_key; then
+    capture err_82 "$BIN" fleet run 2>&1 >/dev/null
+    if printf '%s' "$err_82_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 82' 2>/dev/null; then
+      ok "error envelope code 82 exists" 0 0
+    else
+      ok "error envelope code 82 format invalid" 1 0
+      [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 82: $err_82_out"
+    fi
+    if printf '%s' "$err_82_out" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("type") == "missing_required_field"; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+      ok "envelope 82 has type missing_required_field + hint + docs" 0 0
+    else
+      ok "envelope 82 missing type/hint/docs" 1 0
+      [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 82: $err_82_out"
+    fi
+  else
+    skip_test "error envelope code 82" "no API key (auth check fires before --goal check)"
+    skip_test "envelope 82 fields" "no API key"
   fi
 
   # Error envelope for internal error (exit 110) triggered by fake API key
@@ -569,6 +590,12 @@ test_group_dry_run() {
   else
     ok "error envelope code 110 format invalid" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 110: $err_110_err"
+  fi
+  if printf '%s' "$err_110_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 110 has hint + docs" 0 0
+  else
+    ok "envelope 110 missing hint/docs" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 110: $err_110_err"
   fi
 }
 

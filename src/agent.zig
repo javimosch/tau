@@ -11,6 +11,7 @@ const package_version = @import("version.zig").version;
 
 const term = @import("term.zig");
 const debuglog = @import("debuglog.zig");
+const errs = @import("errors.zig");
 
 /// The exit sentinel for the current run. Priority:
 ///   1. cfg.exit_sentinel (Author↔Critic loop overrides)
@@ -360,17 +361,7 @@ fn goalSubcommand(
     stored_goal: *?session_mod.GoalState,
 ) !u8 {
     const name = cfg.session orelse {
-        const suf = debuglog.envelopeSuffix(gpa);
-        defer if (suf) |s| gpa.free(s);
-        if (std.fmt.allocPrint(gpa,
-            "{{\"err\":{{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"{s}}}}}\n",
-            .{suf orelse ""},
-        )) |msg| {
-            defer gpa.free(msg);
-            term.err(msg);
-        } else |_| {
-            term.err("{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"/goal subcommands require --session <name>\",\"docs\":\"" ++ @import("version.zig").troubleshooting_doc_url ++ "\"}}\n");
-        }
+        errs.printErr(gpa, errs.invalid_argument, "/goal subcommands require --session <name>", .{});
         return 80;
     };
 

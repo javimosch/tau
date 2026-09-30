@@ -6,12 +6,36 @@ tau reports failures on **stderr** as a single-line JSON envelope — even in
 `--mode text`:
 
 ```json
-{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}
+{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"hint":"set OPENAI_API_KEY env var, or use --api-key <key>","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}
 ```
 
 - `code` is also the process exit code — scripts can branch on `$?`.
 - `message` is human-readable and usually names the exact fix.
+- `hint` is a short remediation nudge for the error class — the fastest fix
+  when you don't want to read further.
 - `docs` always links back to this page.
+
+## Stable error catalog
+
+`code` and `type` are **stable**: they never change for a given failure class,
+so integrations may switch on them. (New codes may be added; existing ones are
+never renumbered or renamed.) `hint` is the canned remediation emitted in the
+envelope — dynamic failures (like a missing API key) override it with a
+more specific hint.
+
+| Exit code | Envelope `type` | `hint` |
+|-----------|-----------------|--------|
+| `1` | `not_found` | the message names what was not found — check the name/path and retry |
+| `80` | `invalid_argument` | run `tau --help` (or `tau --help-json`) for the valid flags and values |
+| `82` | `missing_required_field` | the message names the missing input — supply it and retry |
+| `105` | `Timeout` | raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT) |
+| `106` | `AuthFailed` | provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY |
+| `110` | `internal_error` | re-run with --debug to write a diagnostic log, then file a bug report |
+| `111` | `unimplemented` | not supported on this platform — the message names the workaround |
+
+Some emitters override `type` with the underlying Zig error name (e.g.
+`HTTPRequestFailed` on exit 110) while keeping `code` stable — branch on
+`code` first, `type` second.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
 run continues.
