@@ -285,6 +285,10 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `src/tools/registry.zig` | Tool registry + allowlist/denylist | Registering new tools |
 | `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
 | `src/term.zig` | Portable stdout/stderr | Terminal output changes |
+| `install.sh` | curl-able installer for prebuilt releases | Installer/flag/env changes |
+| `action.yml` | `setup-tau` composite GitHub Action (wraps `install.sh`) | Action inputs/outputs |
+| `.github/workflows/release.yml` | Tag-triggered release build + smoke + publish + Homebrew tap update | Release process changes |
+| `scripts/generate-homebrew-formula.sh` | Renders `Formula/tau.rb` from a version + `SHA256SUMS.txt` | Formula field/asset changes |
 
 #### Validation Commands
 
