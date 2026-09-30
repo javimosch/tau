@@ -1,0 +1,33 @@
+# Verify the examples/ cookbook end-to-end on every build.
+#
+# Every published recipe (examples/*.sh, examples/*.py, examples/ci/run.sh)
+# is executed against a freshly built tau binary. Provider HTTP is stubbed by
+# scripts/lib/fake-curl (a `curl` shim earlier on PATH), so the real agent
+# loop, tools, sessions, and goal mode run with no API key and no network.
+name: examples
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cookbook:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # tau is a single Zig binary; the toolchain version is pinned.
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build tau
+        run: zig build
+
+      - name: Run examples cookbook end-to-end
+        run: scripts/smoke.sh --group=examples

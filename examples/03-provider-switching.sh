@@ -166,8 +166,12 @@ section "8. Tune temperature and max-tokens per provider"
 # --temperature 1.0  → creative / varied
 # --max-tokens       → hard cap on response length
 if has_key OPENAI_API_KEY || has_key XIAOMI_API_KEY || has_key DEEPSEEK_API_KEY; then
-  PROV="${OPENAI_API_KEY:+openai}${XIAOMI_API_KEY:+xiaomi}${DEEPSEEK_API_KEY:+deepseek}"
-  PROV="${PROV%% *}"   # take first match
+  # Pick the first provider that has a key set.
+  PROV=""
+  if   has_key OPENAI_API_KEY;   then PROV=openai
+  elif has_key XIAOMI_API_KEY;   then PROV=xiaomi
+  elif has_key DEEPSEEK_API_KEY; then PROV=deepseek
+  fi
 
   echo "Provider: $PROV"
   "$TAU" --provider "$PROV" --temperature 0.2 --max-tokens 60 \

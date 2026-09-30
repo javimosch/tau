@@ -31,6 +31,8 @@ are backward compatible.
   (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
+- CI: `examples` workflow + `smoke.sh --group=examples` run every published
+  `examples/` recipe end-to-end against a stubbed provider (#172)
 
 ### Fixed
 
@@ -62,6 +64,10 @@ are backward compatible.
 - `read` tool hardened against shell/special characters in paths (#94)
 - Skill search is case-insensitive (#90)
 - Session save failure warns instead of failing silently (#78)
+- `examples/` recipes: `03-provider-switching.sh` picks the first configured
+  provider key when several are set (was an invalid concatenated name), and
+  `01-file-editing.sh` selects the `done` envelope before parsing `.content`
+  with jq so streaming chunks don't break the pipeline (#172)
 
 ### Tests
 
