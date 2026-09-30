@@ -1,6 +1,7 @@
 const std = @import("std");
 const jsonmod = @import("../json.zig");
 const term = @import("../term.zig");
+const debuglog = @import("../debuglog.zig");
 
 pub const Message = struct {
     role: []const u8,
@@ -506,7 +507,7 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     if (cfg.debug) {
         const debug_raw = try std.fmt.allocPrint(gpa, "[DEBUG] Raw API response: {s}\n", .{result.stdout});
         defer gpa.free(debug_raw);
-        term.err(debug_raw);
+        debuglog.emit(debug_raw);
     }
 
     // Parse tool_calls first: on a tool-call turn the model returns
@@ -785,7 +786,7 @@ pub fn completeStreamWithTools(
         if (cfg.debug) {
             const dbg = try std.fmt.allocPrint(gpa, "[DEBUG] SSE line: {s}\n", .{line});
             defer gpa.free(dbg);
-            term.err(dbg);
+            debuglog.emit(dbg);
         }
 
         const data = switch (classifySseLine(line)) {
