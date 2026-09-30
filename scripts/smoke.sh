@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "examples:test_group_examples"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -745,6 +746,81 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: examples cookbook — run every shipped recipe end-to-end, offline.
+# tau shells out to `curl` for provider HTTP (src/llm/provider.zig), so a fake
+# `curl` earlier on PATH (scripts/lib/fake-curl) returns canned OpenAI-style
+# responses. The real binary, agent loop, tools, sessions, and goal mode all
+# execute; only the network leg is stubbed. HOME is a temp dir so session and
+# config state stay isolated. New examples are picked up automatically.
+test_group_examples() {
+  local stub_dir ex_home ex out rc base
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "examples cookbook" "fake-curl stub needs python3"
+    return
+  fi
+
+  stub_dir="$SMOKE_TEMP/examples-bin"
+  ex_home="$SMOKE_TEMP/examples-home"
+  mkdir -p "$stub_dir" "$ex_home"
+  ln -sf "$SCRIPT_DIR/lib/fake-curl" "$stub_dir/curl"
+
+  note "examples cookbook (offline provider stub)"
+
+  # Shell recipes: examples/01-*.sh, 02-*.sh, ... Run each with the stubbed
+  # curl and throwaway provider keys so every has_key-gated section executes.
+  for ex in "$ROOT"/examples/[0-9]*.sh; do
+    [ -f "$ex" ] || continue
+    base="$(basename "$ex")"
+    out=$(
+      HOME="$ex_home" XDG_CONFIG_HOME="$ex_home/.config" \
+      TAU_BIN="$BIN" PATH="$stub_dir:$PATH" \
+      XIAOMI_API_KEY="smoke-stub-key" OPENAI_API_KEY="smoke-stub-key" \
+      DEEPSEEK_API_KEY="smoke-stub-key" \
+      bash "$ex" 2>&1
+    )
+    rc=$?
+    ok "examples/$base exits 0" "$rc" 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "$base output (first 400 chars): ${out:0:400}"
+    case "$base" in
+      01-*) contains "$base verifies write tool ran" "$out" "Verified: file created successfully" ;;
+      02-*) contains "$base persists a session file" "$out" "Session saved to:" ;;
+      03-*) contains "$base exercises the openai provider" "$out" "openai answer:" ;;
+    esac
+  done
+
+  # Python consumers: examples/*.py read tau's NDJSON stream.
+  for ex in "$ROOT"/examples/*.py; do
+    [ -f "$ex" ] || continue
+    base="$(basename "$ex")"
+    out=$(
+      HOME="$ex_home" XDG_CONFIG_HOME="$ex_home/.config" \
+      TAU_BIN="$BIN" PATH="$stub_dir:$PATH" \
+      XIAOMI_API_KEY="smoke-stub-key" \
+      python3 "$ex" --no-tools "smoke ping" 2>&1
+    )
+    rc=$?
+    ok "examples/$base exits 0" "$rc" 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "$base output (first 400 chars): ${out:0:400}"
+  done
+
+  # The non-interactive CI recipe (examples/ci/run.sh) writes $TAU_OUT and is
+  # designed to run in any cwd — exercise it from the temp dir.
+  if [ -f "$ROOT/examples/ci/run.sh" ]; then
+    out=$(
+      cd "$SMOKE_TEMP" || exit 1
+      HOME="$ex_home" XDG_CONFIG_HOME="$ex_home/.config" \
+      TAU_BIN="$BIN" TAU_OUT="$SMOKE_TEMP/tau-output.md" \
+      PATH="$stub_dir:$PATH" XIAOMI_API_KEY="smoke-stub-key" \
+      bash "$ROOT/examples/ci/run.sh" 2>&1
+    )
+    rc=$?
+    ok "examples/ci/run.sh exits 0" "$rc" 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "ci/run.sh output (first 400 chars): ${out:0:400}"
+    [ -s "$SMOKE_TEMP/tau-output.md" ]; ok "ci recipe writes non-empty \$TAU_OUT" "$?" 0
+  fi
 }
 
 # Group: --bench regression guard

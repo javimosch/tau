@@ -19,8 +19,10 @@ TAU="${TAU_BIN:-tau}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 section() { echo; echo "── $* ──"; }
-# Extract .content from JSON response if jq is available, else print raw JSON.
-content() { command -v jq &>/dev/null && jq -r '.content' <<< "$1" || echo "$1"; }
+# Extract .content from the final NDJSON envelope if jq is available, else
+# print the raw output. (Streaming emits one JSON object per line; only the
+# "done" envelope carries .content.)
+content() { command -v jq &>/dev/null && jq -r 'select(.done == true) | .content' <<< "$1" || echo "$1"; }
 
 # ── 1. READ a file ───────────────────────────────────────────────────────────
 section "1. Read a file"
@@ -126,9 +128,10 @@ RESULT=$("$TAU" --tools read --mode json \
 Return a JSON object with key 'employees' containing an array of those objects.")
 rm -f "$DATA_FILE"
 
-# In JSON mode the model's answer is in the 'content' field.
+# In JSON mode the model's answer is in the 'content' field of the final
+# ("done") envelope — select it before parsing so stream chunks are skipped.
 if command -v jq &>/dev/null; then
-  echo "$RESULT" | jq '.content | fromjson'
+  echo "$RESULT" | jq 'select(.done == true) | .content | fromjson'
 else
   echo "$RESULT"
 fi

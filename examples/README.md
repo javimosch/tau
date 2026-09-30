@@ -127,3 +127,21 @@ tau --schema '{"type":"object","properties":{"score":{"type":"integer"}}}' \
 ```
 
 See `tau --help` for the full flag reference.
+
+---
+
+## CI verification
+
+Every recipe in this directory runs end-to-end in CI on each push and pull
+request — see `.github/workflows/examples.yml`. The job builds tau and runs
+`scripts/smoke.sh --group=examples`, which executes each script against a
+stubbed provider (`scripts/lib/fake-curl` shadows `curl`, the binary tau uses
+for provider HTTP). Run the same check locally after `zig build`:
+
+```bash
+scripts/smoke.sh --group=examples
+```
+
+Because the provider is stubbed, this validates the recipes themselves — flag
+usage, output parsing, tool calls, sessions, and goal mode — without needing
+an API key.
