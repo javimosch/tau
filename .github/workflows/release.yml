@@ -5,18 +5,21 @@ name: release
 # push origin v0.5.0`), or manually via workflow_dispatch for a build-only
 # dry run (artifacts are uploaded, no release is created).
 #
-# Assets: tau-<os>-<arch>.tar.gz for linux/macos × x86_64/aarch64, plus a
-# SHA256SUMS.txt manifest. install.sh consumes exactly these names.
+# Assets: tau-<os>-<arch>.tar.gz for linux/macos × x86_64/aarch64 and
+# tau-windows-x86_64.zip (Windows convention is .zip, not .tar.gz), plus a
+# SHA256SUMS.txt manifest. install.sh / install.ps1 consume exactly these names.
 #
-# Jobs: build → smoke → release → homebrew. The smoke job installs every tarball through
-# install.sh on the matching OS/arch runner (against a local stand-in for the
-# releases URL via TAU_BASE_URL) and verifies `tau --version`/`--help` run, so
-# a broken binary can never reach the published release.
+# Jobs: build → smoke / smoke-windows / smoke-action → release → homebrew /
+# winget / scoop. The smoke jobs install every artifact through install.sh (or
+# install.ps1 on a native Windows runner) on the matching OS/arch runner
+# (against a local stand-in for the releases URL via TAU_BASE_URL) and verify
+# `tau --version`/`--help` run, so a broken binary can never reach the
+# published release.
 #
-# Integrity: the build job emits a .sha256 next to each tarball; the smoke
+# Integrity: the build job emits a .sha256 next to each archive; the smoke
 # jobs verify it before staging; the release job re-checks SHA256SUMS.txt
-# before publish; install.sh then verifies downloads against it and aborts
-# on any mismatch (fail closed — set TAU_SKIP_CHECKSUM=1 to opt out).
+# before publish; install.sh / install.ps1 then verify downloads against it
+# and abort on any mismatch (fail closed — set TAU_SKIP_CHECKSUM=1 to opt out).
 #
 # Homebrew: the homebrew job regenerates Formula/tau.rb from the published
 # checksums and pushes it to javimosch/homebrew-tap on stable tags, so
@@ -39,10 +42,11 @@ jobs:
         include:
           # All targets are cross-compiled on one runner — Zig needs no
           # per-platform toolchain or SDK.
-          - { zig_target: x86_64-linux-gnu,  artifact: linux-x86_64 }
-          - { zig_target: aarch64-linux-gnu, artifact: linux-aarch64 }
-          - { zig_target: x86_64-macos,      artifact: macos-x86_64 }
-          - { zig_target: aarch64-macos,     artifact: macos-aarch64 }
+          - { zig_target: x86_64-linux-gnu,   artifact: linux-x86_64,   ext: tar.gz }
+          - { zig_target: aarch64-linux-gnu,  artifact: linux-aarch64,  ext: tar.gz }
+          - { zig_target: x86_64-macos,       artifact: macos-x86_64,   ext: tar.gz }
+          - { zig_target: aarch64-macos,      artifact: macos-aarch64,  ext: tar.gz }
+          - { zig_target: x86_64-windows-gnu, artifact: windows-x86_64, ext: zip }
     steps:
       - uses: actions/checkout@v4
 
@@ -71,14 +75,24 @@ jobs:
         if: matrix.zig_target == 'x86_64-linux-gnu'
         run: zig build test --summary all
 
-      - name: Package tarball
-        # A per-asset .sha256 travels with the tarball so the smoke jobs can
-        # verify the artifact survived the artifact store intact before they
-        # re-publish it to the staged release tree.
+      - name: Package artifact
+        # Windows ships as .zip (Expand-Archive on the consumer side); the
+        # rest are tarballs. A per-asset .sha256 travels with the archive so
+        # the smoke jobs can verify the artifact survived the artifact store
+        # intact before they re-publish it to the staged release tree.
         run: |
           mkdir -p dist
-          tar -czf "dist/tau-${{ matrix.artifact }}.tar.gz" -C zig-out/bin tau
-          (cd dist && sha256sum "tau-${{ matrix.artifact }}.tar.gz" > "tau-${{ matrix.artifact }}.tar.gz.sha256")
+          asset="dist/tau-${{ matrix.artifact }}.${{ matrix.ext }}"
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            if command -v zip >/dev/null 2>&1; then
+              zip -j "$asset" zig-out/bin/tau.exe
+            else
+              (cd zig-out/bin && python3 -m zipfile -c "../../$asset" tau.exe)
+            fi
+          else
+            tar -czf "$asset" -C zig-out/bin tau
+          fi
+          (cd dist && sha256sum "tau-${{ matrix.artifact }}.${{ matrix.ext }}" > "tau-${{ matrix.artifact }}.${{ matrix.ext }}.sha256")
           ls -la dist/
 
       - uses: actions/upload-artifact@v4
@@ -87,6 +101,8 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/*.zip
+            dist/*.zip.sha256
           retention-days: 30
 
   smoke:
@@ -160,6 +176,47 @@ jobs:
           tau --help > /dev/null
           tau --help | grep 'Usage:'
 
+  smoke-windows:
+    # Installs the Windows zip end-to-end through install.ps1 on a native
+    # Windows runner and verifies the binary runs. Same staging trick as the
+    # smoke job, but the staged tree is reached via a file:// TAU_BASE_URL —
+    # no local HTTP server needed on Windows.
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-windows-x86_64
+          path: dist
+
+      - name: Verify artifact checksum
+        shell: bash
+        run: (cd dist && sha256sum -c tau-windows-x86_64.zip.sha256)
+
+      - name: Stage a local release tree
+        shell: bash
+        run: |
+          mkdir -p srv/latest/download
+          cp dist/tau-windows-x86_64.zip srv/latest/download/
+          (cd srv/latest/download && sha256sum *.zip > SHA256SUMS.txt)
+          cat srv/latest/download/SHA256SUMS.txt
+
+      - name: Install via install.ps1
+        shell: pwsh
+        run: |
+          $env:TAU_BASE_URL = "file:///" + (Resolve-Path srv).Path.Replace('\','/')
+          ./install.ps1 -Dir "$env:RUNNER_TEMP/tau-bin"
+
+      - name: Verify the installed binary
+        shell: pwsh
+        run: |
+          $ver = & "$env:RUNNER_TEMP/tau-bin/tau.exe" --version
+          if ($LASTEXITCODE -ne 0 -or "$ver" -notmatch '^tau \d+\.\d+\.\d+$') { throw "unexpected tau --version output: $ver" }
+          $help = & "$env:RUNNER_TEMP/tau-bin/tau.exe" --help
+          if ($LASTEXITCODE -ne 0 -or "$help" -notmatch 'Usage:') { throw "unexpected tau --help output" }
+
   smoke-action:
     # Exercises the repo-root action.yml the way adopters consume it —
     # `uses: ./` — against a staged local release tree (same TAU_BASE_URL
@@ -209,7 +266,7 @@ jobs:
 
   release:
     if: github.ref_type == 'tag'
-    needs: [build, smoke, smoke-action]
+    needs: [build, smoke, smoke-windows, smoke-action]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -221,8 +278,9 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
-        # Clean filenames (no ./ prefix) so install.sh's per-asset grep matches.
-        run: (cd dist && sha256sum *.tar.gz > SHA256SUMS.txt)
+        # Clean filenames (no ./ prefix) so install.sh's / install.ps1's
+        # per-asset grep matches.
+        run: (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt)
 
       - name: Verify published checksums
         # Self-check the manifest the release ships — a malformed SHA256SUMS.txt
@@ -237,7 +295,8 @@ jobs:
           set --  # tags carrying a suffix (e.g. v1.0.0-rc.1) publish as pre-releases
           case "$TAG" in *-*) set -- --prerelease ;; esac
           cat > /tmp/release-notes.md <<'EOF'
-          Prebuilt binaries for Linux and macOS (x86_64 and aarch64).
+          Prebuilt binaries for Linux and macOS (x86_64 and aarch64) and
+          Windows (x86_64).
 
           ## Install
 
@@ -245,14 +304,18 @@ jobs:
 
               curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
 
-          Or download `tau-<os>-<arch>.tar.gz` below, verify it against
-          `SHA256SUMS.txt`, extract, and put `tau` on your PATH.
+              # Windows (PowerShell):
+              irm https://raw.githubusercontent.com/javimosch/tau/master/install.ps1 | iex
+
+          Or download `tau-<os>-<arch>.tar.gz` / `tau-windows-x86_64.zip`
+          below, verify it against `SHA256SUMS.txt`, extract, and put `tau`
+          on your PATH.
           EOF
           gh release create "$TAG" \
             --title "tau $TAG" \
             --notes-file /tmp/release-notes.md \
             "$@" \
-            dist/*.tar.gz dist/SHA256SUMS.txt
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt
 
   homebrew:
     # Publishes Formula/tau.rb to the javimosch/homebrew-tap repository so
@@ -323,3 +386,147 @@ jobs:
           [ -n "$sha" ] && set -- "$@" -f "sha=$sha"
           gh api "$@"
           echo "Published Formula/tau.rb @ $TAG to javimosch/homebrew-tap"
+
+  winget:
+    # Generates the three-file winget package manifest (the layout
+    # microsoft/winget-pkgs expects under manifests/j/javimosch/tau/<v>/),
+    # validates it, and uploads it as a workflow artifact.
+    #
+    # Unlike the Homebrew tap, winget-pkgs is a community repo we do not own —
+    # submission is a fork + PR per release, driven by `wingetcreate`. That
+    # step needs a WINGET_PKGS_TOKEN secret (a PAT able to fork and PR into
+    # microsoft/winget-pkgs); while it is absent the job skips submission with
+    # a warning and the artifact stays available for manual submission via:
+    #   wingetcreate submit <downloaded-manifest-dir>
+    # Suffix tags (v1.0.0-rc.1) publish GitHub pre-releases and are skipped so
+    # `winget install javimosch.tau` never lands on a pre-release.
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Regenerate checksum manifest
+        run: (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt)
+
+      - name: Generate the winget manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/generate-winget-manifest.sh --version "$TAG" --sums dist/SHA256SUMS.txt --output-dir dist/winget
+
+      - name: Validate the generated manifest
+        run: |
+          set -euo pipefail
+          for f in dist/winget/javimosch.tau.yaml dist/winget/javimosch.tau.installer.yaml dist/winget/javimosch.tau.locale.en-US.yaml; do
+            test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          grep -q "PackageVersion: ${GITHUB_REF_NAME#v}" dist/winget/javimosch.tau.yaml
+          grep -q 'InstallerType: zip' dist/winget/javimosch.tau.installer.yaml
+          grep -q 'RelativeFilePath: tau.exe' dist/winget/javimosch.tau.installer.yaml
+          grep -q "releases/download/${GITHUB_REF_NAME}/tau-windows-x86_64.zip" dist/winget/javimosch.tau.installer.yaml
+          grep -qE 'InstallerSha256: [0-9a-f]{64}' dist/winget/javimosch.tau.installer.yaml
+          if python3 -c 'import yaml' 2>/dev/null; then
+            python3 -c 'import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' dist/winget/*.yaml
+          else
+            echo "::notice::PyYAML unavailable — skipping YAML parse check"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifest-${{ github.ref_name }}
+          path: dist/winget/
+          retention-days: 90
+
+      - name: Submit to microsoft/winget-pkgs
+        env:
+          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *-*)
+              echo "::notice::$TAG is a pre-release — winget stays on the latest stable version"
+              exit 0
+              ;;
+          esac
+          if [ -z "${WINGET_PKGS_TOKEN:-}" ]; then
+            echo "::warning::WINGET_PKGS_TOKEN secret is not set — skipping winget-pkgs submission (manifest uploaded as the winget-manifest artifact; submit it manually with 'wingetcreate submit <dir>' or add a PAT to automate it)"
+            exit 0
+          fi
+          dotnet tool install --global wingetcreate
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          wingetcreate submit --token "$WINGET_PKGS_TOKEN" dist/winget
+
+  scoop:
+    # Generates the Scoop bucket manifest (bucket/tau.json) and publishes it to
+    # javimosch/scoop-bucket so Windows users can
+    #   scoop bucket add javimosch https://github.com/javimosch/scoop-bucket
+    #   scoop install tau
+    # Same publish pattern as the homebrew job — gh api contents PUT behind a
+    # PAT secret (SCOOP_BUCKET_TOKEN, Contents: read+write on
+    # javimosch/scoop-bucket). Two warn-and-skip gates keep the release green
+    # while prerequisites are missing: the token may be unset and the bucket
+    # repo may not exist yet. Pre-release tags are skipped.
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Regenerate checksum manifest
+        run: (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt)
+
+      - name: Generate bucket/tau.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/generate-scoop-manifest.sh --version "$TAG" --sums dist/SHA256SUMS.txt --output dist/tau.json
+
+      - name: Validate the generated manifest
+        run: |
+          set -euo pipefail
+          python3 -m json.tool dist/tau.json > /dev/null
+          grep -q "\"version\": \"${GITHUB_REF_NAME#v}\"" dist/tau.json
+          grep -q "releases/download/${GITHUB_REF_NAME}/tau-windows-x86_64.zip" dist/tau.json
+          grep -qE 'sha256:[0-9a-f]{64}' dist/tau.json
+          grep -q '"bin": "tau.exe"' dist/tau.json
+
+      - name: Publish to javimosch/scoop-bucket
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *-*)
+              echo "::notice::$TAG is a pre-release — the bucket stays on the latest stable version"
+              exit 0
+              ;;
+          esac
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::SCOOP_BUCKET_TOKEN secret is not set — skipping bucket update (add a fine-grained PAT with Contents:write on javimosch/scoop-bucket to enable it)"
+            exit 0
+          fi
+          if ! gh api repos/javimosch/scoop-bucket -q .full_name >/dev/null 2>&1; then
+            echo "::warning::javimosch/scoop-bucket does not exist yet — create the bucket repo, then this job will publish automatically"
+            exit 0
+          fi
+          sha="$(gh api repos/javimosch/scoop-bucket/contents/bucket/tau.json -q .sha 2>/dev/null || true)"
+          set -- -X PUT repos/javimosch/scoop-bucket/contents/bucket/tau.json \
+            -f "message=tau $TAG" \
+            -f "content=$(base64 -w0 dist/tau.json)" \
+            -f branch=main
+          [ -n "$sha" ] && set -- "$@" -f "sha=$sha"
+          gh api "$@"
+          echo "Published bucket/tau.json @ $TAG to javimosch/scoop-bucket"

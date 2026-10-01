@@ -54,6 +54,21 @@ are backward compatible.
   and pushes it to `javimosch/homebrew-tap` on every stable tag, so
   `brew upgrade` tracks releases (#175). Requires a `HOMEBREW_TAP_TOKEN`
   repository secret to publish; releases proceed without it
+- Windows support: the release workflow cross-compiles
+  `x86_64-windows-gnu` and ships `tau-windows-x86_64.zip` in
+  `SHA256SUMS.txt`; `install.ps1` (PowerShell) mirrors the `install.sh`
+  contract — `-Version`/`-Dir`/`-DryRun`, `TAU_*` env overrides, and
+  fail-closed `Get-FileHash` verification — installing to
+  `%LOCALAPPDATA%\Programs\tau`; a `smoke-windows` job installs the zip
+  end-to-end on a native `windows-latest` runner before publish (#182)
+- Scoop + winget manifests: `scripts/generate-scoop-manifest.sh` and
+  `scripts/generate-winget-manifest.sh` render the package manifests from the
+  published checksums on every stable tag; the `scoop` job pushes
+  `bucket/tau.json` to `javimosch/scoop-bucket` (behind `SCOOP_BUCKET_TOKEN`,
+  warn-and-skip until the repo and secret exist), and the `winget` job
+  validates + uploads the three-file manifest for microsoft/winget-pkgs
+  submission (auto-submits via `wingetcreate` when `WINGET_PKGS_TOKEN` is
+  configured) (#182)
 
 ### Fixed
 
