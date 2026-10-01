@@ -57,9 +57,23 @@ isn't listed in it, no `sha256sum`/`shasum` is available, or the digest
 mismatches — so a tampered or corrupted binary can never be installed
 (`TAU_SKIP_CHECKSUM=1` opts out, e.g. for air-gapped mirrors). All assets are
 built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on
-version tags — and before publish, each tarball is smoke-tested on its
-matching OS/arch runner by installing it through `install.sh` and running
-`tau --version`/`--help`.
+version tags — and before publish, each archive is smoke-tested on its
+matching OS/arch runner by installing it through `install.sh`/`install.ps1`
+and running `tau --version`/`--help`.
+
+**Windows (PowerShell — installs `tau-windows-x86_64.zip` to
+`%LOCALAPPDATA%\Programs\tau`):**
+
+```powershell
+irm https://raw.githubusercontent.com/javimosch/tau/master/install.ps1 | iex
+```
+
+`install.ps1` mirrors the `install.sh` contract: `-Version X.Y.Z`,
+`-Dir DIR`, `-DryRun`, plus `TAU_VERSION`/`TAU_INSTALL_DIR`/`TAU_BASE_URL`/
+`TAU_SKIP_CHECKSUM` overrides, and the same fail-closed `SHA256SUMS.txt`
+verification via `Get-FileHash`. Scoop and winget manifests are generated and
+validated on every release by the `scoop`/`winget` jobs in
+[`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 **Homebrew (macOS and Linux — `brew upgrade` tracks new releases):**
 
@@ -520,7 +534,8 @@ zig build test
 ```
 
 Requires Zig 0.16.0 and `curl` on PATH. To install a prebuilt binary instead,
-run `./install.sh` (no Zig needed — see [Getting Started](#-getting-started)).
+run `./install.sh` (or `install.ps1` on Windows) — no Zig needed; see
+[Getting Started](#-getting-started).
 
 ---
 
