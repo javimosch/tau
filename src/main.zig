@@ -155,6 +155,8 @@ const help_text =
     \\Config:
     \\  tau config show [flags]       Print the resolved effective config as JSON
     \\                              (config file + env + CLI flags merged; API keys redacted)
+    \\  tau config validate [path]    Validate a config file — JSON report on stdout,
+    \\                              exit 1 with every problem listed (CI/pre-commit)
     \\
     \\
     \\
@@ -290,6 +292,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau config show [--flags]", .b = "print the resolved effective config (file+env+flags merged; keys redacted)." },
+    .{ .a = "tau config validate [path]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
@@ -307,6 +310,7 @@ const guide_gotchas = [_][]const u8{
     "tau acp serve reads no model env var; the model comes from config.json or --model.",
     "Requires curl on PATH for LLM HTTP; no other runtime deps.",
     "The tool loop ends when the model stops calling tools or hits --max-iterations (default backstop).",
+    "tau config validate is fully offline — it only checks the file, so it works in CI and pre-commit hooks.",
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
@@ -723,6 +727,32 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(@intFromEnum(ExitCode.invalid_argument));
         },
         .config => {
+            if (std.mem.eql(u8, parsed.config.config_sub orelse "show", "validate")) {
+                const cval = @import("configvalidate.zig");
+                const path = parsed.config.validate_path orelse (configfile.path(arena, init.environ_map) orelse {
+                    printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument",
+                        "no config path given and HOME is unset — pass a path: tau config validate <path>", false);
+                    std.process.exit(@intFromEnum(ExitCode.invalid_argument));
+                });
+                const report = cval.validate(io, arena, path) catch |err| {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "config validation failed", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                };
+                const out = if (parsed.config.mode == .text)
+                    cval.formatText(arena, report) catch {
+                        printErrorJson(@intFromEnum(ExitCode.internal_error), "OutOfMemory", "config validation failed", false);
+                        std.process.exit(@intFromEnum(ExitCode.internal_error));
+                    }
+                else
+                    cval.formatJson(arena, report) catch {
+                        printErrorJson(@intFromEnum(ExitCode.internal_error), "OutOfMemory", "config validation failed", false);
+                        std.process.exit(@intFromEnum(ExitCode.internal_error));
+                    };
+                term.out(out);
+                // Exit 1 (generic_failure) on validation errors — the pinned
+                // contract needs no new code; CI/pre-commit just check non-zero.
+                std.process.exit(if (report.ok()) 0 else @intFromEnum(ExitCode.generic_failure));
+            }
             printEffectiveConfig(arena, parsed.config, init.environ_map);
             return;
         },
@@ -822,6 +852,7 @@ test {
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
+    _ = @import("configvalidate.zig");
 }
 
 test "flag_specs appear in help_text" {

@@ -33,6 +33,9 @@ are backward compatible.
 - `tau config show` — print the resolved effective config (config file + env +
   CLI flags merged) as JSON with API keys redacted and their source reported
   (#140)
+- `tau config validate [path]` — offline config-file validation for CI and
+  pre-commit hooks; JSON report on stdout, exit 1 listing every problem
+  (unknown keys, type mismatches, bad provider/mode, range violations) (#177)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed

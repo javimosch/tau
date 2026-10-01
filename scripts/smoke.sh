@@ -64,6 +64,7 @@ ALL_TEST_GROUPS=(
   "acp:test_group_acp"
   "config-file:test_group_config_file"
   "config-show:test_group_config_show"
+  "config-validate:test_group_config_validate"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -547,6 +548,93 @@ test_group_config_show() {
   # TAU_ENDPOINT override is attributed.
   out=$(HOME="$empty_home" TAU_ENDPOINT="http://localhost:1/v1/chat/completions" "$BIN" config show)
   contains "config show attributes TAU_ENDPOINT" "$out" '"endpoint_source":"env:TAU_ENDPOINT"'
+}
+
+# Group: `tau config validate` — offline config-file validation for
+# CI/pre-commit. Exit 0 on valid, 1 on any problem found, 80 on CLI misuse.
+test_group_config_validate() {
+  local out rc tmpdir mock_home empty_home
+
+  note "tau config validate"
+
+  tmpdir="$(mktemp -d)"; register_temp_dir "$tmpdir"
+
+  # Usage errors -> invalid_argument.
+  "$BIN" config validate a.json b.json >/dev/null 2>&1; ok "config validate two paths -> exit 80" "$?" 80
+  "$BIN" config validate --bogus >/dev/null 2>&1;       ok "config validate unknown flag -> exit 80" "$?" 80
+  "$BIN" config validate --mode >/dev/null 2>&1;        ok "config validate bare --mode -> exit 80" "$?" 80
+
+  # Missing file -> exit 1 with a file-level error (not an err envelope).
+  out=$("$BIN" config validate "$tmpdir/nope.json"); rc=$?
+  ok "config validate missing file -> exit 1" "$rc" 1
+  contains "missing file reports file not found" "$out" 'file not found'
+
+  # Valid config -> exit 0, ok:true, empty errors.
+  printf '{"provider":"openai","mode":"text","temperature":0.2,"keys":{"deepseek":"sk-x"}}' > "$tmpdir/good.json"
+  out=$("$BIN" config validate "$tmpdir/good.json"); rc=$?
+  ok "config validate valid file -> exit 0" "$rc" 0
+  contains "valid file reports ok:true" "$out" '"ok":true'
+  contains "valid file reports no errors" "$out" '"errors":[]'
+
+  # Semantic + type + unknown-key errors -> exit 1, every problem listed.
+  printf '{"provider":"nope","mode":"yaml","stream":"yes","compact_threshold":2,"proivder":true,"keys":{"openai":5}}' > "$tmpdir/bad.json"
+  out=$("$BIN" config validate "$tmpdir/bad.json"); rc=$?
+  ok "config validate invalid file -> exit 1" "$rc" 1
+  contains "bad provider flagged" "$out" '"key":"provider"'
+  contains "bad mode flagged" "$out" '"key":"mode"'
+  contains "wrong type flagged" "$out" 'must be a boolean'
+  contains "range flagged" "$out" 'between 0 and 1'
+  contains "unknown key flagged" "$out" 'not a tau config key'
+  contains "keys value flagged" "$out" '"key":"keys.openai"'
+
+  # The report parses as JSON with a non-empty errors array.
+  if printf '%s' "$out" | python3 -c 'import sys,json;d=json.load(sys.stdin);sys.exit(0 if d["ok"] is False and len(d["errors"])>0 else 1)' 2>/dev/null; then
+    ok "validate report parses as JSON" 0 0
+  else
+    ok "validate report parses as JSON" 1 0
+  fi
+
+  # Invalid JSON syntax -> line/column in the message.
+  printf '{"provider": "openai",\n' > "$tmpdir/broken.json"
+  out=$("$BIN" config validate "$tmpdir/broken.json"); rc=$?
+  ok "config validate broken JSON -> exit 1" "$rc" 1
+  contains "syntax error reports position" "$out" 'invalid JSON at line'
+
+  # Non-object top level.
+  printf '["provider","openai"]' > "$tmpdir/arr.json"
+  out=$("$BIN" config validate "$tmpdir/arr.json"); rc=$?
+  ok "config validate array top level -> exit 1" "$rc" 1
+  contains "non-object flagged" "$out" 'must be a JSON object'
+
+  # --mode text prints human-readable lines.
+  out=$("$BIN" config validate --mode text "$tmpdir/bad.json")
+  contains "text mode error lines" "$out" ': error in "provider"'
+  out=$("$BIN" config validate --mode text "$tmpdir/good.json")
+  contains "text mode ok line" "$out" ': ok'
+
+  # Default path: validates ~/.config/tau/config.json when no path is given.
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+  mkdir -p "$mock_home/.config/tau"
+  printf '{"provider":"deepseek"}' > "$mock_home/.config/tau/config.json"
+  out=$(HOME="$mock_home" "$BIN" config validate); rc=$?
+  ok "config validate default path -> exit 0" "$rc" 0
+  contains "default path appears in report" "$out" '.config/tau/config.json'
+
+  # No config file at all -> exit 1 with an actionable message.
+  empty_home="$(mktemp -d)"; register_temp_dir "$empty_home"
+  out=$(HOME="$empty_home" "$BIN" config validate); rc=$?
+  ok "config validate no config file -> exit 1" "$rc" 1
+  contains "no config points at tau init" "$out" 'tau init'
+
+  # API key values are never echoed in the report.
+  printf '{"api_key":123,"keys":{"bogus-prov":"sk-leak-me"}}' > "$tmpdir/keys.json"
+  out=$("$BIN" config validate "$tmpdir/keys.json"); rc=$?
+  ok "config validate keys issues -> exit 1" "$rc" 1
+  if printf '%s' "$out" | grep -q 'sk-leak-me'; then
+    ok "validate never echoes key values" 1 0
+  else
+    ok "validate never echoes key values" 0 0
+  fi
 }
 
 # Group: Issue #17 goal mode subcommands offline

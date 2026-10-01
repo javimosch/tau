@@ -158,6 +158,13 @@ pub const Config = struct {
     /// Set by configfile.load() to the path of the config file that was read
     /// (set even when the JSON is invalid — config_warning covers that case).
     config_path: ?[]const u8 = null,
+
+    /// `tau config` subcommand carried through parse. Null/absent means the
+    /// default (`config show`); `config validate` sets this to "validate".
+    config_sub: ?[]const u8 = null,
+    /// Positional file argument for `tau config validate` (null → default
+    /// config path is validated).
+    validate_path: ?[]const u8 = null,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau config show` so the

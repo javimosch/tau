@@ -239,14 +239,41 @@ pub fn parse(
         return .{ .action = .fleet, .config = fcfg };
     }
 
-    // `tau config show [flags]` — print the resolved effective config as JSON.
-    // Unlike acp/fleet, `show` falls through to the generic flag loop below so
-    // every override flag (--provider/--model/--api-key/--mode/...) is
-    // reflected in the merged output. Positional args are rejected in the tail.
+    // `tau config <show|validate>` — config inspection/validation.
+    // `show` falls through to the generic flag loop below so every override
+    // flag (--provider/--model/--api-key/--mode/...) is reflected in the
+    // merged output. `validate` checks a config FILE (default:
+    // ~/.config/tau/config.json) and returns early like acp/fleet — the
+    // override flags don't apply to file validation.
     var config_show = false;
     if (argv.len > 0 and eq(argv[0], "config")) {
-        if (argv.len < 2) return errResult(arena, "config subcommand required: show", .{});
-        if (!eq(argv[1], "show")) return errResult(arena, "invalid config subcommand (want show): {s}", .{argv[1]});
+        if (argv.len < 2) return errResult(arena, "config subcommand required: show | validate", .{});
+        if (eq(argv[1], "validate")) {
+            var vcfg: Config = base;
+            vcfg.config_sub = "validate";
+            var j: usize = 2;
+            while (j < argv.len) : (j += 1) {
+                const a = argv[j];
+                if (eq(a, "--mode")) {
+                    j += 1;
+                    if (j >= argv.len) return missing(arena, a);
+                    if (eq(argv[j], "text")) {
+                        vcfg.mode = .text;
+                    } else if (eq(argv[j], "json")) {
+                        vcfg.mode = .json;
+                    } else {
+                        return errResult(arena, "invalid --mode (want text|json): {s}", .{argv[j]});
+                    }
+                } else if (a.len > 0 and a[0] != '-') {
+                    if (vcfg.validate_path != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
+                    vcfg.validate_path = a;
+                } else {
+                    return errResult(arena, "unknown config validate argument: {s}", .{a});
+                }
+            }
+            return .{ .action = .config, .config = vcfg };
+        }
+        if (!eq(argv[1], "show")) return errResult(arena, "invalid config subcommand (want show|validate): {s}", .{argv[1]});
         config_show = true;
         argv = argv[2..];
     }
@@ -976,11 +1003,11 @@ test "parse: config requires a subcommand and validates it" {
 
     const bare = try parseArgv(a, &.{ "tau", "config" }, .{});
     try std.testing.expectEqual(Action.err, bare.action);
-    try std.testing.expectEqualStrings("config subcommand required: show", bare.err_msg.?);
+    try std.testing.expectEqualStrings("config subcommand required: show | validate", bare.err_msg.?);
 
     const bad = try parseArgv(a, &.{ "tau", "config", "bogus" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
-    try std.testing.expectEqualStrings("invalid config subcommand (want show): bogus", bad.err_msg.?);
+    try std.testing.expectEqualStrings("invalid config subcommand (want show|validate): bogus", bad.err_msg.?);
 }
 
 test "parse: config show rejects positional prompt arguments" {
@@ -1001,6 +1028,49 @@ test "parse: config show still honours -h" {
     const p = try parseArgv(a, &.{ "tau", "config", "show", "-h" }, .{});
     try std.testing.expectEqual(Action.help, p.action);
     try std.testing.expect(p.help_requested);
+}
+
+// ── `tau config validate` ────────────────────────────────────────────────────
+
+test "parse: config validate defaults to the resolved config path" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "validate" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expectEqualStrings("validate", p.config.config_sub.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), p.config.validate_path);
+}
+
+test "parse: config validate accepts a positional path and --mode" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "validate", "ci/config.json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expectEqualStrings("validate", p.config.config_sub.?);
+    try std.testing.expectEqualStrings("ci/config.json", p.config.validate_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, p.config.mode);
+}
+
+test "parse: config validate rejects a second positional and unknown flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const two = try parseArgv(a, &.{ "tau", "config", "validate", "a.json", "b.json" }, .{});
+    try std.testing.expectEqual(Action.err, two.action);
+    try std.testing.expectEqualStrings("unexpected extra argument: b.json", two.err_msg.?);
+
+    const flag = try parseArgv(a, &.{ "tau", "config", "validate", "--force" }, .{});
+    try std.testing.expectEqual(Action.err, flag.action);
+    try std.testing.expectEqualStrings("unknown config validate argument: --force", flag.err_msg.?);
+
+    const badmode = try parseArgv(a, &.{ "tau", "config", "validate", "--mode", "yaml" }, .{});
+    try std.testing.expectEqual(Action.err, badmode.action);
+    try std.testing.expect(std.mem.indexOf(u8, badmode.err_msg.?, "invalid --mode") != null);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {

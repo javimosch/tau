@@ -114,7 +114,7 @@ _tau_complete() {
             ;;
 
         config)
-            COMPREPLY=($(compgen -W "show" -- "$cur"))
+            COMPREPLY=($(compgen -W "show validate" -- "$cur"))
             ;;
 
         models)

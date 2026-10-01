@@ -247,6 +247,16 @@ tau config show --provider openai        # Preview flag overrides without runnin
 # api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
 ```
 
+#### 15b. Config Validation (`tau config validate`)
+```bash
+tau config validate                      # Validate ~/.config/tau/config.json
+tau config validate ci/prod.json         # Validate an explicit file
+tau config validate --mode text          # Human-readable error lines
+# → {"path":"…","ok":false,"errors":[{"key":"provider","message":"…"}]}  (stdout)
+# Exit 0 = valid, 1 = problems found, 80 = CLI misuse. Fully offline; key
+# values are never echoed. For CI/pre-commit gates.
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt

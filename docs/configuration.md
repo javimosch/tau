@@ -274,6 +274,38 @@ Subcommand discipline matches `tau fleet`/`tau skills`: bare `tau config` and
 unknown subcommands exit `80`; `tau config show` takes no prompt and rejects
 positional arguments.
 
+## Validating a config file
+
+`tau config validate [path]` checks a config file against the schema without
+running an agent — fully offline, so it is safe for CI jobs and pre-commit
+hooks. With no `path` it validates `~/.config/tau/config.json`.
+
+```bash
+tau config validate                    # validate ~/.config/tau/config.json
+tau config validate ci/prod.json       # validate an explicit file
+tau config validate --mode text        # human-readable errors instead of JSON
+```
+
+The report goes to **stdout** as `{"path":…,"ok":bool,"errors":[{key,message}]}`
+(JSON mode) or one `path: error in "key": message` line per problem (text mode).
+Exit codes: `0` when the file is valid, `1` when any problem is found, `80` for
+CLI misuse. Every problem is listed at once — unknown keys, wrong value types,
+unknown `provider`/`mode` values, out-of-range numbers (`compact_threshold`
+outside 0–1, negative `temperature`, negative or overflowing integers), and
+`keys` entries that aren't strings or name an unknown provider. Syntax errors
+report a line and column. Key *values* are never echoed — `api_key`/`keys`
+contents stay secret.
+
+Example failure output:
+
+```json
+{"path":"bad.json","ok":false,"errors":[{"key":"provider","message":"\"provider\" is not a known provider: \"nope\" — valid providers: xiaomi, openai, deepseek, opencode-go"}]}
+```
+
+The validator is deliberately stricter than the loader: at startup tau ignores
+unknown keys, `null` values, and even invalid JSON, but `config validate`
+reports all of them — dead config is almost always a typo.
+
 ---
 
 ## Storage paths

@@ -4,7 +4,9 @@ const Config = cfgmod.Config;
 
 /// Mirror of the persisted config schema — every key optional so missing keys
 /// fall back to the in-code default. Unknown keys are ignored.
-const FileConfig = struct {
+/// `pub` so `tau config validate` can derive its checks from the same struct
+/// (single source of truth for the file schema).
+pub const FileConfig = struct {
     provider: ?[]const u8 = null,
     model: ?[]const u8 = null,
     api_key: ?[]const u8 = null,
