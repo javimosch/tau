@@ -155,25 +155,72 @@ pub const Config = struct {
     /// Set by configfile.load() when the config file exists but has invalid JSON.
     /// main.zig emits a warning and continues with defaults.
     config_warning: ?[]const u8 = null,
+    /// Set by configfile.load() to the path of the config file that was read
+    /// (set even when the JSON is invalid — config_warning covers that case).
+    config_path: ?[]const u8 = null,
+
+    /// `tau config` subcommand carried through parse. Null/absent means the
+    /// default (`config show`); `config validate` sets this to "validate".
+    config_sub: ?[]const u8 = null,
+    /// Positional file argument for `tau config validate` (null → default
+    /// config path is validated).
+    validate_path: ?[]const u8 = null,
 };
 
-/// Resolve the effective API key. Precedence:
+/// Where the resolved API key came from. Surfaced by `tau config show` so the
+/// key's provenance can be reported without printing the key itself.
+pub const ApiKeySource = enum {
+    /// `--api-key` CLI flag.
+    flag,
+    /// Config file `keys["<provider>"]` (per-provider key).
+    config_keys,
+    /// A provider-specific environment variable (env_name says which).
+    env_provider,
+    /// Config file global `api_key`.
+    config_global,
+    /// `TAU_API_KEY` environment variable.
+    env_tau,
+    /// Provider built-in key compiled into the binary.
+    builtin,
+};
+
+/// The resolved API key plus provenance for diagnostics.
+pub const ResolvedKey = struct {
+    key: []const u8,
+    source: ApiKeySource,
+    /// Populated for .env_provider (e.g. "OPENAI_API_KEY") and .env_tau
+    /// ("TAU_API_KEY"); null otherwise.
+    env_name: ?[]const u8 = null,
+};
+
+/// Mask an API key for display: keys longer than 8 chars keep only their last
+/// 4 ("***wxyz"); shorter keys are fully masked ("***"). May return a string
+/// literal or an arena allocation — treat the result as borrowed.
+pub fn redactApiKey(arena: std.mem.Allocator, key: []const u8) []const u8 {
+    if (key.len <= 8) return "***";
+    return std.fmt.allocPrint(arena, "***{s}", .{key[key.len - 4 ..]}) catch "***";
+}
+
+/// Resolve the effective API key with provenance. Precedence:
 /// 1. `--api-key` (explicit flag)
 /// 2. config `keys[selected_provider]`
 /// 3. provider env var(s)
 /// 4. config global `api_key`
 /// 5. `TAU_API_KEY`
 /// 6. provider builtin / keyless
-pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
+/// `source` reports which level supplied the key and, for env-var sources,
+/// `env_name` says which variable. `tau config show` uses this to print
+/// provenance alongside the redacted key.
+pub fn resolveApiKeyInfo(cfg: Config, env: *std.process.Environ.Map) ?ResolvedKey {
     // 1. --api-key (explicit flag)
     if (cfg.api_key) |k| {
-        if (k.len > 0) return k;
+        if (k.len > 0) return .{ .key = k, .source = .flag };
     }
 
     // 2. config keys[selected_provider]
     if (cfg.keys) |keys_map| {
         if (keys_map.get(cfg.provider)) |k| {
-            if (k.len > 0) return k;
+            if (k.len > 0) return .{ .key = k, .source = .config_keys };
         }
     }
 
@@ -181,29 +228,34 @@ pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
     if (findProvider(cfg.provider)) |p| {
         for (p.env_keys) |ek| {
             if (env.get(ek)) |v| {
-                if (v.len > 0) return v;
+                if (v.len > 0) return .{ .key = v, .source = .env_provider, .env_name = ek };
             }
         }
     }
 
     // 4. config global api_key
     if (cfg.config_api_key) |k| {
-        if (k.len > 0) return k;
+        if (k.len > 0) return .{ .key = k, .source = .config_global };
     }
 
     // 5. TAU_API_KEY
     if (env.get("TAU_API_KEY")) |v| {
-        if (v.len > 0) return v;
+        if (v.len > 0) return .{ .key = v, .source = .env_tau, .env_name = "TAU_API_KEY" };
     }
 
     // 6. provider builtin
     if (findProvider(cfg.provider)) |p| {
         if (p.builtin_key) |bk| {
-            if (bk.len > 0) return bk;
+            if (bk.len > 0) return .{ .key = bk, .source = .builtin };
         }
     }
 
     return null;
+}
+
+pub fn resolveApiKey(cfg: Config, env: *std.process.Environ.Map) ?[]const u8 {
+    const rk = resolveApiKeyInfo(cfg, env) orelse return null;
+    return rk.key;
 }
 
 const testing = std.testing;
@@ -314,4 +366,91 @@ test "resolveApiKey: empty per-provider map value is skipped" {
     try km.put("openai", "");
     const cfg = Config{ .provider = "openai", .keys = km };
     try testing.expectEqualStrings("env-key", resolveApiKey(cfg, &env).?);
+}
+
+test "resolveApiKeyInfo: reports flag source for --api-key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var env = std.process.Environ.Map.init(arena.allocator());
+    try env.put("OPENAI_API_KEY", "env-key");
+    const cfg = Config{ .provider = "openai", .api_key = "flag-key" };
+    const rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqualStrings("flag-key", rk.key);
+    try testing.expectEqual(ApiKeySource.flag, rk.source);
+    try testing.expectEqual(@as(?[]const u8, null), rk.env_name);
+}
+
+test "resolveApiKeyInfo: reports config_keys source for per-provider key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("OPENAI_API_KEY", "env-key");
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("openai", "map-key");
+    const cfg = Config{ .provider = "openai", .keys = km };
+    const rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqualStrings("map-key", rk.key);
+    try testing.expectEqual(ApiKeySource.config_keys, rk.source);
+}
+
+test "resolveApiKeyInfo: env_name identifies which provider env var was used" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    // xiaomi tries XIAOMI_API_KEY first, then PIZIG_API_KEY.
+    try env.put("PIZIG_API_KEY", "pizig-key");
+    const cfg = Config{ .provider = "xiaomi" };
+    const rk = resolveApiKeyInfo(cfg, &env).?;
+    try testing.expectEqualStrings("pizig-key", rk.key);
+    try testing.expectEqual(ApiKeySource.env_provider, rk.source);
+    try testing.expectEqualStrings("PIZIG_API_KEY", rk.env_name.?);
+}
+
+test "resolveApiKeyInfo: reports config_global, env_tau, and null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    {
+        var env = std.process.Environ.Map.init(a);
+        try env.put("TAU_API_KEY", "tau-key");
+        const cfg = Config{ .provider = "openai", .config_api_key = "global-key" };
+        const rk = resolveApiKeyInfo(cfg, &env).?;
+        try testing.expectEqual(ApiKeySource.config_global, rk.source);
+        try testing.expectEqualStrings("global-key", rk.key);
+    }
+    {
+        var env = std.process.Environ.Map.init(a);
+        try env.put("TAU_API_KEY", "tau-key");
+        const cfg = Config{ .provider = "openai" };
+        const rk = resolveApiKeyInfo(cfg, &env).?;
+        try testing.expectEqual(ApiKeySource.env_tau, rk.source);
+        try testing.expectEqualStrings("TAU_API_KEY", rk.env_name.?);
+    }
+    {
+        var env = std.process.Environ.Map.init(a);
+        const cfg = Config{ .provider = "openai" };
+        try testing.expect(resolveApiKeyInfo(cfg, &env) == null);
+    }
+}
+
+test "redactApiKey: long keys keep only the last 4 chars" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const masked = redactApiKey(a, "sk-secret-abcdef12");
+    try testing.expectEqualStrings("***ef12", masked);
+    // The original key must not be recoverable from the masked value.
+    try testing.expect(std.mem.indexOf(u8, masked, "sk-secret") == null);
+}
+
+test "redactApiKey: short keys are fully masked" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("***", redactApiKey(a, "short123"));
+    try testing.expectEqualStrings("***", redactApiKey(a, "x"));
+    try testing.expectEqualStrings("***", redactApiKey(a, ""));
 }

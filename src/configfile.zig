@@ -4,7 +4,9 @@ const Config = cfgmod.Config;
 
 /// Mirror of the persisted config schema — every key optional so missing keys
 /// fall back to the in-code default. Unknown keys are ignored.
-const FileConfig = struct {
+/// `pub` so `tau config validate` can derive its checks from the same struct
+/// (single source of truth for the file schema).
+pub const FileConfig = struct {
     provider: ?[]const u8 = null,
     model: ?[]const u8 = null,
     api_key: ?[]const u8 = null,
@@ -40,6 +42,9 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     var cfg: Config = .{};
     const p = path(arena, env) orelse return cfg;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch return cfg;
+    // File exists and was read; record the path even if the JSON below fails
+    // to parse (config_warning carries that) so `tau config show` can report it.
+    cfg.config_path = p;
     const fc = std.json.parseFromSliceLeaky(FileConfig, arena, bytes, .{
         .ignore_unknown_fields = true,
     }) catch {
@@ -297,6 +302,26 @@ test "load: unknown keys are ignored, known keys still applied" {
     try testing.expectEqualStrings("groq", cfg.provider);
     // Unrecognized fields don't disturb defaults.
     try testing.expectEqual(cfgmod.OutputMode.json, cfg.mode);
+}
+
+test "load: config_path records the read file, stays null when absent" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+
+    // No file yet → config_path stays null.
+    var cfg = load(testing.io, arena, &th.env);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.config_path);
+
+    // After writing the file, config_path points at it — even for invalid JSON.
+    try th.writeConfig(arena, "{ not json ");
+    cfg = load(testing.io, arena, &th.env);
+    const want = try std.fmt.allocPrint(arena, "{s}/.config/tau/config.json", .{th.home});
+    try testing.expectEqualStrings(want, cfg.config_path.?);
+    try testing.expect(cfg.config_warning != null);
 }
 
 test "path: builds <HOME>/.config/tau/config.json and is null without HOME" {

@@ -63,6 +63,8 @@ ALL_TEST_GROUPS=(
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
   "config-file:test_group_config_file"
+  "config-show:test_group_config_show"
+  "config-validate:test_group_config_validate"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -471,6 +473,167 @@ test_group_config_file() {
     ok "invalid config JSON degrades gracefully (exit $rc, not 80)" 0 0
   else
     ok "invalid config JSON degrades gracefully" 1 0
+  fi
+}
+
+# Group: `tau config show` — resolved effective config (file/env/flag merge,
+# API keys redacted). Offline; uses a mock HOME for config-file cases.
+test_group_config_show() {
+  local out rc mock_home mock_config
+
+  note "tau config show"
+
+  "$BIN" config >/dev/null 2>&1;            ok "config (no sub) -> invalid_argument" "$?" 80
+  "$BIN" config bogus >/dev/null 2>&1;      ok "config bogus -> invalid_argument" "$?" 80
+  "$BIN" config show stray >/dev/null 2>&1; ok "config show positional -> invalid_argument" "$?" 80
+
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+  mock_config="$mock_home/.config/tau"; mkdir -p "$mock_config"
+  printf '{"provider":"deepseek","mode":"text","timeout_ms":9000,"api_key":"file-secret-4242"}' > "$mock_config/config.json"
+
+  out=$(HOME="$mock_home" "$BIN" config show); rc=$?
+  ok "config show exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
+    ok "config show is valid JSON" 0 0
+  else
+    ok "config show is not valid JSON" 1 0
+  fi
+  contains "config show merges config provider" "$out" '"provider":"deepseek"'
+  contains "config show merges config mode" "$out" '"mode":"text"'
+  contains "config show merges config timeout" "$out" '"timeout_ms":9000'
+  contains "config show reports config file exists" "$out" '"exists":true'
+  # File api_key must be redacted (config api_key is below provider env in
+  # precedence, but no env keys are set in the mock HOME test env).
+  if printf '%s' "$out" | grep -q 'file-secret-4242'; then
+    ok "config show does NOT leak config api_key" 1 0
+  else
+    ok "config show redacts config api_key" 0 0
+  fi
+
+  # CLI flags merge over the config file.
+  out=$(HOME="$mock_home" "$BIN" config show --provider openai --model gpt-test --no-stream)
+  contains "config show CLI --provider override" "$out" '"provider":"openai"'
+  contains "config show CLI --model override" "$out" '"model":"gpt-test"'
+  contains "config show CLI --no-stream" "$out" '"stream":false'
+
+  # Key-source checks need a config file WITHOUT an api_key (config api_key
+  # outranks TAU_API_KEY in precedence and would shadow it).
+  local empty_home; empty_home="$(mktemp -d)"; register_temp_dir "$empty_home"
+
+  # Env key is reported by source and redacted, never printed raw. Clear all
+  # provider env keys so TAU_API_KEY is what actually resolves on this host.
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY TAU_API_KEY="smoke-secret-aa11" HOME="$empty_home" "$BIN" config show)
+  if printf '%s' "$out" | grep -q 'smoke-secret-aa11'; then
+    ok "config show does NOT leak TAU_API_KEY" 1 0
+  else
+    ok "config show redacts TAU_API_KEY" 0 0
+  fi
+  contains "config show reports api_key set" "$out" '"api_key":{"set":true'
+  contains "config show reports env source" "$out" '"source":"env TAU_API_KEY"'
+  contains "config show value is masked" "$out" '"value":"***'
+
+  out=$(HOME="$empty_home" "$BIN" config show --api-key flag-secret-bb22)
+  if printf '%s' "$out" | grep -q 'flag-secret-bb22'; then
+    ok "config show does NOT leak --api-key" 1 0
+  else
+    ok "config show redacts --api-key" 0 0
+  fi
+  contains "config show reports flag source" "$out" '"source":"--api-key"'
+
+  # No key anywhere -> set:false (read-only diagnostic, still exits 0).
+  out=$(env -u TAU_API_KEY -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY HOME="$empty_home" "$BIN" config show); rc=$?
+  ok "config show no key still exits 0" "$rc" 0
+  contains "config show no key -> set:false" "$out" '"api_key":{"set":false'
+
+  # TAU_ENDPOINT override is attributed.
+  out=$(HOME="$empty_home" TAU_ENDPOINT="http://localhost:1/v1/chat/completions" "$BIN" config show)
+  contains "config show attributes TAU_ENDPOINT" "$out" '"endpoint_source":"env:TAU_ENDPOINT"'
+}
+
+# Group: `tau config validate` — offline config-file validation for
+# CI/pre-commit. Exit 0 on valid, 1 on any problem found, 80 on CLI misuse.
+test_group_config_validate() {
+  local out rc tmpdir mock_home empty_home
+
+  note "tau config validate"
+
+  tmpdir="$(mktemp -d)"; register_temp_dir "$tmpdir"
+
+  # Usage errors -> invalid_argument.
+  "$BIN" config validate a.json b.json >/dev/null 2>&1; ok "config validate two paths -> exit 80" "$?" 80
+  "$BIN" config validate --bogus >/dev/null 2>&1;       ok "config validate unknown flag -> exit 80" "$?" 80
+  "$BIN" config validate --mode >/dev/null 2>&1;        ok "config validate bare --mode -> exit 80" "$?" 80
+
+  # Missing file -> exit 1 with a file-level error (not an err envelope).
+  out=$("$BIN" config validate "$tmpdir/nope.json"); rc=$?
+  ok "config validate missing file -> exit 1" "$rc" 1
+  contains "missing file reports file not found" "$out" 'file not found'
+
+  # Valid config -> exit 0, ok:true, empty errors.
+  printf '{"provider":"openai","mode":"text","temperature":0.2,"keys":{"deepseek":"sk-x"}}' > "$tmpdir/good.json"
+  out=$("$BIN" config validate "$tmpdir/good.json"); rc=$?
+  ok "config validate valid file -> exit 0" "$rc" 0
+  contains "valid file reports ok:true" "$out" '"ok":true'
+  contains "valid file reports no errors" "$out" '"errors":[]'
+
+  # Semantic + type + unknown-key errors -> exit 1, every problem listed.
+  printf '{"provider":"nope","mode":"yaml","stream":"yes","compact_threshold":2,"proivder":true,"keys":{"openai":5}}' > "$tmpdir/bad.json"
+  out=$("$BIN" config validate "$tmpdir/bad.json"); rc=$?
+  ok "config validate invalid file -> exit 1" "$rc" 1
+  contains "bad provider flagged" "$out" '"key":"provider"'
+  contains "bad mode flagged" "$out" '"key":"mode"'
+  contains "wrong type flagged" "$out" 'must be a boolean'
+  contains "range flagged" "$out" 'between 0 and 1'
+  contains "unknown key flagged" "$out" 'not a tau config key'
+  contains "keys value flagged" "$out" '"key":"keys.openai"'
+
+  # The report parses as JSON with a non-empty errors array.
+  if printf '%s' "$out" | python3 -c 'import sys,json;d=json.load(sys.stdin);sys.exit(0 if d["ok"] is False and len(d["errors"])>0 else 1)' 2>/dev/null; then
+    ok "validate report parses as JSON" 0 0
+  else
+    ok "validate report parses as JSON" 1 0
+  fi
+
+  # Invalid JSON syntax -> line/column in the message.
+  printf '{"provider": "openai",\n' > "$tmpdir/broken.json"
+  out=$("$BIN" config validate "$tmpdir/broken.json"); rc=$?
+  ok "config validate broken JSON -> exit 1" "$rc" 1
+  contains "syntax error reports position" "$out" 'invalid JSON at line'
+
+  # Non-object top level.
+  printf '["provider","openai"]' > "$tmpdir/arr.json"
+  out=$("$BIN" config validate "$tmpdir/arr.json"); rc=$?
+  ok "config validate array top level -> exit 1" "$rc" 1
+  contains "non-object flagged" "$out" 'must be a JSON object'
+
+  # --mode text prints human-readable lines.
+  out=$("$BIN" config validate --mode text "$tmpdir/bad.json")
+  contains "text mode error lines" "$out" ': error in "provider"'
+  out=$("$BIN" config validate --mode text "$tmpdir/good.json")
+  contains "text mode ok line" "$out" ': ok'
+
+  # Default path: validates ~/.config/tau/config.json when no path is given.
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+  mkdir -p "$mock_home/.config/tau"
+  printf '{"provider":"deepseek"}' > "$mock_home/.config/tau/config.json"
+  out=$(HOME="$mock_home" "$BIN" config validate); rc=$?
+  ok "config validate default path -> exit 0" "$rc" 0
+  contains "default path appears in report" "$out" '.config/tau/config.json'
+
+  # No config file at all -> exit 1 with an actionable message.
+  empty_home="$(mktemp -d)"; register_temp_dir "$empty_home"
+  out=$(HOME="$empty_home" "$BIN" config validate); rc=$?
+  ok "config validate no config file -> exit 1" "$rc" 1
+  contains "no config points at tau init" "$out" 'tau init'
+
+  # API key values are never echoed in the report.
+  printf '{"api_key":123,"keys":{"bogus-prov":"sk-leak-me"}}' > "$tmpdir/keys.json"
+  out=$("$BIN" config validate "$tmpdir/keys.json"); rc=$?
+  ok "config validate keys issues -> exit 1" "$rc" 1
+  if printf '%s' "$out" | grep -q 'sk-leak-me'; then
+    ok "validate never echoes key values" 1 0
+  else
+    ok "validate never echoes key values" 0 0
   fi
 }
 

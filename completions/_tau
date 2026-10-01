@@ -66,6 +66,7 @@ _tau() {
                 'models:list available providers and models'
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+                'config:inspect or validate the effective config (show|validate)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -121,6 +122,37 @@ _tau() {
                         'load:load a skill into the system context by name'
                     )
                     _arguments '1: :_describe skill_subcommand skill_cmds'
+                    ;;
+
+                config)
+                    local curcontext="$curcontext" state line
+                    _arguments -C \
+                        '1: :->config_sub' \
+                        '*:: :->config_opts'
+                    case $state in
+                        config_sub)
+                            local -a config_cmds=(
+                                'show:print the resolved effective config (keys redacted)'
+                                'validate:check a config file (CI/pre-commit)'
+                            )
+                            _describe 'config subcommand' config_cmds
+                            ;;
+                        config_opts)
+                            # $line[1] is the config subcommand just typed.
+                            case ${line[1]} in
+                                validate)
+                                    _arguments \
+                                        '--mode=[report format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                *)
+                                    # `config show` accepts the normal override
+                                    # flags so the merged result is previewed.
+                                    _arguments $global_opts
+                                    ;;
+                            esac
+                            ;;
+                    esac
                     ;;
 
                 models)
