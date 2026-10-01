@@ -86,6 +86,8 @@ provider table (also visible via `tau models`):
 
 No provider currently ships a built-in key — supply one via any of the
 mechanisms below. An unknown provider name is rejected with exit code `80`.
+Per-provider credential setup and auth troubleshooting:
+[providers.md](providers.md).
 
 ---
 

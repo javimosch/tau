@@ -6,14 +6,16 @@ tau reports failures on **stderr** as a single-line JSON envelope — even in
 `--mode text`:
 
 ```json
-{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"hint":"set OPENAI_API_KEY env var, or use --api-key <key>","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}
+{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"hint":"set OPENAI_API_KEY env var, or use --api-key <key>","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md"}}
 ```
 
 - `code` is also the process exit code — scripts can branch on `$?`.
 - `message` is human-readable and usually names the exact fix.
 - `hint` is a short remediation nudge for the error class — the fastest fix
   when you don't want to read further.
-- `docs` always links back to this page.
+- `docs` links to the guide for that error class — auth failures (code 106)
+  link to [providers.md](providers.md), everything else links back to this
+  page (`https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md`).
 
 ## Stable error catalog
 
@@ -23,15 +25,15 @@ never renumbered or renamed.) `hint` is the canned remediation emitted in the
 envelope — dynamic failures (like a missing API key) override it with a
 more specific hint.
 
-| Exit code | Envelope `type` | `hint` |
-|-----------|-----------------|--------|
-| `1` | `not_found` | the message names what was not found — check the name/path and retry |
-| `80` | `invalid_argument` | run `tau --help` (or `tau --help-json`) for the valid flags and values |
-| `82` | `missing_required_field` | the message names the missing input — supply it and retry |
-| `105` | `Timeout` | raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT) |
-| `106` | `AuthFailed` | provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY |
-| `110` | `internal_error` | re-run with --debug to write a diagnostic log, then file a bug report |
-| `111` | `unimplemented` | not supported on this platform — the message names the workaround |
+| Exit code | Envelope `type` | `hint` | `docs` |
+|-----------|-----------------|--------|--------|
+| `1` | `not_found` | the message names what was not found — check the name/path and retry | this page |
+| `80` | `invalid_argument` | run `tau --help` (or `tau --help-json`) for the valid flags and values | this page |
+| `82` | `missing_required_field` | the message names the missing input — supply it and retry | this page |
+| `105` | `Timeout` | raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT) | this page |
+| `106` | `AuthFailed` | provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY | [providers.md](providers.md) |
+| `110` | `internal_error` | re-run with --debug to write a diagnostic log, then file a bug report | this page |
+| `111` | `unimplemented` | not supported on this platform — the message names the workaround | this page |
 
 Some emitters override `type` with the underlying Zig error name (e.g.
 `HTTPRequestFailed` on exit 110) while keeping `code` stable — branch on
@@ -58,6 +60,9 @@ run continues.
 ---
 
 ## Authentication failures (exit 106)
+
+Envelopes for this class link `docs` to [providers.md](providers.md) — the
+per-provider credential setup guide. The short version:
 
 ### `no API key for provider '<name>' — set <ENV> env var, or use --api-key <key>`
 

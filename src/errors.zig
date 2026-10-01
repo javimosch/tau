@@ -14,16 +14,20 @@ const term = @import("term.zig");
 const debuglog = @import("debuglog.zig");
 
 const doc_url = @import("version.zig").troubleshooting_doc_url;
+const providers_doc_url = @import("version.zig").providers_doc_url;
 
 /// One entry in the stable error catalog (docs/troubleshooting.md mirrors
 /// it). `code` doubles as the process exit code; `type_name` is the wire tag
 /// in err.type — it keeps legacy spellings like "AuthFailed"/"Timeout" since
-/// the string itself is the contract.
+/// the string itself is the contract. `docs` is the envelope's guide link —
+/// it defaults to the troubleshooting page; auth failures point at the
+/// per-provider credential guide instead.
 pub const Spec = struct {
     code: u8,
     type_name: []const u8,
     hint: []const u8,
     recoverable: bool = false,
+    docs: []const u8 = doc_url,
 };
 
 pub const not_found = Spec{
@@ -50,6 +54,7 @@ pub const auth_failed = Spec{
     .code = 106,
     .type_name = "AuthFailed",
     .hint = "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY",
+    .docs = providers_doc_url,
 };
 pub const internal_error = Spec{
     .code = 110,
@@ -91,6 +96,7 @@ pub const Opts = struct {
     type_name: ?[]const u8 = null,
     hint: ?[]const u8 = null,
     recoverable: ?bool = null,
+    docs: ?[]const u8 = null,
 };
 
 /// Serialize the canonical envelope:
@@ -104,10 +110,12 @@ pub fn format(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opts)
     defer a.free(me);
     const he = try json.escapeAlloc(a, opts.hint orelse spec.hint);
     defer a.free(he);
+    const de = try json.escapeAlloc(a, opts.docs orelse spec.docs);
+    defer a.free(de);
     // When --debug opened a diagnostic log, link it so bug reports can attach it.
     const suf = debuglog.envelopeSuffix(a) orelse "";
     defer if (suf.len > 0) a.free(suf);
-    return std.fmt.allocPrint(a, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"{s}}}}}\n", .{ spec.code, te, me, opts.recoverable orelse spec.recoverable, he, doc_url, suf });
+    return std.fmt.allocPrint(a, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"{s}}}}}\n", .{ spec.code, te, me, opts.recoverable orelse spec.recoverable, he, de, suf });
 }
 
 /// Print the envelope to stderr. Best-effort: on OOM a stack-formatted
@@ -136,7 +144,7 @@ pub fn printOut(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opt
 /// escaping needed), formatted into a stack buffer.
 fn emitFallback(write: *const fn ([]const u8) void, spec: Spec) void {
     var buf: [768]u8 = undefined;
-    const j = std.fmt.bufPrint(&buf, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"internal error\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"}}}}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.hint, doc_url }) catch
+    const j = std.fmt.bufPrint(&buf, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"internal error\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"}}}}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.hint, spec.docs }) catch
         "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"internal error\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\"}}\n";
     write(j);
 }
@@ -154,7 +162,7 @@ const golden = [_][]const u8{
     "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"run `tau --help` (or `tau --help-json`) for the valid flags and values\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
     "{\"err\":{\"code\":82,\"type\":\"missing_required_field\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"the message names the missing input — supply it and retry\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
     "{\"err\":{\"code\":105,\"type\":\"Timeout\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":106,\"type\":\"AuthFailed\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":106,\"type\":\"AuthFailed\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY\",\"docs\":\"" ++ providers_doc_url ++ "\"}}\n",
     "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
     "{\"err\":{\"code\":111,\"type\":\"unimplemented\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"not supported on this platform — the message names the workaround\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
 };
@@ -175,18 +183,27 @@ test "catalog codes are unique and in ascending order" {
     }
 }
 
-test "format honors type/hint/recoverable overrides" {
+test "format honors type/hint/recoverable/docs overrides" {
     const gpa = testing.allocator;
     const got = try format(gpa, internal_error, "boom", .{
         .type_name = "HTTPRequestFailed",
         .hint = "check TAU_ENDPOINT",
         .recoverable = true,
+        .docs = "https://example.com/fix",
     });
     defer gpa.free(got);
     try testing.expectEqualStrings(
-        "{\"err\":{\"code\":110,\"type\":\"HTTPRequestFailed\",\"message\":\"boom\",\"recoverable\":true,\"hint\":\"check TAU_ENDPOINT\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
+        "{\"err\":{\"code\":110,\"type\":\"HTTPRequestFailed\",\"message\":\"boom\",\"recoverable\":true,\"hint\":\"check TAU_ENDPOINT\",\"docs\":\"https://example.com/fix\"}}\n",
         got,
     );
+}
+
+test "auth envelopes link docs/providers.md" {
+    const gpa = testing.allocator;
+    const got = try format(gpa, auth_failed, "no API key", .{});
+    defer gpa.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "\"docs\":\"" ++ providers_doc_url ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "troubleshooting.md") == null);
 }
 
 test "format escapes quotes, backslashes, and control characters" {

@@ -6,6 +6,10 @@ pub const version = "0.4.0";
 /// so agents and humans can jump straight from an error to the fix list.
 pub const troubleshooting_doc_url = "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md";
 
+/// Provider credentials + auth troubleshooting doc URL. `AuthFailed` envelopes
+/// link here instead of the generic troubleshooting page.
+pub const providers_doc_url = "https://github.com/javimosch/tau/blob/master/docs/providers.md";
+
 test "version is a non-empty dotted triple" {
     try @import("std").testing.expect(version.len > 0);
     try @import("std").testing.expectEqualStrings("0.4.0", version);

@@ -31,6 +31,7 @@ fn writeErr(s: []const u8) void {
 }
 
 const doc_url = @import("version.zig").troubleshooting_doc_url;
+const providers_doc_url = @import("version.zig").providers_doc_url;
 
 fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
     return errs.format(gpa, errs.specFor(code), message, .{ .type_name = error_type, .recoverable = recoverable });
@@ -315,6 +316,7 @@ const guide_see_also = [_][]const u8{
     "tau --help (human help)",
     "README.md (ships with the source)",
     "docs/troubleshooting.md — " ++ doc_url ++ " (error-message → fix FAQ)",
+    "docs/providers.md — " ++ providers_doc_url ++ " (per-provider credential setup + auth troubleshooting)",
     "https://cli-specs.intrane.fr/ (guide spec)",
 };
 

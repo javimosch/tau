@@ -597,6 +597,26 @@ test_group_dry_run() {
     ok "envelope 110 missing hint/docs" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 110: $err_110_err"
   fi
+
+  # Error envelope for auth failure (exit 106): docs links the per-provider
+  # credential guide, not the generic troubleshooting page. Keyless env +
+  # fresh HOME so no config.json or env var can satisfy the auth check —
+  # fleet's auth check fires before the --goal validation.
+  local kh="$SMOKE_TEMP/keyless-home"
+  mkdir -p "$kh"
+  capture err_106 env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY HOME="$kh" "$BIN" fleet run 2>&1 >/dev/null
+  if printf '%s' "$err_106_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("code") == 106; assert e.get("type") == "AuthFailed"' 2>/dev/null; then
+    ok "envelope 106 has type AuthFailed" 0 0
+  else
+    ok "envelope 106 format invalid" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 106: $err_106_err"
+  fi
+  if printf '%s' "$err_106_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert "docs/providers.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 106 docs links providers.md" 0 0
+  else
+    ok "envelope 106 docs missing providers.md link" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 106: $err_106_err"
+  fi
 }
 
 # Group: --scan-agents JSON output (Issue: unescaped path/first_line broke machine output)
