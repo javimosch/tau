@@ -77,7 +77,7 @@ export OPENAI_API_KEY="sk-..."       # use with --model openai/gpt-4o-mini
 export DEEPSEEK_API_KEY="..."        # use with --model deepseek/deepseek-chat
 ```
 
-Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table and [docs/configuration.md](docs/configuration.md) for the full reference.
+Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table, [docs/providers.md](docs/providers.md) for per-provider credential setup, and [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ### 4. First run
 
@@ -477,10 +477,12 @@ Requires Zig 0.16.0 and `curl` on PATH.
 
 ## 🔧 Troubleshooting
 
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it.
+
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | Empty response with no args | Expected behavior (shows help) | Use `tau --help` or provide a prompt |
-| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var |
+| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var — [docs/providers.md](docs/providers.md) |
 | Timeout (exit 105) | Request too slow | Increase `--timeout-ms` (default: 120000) |
 | Tool not found | Tool name mismatch | Check tool name in tool_calls |
 

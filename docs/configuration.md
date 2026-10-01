@@ -33,7 +33,7 @@ The file is **optional** — tau runs fine without it. Behavior on load:
 | `mode` | `"text"` \| `"json"` | `"json"` | `--mode <text\|json>` | Unrecognized values are ignored (stays `json`). |
 | `stream` | bool | `true` | `--stream` / `--no-stream` | SSE token streaming; `--no-stream` for batch. |
 | `thinking` | bool | `false` | `--thinking` | Emit reasoning/thinking chunks. |
-| `debug` | bool | `false` | `--debug` | Perf stats + tool I/O on stderr. |
+| `debug` | bool | `false` | `--debug` | Perf stats + tool I/O on stderr, plus a redacted diagnostic log under `~/.config/tau/debug/`. |
 | `temperature` | float | `0.7` | `--temperature <f>` | Sampling temperature. |
 | `max_tokens` | int | — (uncapped) | `--max-tokens <n>` | Output token cap. |
 | `timeout_ms` | int | `120000` | `--timeout-ms <n>` | HTTP request timeout in milliseconds. |
@@ -86,6 +86,8 @@ provider table (also visible via `tau models`):
 
 No provider currently ships a built-in key — supply one via any of the
 mechanisms below. An unknown provider name is rejected with exit code `80`.
+Per-provider credential setup and auth troubleshooting:
+[providers.md](providers.md).
 
 ---
 
@@ -163,6 +165,7 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 |----------|---------|
 | `TAU_API_KEY` | Fallback API key, used after provider-specific env vars. |
 | `TAU_ENDPOINT` | Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers. |
+| `TAU_DEBUG_LOG` | Overrides the `--debug` diagnostic log destination (default `~/.config/tau/debug/<timestamp>.log`). |
 | `XIAOMI_API_KEY`, `PIZIG_API_KEY` | API keys for the `xiaomi` provider (tried in that order). |
 | `OPENAI_API_KEY` | API key for the `openai` provider. |
 | `DEEPSEEK_API_KEY` | API key for the `deepseek` provider. |
