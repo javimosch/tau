@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "debug:test_group_debug"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -551,14 +552,35 @@ test_group_dry_run() {
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope: $err_env_err"
   fi
 
-  # Error envelope for missing required field (exit 82)
-  # fleet run without --goal writes to stdout via fleetRequires (term.out, not term.err)
-  capture err_82 "$BIN" fleet run 2>&1 >/dev/null
-  if printf '%s' "$err_82_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 82' 2>/dev/null; then
-    ok "error envelope code 82 exists" 0 0
+  # Standardized envelope (task #171): every code carries recoverable, a
+  # remediation hint, and the docs link — on both channels.
+  if printf '%s' "$err_env_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("recoverable") == False; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 80 has recoverable + hint + docs" 0 0
   else
-    ok "error envelope code 82 format invalid" 1 0
-    [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 82: $err_82_out"
+    ok "envelope 80 missing recoverable/hint/docs" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 80: $err_env_err"
+  fi
+
+  # Error envelope for missing required field (exit 82)
+  # fleet run without --goal writes to stdout via fleetRequires (term.out, not
+  # term.err). Unreachable without a key: fleet's auth check fires first (106).
+  if $has_key; then
+    capture err_82 "$BIN" fleet run 2>&1 >/dev/null
+    if printf '%s' "$err_82_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 82' 2>/dev/null; then
+      ok "error envelope code 82 exists" 0 0
+    else
+      ok "error envelope code 82 format invalid" 1 0
+      [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 82: $err_82_out"
+    fi
+    if printf '%s' "$err_82_out" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("type") == "missing_required_field"; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+      ok "envelope 82 has type missing_required_field + hint + docs" 0 0
+    else
+      ok "envelope 82 missing type/hint/docs" 1 0
+      [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 82: $err_82_out"
+    fi
+  else
+    skip_test "error envelope code 82" "no API key (auth check fires before --goal check)"
+    skip_test "envelope 82 fields" "no API key"
   fi
 
   # Error envelope for internal error (exit 110) triggered by fake API key
@@ -568,6 +590,12 @@ test_group_dry_run() {
   else
     ok "error envelope code 110 format invalid" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 110: $err_110_err"
+  fi
+  if printf '%s' "$err_110_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 110 has hint + docs" 0 0
+  else
+    ok "envelope 110 missing hint/docs" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 110: $err_110_err"
   fi
 }
 
@@ -745,6 +773,136 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: --debug redacted diagnostic log (task #167)
+# --debug mirrors its [DEBUG] stderr lines into ~/.config/tau/debug/<ts>.log
+# (TAU_DEBUG_LOG overrides). The file copy masks registered keys, Bearer
+# tokens, api_key-style JSON fields and *_KEY= env assignments; stderr keeps
+# the raw output. A stubbed curl on PATH exercises the provider emitters
+# offline.
+test_group_debug() {
+  local dbg_home="$SMOKE_TEMP/debug-home"
+  local stubdir="$SMOKE_TEMP/curl-stub"
+  mkdir -p "$dbg_home" "$stubdir"
+  local scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u TAU_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY "HOME=$dbg_home")
+
+  note "--debug diagnostic log file"
+
+  # Keyless run: the log opens before the agent loop, so even the silent
+  # exit-106 path leaves a file and a {"debug_log":...} pointer on stderr.
+  capture r "${scrub[@]}" "$BIN" --debug --no-stream "hi"
+  ok "debug: keyless run exits 106" "$r_rc" 106
+  contains "debug: stderr announces debug_log path" "$r_err" '"debug_log":"'
+  contains "debug: perf line on stderr" "$r_err" "[DEBUG] perf:"
+  local created
+  created="$(ls "$dbg_home/.config/tau/debug"/debug-*.log 2>/dev/null | head -1)"
+  if [ -n "$created" ] && [ -f "$created" ]; then
+    ok "debug: default log file created under ~/.config/tau/debug" 0 0
+    local body; body="$(cat "$created")"
+    contains "debug: log carries provenance header" "$body" "tau diagnostic log"
+    contains "debug: header names provider" "$body" "# provider: xiaomi"
+    contains "debug: header flags key_resolved no" "$body" "key_resolved: no"
+  else
+    ok "debug: default log file created under ~/.config/tau/debug" 1 0
+    ok "debug: log carries provenance header" 1 0
+    ok "debug: header names provider" 1 0
+    ok "debug: header flags key_resolved no" 1 0
+  fi
+
+  # TAU_DEBUG_LOG override is honored verbatim.
+  local custom="$SMOKE_TEMP/custom-debug.log"
+  capture r2 "${scrub[@]}" TAU_DEBUG_LOG="$custom" "$BIN" --debug --no-stream "hi"
+  if [ -f "$custom" ]; then
+    ok "debug: TAU_DEBUG_LOG override creates file" 0 0
+  else
+    ok "debug: TAU_DEBUG_LOG override creates file" 1 0
+  fi
+  contains "debug: override path announced on stderr" "$r2_err" "$custom"
+
+  # Unwritable destination degrades to a warn envelope; the run continues.
+  # (/dev/null is a file, so paths under it are unresolvable; a /proc path
+  # would exercise a Zig 0.16 Io spin in createDirPath instead.)
+  capture r3 "${scrub[@]}" TAU_DEBUG_LOG="/dev/null/nope/tau.log" "$BIN" --debug --no-stream "hi"
+  contains "debug: unwritable path emits warn envelope" "$r3_err" '"warn"'
+  ok "debug: unwritable log keeps normal exit path" "$r3_rc" 106
+
+  # Redaction e2e (non-streaming): a stub curl echoes the Authorization header
+  # into the response body; the log must mask both the literal key and the
+  # api_key JSON field — stderr keeps the raw line.
+  cat > "$stubdir/curl" <<'STUB'
+#!/usr/bin/env bash
+auth=""
+for a in "$@"; do
+  case "$a" in Authorization:*) auth="$a";; esac
+done
+printf '{"content":"stub saw %s","api_key":"nested-KEYVAL-9","usage":{"total_tokens":7}}' "$auth"
+STUB
+  chmod +x "$stubdir/curl"
+  local rlog="$SMOKE_TEMP/redact.log"
+  capture r4 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$rlog" PATH="$stubdir:$PATH" "$BIN" --debug --no-stream "hi"
+  ok "debug: stubbed run exits 0" "$r4_rc" 0
+  contains "debug: stderr keeps raw debug line" "$r4_err" "[DEBUG] Raw API response"
+  if [ -f "$rlog" ]; then
+    local lbody; lbody="$(cat "$rlog")"
+    case "$lbody" in
+      *SMOKESECRET-777*) ok "debug: resolved key masked in log" 1 0 ;;
+      *)                 ok "debug: resolved key masked in log" 0 0 ;;
+    esac
+    case "$lbody" in
+      *nested-KEYVAL-9*) ok "debug: api_key JSON field masked in log" 1 0 ;;
+      *)                 ok "debug: api_key JSON field masked in log" 0 0 ;;
+    esac
+    contains "debug: log uses REDACTED marker" "$lbody" "***REDACTED***"
+    contains "debug: log has raw API line" "$lbody" "[DEBUG] Raw API response"
+  else
+    ok "debug: resolved key masked in log" 1 0
+    ok "debug: api_key JSON field masked in log" 1 0
+    ok "debug: log uses REDACTED marker" 1 0
+    ok "debug: log has raw API line" 1 0
+  fi
+
+  # Redaction e2e (streaming): SSE lines are debug-logged too; the key inside
+  # a streamed chunk must still be masked in the file.
+  cat > "$stubdir/curl" <<'STUB'
+#!/usr/bin/env bash
+auth=""
+for a in "$@"; do
+  case "$a" in Authorization:*) auth="$a";; esac
+done
+printf 'data: {"choices":[{"delta":{"content":"saw %s"}}],"usage":{"total_tokens":3}}\n\ndata: [DONE]\n\n' "$auth"
+STUB
+  chmod +x "$stubdir/curl"
+  local slog="$SMOKE_TEMP/redact-stream.log"
+  capture r5 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$slog" PATH="$stubdir:$PATH" "$BIN" --debug "hi"
+  ok "debug: stubbed streaming run exits 0" "$r5_rc" 0
+  if [ -f "$slog" ]; then
+    local sbody; sbody="$(cat "$slog")"
+    contains "debug: SSE lines land in log" "$sbody" "[DEBUG] SSE line:"
+    case "$sbody" in
+      *SMOKESECRET-777*) ok "debug: key masked in streamed log" 1 0 ;;
+      *)                 ok "debug: key masked in streamed log" 0 0 ;;
+    esac
+  else
+    ok "debug: SSE lines land in log" 1 0
+    ok "debug: key masked in streamed log" 1 0
+  fi
+
+  # Error-envelope link: auth failure produces an {"err"} envelope carrying
+  # the log path (the literal /goal emitter does the same).
+  cat > "$stubdir/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"message":"invalid_key: bad token"}}'
+STUB
+  chmod +x "$stubdir/curl"
+  local elog="$SMOKE_TEMP/err-link.log"
+  capture r6 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$elog" PATH="$stubdir:$PATH" "$BIN" --debug --no-stream "hi"
+  ok "debug: auth failure exits 106" "$r6_rc" 106
+  contains "debug: err envelope links debug_log" "$r6_err" '"debug_log":"'"$elog"'"'
+
+  capture r7 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$elog" "$BIN" --debug "/goal status"
+  ok "debug: /goal status without session exits 80" "$r7_rc" 80
+  contains "debug: literal envelope links debug_log" "$r7_err" '"debug_log":"'
 }
 
 # Group: --bench regression guard

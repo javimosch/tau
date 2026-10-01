@@ -477,6 +477,8 @@ Requires Zig 0.16.0 and `curl` on PATH.
 
 ## 🔧 Troubleshooting
 
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it.
+
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | Empty response with no args | Expected behavior (shows help) | Use `tau --help` or provide a prompt |
