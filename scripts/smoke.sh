@@ -63,6 +63,7 @@ ALL_TEST_GROUPS=(
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
   "config-file:test_group_config_file"
+  "config-show:test_group_config_show"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -472,6 +473,80 @@ test_group_config_file() {
   else
     ok "invalid config JSON degrades gracefully" 1 0
   fi
+}
+
+# Group: `tau config show` — resolved effective config (file/env/flag merge,
+# API keys redacted). Offline; uses a mock HOME for config-file cases.
+test_group_config_show() {
+  local out rc mock_home mock_config
+
+  note "tau config show"
+
+  "$BIN" config >/dev/null 2>&1;            ok "config (no sub) -> invalid_argument" "$?" 80
+  "$BIN" config bogus >/dev/null 2>&1;      ok "config bogus -> invalid_argument" "$?" 80
+  "$BIN" config show stray >/dev/null 2>&1; ok "config show positional -> invalid_argument" "$?" 80
+
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+  mock_config="$mock_home/.config/tau"; mkdir -p "$mock_config"
+  printf '{"provider":"deepseek","mode":"text","timeout_ms":9000,"api_key":"file-secret-4242"}' > "$mock_config/config.json"
+
+  out=$(HOME="$mock_home" "$BIN" config show); rc=$?
+  ok "config show exit" "$rc" 0
+  if printf '%s' "$out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
+    ok "config show is valid JSON" 0 0
+  else
+    ok "config show is not valid JSON" 1 0
+  fi
+  contains "config show merges config provider" "$out" '"provider":"deepseek"'
+  contains "config show merges config mode" "$out" '"mode":"text"'
+  contains "config show merges config timeout" "$out" '"timeout_ms":9000'
+  contains "config show reports config file exists" "$out" '"exists":true'
+  # File api_key must be redacted (config api_key is below provider env in
+  # precedence, but no env keys are set in the mock HOME test env).
+  if printf '%s' "$out" | grep -q 'file-secret-4242'; then
+    ok "config show does NOT leak config api_key" 1 0
+  else
+    ok "config show redacts config api_key" 0 0
+  fi
+
+  # CLI flags merge over the config file.
+  out=$(HOME="$mock_home" "$BIN" config show --provider openai --model gpt-test --no-stream)
+  contains "config show CLI --provider override" "$out" '"provider":"openai"'
+  contains "config show CLI --model override" "$out" '"model":"gpt-test"'
+  contains "config show CLI --no-stream" "$out" '"stream":false'
+
+  # Key-source checks need a config file WITHOUT an api_key (config api_key
+  # outranks TAU_API_KEY in precedence and would shadow it).
+  local empty_home; empty_home="$(mktemp -d)"; register_temp_dir "$empty_home"
+
+  # Env key is reported by source and redacted, never printed raw. Clear all
+  # provider env keys so TAU_API_KEY is what actually resolves on this host.
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY TAU_API_KEY="smoke-secret-aa11" HOME="$empty_home" "$BIN" config show)
+  if printf '%s' "$out" | grep -q 'smoke-secret-aa11'; then
+    ok "config show does NOT leak TAU_API_KEY" 1 0
+  else
+    ok "config show redacts TAU_API_KEY" 0 0
+  fi
+  contains "config show reports api_key set" "$out" '"api_key":{"set":true'
+  contains "config show reports env source" "$out" '"source":"env TAU_API_KEY"'
+  contains "config show value is masked" "$out" '"value":"***'
+
+  out=$(HOME="$empty_home" "$BIN" config show --api-key flag-secret-bb22)
+  if printf '%s' "$out" | grep -q 'flag-secret-bb22'; then
+    ok "config show does NOT leak --api-key" 1 0
+  else
+    ok "config show redacts --api-key" 0 0
+  fi
+  contains "config show reports flag source" "$out" '"source":"--api-key"'
+
+  # No key anywhere -> set:false (read-only diagnostic, still exits 0).
+  out=$(env -u TAU_API_KEY -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY HOME="$empty_home" "$BIN" config show); rc=$?
+  ok "config show no key still exits 0" "$rc" 0
+  contains "config show no key -> set:false" "$out" '"api_key":{"set":false'
+
+  # TAU_ENDPOINT override is attributed.
+  out=$(HOME="$empty_home" TAU_ENDPOINT="http://localhost:1/v1/chat/completions" "$BIN" config show)
+  contains "config show attributes TAU_ENDPOINT" "$out" '"endpoint_source":"env:TAU_ENDPOINT"'
 }
 
 # Group: Issue #17 goal mode subcommands offline

@@ -239,6 +239,14 @@ tau --auto-agents-md \
   --mode text "follow project rules"     # Auto-load cwd/AGENTS.md
 ```
 
+#### 15. Effective Config (`tau config show`)
+```bash
+tau config show                          # Resolved config (file+env+flags), keys redacted
+tau config show --provider openai        # Preview flag overrides without running
+# → {"config_file":{...},"provider":"openai","api_key":{"set":true,"value":"***wxyz","source":"env OPENAI_API_KEY"},...}
+# api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt

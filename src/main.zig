@@ -1,6 +1,7 @@
 const std = @import("std");
 const term = @import("term.zig");
 const cfgmod = @import("config.zig");
+const configfile = @import("configfile.zig");
 const argsmod = @import("args.zig");
 const json = @import("json.zig");
 const agent = @import("agent.zig");
@@ -151,6 +152,10 @@ const help_text =
     \\  tau skills search <query>     Search skills by keyword
     \\  tau skills load <name>        Load a skill into system context
     \\
+    \\Config:
+    \\  tau config show [flags]       Print the resolved effective config as JSON
+    \\                              (config file + env + CLI flags merged; API keys redacted)
+    \\
     \\
     \\
     \\Models:
@@ -284,6 +289,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
+    .{ .a = "tau config show [--flags]", .b = "print the resolved effective config (file+env+flags merged; keys redacted)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
@@ -313,6 +319,194 @@ fn appendJsonStr(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u
     buf.append(alloc, '"') catch return;
     json.escapeInto(alloc, buf, s) catch return;
     buf.append(alloc, '"') catch return;
+}
+
+/// `"value"` when set, `null` when not.
+fn appendJsonStrOrNull(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), s: ?[]const u8) void {
+    if (s) |v| {
+        appendJsonStr(alloc, buf, v);
+    } else {
+        buf.appendSlice(alloc, "null") catch return;
+    }
+}
+
+/// `[ "a", "b" ]` when set, `null` when not.
+fn appendJsonStrListOrNull(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), list: ?[]const []const u8) void {
+    const l = list orelse {
+        buf.appendSlice(alloc, "null") catch return;
+        return;
+    };
+    buf.append(alloc, '[') catch return;
+    for (l, 0..) |s, i| {
+        if (i != 0) buf.append(alloc, ',') catch return;
+        appendJsonStr(alloc, buf, s);
+    }
+    buf.append(alloc, ']') catch return;
+}
+
+/// A finite float as a JSON number, `null` for NaN/Inf (which are not valid
+/// JSON literals — parseFloat accepts "nan"/"inf" from flags and config).
+fn appendJsonFloatOrNull(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), v: f32) void {
+    if (!std.math.isFinite(v)) {
+        buf.appendSlice(alloc, "null") catch return;
+        return;
+    }
+    const s = std.fmt.allocPrint(alloc, "{d}", .{v}) catch return;
+    defer alloc.free(s);
+    buf.appendSlice(alloc, s) catch return;
+}
+
+fn appendJsonIntOrNull(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), v: ?u32) void {
+    if (v) |n| {
+        const s = std.fmt.allocPrint(alloc, "{d}", .{n}) catch return;
+        defer alloc.free(s);
+        buf.appendSlice(alloc, s) catch return;
+    } else {
+        buf.appendSlice(alloc, "null") catch return;
+    }
+}
+
+/// Serialize the resolved effective config for `tau config show`. Reflects the
+/// full merge — config file → env vars → CLI flags — exactly as a run would see
+/// it. Secrets are never printed: `api_key.value` is masked via redactApiKey and
+/// `api_key.source` reports which precedence level supplied the key.
+fn formatEffectiveConfig(alloc: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(alloc);
+    const b = &buf;
+    const A = alloc;
+
+    try b.appendSlice(A, "{\"version\":");
+    appendJsonStr(A, b, version);
+
+    // Where config came from: the probed file path, whether a file was read,
+    // and any parse warning (the file is optional; defaults fill the rest).
+    try b.appendSlice(A, ",\"config_file\":{\"path\":");
+    appendJsonStrOrNull(A, b, configfile.path(A, env));
+    try b.appendSlice(A, ",\"exists\":");
+    try b.appendSlice(A, if (cfg.config_path != null) "true" else "false");
+    try b.appendSlice(A, ",\"warning\":");
+    appendJsonStrOrNull(A, b, cfg.config_warning);
+    try b.append(A, '}');
+
+    try b.appendSlice(A, ",\"provider\":");
+    appendJsonStr(A, b, cfg.provider);
+    try b.appendSlice(A, ",\"model\":");
+    appendJsonStr(A, b, cfg.model);
+    try b.appendSlice(A, ",\"endpoint\":");
+    appendJsonStr(A, b, cfg.endpoint);
+    // TAU_ENDPOINT is applied during arg resolution; label where the final
+    // endpoint came from so overrides are visible.
+    const ep_src: []const u8 = blk: {
+        if (env.get("TAU_ENDPOINT")) |ep| {
+            if (ep.len > 0) break :blk "env:TAU_ENDPOINT";
+        }
+        break :blk "provider";
+    };
+    try b.appendSlice(A, ",\"endpoint_source\":");
+    appendJsonStr(A, b, ep_src);
+
+    // Resolved API key: redacted value + provenance, never the raw key.
+    try b.appendSlice(A, ",\"api_key\":{");
+    if (cfgmod.resolveApiKeyInfo(cfg, env)) |rk| {
+        const source: []const u8 = switch (rk.source) {
+            .flag => "--api-key",
+            .config_keys => try std.fmt.allocPrint(A, "config keys[{s}]", .{cfg.provider}),
+            .env_provider => try std.fmt.allocPrint(A, "env {s}", .{rk.env_name orelse "?"}),
+            .config_global => "config api_key",
+            .env_tau => "env TAU_API_KEY",
+            .builtin => "builtin",
+        };
+        try b.appendSlice(A, "\"set\":true,\"value\":");
+        appendJsonStr(A, b, cfgmod.redactApiKey(A, rk.key));
+        try b.appendSlice(A, ",\"source\":");
+        appendJsonStr(A, b, source);
+    } else {
+        try b.appendSlice(A, "\"set\":false,\"value\":null,\"source\":null");
+    }
+    try b.append(A, '}');
+
+    // Per-provider keys present in the config file, each value redacted.
+    try b.appendSlice(A, ",\"keys\":");
+    if (cfg.keys) |km| {
+        var it = km.iterator();
+        // Sort provider names for deterministic output.
+        var names: std.ArrayList([]const u8) = .empty;
+        defer names.deinit(A);
+        while (it.next()) |e| try names.append(A, e.key_ptr.*);
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn lt(_: void, x: []const u8, y: []const u8) bool {
+                return std.mem.order(u8, x, y) == .lt;
+            }
+        }.lt);
+        try b.append(A, '{');
+        for (names.items, 0..) |n, i| {
+            if (i != 0) try b.append(A, ',');
+            appendJsonStr(A, b, n);
+            try b.append(A, ':');
+            appendJsonStr(A, b, cfgmod.redactApiKey(A, km.get(n).?));
+        }
+        try b.append(A, '}');
+    } else {
+        try b.appendSlice(A, "null");
+    }
+
+    try b.appendSlice(A, ",\"mode\":");
+    appendJsonStr(A, b, @tagName(cfg.mode));
+    try b.appendSlice(A, ",\"role\":");
+    appendJsonStr(A, b, @tagName(cfg.role));
+    try b.appendSlice(A, ",\"session\":");
+    appendJsonStrOrNull(A, b, cfg.session);
+    try b.appendSlice(A, ",\"stream\":");
+    try b.appendSlice(A, if (cfg.stream) "true" else "false");
+    try b.appendSlice(A, ",\"no_tools\":");
+    try b.appendSlice(A, if (cfg.no_tools) "true" else "false");
+    try b.appendSlice(A, ",\"tools_allow\":");
+    appendJsonStrListOrNull(A, b, cfg.tools_allow);
+    try b.appendSlice(A, ",\"tools_deny\":");
+    appendJsonStrListOrNull(A, b, cfg.tools_deny);
+    try b.appendSlice(A, ",\"thinking\":");
+    try b.appendSlice(A, if (cfg.thinking) "true" else "false");
+    try b.appendSlice(A, ",\"debug\":");
+    try b.appendSlice(A, if (cfg.debug) "true" else "false");
+    try b.appendSlice(A, ",\"dry_run\":");
+    try b.appendSlice(A, if (cfg.dry_run) "true" else "false");
+    try b.appendSlice(A, ",\"temperature\":");
+    appendJsonFloatOrNull(A, b, cfg.temperature);
+    try b.appendSlice(A, ",\"max_tokens\":");
+    appendJsonIntOrNull(A, b, cfg.max_tokens);
+    {
+        const s = try std.fmt.allocPrint(A, ",\"timeout_ms\":{d},\"max_iterations\":{d}", .{ cfg.timeout_ms, cfg.max_iterations });
+        defer A.free(s);
+        try b.appendSlice(A, s);
+    }
+    try b.appendSlice(A, ",\"context_window\":");
+    {
+        const s = try std.fmt.allocPrint(A, "{d}", .{cfg.context_window});
+        defer A.free(s);
+        try b.appendSlice(A, s);
+    }
+    try b.appendSlice(A, ",\"auto_compact\":");
+    try b.appendSlice(A, if (cfg.auto_compact) "true" else "false");
+    try b.appendSlice(A, ",\"compact_threshold\":");
+    appendJsonFloatOrNull(A, b, cfg.compact_threshold);
+    try b.appendSlice(A, ",\"compact_keep_recent_tokens\":");
+    {
+        const s = try std.fmt.allocPrint(A, "{d}", .{cfg.compact_keep_recent_tokens});
+        defer A.free(s);
+        try b.appendSlice(A, s);
+    }
+    {
+        const s = try std.fmt.allocPrint(A, ",\"goal_max_iterations\":{d},\"goal_max_continues\":{d}}}\n", .{ cfg.goal_max_iterations, cfg.goal_max_continues });
+        defer A.free(s);
+        try b.appendSlice(A, s);
+    }
+    return b.toOwnedSlice(A);
+}
+
+fn printEffectiveConfig(arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) void {
+    const s = formatEffectiveConfig(arena, cfg, env) catch return;
+    writeOut(s);
 }
 
 fn printGuideJson() void {
@@ -425,7 +619,7 @@ pub fn main(init: std.process.Init) !void {
     term.init(io); // portable stdout/stderr (replaces Linux-only write syscalls)
 
     // Config-file defaults (~/.config/tau/config.json); CLI flags override these.
-    const base_cfg: Config = @import("configfile.zig").load(io, arena, init.environ_map);
+    const base_cfg: Config = configfile.load(io, arena, init.environ_map);
     // Warn if the config file exists but has invalid JSON (load degrades silently).
     if (base_cfg.config_warning) |w| printWarnJson(w);
 
@@ -527,6 +721,10 @@ pub fn main(init: std.process.Init) !void {
             }
             printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", "invalid skills subcommand", false);
             std.process.exit(@intFromEnum(ExitCode.invalid_argument));
+        },
+        .config => {
+            printEffectiveConfig(arena, parsed.config, init.environ_map);
+            return;
         },
         .fleet => {
             const fleet = @import("fleet.zig");
@@ -686,4 +884,117 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     defer gpa.free(got);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
+}
+
+// ── tau config show ─────────────────────────────────────────────────────────
+
+test "formatEffectiveConfig emits merged values with the key redacted" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    const cfg = Config{
+        .provider = "openai",
+        .model = "gpt-x",
+        .endpoint = "https://api.openai.com/v1/chat/completions",
+        .api_key = "sk-supersecret-9f8e",
+        .mode = .text,
+        .stream = false,
+        .timeout_ms = 9000,
+        .session = "work",
+        .role = .author,
+    };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"provider\":\"openai\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"model\":\"gpt-x\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"mode\":\"text\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"stream\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"timeout_ms\":9000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"session\":\"work\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"role\":\"author\"") != null);
+    // The raw key must never appear — only the masked tail and its source.
+    try std.testing.expect(std.mem.indexOf(u8, out, "sk-supersecret-9f8e") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"api_key\":{\"set\":true,\"value\":\"***9f8e\",\"source\":\"--api-key\"}") != null);
+}
+
+test "formatEffectiveConfig reports env key source and endpoint override" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("OPENAI_API_KEY", "sk-env-9999");
+    try env.put("TAU_ENDPOINT", "http://localhost:8080/v1/chat/completions");
+
+    const cfg = Config{
+        .provider = "openai",
+        .endpoint = "http://localhost:8080/v1/chat/completions",
+    };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+    try std.testing.expect(std.mem.indexOf(u8, out, "sk-env-9999") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"source\":\"env OPENAI_API_KEY\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"endpoint_source\":\"env:TAU_ENDPOINT\"") != null);
+}
+
+test "formatEffectiveConfig reports set:false and provider endpoint without overrides" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    const cfg = Config{};
+    const out = try formatEffectiveConfig(a, cfg, &env);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"api_key\":{\"set\":false,\"value\":null,\"source\":null}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"endpoint_source\":\"provider\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"exists\":false") != null);
+}
+
+test "formatEffectiveConfig redacts each per-provider keys entry and sorts them" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("xiaomi", "xiaomi-key-bbbb");
+    try km.put("deepseek", "deepseek-key-aaaa");
+    const cfg = Config{ .provider = "openai", .keys = km };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "deepseek-key-aaaa") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "xiaomi-key-bbbb") == null);
+    // Sorted: deepseek before xiaomi; each value masked to its last 4.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"keys\":{\"deepseek\":\"***aaaa\",\"xiaomi\":\"***bbbb\"}") != null);
+    // The resolved api_key for provider openai comes from the map miss → set:false.
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"api_key\":{\"set\":false") != null);
+}
+
+test "formatEffectiveConfig reports config file path and warning" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("HOME", "/home/tester");
+
+    const cfg = Config{
+        .config_path = "/home/tester/.config/tau/config.json",
+        .config_warning = "config file has invalid JSON and was ignored",
+    };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"path\":\"/home/tester/.config/tau/config.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"exists\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"warning\":\"config file has invalid JSON and was ignored\"") != null);
+}
+
+test "formatEffectiveConfig emits null for non-finite floats (valid JSON)" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    const cfg = Config{ .temperature = std.math.nan(f32) };
+    const out = try formatEffectiveConfig(a, cfg, &env);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"temperature\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "nan") == null);
 }

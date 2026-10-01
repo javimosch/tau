@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, config, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -95,7 +95,7 @@ pub fn parse(
 
     var argv_list: std.ArrayList([]const u8) = .empty;
     while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
-    const argv = argv_list.items;
+    var argv = argv_list.items;
 
     // Fleet-subcommand scratch state (declared up here so the fleet subcommand
     // block above can write into them before the generic flag loop runs).
@@ -237,6 +237,18 @@ pub fn parse(
         fcfg.fleet_goal = fleet_goal;
         fcfg.fleet_items = fleet_items;
         return .{ .action = .fleet, .config = fcfg };
+    }
+
+    // `tau config show [flags]` — print the resolved effective config as JSON.
+    // Unlike acp/fleet, `show` falls through to the generic flag loop below so
+    // every override flag (--provider/--model/--api-key/--mode/...) is
+    // reflected in the merged output. Positional args are rejected in the tail.
+    var config_show = false;
+    if (argv.len > 0 and eq(argv[0], "config")) {
+        if (argv.len < 2) return errResult(arena, "config subcommand required: show", .{});
+        if (!eq(argv[1], "show")) return errResult(arena, "invalid config subcommand (want show): {s}", .{argv[1]});
+        config_show = true;
+        argv = argv[2..];
     }
 
     // Start from `base` (config-file defaults). CLI flags below override it.
@@ -474,6 +486,18 @@ pub fn parse(
 
     // -h/--help always shows human-readable text; --help-json is the machine form.
     if (help_requested) return .{ .action = .help, .config = cfg, .help_requested = true };
+
+    // `tau config show` takes no prompt — any positional (or @file) is an error.
+    if (config_show) {
+        if (cfg.prompt != null) {
+            const bad = if (msg_parts.items.len > 0)
+                msg_parts.items[0]
+            else
+                try std.fmt.allocPrint(arena, "@{s}", .{file_parts.items[0]});
+            return errResult(arena, "config show takes no prompt; unexpected argument: {s}", .{bad});
+        }
+        return .{ .action = .config, .config = cfg };
+    }
 
     // No args and no prompt: show human-readable help (not JSON),
     // unless a standalone flag like --scan-agents or --load-agents-md is set.
@@ -900,6 +924,83 @@ test "parse: fleet run resolves provider and captures goal" {
     try std.testing.expect(!p.config.fleet_parallel);
     // Provider resolution happens inline for the fleet early-return path.
     try std.testing.expectEqualStrings(provider_mod.providers[0].endpoint, p.config.endpoint);
+}
+
+// ── `tau config show` ────────────────────────────────────────────────────────
+
+test "parse: config show selects the config action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    // Provider/endpoint/model are resolved like a normal run.
+    const want = provider_mod.providers[0];
+    try std.testing.expectEqualStrings(want.name, p.config.provider);
+    try std.testing.expectEqualStrings(want.endpoint, p.config.endpoint);
+    try std.testing.expectEqualStrings(want.default_model, p.config.model);
+}
+
+test "parse: config show merges override flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "--provider", "openai", "--model", "gpt-x", "--no-stream", "--api-key", "sk-flag" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    const oai = provider_mod.findProvider("openai").?;
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(oai.endpoint, p.config.endpoint);
+    try std.testing.expectEqualStrings("gpt-x", p.config.model);
+    try std.testing.expect(!p.config.stream);
+    try std.testing.expectEqualStrings("sk-flag", p.config.api_key.?);
+}
+
+test "parse: config show reflects config-file base values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const base = Config{ .provider = "deepseek", .timeout_ms = 9000 };
+    const p = try parseArgv(a, &.{ "tau", "config", "show" }, base);
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expectEqualStrings("deepseek", p.config.provider);
+    try std.testing.expectEqual(@as(i64, 9000), p.config.timeout_ms);
+}
+
+test "parse: config requires a subcommand and validates it" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "config" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    try std.testing.expectEqualStrings("config subcommand required: show", bare.err_msg.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "config", "bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("invalid config subcommand (want show): bogus", bad.err_msg.?);
+}
+
+test "parse: config show rejects positional prompt arguments" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "hello" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expectEqualStrings("config show takes no prompt; unexpected argument: hello", p.err_msg.?);
+}
+
+test "parse: config show still honours -h" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "-h" }, .{});
+    try std.testing.expectEqual(Action.help, p.action);
+    try std.testing.expect(p.help_requested);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {
