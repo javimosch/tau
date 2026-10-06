@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models|init)
+            acp|fleet|skills|models|init|guide|doctor|setup)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -48,7 +48,7 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "author critic coordinator none" -- "$cur"))
             return ;;
         --tools|-t|--exclude-tools|-xt)
-            COMPREPLY=($(compgen -W "bash ls read write edit grep find" -- "$cur"))
+            COMPREPLY=($(compgen -W "bash ls read write edit grep find calculator" -- "$cur"))
             return ;;
         --load-agents-md)
             declare -f _filedir &>/dev/null && _filedir
@@ -101,7 +101,11 @@ _tau_complete() {
                 fi
             done
             if [[ -z "$fleet_sub" ]]; then
-                COMPREPLY=($(compgen -W "run status list logs cancel" -- "$cur"))
+                # Flags are valid before the sub-subcommand too, so offer both.
+                COMPREPLY=($(compgen -W "run status list logs cancel \
+                    --goal --id --api-key --provider --model \
+                    --coordinator-model --worker-model --sequential --parallel \
+                    --items --schema" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "--goal --id --api-key --provider --model \
                     --coordinator-model --worker-model --sequential --parallel \
@@ -117,13 +121,17 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "--force --stdout --provider" -- "$cur"))
             ;;
 
+        guide)
+            COMPREPLY=($(compgen -W "--human" -- "$cur"))
+            ;;
+
         models)
             # No additional completions for `models`.
             ;;
 
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet init
+            local top_level="acp models skills fleet init guide doctor setup
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream
