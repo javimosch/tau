@@ -3,6 +3,10 @@
 Tab-complete `tau` flags, options, and subcommands in Bash, Zsh, Fish, or
 PowerShell.
 
+> **Quick install:** `tau setup` installs these for the detected shell (or
+> `--shell bash|zsh|fish|pwsh|all`) — the scripts are embedded in the binary,
+> so no checkout is needed. The manual installs below do the same thing.
+
 | File | Shell |
 |---|---|
 | `tau.bash` | Bash |
@@ -14,7 +18,7 @@ PowerShell.
 
 | Context | Completions |
 |---|---|
-| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `init`, `guide`) |
+| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `init`, `setup`, `doctor`, `guide`) |
 | `--provider` | `xiaomi openai deepseek opencode-go` |
 | `--mode` | `text json` |
 | `--role` | `author critic coordinator none` |
@@ -25,6 +29,8 @@ PowerShell.
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
 | `tau init` | `--force`, `--stdout`, `--provider` |
+| `tau doctor` | `--offline`, `--deep`, `--provider`, `--model`, `--api-key` |
+| `tau setup` | `--shell`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key` |
 | `tau guide` | `--human` |
 
 ---

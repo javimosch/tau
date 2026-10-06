@@ -213,6 +213,53 @@ pub fn parse(
         return .{ .action = .init, .config = icfg };
     }
 
+    // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
+    // [--api-key K] [--offline] [--deep]` — one-shot onboarding: scaffold the
+    // config (init), install shell completions, embed a doctor health report.
+    // A command, not a prompt; an unknown provider rides into the doctor step
+    // as a failed check (same convention as `tau doctor`).
+    if (argv.len > 0 and eq(argv[0], "setup")) {
+        var scfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!eq(s, "bash") and !eq(s, "zsh") and !eq(s, "fish") and !eq(s, "pwsh") and
+                    !eq(s, "powershell") and !eq(s, "all"))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                scfg.setup_shell = s;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                scfg.api_key = argv[j];
+            } else if (eq(a, "--offline")) {
+                scfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                scfg.doctor_deep = true;
+            } else return errResult(arena, "unknown setup argument: {s}", .{a});
+        }
+        if (try resolveProviderAndModel(&scfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            scfg.doctor_bad_provider = bad;
+        }
+        // Seed the scaffold when --provider names a known provider;
+        // pickProvider ignores unknown names (doctor reports that failure).
+        scfg.init_provider = provider_opt;
+        return .{ .action = .setup, .config = scfg };
+    }
+
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
     if (argv.len > 0 and eq(argv[0], "fleet")) {
         var fcfg: Config = base;

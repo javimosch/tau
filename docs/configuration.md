@@ -26,6 +26,11 @@ in comments. It never copies secret values into the file, and refuses to
 overwrite an existing config unless `--force` is passed (`--stdout` previews
 without writing, `--provider <name>` picks a provider explicitly).
 
+`tau setup` wraps this into one-shot onboarding: it scaffolds the config the
+same way (keeping an existing file instead of failing), installs shell
+completions for the detected shell, then prints the `tau doctor` health
+report — one NDJSON object per step, exit 0 only when everything is healthy.
+
 The file is **JSONC**: `//` line comments and `/* */` block comments are
 stripped before parsing, so a commented config (like the one `tau init`
 writes) loads cleanly.

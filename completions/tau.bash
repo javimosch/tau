@@ -121,6 +121,14 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "--force --stdout --provider" -- "$cur"))
             ;;
 
+        doctor)
+            COMPREPLY=($(compgen -W "--offline --deep --provider --model --api-key" -- "$cur"))
+            ;;
+
+        setup)
+            COMPREPLY=($(compgen -W "--shell --offline --deep --provider --model --api-key" -- "$cur"))
+            ;;
+
         guide)
             COMPREPLY=($(compgen -W "--human" -- "$cur"))
             ;;

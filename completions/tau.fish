@@ -18,7 +18,7 @@ function __tau_no_subcommand
     set -e tokens[1]
     for t in $tokens
         switch $t
-            case acp fleet skills models guide
+            case acp fleet skills models guide init doctor setup
                 return 1
         end
     end
@@ -84,6 +84,9 @@ complete -c tau -n $top -f -a fleet -d 'multi-agent orchestration (run|status|li
 complete -c tau -n $top -f -a skills -d 'skills autodiscovery (list|search|load)'
 complete -c tau -n $top -f -a models -d 'list available providers and models'
 complete -c tau -n $top -f -a guide -d 'print the embedded operator manual'
+complete -c tau -n $top -f -a init -d 'write a commented starter config'
+complete -c tau -n $top -f -a doctor -d 'validate setup (config, provider, key, connectivity)'
+complete -c tau -n $top -f -a setup -d 'one-shot onboarding (init + completions + doctor)'
 
 complete -c tau -n $top -s h -l help -d 'show help text'
 complete -c tau -n $top -s v -l version -d 'show version'
@@ -157,5 +160,26 @@ complete -c tau -n $skills -f -a search -d 'search skills by keyword'
 complete -c tau -n $skills -f -a load -d 'load a skill into the system context by name'
 
 complete -c tau -n '__tau_using_subcommand guide' -f -l human -d 'render the guide as markdown'
+
+# ── tau init / tau doctor / tau setup ───────────────────────────────────────
+set -l init '__tau_using_subcommand init'
+complete -c tau -n $init -f -l force -d 'overwrite an existing config file'
+complete -c tau -n $init -f -l stdout -d 'print the starter config without writing it'
+complete -c tau -n $init -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'scaffold for a specific provider'
+
+set -l doctor '__tau_using_subcommand doctor'
+complete -c tau -n $doctor -f -l offline -d 'skip network checks'
+complete -c tau -n $doctor -f -l deep -d 'run an authenticated probe (spends ~1 token)'
+complete -c tau -n $doctor -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'diagnose an override provider'
+complete -c tau -n $doctor -f -l model -x -d 'diagnose an override model'
+complete -c tau -n $doctor -f -l api-key -x -d 'diagnose an override API key'
+
+set -l setup '__tau_using_subcommand setup'
+complete -c tau -n $setup -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
+complete -c tau -n $setup -f -l offline -d 'skip network checks in the doctor step'
+complete -c tau -n $setup -f -l deep -d 'run an authenticated probe in the doctor step'
+complete -c tau -n $setup -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'seed scaffold + diagnose provider'
+complete -c tau -n $setup -f -l model -x -d 'diagnose an override model'
+complete -c tau -n $setup -f -l api-key -x -d 'diagnose an override API key'
 
 # `tau models` takes no further arguments.

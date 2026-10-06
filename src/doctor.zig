@@ -112,8 +112,10 @@ fn keySourceLabel(arena: std.mem.Allocator, cfg: Config, rk: cfgmod.ResolvedKey)
 
 /// Classify config-file bytes: invalid JSON -> fail, unknown provider key ->
 /// warn, otherwise ok. Pure (unit-testable); file I/O stays in checkConfigFile.
+/// The file is JSONC — comments are stripped first, same as configfile.load,
+/// so a `tau init` scaffold (which is commented) parses cleanly.
 fn configBodyCheck(arena: std.mem.Allocator, path: []const u8, bytes: []const u8) Check {
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, bytes) catch bytes, .{
         .ignore_unknown_fields = true,
     }) catch {
         return .{
@@ -366,9 +368,17 @@ fn checkAuthProbe(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, 
     };
 }
 
-/// Run all checks, print the JSON report on stdout, and return the process
-/// exit code: 0 when every non-skipped check is ok/warn, 1 when any fails.
-pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
+/// The collected doctor verdict: `ok` mirrors the exit code (all non-skipped
+/// checks ok/warn) and `json` is the serialized report object with no trailing
+/// newline — callers (tau setup) can embed it in a larger envelope.
+pub const Report = struct {
+    ok: bool,
+    json: []const u8,
+};
+
+/// Run every check and return the report. Split from run() so `tau setup` can
+/// embed the same report under a "doctor" step instead of printing it bare.
+pub fn collectReport(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !Report {
     var checks: std.ArrayList(Check) = .empty;
     try checks.append(arena, checkConfigFile(io, arena, env));
     try checks.append(arena, checkProvider(arena, cfg));
@@ -380,9 +390,22 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     try checks.append(arena, checkEndpoint(io, gpa, arena, cfg, curl_ok));
     try checks.append(arena, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok));
 
-    const report = try formatReportJson(arena, checks.items);
-    term.out(report);
-    return if (summarize(checks.items).fail == 0) 0 else 1;
+    const report_json = try formatReportJson(arena, checks.items);
+    return .{
+        .ok = summarize(checks.items).fail == 0,
+        // formatReportJson emits a trailing '\n' — drop it so callers can
+        // embed the object inside a larger envelope.
+        .json = if (report_json.len > 0 and report_json[report_json.len - 1] == '\n') report_json[0 .. report_json.len - 1] else report_json,
+    };
+}
+
+/// Run all checks, print the JSON report on stdout, and return the process
+/// exit code: 0 when every non-skipped check is ok/warn, 1 when any fails.
+pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
+    const report = try collectReport(io, gpa, arena, cfg, env);
+    term.out(report.json);
+    term.out("\n");
+    return if (report.ok) 0 else 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +473,10 @@ test "configBodyCheck: unknown provider key warns, valid file is ok" {
 
     const ok = configBodyCheck(a, "/tmp/cfg", "{\"provider\":\"openai\",\"model\":\"gpt-x\"}");
     try testing.expectEqual(CheckStatus.ok, ok.status);
+
+    // JSONC (as `tau init` writes it) parses after comment stripping.
+    const jsonc = configBodyCheck(a, "/tmp/cfg", "// starter\n{\"provider\":\"openai\"} /* tail */");
+    try testing.expectEqual(CheckStatus.ok, jsonc.status);
 
     // Provider as a non-string is tolerated (configfile.load ignores it too).
     const odd = configBodyCheck(a, "/tmp/cfg", "{\"provider\":42}");

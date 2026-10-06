@@ -262,7 +262,7 @@ TAU_BIN="$HOME/ai/tau-custom/zig-out/bin/tau" a2a-spawn --cli tau --id custom --
 
 Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations 40 --timeout-ms 300000`.
 
-#### 15. Config Scaffolding
+#### 16. Config Scaffolding
 ```bash
 tau init                                 # Write commented starter ~/.config/tau/config.json
 tau init --stdout                        # Preview the scaffold without writing
@@ -271,6 +271,24 @@ tau init --provider openai               # Scaffold for a specific provider
 # Detects set provider env keys (marks them "*"), picks a matching provider,
 # and never copies secret values into the file. config.json is JSONC:
 # `//` and `/* */` comments are stripped on load.
+```
+
+#### 17. One-Shot Onboarding
+```bash
+tau setup                      # init + install completions ($SHELL-detected) + doctor summary
+tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
+tau setup --offline            # Skip network checks in the doctor step
+# Emits one NDJSON object per step plus a final verdict:
+#   {"step":"init","status":"created|exists|failed",...}
+#   {"step":"completions","status":"installed|skipped|failed","shells":[...]}
+#   {"step":"doctor","report":{...same shape as `tau doctor`...}}
+#   {"step":"setup","ok":bool,"version":..}
+# Idempotent: existing config is kept, rc edits carry a "# tau completions"
+# marker so re-runs don't duplicate. Exit 0 when every step is ok/skipped,
+# 1 on any failure (including a doctor report with failed checks).
+# Completion scripts are embedded in the binary at build time (build.zig
+# generates a `completions` module from completions/), so `tau setup`
+# works without a source checkout.
 ```
 
 ### Storage Paths
@@ -299,6 +317,9 @@ tau init --provider openai               # Scaffold for a specific provider
 | `src/config.zig` | `Config` struct + `Role` enum + key resolution | Adding config fields |
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
 | `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
+| `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
+| `src/setup.zig` | `tau setup` onboarding (init + completions + doctor) | Setup steps, install paths |
+| `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |
 | `src/llm/provider.zig` | LLM providers, HTTP, streaming | Adding providers |

@@ -67,6 +67,8 @@ _tau() {
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
                 'init:write a commented starter config (~/.config/tau/config.json)'
+                'setup:one-shot onboarding (init + completions + doctor)'
+                'doctor:validate setup (config, provider, key, connectivity)'
                 'guide:print the embedded operator manual'
             )
             _alternative \
@@ -133,6 +135,25 @@ _tau() {
                         '--force[overwrite an existing config file]' \
                         '--stdout[print the starter config without writing it]' \
                         '--provider=[scaffold for a specific provider]:provider:(xiaomi openai deepseek opencode-go)'
+                    ;;
+
+                setup)
+                    _arguments \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--offline[skip network checks in the doctor step]' \
+                        '--deep[run an authenticated probe in the doctor step]' \
+                        '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:'
+                    ;;
+
+                doctor)
+                    _arguments \
+                        '--offline[skip network checks]' \
+                        '--deep[run an authenticated probe (spends ~1 token)]' \
+                        '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:'
                     ;;
 
                 guide)

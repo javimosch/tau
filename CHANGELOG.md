@@ -33,10 +33,23 @@ are backward compatible.
 - `tau doctor` — JSON setup diagnostics (config file parse, provider
   resolution, API key provenance, curl on PATH, endpoint reachability, and an
   optional `--deep` authenticated probe); `--offline` skips network checks
+- `tau init` — write a commented starter `~/.config/tau/config.json` seeded
+  from detected provider env keys (`--force`, `--stdout`, `--provider`)
+- `tau setup` — one-shot onboarding: scaffolds the config (init), installs
+  shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+  to override; scripts are embedded in the binary), and embeds the `doctor`
+  health report; emits one NDJSON object per step plus a final verdict and
+  exits non-zero when any step fails; idempotent on re-run
+- Shell completions for fish and PowerShell (`completions/tau.fish`,
+  `completions/tau.ps1`); all four scripts now complete `init`, `setup`,
+  `doctor`, and `guide`
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed
 
+- `tau doctor` no longer false-fails a commented (JSONC) config file — the
+  `config_file` check strips `//` and `/* */` comments before parsing, same
+  as the runtime loader, so a `tau init` scaffold reports `ok`
 - Streaming: honor `--timeout-ms` on SSE requests (#76); tolerate whitespace in
   SSE tool-call and reasoning parsers (#68)
 - Provider response parsing: whitespace after JSON colons (#66) and before

@@ -126,6 +126,11 @@ const help_text =
     \\      --force                 Overwrite an existing config file
     \\      --provider <name>       Scaffold for a specific provider
     \\      --stdout                Print the starter config without writing it
+    \\  tau setup                   One-shot onboarding: init + install shell
+    \\                              completions + doctor health summary (NDJSON)
+    \\      --shell <name>          Completions shell: bash|zsh|fish|pwsh|all
+    \\                              (default: detect from $SHELL)
+    \\      --offline/--deep        Passed through to the doctor step
     \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
@@ -297,6 +302,8 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
+    .{ .a = "tau setup [--shell <sh>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + doctor health summary (NDJSON)." },
+    .{ .a = "tau doctor [--offline|--deep]", .b = "diagnose the setup chain (config, provider, key, connectivity) — JSON report." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
@@ -482,6 +489,14 @@ pub fn main(init: std.process.Init) !void {
             };
             std.process.exit(code);
         },
+        .setup => {
+            const setup = @import("setup.zig");
+            const code = setup.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "setup failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
         .err => {
             const msg = parsed.err_msg orelse "invalid arguments";
             printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", msg, false);
@@ -657,6 +672,7 @@ test {
     _ = @import("session.zig");
     _ = @import("doctor.zig");
     _ = @import("init.zig");
+    _ = @import("setup.zig");
 }
 
 test "flag_specs appear in help_text" {

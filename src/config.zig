@@ -176,6 +176,11 @@ pub const Config = struct {
     /// Doctor reports it as a failed check instead of exiting 80 so the report
     /// still carries diagnostics for the rest of the setup chain.
     doctor_bad_provider: ?[]const u8 = null,
+
+    // --- Setup (src/setup.zig) ---
+    /// `tau setup --shell <name>` — completions shell override
+    /// (bash|zsh|fish|pwsh|all). Null means detect from $SHELL.
+    setup_shell: ?[]const u8 = null,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` so the

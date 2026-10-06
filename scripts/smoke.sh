@@ -65,6 +65,7 @@ ALL_TEST_GROUPS=(
   "config-file:test_group_config_file"
   "doctor:test_group_doctor"
   "init:test_group_init"
+  "setup:test_group_setup"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -771,6 +772,103 @@ test_group_init() {
   # Bad arguments.
   "$BIN" init --bogus >/dev/null 2>&1; ok "init --bogus -> exit 80" "$?" 80
   "$BIN" init --provider acme >/dev/null 2>&1; ok "init --provider acme -> exit 80" "$?" 80
+}
+
+# Group: tau setup — one-shot onboarding (init + completions + doctor)
+# All runs use --offline so no real network/API key is needed; ambient keys
+# and config are scrubbed via env -u + mock HOME.
+test_group_setup() {
+  local mock_home line1 line2 line3 line4
+
+  note "tau setup scaffolds config, installs completions, embeds doctor"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+
+  # Fresh HOME + detected zsh + a provider env key -> all steps ok, exit 0.
+  capture s1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home" SHELL=/bin/zsh XIAOMI_API_KEY=smoke-key "$BIN" setup --offline
+  ok "setup on fresh HOME exits 0" "$s1_rc" 0
+  line1=$(printf '%s' "$s1_out" | sed -n '1p')
+  line2=$(printf '%s' "$s1_out" | sed -n '2p')
+  line3=$(printf '%s' "$s1_out" | sed -n '3p')
+  line4=$(printf '%s' "$s1_out" | sed -n '4p')
+  contains "line 1 is the init step, status created" "$line1" '"step":"init","status":"created"'
+  contains "init reports the config path" "$line1" '"config_path":'
+  contains "line 2 is the completions step" "$line2" '"step":"completions","status":"installed"'
+  contains "completions detected zsh" "$line2" '"shell":"zsh"'
+  contains "zsh rc was appended" "$line2" '"rc_status":"appended"'
+  contains "line 3 embeds the doctor report" "$line3" '"step":"doctor","report":{"ok":true'
+  contains "line 4 is the setup verdict" "$line4" '"step":"setup","ok":true'
+  contains "verdict carries the version" "$line4" '"version":'
+
+  # Files actually landed.
+  [ -f "$mock_home/.config/tau/config.json" ]; ok "config.json was written" "$?" 0
+  [ -f "$mock_home/.zsh/completions/_tau" ]; ok "zsh completion installed" "$?" 0
+  [ -f "$mock_home/.zshrc" ]; ok ".zshrc created" "$?" 0
+  # The installed file is the embedded script — byte-identical to the repo copy.
+  cmp -s "$mock_home/.zsh/completions/_tau" "$ROOT/completions/_tau"; ok "installed _tau matches shipped script" "$?" 0
+  grep -q '# tau completions' "$mock_home/.zshrc" 2>/dev/null; ok ".zshrc carries the tau marker" "$?" 0
+  grep -q 'fpath=(~/.zsh/completions \$fpath)' "$mock_home/.zshrc" 2>/dev/null; ok ".zshrc registers the fpath" "$?" 0
+
+  # Re-run is idempotent: init -> exists, rc -> present, marker not duplicated.
+  capture s2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home" SHELL=/bin/zsh XIAOMI_API_KEY=smoke-key "$BIN" setup --offline
+  ok "setup re-run exits 0" "$s2_rc" 0
+  contains "re-run reports config exists" "$s2_out" '"step":"init","status":"exists"'
+  contains "re-run reports already_installed" "$s2_out" '"status":"already_installed"'
+  contains "re-run reports rc present" "$s2_out" '"rc_status":"present"'
+  [ "$(grep -c '# tau completions' "$mock_home/.zshrc")" = "1" ]; ok "rc marker not duplicated" "$?" 0
+
+  # --shell overrides detection; fish needs no rc edit.
+  local mock_home2; mock_home2="$(mktemp -d)"; register_temp_dir "$mock_home2"
+  capture s3 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell fish
+  ok "setup --shell fish exits 0" "$s3_rc" 0
+  contains "--shell fish installs fish" "$s3_out" '"shell":"fish"'
+  [ -f "$mock_home2/.config/fish/completions/tau.fish" ]; ok "fish completion installed" "$?" 0
+  cmp -s "$mock_home2/.config/fish/completions/tau.fish" "$ROOT/completions/tau.fish"; ok "installed tau.fish matches shipped script" "$?" 0
+
+  # --shell all installs every supported shell (pwsh gets a profile line).
+  local mock_home3; mock_home3="$(mktemp -d)"; register_temp_dir "$mock_home3"
+  capture s4 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home3" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all
+  ok "setup --shell all exits 0" "$s4_rc" 0
+  contains "--shell all covers bash" "$s4_out" '"shell":"bash"'
+  contains "--shell all covers zsh" "$s4_out" '"shell":"zsh"'
+  contains "--shell all covers fish" "$s4_out" '"shell":"fish"'
+  contains "--shell all covers pwsh" "$s4_out" '"shell":"pwsh"'
+  [ -f "$mock_home3/.local/share/bash-completion/completions/tau" ]; ok "bash completion installed" "$?" 0
+  cmp -s "$mock_home3/.config/tau/completions/tau.ps1" "$ROOT/completions/tau.ps1"; ok "installed tau.ps1 matches shipped script" "$?" 0
+  grep -q '# tau completions' "$mock_home3/.config/powershell/Microsoft.PowerShell_profile.ps1" 2>/dev/null
+  ok "pwsh profile carries the tau marker" "$?" 0
+
+  # No SHELL -> completions skipped (still a pass), setup verdict stays ok.
+  local mock_home4; mock_home4="$(mktemp -d)"; register_temp_dir "$mock_home4"
+  capture s5 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u SHELL \
+    HOME="$mock_home4" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline
+  ok "setup without SHELL exits 0" "$s5_rc" 0
+  contains "undetected shell is skipped with a hint" "$s5_out" '"step":"completions","status":"skipped"'
+
+  # Doctor failure (no API key anywhere) -> ok:false, exit 1.
+  local mock_home5; mock_home5="$(mktemp -d)"; register_temp_dir "$mock_home5"
+  capture s6 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u XIAOMI_API_KEY \
+    HOME="$mock_home5" SHELL=/bin/bash "$BIN" setup --offline
+  ok "setup with no API key exits 1" "$s6_rc" 1
+  contains "doctor report marks api_key fail" "$s6_out" '"name":"api_key","status":"fail"'
+  contains "final verdict is ok:false" "$s6_out" '"step":"setup","ok":false'
+
+  # Unknown --provider rides into the doctor step as a failed check (like
+  # `tau doctor`), not an arg error.
+  local mock_home6; mock_home6="$(mktemp -d)"; register_temp_dir "$mock_home6"
+  capture s7 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home6" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --provider acme
+  contains "unknown provider fails provider_resolution" "$s7_out" '"name":"provider_resolution","status":"fail"'
+
+  # Bad arguments.
+  "$BIN" setup --bogus >/dev/null 2>&1; ok "setup --bogus -> exit 80" "$?" 80
+  "$BIN" setup --shell tcsh >/dev/null 2>&1; ok "setup --shell tcsh -> exit 80" "$?" 80
+  "$BIN" setup --shell >/dev/null 2>&1; ok "setup --shell (missing value) -> exit 80" "$?" 80
 }
 
 # Group: Issue #17 goal mode subcommands offline

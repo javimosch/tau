@@ -14,7 +14,7 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
@@ -22,6 +22,10 @@ $TauArgumentCompleter = {
                      '--items', '--schema')
     $skillSubs   = @('list', 'search', 'load')
     $guideFlags  = @('--human')
+    $initFlags   = @('--force', '--stdout', '--provider')
+    $doctorFlags = @('--offline', '--deep', '--provider', '--model', '--api-key')
+    $setupFlags  = @('--shell', '--offline', '--deep', '--provider', '--model', '--api-key')
+    $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
         '--print', '-p',
@@ -48,6 +52,9 @@ $TauArgumentCompleter = {
         'skills'              = 'skills autodiscovery (list|search|load)'
         'models'              = 'list available providers and models'
         'guide'               = 'print the embedded operator manual'
+        'init'                = 'write a commented starter config'
+        'doctor'              = 'validate setup (config, provider, key, connectivity)'
+        'setup'               = 'one-shot onboarding (init + completions + doctor)'
         'run'                 = 'decompose a goal and dispatch workers'
         'status'              = 'check status of a fleet by id'
         'list'                = 'list all known fleets / skills'
@@ -100,6 +107,11 @@ $TauArgumentCompleter = {
         '--parallel'          = 'run worker agents in parallel (default)'
         '--items'             = 'pre-supplied work items, skips coordinator (JSON)'
         '--human'             = 'render the guide as markdown'
+        '--force'             = 'overwrite an existing config file'
+        '--stdout'            = 'print the starter config without writing it'
+        '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
+        '--offline'           = 'skip network checks'
+        '--deep'              = 'run an authenticated probe (spends ~1 token)'
     }
 
     # Emit $candidates filtered by the word being completed.
@@ -177,6 +189,7 @@ $TauArgumentCompleter = {
     # ── Flag-argument completions ───────────────────────────────────────────
     switch ($prev) {
         '--provider'       { return & $emit $providers 'ParameterValue' }
+        '--shell'          { return & $emit $shells 'ParameterValue' }
         '--mode'           { return & $emit $modes 'ParameterValue' }
         '--role'           { return & $emit $roles 'ParameterValue' }
         { $_ -in '--tools', '-t', '--exclude-tools', '-xt' } {
@@ -203,6 +216,9 @@ $TauArgumentCompleter = {
         'acp'    { return & $emit $acpArgs 'Command' }
         'skills' { return & $emit $skillSubs 'Command' }
         'guide'  { return & $emit $guideFlags 'ParameterName' }
+        'init'   { return & $emit $initFlags 'ParameterName' }
+        'doctor' { return & $emit $doctorFlags 'ParameterName' }
+        'setup'  { return & $emit $setupFlags 'ParameterName' }
         'models' { return }
         'fleet'  {
             $fleetSub = ''
