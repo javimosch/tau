@@ -24,6 +24,16 @@ name: release
 # before publish; install.sh / install.ps1 then verify downloads against it
 # and abort on any mismatch (fail closed — set TAU_SKIP_CHECKSUM=1 to opt out).
 #
+# Authenticity: the release job additionally signs every asset (archives +
+# SHA256SUMS.txt) with keyless Sigstore/cosign — the GitHub OIDC token
+# mints a short-lived Fulcio certificate and the signature lands in the Rekor
+# transparency log, so nothing secret has to be stored. Each asset ships a
+# `<asset>.sigstore.json` bundle, the release self-verifies every bundle
+# before publish, and the archives get a SLSA build-provenance attestation
+# (`gh attestation verify <asset> --repo javimosch/tau`). Consumers verify
+# manually per docs/verifying-releases.md, or set TAU_VERIFY_SIGSTORE=1 to
+# make install.sh / install.ps1 run `cosign verify-blob` themselves.
+#
 # Homebrew: the homebrew job regenerates Formula/tau.rb from the published
 # checksums and pushes it to javimosch/homebrew-tap on stable tags, so
 # `brew install javimosch/tap/tau` / `brew upgrade` work without install.sh.
@@ -295,7 +305,9 @@ jobs:
     needs: [build, smoke, smoke-windows, smoke-action]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write        # gh release create
+      id-token: write        # keyless Sigstore signing + attestation OIDC
+      attestations: write    # SLSA provenance in the repo's attestation store
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -312,6 +324,48 @@ jobs:
         # Self-check the manifest the release ships — a malformed SHA256SUMS.txt
         # would make every install.sh run abort (verification is fail-closed).
         run: (cd dist && sha256sum -c SHA256SUMS.txt)
+
+      - name: Install cosign
+        # cosign v3 sign-blob always emits a Sigstore bundle (signature +
+        # Fulcio cert + Rekor entry) — consumers need no tlog lookups.
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign release assets (keyless Sigstore)
+        # Keyless: the job's OIDC token proves this workflow ran on this tag;
+        # no signing key material exists anywhere to leak. Every published
+        # asset — archives and the checksum manifest — gets a
+        # <name>.sigstore.json bundle next to it.
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.tar.gz *.zip SHA256SUMS.txt; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
+          ls -la *.sigstore.json
+
+      - name: Self-verify signature bundles
+        # Fail-closed gate: a release never publishes a signature that does
+        # not verify against this repo's release workflow identity. The
+        # identity regexp must match install.sh, install.ps1 and
+        # docs/verifying-releases.md — the smoke suite pins that contract.
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.tar.gz *.zip SHA256SUMS.txt; do
+            cosign verify-blob \
+              --bundle "$f.sigstore.json" \
+              --certificate-identity-regexp '^https://github\.com/javimosch/tau/\.github/workflows/release\.yml@refs/tags/v' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              "$f"
+          done
+
+      - name: Attest build provenance (SLSA)
+        # Publishes a signed SLSA v1 provenance attestation covering every
+        # asset listed in SHA256SUMS.txt into the repo's attestation store;
+        # `gh attestation verify <asset> --repo javimosch/tau` resolves it.
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-checksums: dist/SHA256SUMS.txt
 
       - name: Create GitHub release
         env:
@@ -336,12 +390,21 @@ jobs:
           Or download `tau-<os>-<arch>.tar.gz` / `tau-windows-x86_64.zip`
           below, verify it against `SHA256SUMS.txt`, extract, and put `tau`
           on your PATH.
+
+          ## Verify
+
+          Every asset ships a keyless Sigstore/cosign signature bundle
+          (`<asset>.sigstore.json`) and a SLSA build-provenance attestation:
+
+              gh attestation verify tau-linux-x86_64.tar.gz --repo javimosch/tau
+
+          See docs/verifying-releases.md for the full verification guide.
           EOF
           gh release create "$TAG" \
             --title "tau $TAG" \
             --notes-file /tmp/release-notes.md \
             "$@" \
-            dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt dist/*.sigstore.json
 
   homebrew:
     # Publishes Formula/tau.rb to the javimosch/homebrew-tap repository so

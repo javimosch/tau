@@ -76,6 +76,15 @@ are backward compatible.
   `share/man/`; `install.sh` installs them next to the binary (into
   `<dir>/../share/man` for `*/bin` install dirs, or `TAU_MAN_DIR`), and the
   Homebrew formula picks them up via `man1.install`/`man5.install` (#185)
+- Release signing + provenance: the release workflow signs every asset
+  (archives and `SHA256SUMS.txt`) with keyless Sigstore/cosign — OIDC-issued
+  certificates witnessed in Rekor, no stored keys — publishes a
+  `<asset>.sigstore.json` bundle per asset, self-verifies all bundles before
+  publish, and attaches a SLSA build-provenance attestation verifiable with
+  `gh attestation verify <asset> --repo javimosch/tau`. `install.sh` and
+  `install.ps1` can opt into signature verification via
+  `TAU_VERIFY_SIGSTORE=1` (fail closed; needs cosign). See
+  `docs/verifying-releases.md` (#184)
 
 ### Fixed
 

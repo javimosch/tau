@@ -23,6 +23,11 @@
 #   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (NOT recommended —
 #                     verification is what protects you from tampered or
 #                     corrupted downloads)
+#   TAU_VERIFY_SIGSTORE
+#                     set to 1 to also verify the archive's keyless
+#                     Sigstore/cosign signature (<asset>.sigstore.json) —
+#                     requires cosign on PATH and fails closed; see
+#                     docs/verifying-releases.md
 #
 # Release assets are produced by .github/workflows/release.yml and named
 # tau-<os>-<arch>.tar.gz alongside a SHA256SUMS.txt manifest. Verification is
@@ -33,6 +38,11 @@ set -eu
 
 REPO="javimosch/tau"
 BASE="${TAU_BASE_URL:-https://github.com/$REPO/releases}"
+
+# Sigstore verification contract — must match the sign/self-verify steps in
+# .github/workflows/release.yml and the commands in docs/verifying-releases.md.
+SIG_ISSUER="https://token.actions.githubusercontent.com"
+SIG_IDENTITY_RE='^https://github\.com/javimosch/tau/\.github/workflows/release\.yml@refs/tags/v'
 
 VERSION="${TAU_VERSION:-}"
 DEST="${TAU_INSTALL_DIR:-$HOME/.local/bin}"
@@ -62,6 +72,9 @@ Environment overrides:
   TAU_MAN_DIR       man page dir (default: share/man next to a */bin --dir;
                     "none" skips man pages)
   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (not recommended)
+  TAU_VERIFY_SIGSTORE
+                    set to 1 to also verify the cosign signature bundle
+                    (requires cosign on PATH; see docs/verifying-releases.md)
 EOF
 }
 
@@ -160,6 +173,25 @@ else
     fail "no sha256sum/shasum on PATH — install coreutils (or set TAU_SKIP_CHECKSUM=1 to bypass verification)"
   fi
   echo "install.sh: checksum verified against $SUMS"
+fi
+
+# ── Sigstore signature verification (opt-in via TAU_VERIFY_SIGSTORE=1) ──────
+# Checksums prove the download is intact; the cosign bundle proves it was
+# produced by this repo's release workflow on a v* tag. Opt-in because it
+# needs cosign on PATH — but once asked for, it fails closed: no cosign, no
+# bundle, or a failed verify all abort the install.
+if [ "${TAU_VERIFY_SIGSTORE:-0}" = "1" ]; then
+  command -v cosign >/dev/null 2>&1 \
+    || fail "TAU_VERIFY_SIGSTORE=1 requires cosign on PATH — install it per docs/verifying-releases.md (or unset TAU_VERIFY_SIGSTORE)"
+  curl -fsSL "$ASSET_URL.sigstore.json" -o "$TMP/$ASSET.sigstore.json" \
+    || fail "could not download $ASSET.sigstore.json for $RELEASE_DESC — refusing to install (unset TAU_VERIFY_SIGSTORE to skip signature verification)"
+  cosign verify-blob \
+    --bundle "$TMP/$ASSET.sigstore.json" \
+    --certificate-identity-regexp "$SIG_IDENTITY_RE" \
+    --certificate-oidc-issuer "$SIG_ISSUER" \
+    "$TMP/$ASSET" >/dev/null \
+    || fail "sigstore signature verification failed for $ASSET — the download was not signed by the tau release workflow; aborting"
+  echo "install.sh: sigstore signature verified (keyless cosign)"
 fi
 
 tar -xzf "$TMP/$ASSET" -C "$TMP" || fail "failed to extract $ASSET"

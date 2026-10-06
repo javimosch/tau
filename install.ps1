@@ -18,6 +18,11 @@
 #   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (NOT recommended —
 #                     verification is what protects you from tampered or
 #                     corrupted downloads)
+#   TAU_VERIFY_SIGSTORE
+#                     set to 1 to also verify the archive's keyless
+#                     Sigstore/cosign signature (<asset>.sigstore.json) —
+#                     requires cosign on PATH and fails closed; see
+#                     docs/verifying-releases.md
 #
 # Release assets are produced by .github/workflows/release.yml and named
 # tau-windows-<arch>.zip alongside a SHA256SUMS.txt manifest. Verification is
@@ -54,6 +59,9 @@ Environment overrides:
   TAU_ARCH          override CPU detection (x86_64|amd64|aarch64|arm64)
   TAU_BASE_URL      override the releases base URL (test/staging/mirror)
   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (not recommended)
+  TAU_VERIFY_SIGSTORE
+                    set to 1 to also verify the cosign signature bundle
+                    (requires cosign on PATH; see docs/verifying-releases.md)
 '@
 }
 
@@ -111,6 +119,11 @@ if ($Arch -ne 'x86_64') {
 $Platform = "windows-$Arch"
 $Asset    = "tau-$Platform.zip"
 $Sums     = 'SHA256SUMS.txt'
+
+# Sigstore verification contract — must match the sign/self-verify steps in
+# .github/workflows/release.yml and the commands in docs/verifying-releases.md.
+$SigIssuer     = 'https://token.actions.githubusercontent.com'
+$SigIdentityRe = '^https://github\.com/javimosch/tau/\.github/workflows/release\.yml@refs/tags/v'
 
 # ── Version resolution ───────────────────────────────────────────────────────
 if ($Version -and $Version.StartsWith('v')) { $Version = $Version.Substring(1) }
@@ -180,6 +193,30 @@ try {
             Fail "checksum verification failed for $Asset — the download is corrupted or tampered; aborting"
         }
         Write-Host "install.ps1: checksum verified against $Sums"
+    }
+
+    # ── Sigstore signature verification (opt-in via TAU_VERIFY_SIGSTORE=1) ──
+    # Same contract as install.sh: opt-in because it needs cosign on PATH,
+    # but fail closed once asked — no cosign, no bundle, or a failed verify
+    # all abort the install.
+    if ($env:TAU_VERIFY_SIGSTORE -eq '1') {
+        if (-not (Get-Command cosign -ErrorAction SilentlyContinue)) {
+            Fail 'TAU_VERIFY_SIGSTORE=1 requires cosign on PATH — install it per docs/verifying-releases.md (or unset TAU_VERIFY_SIGSTORE)'
+        }
+        $bundle = "$Asset.sigstore.json"
+        try {
+            Save-RemoteFile "$AssetUrl.sigstore.json" (Join-Path $Tmp $bundle)
+        } catch {
+            Fail "could not download $bundle for $ReleaseDesc — refusing to install (unset TAU_VERIFY_SIGSTORE to skip signature verification)"
+        }
+        & cosign verify-blob --bundle (Join-Path $Tmp $bundle) `
+            --certificate-identity-regexp $SigIdentityRe `
+            --certificate-oidc-issuer $SigIssuer `
+            (Join-Path $Tmp $Asset) | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Fail "sigstore signature verification failed for $Asset — the download was not signed by the tau release workflow; aborting"
+        }
+        Write-Host 'install.ps1: sigstore signature verified (keyless cosign)'
     }
 
     Expand-Archive -LiteralPath (Join-Path $Tmp $Asset) -DestinationPath $Tmp -Force
