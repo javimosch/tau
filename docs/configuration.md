@@ -7,13 +7,35 @@ Resolution model: **CLI flags > environment > config file > in-code defaults.**
 The config file is loaded first as the base, then command-line flags override it.
 Each section below lists the exact precedence order used by the code.
 
+> **Tip:** `tau doctor` validates this whole chain end-to-end and prints a JSON
+> report — config file parse, resolved provider/model/endpoint, which source
+> supplied the API key (never the key itself), curl availability, endpoint
+> reachability, and (with `--deep`) an authenticated probe. Exit code is `0`
+> when no check fails, `1` otherwise; `--offline` skips network checks.
+
 ---
 
 ## Config file
 
 Path: `~/.config/tau/config.json` (built from `$HOME`).
 
-The file is **optional** — tau runs fine without it. Behavior on load:
+The file is **optional** — tau runs fine without it. `tau init` scaffolds a
+commented starter: it detects which provider API keys are already in your
+environment, selects a matching `provider`, and lists every provider's env var
+in comments. It never copies secret values into the file, and refuses to
+overwrite an existing config unless `--force` is passed (`--stdout` previews
+without writing, `--provider <name>` picks a provider explicitly).
+
+`tau setup` wraps this into one-shot onboarding: it scaffolds the config the
+same way (keeping an existing file instead of failing), installs shell
+completions for the detected shell, then prints the `tau doctor` health
+report — one NDJSON object per step, exit 0 only when everything is healthy.
+
+The file is **JSONC**: `//` line comments and `/* */` block comments are
+stripped before parsing, so a commented config (like the one `tau init`
+writes) loads cleanly.
+
+Behavior on load:
 
 - Missing file, unreadable file, or unset `HOME` → all defaults are used.
 - Invalid JSON → a warning is printed to stderr and defaults are used; tau does
