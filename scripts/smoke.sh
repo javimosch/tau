@@ -1370,6 +1370,92 @@ test_group_release() {
   ok "generator rejects unknown flag" "$?" 1
   rm -rf "$fdir"
 
+  # ── generated man pages (task #185) ──
+  local mgen="$ROOT/scripts/gen-man-pages.py"
+  local m1="$ROOT/man/man1/tau.1"
+  local m5="$ROOT/man/man5/tau-config.5"
+  [ -f "$mgen" ]; ok "man page generator exists" "$?" 0
+  [ -x "$mgen" ]; ok "man page generator is executable" "$?" 0
+  [ -f "$m1" ];   ok "man/man1/tau.1 exists" "$?" 0
+  [ -f "$m5" ];   ok "man/man5/tau-config.5 exists" "$?" 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m py_compile "$mgen" 2>/dev/null
+    ok "man page generator compiles under python3" "$?" 0
+
+    out=$("$mgen" --help 2>&1); rc=$?
+    ok "man page generator --help exit" "$rc" 0
+    contains "man page generator --help shows usage" "$out" "--outdir"
+
+    # regenerate into a temp dir — proves the checked-in pages are produced
+    # by the script and not stale hand edits
+    local mdir
+    mdir="$(mktemp -d)"
+    "$mgen" --bin "$BIN" --outdir "$mdir" >/dev/null 2>&1; rc=$?
+    ok "man page generator runs against zig-out/bin/tau" "$rc" 0
+    [ -f "$mdir/man1/tau.1" ];         ok "generator emits man1/tau.1" "$?" 0
+    [ -f "$mdir/man5/tau-config.5" ];  ok "generator emits man5/tau-config.5" "$?" 0
+
+    # every flag name advertised by --help-json must appear (roff-escaped)
+    # in tau.1 — this is what keeps the checked-in page in sync with the CLI
+    if [ -f "$mdir/man1/tau.1" ]; then
+      local flags flag missing=""
+      flags=$("$BIN" --help-json 2>/dev/null | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+      for flag in $flags; do
+        esc_flag="$(printf '%s' "$flag" | sed 's/-/\\-/g')"
+        grep -qF "$esc_flag" "$mdir/man1/tau.1" || missing="$missing $flag"
+      done
+      if [ -z "$missing" ]; then
+        ok "tau.1 covers every --help-json flag" 0 0
+      else
+        ok "tau.1 missing flags:$missing" 1 0
+      fi
+    fi
+
+    # the .TH version stamp tracks src/version.zig
+    local ver
+    ver="$(sed -n 's/.*version = "\([^"]*\)".*/\1/p' "$ROOT/src/version.zig" | head -n1)"
+    if [ -n "$ver" ]; then
+      grep -q "tau $ver" "$mdir/man1/tau.1"; ok "tau.1 .TH carries src/version.zig version" "$?" 0
+      grep -q "tau $ver" "$mdir/man5/tau-config.5"; ok "tau-config.5 .TH carries src/version.zig version" "$?" 0
+    fi
+
+    # every documented config key must appear in tau-config.5
+    if [ -f "$mdir/man5/tau-config.5" ]; then
+      local keys key kmissing=""
+      keys=$(awk '/^### All supported keys/{f=1;next} f&&/^###/{exit} f&&/^\| `/{print}' "$ROOT/docs/configuration.md" \
+        | sed 's/^| `\([^`]*\)`.*/\1/')
+      for key in $keys; do
+        grep -qF "\\fB${key}\\fR" "$mdir/man5/tau-config.5" || kmissing="$kmissing $key"
+      done
+      if [ -z "$kmissing" ]; then
+        ok "tau-config.5 covers every documented config key" 0 0
+      else
+        ok "tau-config.5 missing keys:$kmissing" 1 0
+      fi
+    fi
+
+    # roff validity when a groff toolchain is around
+    if command -v groff >/dev/null 2>&1; then
+      groff -man -Tascii -z "$mdir/man1/tau.1" 2>/dev/null
+      ok "tau.1 parses under groff -man" "$?" 0
+      groff -man -Tascii -z "$mdir/man5/tau-config.5" 2>/dev/null
+      ok "tau-config.5 parses under groff -man" "$?" 0
+    else
+      note "release: skipping groff lint (groff unavailable)"
+    fi
+    rm -rf "$mdir"
+  else
+    note "release: skipping man page generator checks (python3 unavailable)"
+  fi
+
+  # packaging contract: workflow bundles share/man, installer consumes it
+  contains "workflow bundles man pages into assets" "$(cat "$wf")" "share/man"
+  contains "workflow asserts man pages in tarball" "$(cat "$wf")" "share/man/man1/tau.1"
+  contains "workflow verifies installed man pages" "$(cat "$wf")" "TAU_MAN_DIR"
+  contains "install.sh documents TAU_MAN_DIR" "$(cat "$inst")" "TAU_MAN_DIR"
+  contains "formula installs man1 page" "$(cat "$gen")" 'man1.install "share/man/man1/tau.1"'
+  contains "formula installs man5 page" "$(cat "$gen")" 'man5.install "share/man/man5/tau-config.5"'
+
   # ── winget manifest generator ──
   local wgen="$ROOT/scripts/generate-winget-manifest.sh"
   [ -f "$wgen" ];  ok "winget generator exists" "$?" 0
@@ -1512,8 +1598,10 @@ test_group_release() {
       local e2e asset
       e2e="$(mktemp -d)"
       asset="tau-$asset_os-$asset_arch.tar.gz"
-      mkdir -p "$e2e/srv/latest/download"
-      tar -czf "$e2e/srv/latest/download/$asset" -C "$ROOT/zig-out/bin" tau
+      mkdir -p "$e2e/srv/latest/download" "$e2e/pkg/share"
+      # stage the tarball the same way release.yml does: binary + share/man
+      cp -r "$ROOT/man" "$e2e/pkg/share/man"
+      tar -czf "$e2e/srv/latest/download/$asset" -C "$ROOT/zig-out/bin" tau -C "$e2e/pkg" share
       (cd "$e2e/srv/latest/download" && \
         { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
 
@@ -1521,6 +1609,22 @@ test_group_release() {
       ok "e2e file:// install exit" "$rc" 0
       contains "e2e install reports dest" "$out" "installed tau -> $e2e/bin/tau"
       [ -x "$e2e/bin/tau" ]; ok "e2e installed binary is executable" "$?" 0
+
+      # man pages derive <dir>/../share/man when --dir ends in /bin
+      contains "e2e install reports man dest" "$out" "installed man pages -> $e2e/share/man/man1"
+      [ -f "$e2e/share/man/man1/tau.1" ];        ok "e2e installs tau.1 via */bin derivation" "$?" 0
+      [ -f "$e2e/share/man/man5/tau-config.5" ]; ok "e2e installs tau-config.5 via */bin derivation" "$?" 0
+
+      # TAU_MAN_DIR wins when --dir is not a */bin path
+      out=$(TAU_MAN_DIR="$e2e/mandir" TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/notbin" 2>&1); rc=$?
+      ok "e2e TAU_MAN_DIR install exit" "$rc" 0
+      [ -f "$e2e/mandir/man1/tau.1" ];        ok "e2e TAU_MAN_DIR installs tau.1" "$?" 0
+      [ -f "$e2e/mandir/man5/tau-config.5" ]; ok "e2e TAU_MAN_DIR installs tau-config.5" "$?" 0
+
+      # TAU_MAN_DIR=none opts out cleanly
+      out=$(TAU_MAN_DIR=none TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/binopt" 2>&1); rc=$?
+      ok "e2e TAU_MAN_DIR=none install exit" "$rc" 0
+      contains "e2e TAU_MAN_DIR=none skips man" "$out" "skipping man pages"
 
       out=$("$e2e/bin/tau" --version 2>&1); rc=$?
       ok "e2e installed tau --version exit" "$rc" 0

@@ -104,6 +104,8 @@ class Tau < Formula
 
   def install
     bin.install "tau"
+    man1.install "share/man/man1/tau.1"
+    man5.install "share/man/man5/tau-config.5"
   end
 
   test do

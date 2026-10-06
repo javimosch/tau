@@ -69,6 +69,13 @@ are backward compatible.
   validates + uploads the three-file manifest for microsoft/winget-pkgs
   submission (auto-submits via `wingetcreate` when `WINGET_PKGS_TOKEN` is
   configured) (#182)
+- Generated man pages: `man/man1/tau.1` and `man/man5/tau-config.5`, built by
+  `scripts/gen-man-pages.py` from `tau --help`/`--help-json` and
+  `docs/configuration.md` and checked in so a stale regeneration fails the
+  smoke `release` group. Every release archive bundles them under
+  `share/man/`; `install.sh` installs them next to the binary (into
+  `<dir>/../share/man` for `*/bin` install dirs, or `TAU_MAN_DIR`), and the
+  Homebrew formula picks them up via `man1.install`/`man5.install` (#185)
 
 ### Fixed
 

@@ -17,6 +17,9 @@
 #   TAU_ARCH          override `uname -m` detection (x86_64|aarch64|arm64)
 #   TAU_BASE_URL      override the releases base URL — useful for testing
 #                     installs against a staging dir (file://…) or mirror
+#   TAU_MAN_DIR       where to install man pages (default: <dir>/../share/man
+#                     when --dir ends in /bin, e.g. ~/.local/bin installs to
+#                     ~/.local/share/man; set to "none" to skip man pages)
 #   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (NOT recommended —
 #                     verification is what protects you from tampered or
 #                     corrupted downloads)
@@ -56,6 +59,8 @@ Environment overrides:
   TAU_OS            override `uname -s` detection (linux|darwin)
   TAU_ARCH          override `uname -m` detection (x86_64|aarch64|arm64)
   TAU_BASE_URL      override the releases base URL (test/staging/mirror)
+  TAU_MAN_DIR       man page dir (default: share/man next to a */bin --dir;
+                    "none" skips man pages)
   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (not recommended)
 EOF
 }
@@ -166,6 +171,36 @@ install -m 0755 "$TMP/tau" "$DEST/tau" 2>/dev/null \
   || fail "cannot write $DEST/tau — check permissions or choose another --dir"
 
 echo "install.sh: installed tau -> $DEST/tau"
+
+# ── Man pages (best effort — a man install failure never fails the install) ──
+# Release tarballs ship share/man/manN/*.  The default destination derives
+# from --dir: installing to <prefix>/bin lands pages in <prefix>/share/man,
+# which man(1) already searches.  TAU_MAN_DIR overrides; "none" opts out.
+if [ -d "$TMP/share/man" ]; then
+  MANDIR="${TAU_MAN_DIR:-}"
+  if [ -z "$MANDIR" ]; then
+    case "$DEST" in
+      */bin) MANDIR="$(dirname "$DEST")/share/man" ;;
+    esac
+  fi
+  if [ -z "$MANDIR" ]; then
+    echo "install.sh: note: skipping man pages — $DEST is not a */bin dir; set TAU_MAN_DIR to install them" >&2
+  elif [ "$MANDIR" = "none" ]; then
+    echo "install.sh: skipping man pages (TAU_MAN_DIR=none)"
+  else
+    for section_dir in "$TMP"/share/man/man*; do
+      [ -d "$section_dir" ] || continue
+      section="$(basename "$section_dir")"
+      mkdir -p "$MANDIR/$section" 2>/dev/null || {
+        echo "install.sh: note: cannot create $MANDIR/$section — skipping man pages" >&2
+        break
+      }
+      cp "$section_dir"/* "$MANDIR/$section/" 2>/dev/null \
+        && echo "install.sh: installed man pages -> $MANDIR/$section" \
+        || echo "install.sh: note: cannot write $MANDIR/$section — skipping man pages" >&2
+    done
+  fi
+fi
 
 case ":$PATH:" in
   *":$DEST:"*) ;;

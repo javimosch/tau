@@ -86,6 +86,14 @@ formula is regenerated with the correct per-platform checksums and pushed by
 the release workflow on every stable version tag, so `brew update && brew
 upgrade tau` always lands on the latest release.
 
+Every release asset also ships generated man pages (`man tau`,
+`man tau-config`, built from `tau --help`/`--help-json` and
+`docs/configuration.md` by `scripts/gen-man-pages.py`). `install.sh` installs
+them to `<dir>/../share/man` when `--dir` ends in `/bin` (e.g.
+`~/.local/share/man` for the default `~/.local/bin`), or to `TAU_MAN_DIR`
+when set — `TAU_MAN_DIR=none` opts out. The Homebrew formula installs them
+too, so `man tau` works after `brew install`.
+
 **In GitHub Actions (one `uses:` line):**
 
 ```yaml

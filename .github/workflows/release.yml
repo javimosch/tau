@@ -8,6 +8,9 @@ name: release
 # Assets: tau-<os>-<arch>.tar.gz for linux/macos × x86_64/aarch64 and
 # tau-windows-x86_64.zip (Windows convention is .zip, not .tar.gz), plus a
 # SHA256SUMS.txt manifest. install.sh / install.ps1 consume exactly these names.
+# Every asset bundles the generated man pages under share/man/
+# (scripts/gen-man-pages.py → man/); install.sh installs them next to the
+# binary and the Homebrew formula picks them up with man1.install/man5.install.
 #
 # Jobs: build → smoke / smoke-windows / smoke-action → release → homebrew /
 # winget / scoop. The smoke jobs install every artifact through install.sh (or
@@ -80,17 +83,33 @@ jobs:
         # rest are tarballs. A per-asset .sha256 travels with the archive so
         # the smoke jobs can verify the artifact survived the artifact store
         # intact before they re-publish it to the staged release tree.
+        #
+        # Every asset also carries share/man/man1/tau.1 + man5/tau-config.5 —
+        # the checked-in generated pages (scripts/gen-man-pages.py). They are
+        # staged under share/man so the tarball unpacks into a standard
+        # prefix layout that install.sh and the Homebrew formula consume.
         run: |
-          mkdir -p dist
+          mkdir -p dist pkg/share
+          cp -r man pkg/share/man
           asset="dist/tau-${{ matrix.artifact }}.${{ matrix.ext }}"
           if [ "${{ matrix.ext }}" = "zip" ]; then
             if command -v zip >/dev/null 2>&1; then
               zip -j "$asset" zig-out/bin/tau.exe
+              (cd pkg && zip -qr "$GITHUB_WORKSPACE/$asset" share)
             else
-              (cd zig-out/bin && python3 -m zipfile -c "../../$asset" tau.exe)
+              python3 - "$asset" <<'PY'
+          import os, sys, zipfile
+          with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+              z.write("zig-out/bin/tau.exe", "tau.exe")
+              for base, _dirs, files in os.walk("pkg"):
+                  for f in files:
+                      p = os.path.join(base, f)
+                      z.write(p, os.path.relpath(p, "pkg"))
+          PY
             fi
           else
-            tar -czf "$asset" -C zig-out/bin tau
+            tar -czf "$asset" -C zig-out/bin tau -C pkg share
+            tar -tzf "$asset" | grep -q 'share/man/man1/tau.1'
           fi
           (cd dist && sha256sum "tau-${{ matrix.artifact }}.${{ matrix.ext }}" > "tau-${{ matrix.artifact }}.${{ matrix.ext }}.sha256")
           ls -la dist/
@@ -166,7 +185,7 @@ jobs:
 
       - name: Install via install.sh
         run: |
-          TAU_BASE_URL="http://127.0.0.1:18923" sh ./install.sh --dir "$RUNNER_TEMP/tau-bin"
+          TAU_BASE_URL="http://127.0.0.1:18923" TAU_MAN_DIR="$RUNNER_TEMP/tau-man" sh ./install.sh --dir "$RUNNER_TEMP/tau-bin"
           echo "$RUNNER_TEMP/tau-bin" >> "$GITHUB_PATH"
 
       - name: Verify the installed binary
@@ -175,6 +194,13 @@ jobs:
           tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
           tau --help > /dev/null
           tau --help | grep 'Usage:'
+
+      - name: Verify the installed man pages
+        # install.sh drops share/man/* into TAU_MAN_DIR; the release tarball
+        # must ship man/man1/tau.1 + man5/tau-config.5 for this to pass.
+        run: |
+          test -f "$RUNNER_TEMP/tau-man/man1/tau.1"
+          test -f "$RUNNER_TEMP/tau-man/man5/tau-config.5"
 
   smoke-windows:
     # Installs the Windows zip end-to-end through install.ps1 on a native
@@ -356,6 +382,8 @@ jobs:
           grep -q 'class Tau < Formula' dist/tau.rb
           grep -q "version \"${GITHUB_REF_NAME#v}\"" dist/tau.rb
           grep -c 'sha256 "' dist/tau.rb | grep -qx '4'
+          grep -q 'man1.install "share/man/man1/tau.1"' dist/tau.rb
+          grep -q 'man5.install "share/man/man5/tau-config.5"' dist/tau.rb
           if command -v ruby >/dev/null 2>&1; then
             ruby -c dist/tau.rb
           else
