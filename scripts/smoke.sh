@@ -1318,6 +1318,21 @@ test_group_release() {
     contains "homebrew job uses the tap token secret" "$(cat "$wf")" "HOMEBREW_TAP_TOKEN"
     contains "homebrew job skips pre-release tags" "$(cat "$wf")" 'is a pre-release'
     contains "release notes mention brew install" "$(cat "$wf")" "brew install javimosch/tap/tau"
+
+    # ── sigstore signing + SLSA provenance drift guards (task #184) ──
+    contains "release job mints an OIDC token" "$(cat "$wf")" "id-token: write"
+    contains "release job writes attestations" "$(cat "$wf")" "attestations: write"
+    contains "release job installs cosign" "$(cat "$wf")" "sigstore/cosign-installer"
+    contains "release job signs blobs keyless" "$(cat "$wf")" "cosign sign-blob"
+    contains "release job emits sigstore bundles" "$(cat "$wf")" ".sigstore.json"
+    contains "release job self-verifies signatures" "$(cat "$wf")" "cosign verify-blob"
+    contains "release job pins the OIDC issuer" "$(cat "$wf")" "token.actions.githubusercontent.com"
+    contains "release job pins the workflow identity" "$(cat "$wf")" 'workflows/release\.yml@refs/tags/v'
+    contains "release job attests SLSA provenance" "$(cat "$wf")" "actions/attest-build-provenance"
+    contains "release attests the checksum manifest subjects" "$(cat "$wf")" "subject-checksums: dist/SHA256SUMS.txt"
+    contains "release publishes signature bundles" "$(cat "$wf")" "dist/*.sigstore.json"
+    contains "release notes mention verification" "$(cat "$wf")" "gh attestation verify"
+    contains "release notes link the verify doc" "$(cat "$wf")" "docs/verifying-releases.md"
   fi
 
   # ── Homebrew formula generator ──
@@ -1576,6 +1591,34 @@ test_group_release() {
   contains "installer fail-closes on missing manifest" "$(cat "$inst")" "refusing to install an unverified binary"
   contains "installer reports asset absent from manifest" "$(cat "$inst")" "not listed in \$SUMS"
 
+  # ── opt-in sigstore verification contract (task #184) ──
+  # install.sh, install.ps1, release.yml and docs/verifying-releases.md all
+  # pin the same issuer + identity regexp — drift breaks real verification.
+  contains "installer documents TAU_VERIFY_SIGSTORE" "$(cat "$inst")" "TAU_VERIFY_SIGSTORE"
+  contains "installer fail-closes on missing cosign" "$(cat "$inst")" "requires cosign on PATH"
+  contains "installer fetches the bundle" "$(cat "$inst")" '$ASSET.sigstore.json'
+  contains "installer verifies the bundle" "$(cat "$inst")" "cosign verify-blob"
+  contains "installer pins the OIDC issuer" "$(cat "$inst")" "token.actions.githubusercontent.com"
+  contains "installer pins the workflow identity" "$(cat "$inst")" 'workflows/release\.yml@refs/tags/v'
+  contains "install.ps1 documents TAU_VERIFY_SIGSTORE" "$(cat "$ps1")" "TAU_VERIFY_SIGSTORE"
+  contains "install.ps1 verifies the bundle" "$(cat "$ps1")" "cosign verify-blob"
+  contains "install.ps1 pins the OIDC issuer" "$(cat "$ps1")" "token.actions.githubusercontent.com"
+  contains "install.ps1 pins the workflow identity" "$(cat "$ps1")" 'workflows/release\.yml@refs/tags/v'
+
+  # ── docs/verifying-releases.md (task #184) ──
+  local vdoc="$ROOT/docs/verifying-releases.md"
+  [ -f "$vdoc" ]; ok "docs/verifying-releases.md exists" "$?" 0
+  if [ -f "$vdoc" ]; then
+    contains "verify doc covers cosign verify-blob" "$(cat "$vdoc")" "cosign verify-blob"
+    contains "verify doc pins the OIDC issuer" "$(cat "$vdoc")" "token.actions.githubusercontent.com"
+    contains "verify doc pins the workflow identity" "$(cat "$vdoc")" 'workflows/release\.yml@refs/tags/v'
+    contains "verify doc covers SLSA attestation" "$(cat "$vdoc")" "gh attestation verify"
+    contains "verify doc covers the checksum layer" "$(cat "$vdoc")" "SHA256SUMS.txt"
+    contains "verify doc covers the installer opt-in" "$(cat "$vdoc")" "TAU_VERIFY_SIGSTORE"
+    contains "verify doc names the bundle files" "$(cat "$vdoc")" ".sigstore.json"
+  fi
+  contains "README links the verifying doc" "$(cat "$ROOT/README.md")" "verifying-releases.md"
+
   # ── offline end-to-end install via file:// (needs a built binary) ──
   # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
   # install through install.sh against TAU_BASE_URL=file://…, run the binary.
@@ -1657,6 +1700,53 @@ test_group_release() {
       contains "e2e skip-checksum warns" "$out" "TAU_SKIP_CHECKSUM=1"
       [ -x "$e2e/bin5/tau" ]; ok "e2e skip-checksum installed binary" "$?" 0
 
+      # ── opt-in sigstore verification via a stub cosign (task #184) ──
+      # The stub exits $COSIGN_STUB_RC and logs each invocation, so the e2e
+      # pins that cosign is only called when TAU_VERIFY_SIGSTORE=1.
+      local stubbin="$e2e/stubbin"
+      mkdir -p "$stubbin"
+      printf '#!/bin/sh\necho called >> "%s"\nexit "${COSIGN_STUB_RC:-0}"\n' \
+        "$e2e/cosign-called" > "$stubbin/cosign"
+      chmod +x "$stubbin/cosign"
+      # re-stage a valid manifest (the missing-manifest test removed it) and
+      # a stand-in bundle next to the asset
+      (cd "$e2e/srv/latest/download" && \
+        { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
+      printf '{"stub":true}\n' > "$e2e/srv/latest/download/$asset.sigstore.json"
+
+      # default: cosign is never invoked
+      out=$(PATH="$stubbin:$PATH" TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin6" 2>&1); rc=$?
+      ok "e2e default install exit (cosign present on PATH)" "$rc" 0
+      [ ! -f "$e2e/cosign-called" ]; ok "e2e default install does not run cosign" "$?" 0
+
+      # opt-in + passing verify → install proceeds
+      out=$(PATH="$stubbin:$PATH" TAU_VERIFY_SIGSTORE=1 TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin7" 2>&1); rc=$?
+      ok "e2e TAU_VERIFY_SIGSTORE install exit" "$rc" 0
+      contains "e2e sigstore verify reports success" "$out" "sigstore signature verified"
+      [ -f "$e2e/cosign-called" ]; ok "e2e opt-in install ran cosign" "$?" 0
+      [ -x "$e2e/bin7/tau" ]; ok "e2e sigstore-verified binary installed" "$?" 0
+
+      # a failed verify must abort the install (fail closed)
+      out=$(PATH="$stubbin:$PATH" COSIGN_STUB_RC=1 TAU_VERIFY_SIGSTORE=1 TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin8" 2>&1); rc=$?
+      ok "e2e failed signature verify aborts" "$rc" 1
+      contains "e2e sigstore failure message" "$out" "signature verification failed"
+      [ ! -e "$e2e/bin8/tau" ]; ok "e2e failed verify installed nothing" "$?" 0
+
+      # a missing bundle must abort the install (fail closed)
+      rm -f "$e2e/srv/latest/download/$asset.sigstore.json"
+      out=$(PATH="$stubbin:$PATH" TAU_VERIFY_SIGSTORE=1 TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin9" 2>&1); rc=$?
+      ok "e2e missing sigstore bundle aborts" "$rc" 1
+      contains "e2e missing bundle message" "$out" "sigstore.json"
+
+      # opt-in without cosign on PATH must abort (only when no real cosign)
+      if ! command -v cosign >/dev/null 2>&1; then
+        out=$(TAU_VERIFY_SIGSTORE=1 TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin10" 2>&1); rc=$?
+        ok "e2e missing cosign aborts" "$rc" 1
+        contains "e2e missing cosign message" "$out" "requires cosign on PATH"
+      else
+        note "release: skipping missing-cosign check (cosign installed)"
+      fi
+
       rm -rf "$e2e"
     else
       note "release: skipping e2e install (unsupported host platform)"
@@ -1707,6 +1797,32 @@ test_group_release() {
     ok "e2e ps1 TAU_SKIP_CHECKSUM bypass exit" "$rc" 0
     contains "e2e ps1 skip-checksum warns" "$out" "TAU_SKIP_CHECKSUM=1"
     [ -f "$we2e/bin5/tau.exe" ]; ok "e2e ps1 skip-checksum installed tau.exe" "$?" 0
+
+    # ── opt-in sigstore verification via a stub cosign (task #184) ──
+    # A POSIX-sh stub suffices under pwsh on Linux/macOS — pwsh resolves
+    # `cosign` via PATH the same way a shell does.
+    mkdir -p "$we2e/stubbin"
+    printf '#!/bin/sh\nexit "${COSIGN_STUB_RC:-0}"\n' > "$we2e/stubbin/cosign"
+    chmod +x "$we2e/stubbin/cosign"
+    # re-stage a valid manifest (removed by the missing-manifest test) + bundle
+    (cd "$we2e/srv/latest/download" && \
+      { sha256sum tau-windows-x86_64.zip 2>/dev/null || shasum -a 256 tau-windows-x86_64.zip; } > SHA256SUMS.txt)
+    printf '{"stub":true}\n' > "$we2e/srv/latest/download/tau-windows-x86_64.zip.sigstore.json"
+
+    out=$(PATH="$we2e/stubbin:$PATH" TAU_VERIFY_SIGSTORE=1 TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin6" 2>&1); rc=$?
+    ok "e2e ps1 TAU_VERIFY_SIGSTORE install exit" "$rc" 0
+    contains "e2e ps1 sigstore verify reports success" "$out" "sigstore signature verified"
+    [ -f "$we2e/bin6/tau.exe" ]; ok "e2e ps1 sigstore-verified binary installed" "$?" 0
+
+    out=$(PATH="$we2e/stubbin:$PATH" COSIGN_STUB_RC=1 TAU_VERIFY_SIGSTORE=1 TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin7" 2>&1); rc=$?
+    ok "e2e ps1 failed signature verify aborts" "$rc" 1
+    contains "e2e ps1 sigstore failure message" "$out" "signature verification failed"
+    [ ! -e "$we2e/bin7/tau.exe" ]; ok "e2e ps1 failed verify installed nothing" "$?" 0
+
+    rm -f "$we2e/srv/latest/download/tau-windows-x86_64.zip.sigstore.json"
+    out=$(PATH="$we2e/stubbin:$PATH" TAU_VERIFY_SIGSTORE=1 TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin8" 2>&1); rc=$?
+    ok "e2e ps1 missing sigstore bundle aborts" "$rc" 1
+    contains "e2e ps1 missing bundle message" "$out" "sigstore.json"
 
     rm -rf "$we2e"
   else
