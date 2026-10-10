@@ -147,7 +147,7 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
-- **Setup diagnostics** — `tau doctor` validates the config file, provider, API key resolution, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe)
+- **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); `--fix` remediates common issues (missing config, loose permissions, missing completions) behind per-fix confirmation
 - **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, and embeds the `doctor` health report as one NDJSON transcript
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal

@@ -176,10 +176,16 @@ pub const Config = struct {
     /// Doctor reports it as a failed check instead of exiting 80 so the report
     /// still carries diagnostics for the rest of the setup chain.
     doctor_bad_provider: ?[]const u8 = null,
+    /// `tau doctor --fix` — remediate fixable checks (missing config, loose
+    /// permissions, missing completions). Each fix needs confirmation unless
+    /// --yes is passed or stdin is a TTY (interactive prompt).
+    doctor_fix: bool = false,
+    /// `tau doctor --yes` — apply --fix remediations without prompting.
+    doctor_yes: bool = false,
 
     // --- Setup (src/setup.zig) ---
-    /// `tau setup --shell <name>` — completions shell override
-    /// (bash|zsh|fish|pwsh|all). Null means detect from $SHELL.
+    /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —
+    /// shared by `tau setup` and `tau doctor`. Null means detect from $SHELL.
     setup_shell: ?[]const u8 = null,
 };
 

@@ -23,7 +23,7 @@ pub const ShellKind = enum { bash, zsh, fish, pwsh };
 /// re-runs stay idempotent and users can find (and remove) what was added.
 pub const rc_marker = "# tau completions";
 
-fn shellName(k: ShellKind) []const u8 {
+pub fn shellName(k: ShellKind) []const u8 {
     return switch (k) {
         .bash => "bash",
         .zsh => "zsh",
@@ -53,7 +53,7 @@ pub fn parseShellName(name: []const u8) ?ShellKind {
 }
 
 /// The script content embedded for each shell (see build.zig).
-fn shellContent(k: ShellKind) []const u8 {
+pub fn shellContent(k: ShellKind) []const u8 {
     return switch (k) {
         .bash => completions.bash,
         .zsh => completions.zsh,
@@ -80,7 +80,7 @@ pub fn installPath(arena: std.mem.Allocator, home: []const u8, k: ShellKind) ![]
 
 /// The rc/profile file that needs a line appended for this shell, or null
 /// when the shell autoloads the installed file on its own.
-fn rcPath(arena: std.mem.Allocator, home: []const u8, k: ShellKind) !?[]u8 {
+pub fn rcPath(arena: std.mem.Allocator, home: []const u8, k: ShellKind) !?[]u8 {
     return switch (k) {
         .bash, .fish => null,
         .zsh => try std.fmt.allocPrint(arena, "{s}/.zshrc", .{home}),
@@ -91,7 +91,7 @@ fn rcPath(arena: std.mem.Allocator, home: []const u8, k: ShellKind) !?[]u8 {
 }
 
 /// The block appended to rcPath when rc_marker is not already present.
-fn rcBlock(arena: std.mem.Allocator, k: ShellKind) ![]u8 {
+pub fn rcBlock(arena: std.mem.Allocator, k: ShellKind) ![]u8 {
     return switch (k) {
         .zsh => std.fmt.allocPrint(arena,
             \\{s}
@@ -106,9 +106,9 @@ fn rcBlock(arena: std.mem.Allocator, k: ShellKind) ![]u8 {
 
 /// Write `data` to `path` (creating parent dirs) only when the content
 /// differs. Returns whether the file was actually written.
-const WriteResult = enum { written, unchanged };
+pub const WriteResult = enum { written, unchanged };
 
-fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8) !WriteResult {
+pub fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8) !WriteResult {
     if (std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited)) |cur| {
         if (std.mem.eql(u8, cur, data)) return .unchanged;
     } else |_| {}
@@ -120,9 +120,9 @@ fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, data: 
 }
 
 /// Append `block` to the rc file unless it already carries rc_marker.
-const RcResult = enum { appended, present };
+pub const RcResult = enum { appended, present };
 
-fn ensureRcBlock(io: std.Io, arena: std.mem.Allocator, path: []const u8, block: []const u8) !RcResult {
+pub fn ensureRcBlock(io: std.Io, arena: std.mem.Allocator, path: []const u8, block: []const u8) !RcResult {
     const cur = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch "";
     if (std.mem.indexOf(u8, cur, rc_marker) != null) return .present;
     var out: std.ArrayList(u8) = .empty;
@@ -214,9 +214,61 @@ fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
 
 // --- Step 2: shell completions ---------------------------------------------
 
+/// The install state of one shell's completion script — reported by `tau
+/// doctor` (shell_completions check) and remediated by `tau doctor --fix`.
+pub const CompletionState = enum { installed, missing, outdated, rc_missing };
+
+/// Inspect shell `k`'s completion under `home`: absent-or-unreadable script
+/// -> missing; present but differing from the embedded script -> outdated
+/// (upgrade needed); script current but the rc hook absent -> rc_missing.
+pub fn completionState(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ShellKind) !CompletionState {
+    const path = try installPath(arena, home, k);
+    const cur = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch return .missing;
+    if (!std.mem.eql(u8, cur, shellContent(k))) return .outdated;
+    if (try rcPath(arena, home, k)) |rp| {
+        const rc = std.Io.Dir.cwd().readFileAlloc(io, rp, arena, .unlimited) catch "";
+        if (std.mem.indexOf(u8, rc, rc_marker) == null) return .rc_missing;
+    }
+    return .installed;
+}
+
+/// Result of installing (or repairing) one shell's completions.
+pub const CompletionInstall = struct {
+    path: []const u8,
+    wrote: WriteResult,
+    /// Shells that need an rc hook set rc_path; rc_status is null when the rc
+    /// write failed (rc_failed mirrors that as a bool for callers).
+    rc_path: ?[]const u8 = null,
+    rc_status: ?RcResult = null,
+    rc_failed: bool = false,
+};
+
+/// Write the completion script for shell `k` (creating parent dirs) and, for
+/// shells that need one, append the rc hook unless the marker is present.
+/// Shared by `tau setup` and `tau doctor --fix`.
+pub fn installCompletion(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ShellKind) !CompletionInstall {
+    const path = try installPath(arena, home, k);
+    const wrote = try writeIfChanged(io, arena, path, shellContent(k));
+    var out: CompletionInstall = .{ .path = path, .wrote = wrote };
+    if (try rcPath(arena, home, k)) |rp| {
+        out.rc_path = rp;
+        if (ensureRcBlock(io, arena, rp, try rcBlock(arena, k))) |r| {
+            out.rc_status = r;
+        } else |_| {
+            out.rc_failed = true;
+        }
+    }
+    if (k == .zsh) {
+        // Drop the cached completion dump so the new _tau is picked up.
+        const dump = try std.fmt.allocPrint(arena, "{s}/.zcompdump", .{home});
+        std.Io.Dir.cwd().deleteFile(io, dump) catch {};
+    }
+    return out;
+}
+
 /// The shells setup should install for: explicit --shell (validated upstream),
 /// or the $SHELL-detected one. Empty when detection fails.
-fn resolveShells(arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]ShellKind {
+pub fn resolveShells(arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]ShellKind {
     var list: std.ArrayList(ShellKind) = .empty;
     if (cfg.setup_shell) |s| {
         if (std.mem.eql(u8, s, "all")) {
@@ -239,43 +291,32 @@ fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), 
     try shells.appendSlice(arena, "{\"shell\":");
     try js(arena, shells, shellName(k));
 
-    const path = try installPath(arena, home, k);
-    const wrote = writeIfChanged(io, arena, path, shellContent(k)) catch |err| {
+    const inst = installCompletion(io, arena, home, k) catch |err| {
+        const path = installPath(arena, home, k) catch "?";
         try shells.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
         const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
         try js(arena, shells, msg);
         try shells.append(arena, '}');
         return false;
     };
-    var ok = true;
+    const ok = !inst.rc_failed;
 
-    if (try rcPath(arena, home, k)) |rp| {
-        var rr: ?RcResult = null;
-        if (ensureRcBlock(io, arena, rp, try rcBlock(arena, k))) |r| {
-            rr = r;
-        } else |_| {
-            ok = false;
-        }
+    if (inst.rc_path) |rp| {
         try shells.appendSlice(arena, ",\"rc\":");
         try js(arena, shells, rp);
         try shells.appendSlice(arena, ",\"rc_status\":");
-        try js(arena, shells, if (rr) |r| @tagName(r) else "failed");
+        try js(arena, shells, if (inst.rc_status) |r| @tagName(r) else "failed");
     }
 
     try shells.appendSlice(arena, ",\"status\":");
     if (!ok) {
         try shells.appendSlice(arena, "\"failed\"");
     } else {
-        try shells.appendSlice(arena, if (wrote == .written) "\"installed\"" else "\"already_installed\"");
+        try shells.appendSlice(arena, if (inst.wrote == .written) "\"installed\"" else "\"already_installed\"");
     }
     try shells.appendSlice(arena, ",\"path\":");
-    try js(arena, shells, path);
+    try js(arena, shells, inst.path);
     switch (k) {
-        .zsh => {
-            // Drop the cached completion dump so the new _tau is picked up.
-            const dump = try std.fmt.allocPrint(arena, "{s}/.zcompdump", .{home});
-            std.Io.Dir.cwd().deleteFile(io, dump) catch {};
-        },
         .bash => {
             try shells.appendSlice(arena, ",\"note\":");
             try js(arena, shells, "requires bash-completion; otherwise source this file from ~/.bashrc");

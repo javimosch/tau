@@ -595,7 +595,71 @@ test_group_doctor() {
   contains "warn does not flip ok" "$doc_warn_out" '"ok":true'
   rm -f "$mock_config/config.json"
 
-  # 11. Live probe paths against a local stub HTTP server: endpoint_reachable
+  # 11. doctor --fix (non-interactive, no --yes): fixable outcomes are listed
+  #     in "fixes" but skipped — nothing is written without confirmation.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  capture doc_fix_skip env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix
+  contains "--fix report carries a fixes array" "$doc_fix_skip_out" '"fixes":['
+  contains "scaffold fix skipped without confirmation" "$doc_fix_skip_out" '"id":"scaffold_config","check":"config_file","status":"skipped"'
+  contains "completions fix skipped without confirmation" "$doc_fix_skip_out" '"id":"install_completions","check":"shell_completions","status":"skipped"'
+  contains "skipped fix points at --yes" "$doc_fix_skip_out" 'pass --yes'
+  if [ ! -f "$mock_config/config.json" ] && [ ! -e "$mock_home/.local/share/bash-completion/completions/tau" ]; then
+    ok "unconfirmed --fix wrote nothing" 0 0
+  else
+    ok "unconfirmed --fix wrote nothing" 1 0
+  fi
+
+  # 12. doctor --fix --yes: scaffold + completions apply, permissions tighten,
+  #     and the emitted report reflects the post-fix state. TAU_API_KEY makes
+  #     api_key resolvable so the whole post-fix report is ok -> exit 0.
+  capture doc_fix_yes env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
+  ok "--fix --yes all-fixable run exits 0" "$doc_fix_yes_rc" 0
+  contains "scaffold fix applied" "$doc_fix_yes_out" '"id":"scaffold_config","check":"config_file","status":"applied"'
+  contains "completions fix applied" "$doc_fix_yes_out" '"id":"install_completions","check":"shell_completions","status":"applied"'
+  contains "post-fix config_file is ok" "$doc_fix_yes_out" '"name":"config_file","status":"ok","message":"config file parsed'
+  contains "post-fix completions are ok" "$doc_fix_yes_out" '"name":"shell_completions","status":"ok"'
+  if [ -f "$mock_config/config.json" ]; then
+    ok "scaffolded config.json exists" 0 0
+  else
+    ok "scaffolded config.json exists" 1 0
+  fi
+  grep -q '"provider"' "$mock_config/config.json" && ok "scaffolded config has a provider" 0 0 || ok "scaffolded config has a provider" 1 0
+  if [ -f "$mock_home/.local/share/bash-completion/completions/tau" ]; then
+    ok "bash completion script installed" 0 0
+  else
+    ok "bash completion script installed" 1 0
+  fi
+  if [ "$(stat -c %a "$mock_config" 2>/dev/null)" = "700" ] && [ "$(stat -c %a "$mock_config/config.json" 2>/dev/null)" = "600" ]; then
+    ok "scaffolded config lands with 0700/0600" 0 0
+  else
+    ok "scaffolded config lands with 0700/0600" 1 0
+  fi
+
+  # 13. --fix --yes on an invalid config: moved to .bak, fresh scaffold written.
+  printf 'this is not valid json' > "$mock_config/config.json"
+  chmod 644 "$mock_config/config.json"
+  capture doc_fix_restore env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
+  ok "restore run exits 0" "$doc_fix_restore_rc" 0
+  contains "restore fix applied" "$doc_fix_restore_out" '"id":"restore_config","check":"config_file","status":"applied"'
+  if [ -f "$mock_config/config.json.bak" ] && grep -q 'not valid json' "$mock_config/config.json.bak"; then
+    ok "invalid config preserved at .bak" 0 0
+  else
+    ok "invalid config preserved at .bak" 1 0
+  fi
+  grep -q '"provider"' "$mock_config/config.json" && ok "restored config is a fresh scaffold" 0 0 || ok "restored config is a fresh scaffold" 1 0
+  rm -f "$mock_config/config.json" "$mock_config/config.json.bak"
+
+  # 14. -y/--yes implies --fix; bad --shell value is an arg error.
+  capture doc_fix_short env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline -y
+  contains "-y implies --fix" "$doc_fix_short_out" '"fixes":['
+  "$BIN" doctor --shell tcsh >/dev/null 2>&1; ok "doctor --shell tcsh -> exit 80" "$?" 80
+  "$BIN" doctor --fix --shell >/dev/null 2>&1; ok "doctor --shell missing value -> exit 80" "$?" 80
+
+  # 15. Live probe paths against a local stub HTTP server: endpoint_reachable
   #     treats ANY HTTP response as reachable, and --deep maps the auth probe's
   #     HTTP status to ok/fail/warn. Requires python3 + curl.
   if command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
