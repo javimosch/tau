@@ -135,9 +135,11 @@ pub fn parse(
         return .{ .action = .models, .config = base };
     }
 
-    // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]`
-    // — setup diagnostics; a command, not a prompt. An unknown provider is
-    // carried into the report as a failed check instead of exiting 80.
+    // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
+    // [--fix] [--yes] [--shell sh]` — setup diagnostics; a command, not a
+    // prompt. An unknown provider is carried into the report as a failed
+    // check instead of exiting 80. --fix proposes remediations, --yes applies
+    // them without prompting (non-interactive use).
     if (argv.len > 0 and eq(argv[0], "doctor")) {
         var dcfg: Config = base;
         var provider_opt: ?[]const u8 = null;
@@ -161,6 +163,20 @@ pub fn parse(
                 dcfg.doctor_offline = true;
             } else if (eq(a, "--deep")) {
                 dcfg.doctor_deep = true;
+            } else if (eq(a, "--fix")) {
+                dcfg.doctor_fix = true;
+            } else if (eq(a, "--yes") or eq(a, "-y")) {
+                // --yes implies --fix (nothing else to approve).
+                dcfg.doctor_fix = true;
+                dcfg.doctor_yes = true;
+            } else if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!eq(s, "bash") and !eq(s, "zsh") and !eq(s, "fish") and !eq(s, "pwsh") and
+                    !eq(s, "powershell") and !eq(s, "all"))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                dcfg.setup_shell = s;
             } else return errResult(arena, "unknown doctor argument: {s}", .{a});
         }
         if (try resolveProviderAndModel(&dcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {

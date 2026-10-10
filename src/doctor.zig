@@ -1,24 +1,51 @@
 // `tau doctor` — offline-first setup diagnostics. Validates the whole setup
-// chain (config file parse, provider resolution, API key provenance, curl,
-// endpoint reachability, optional authenticated probe) and prints a JSON
-// report on stdout. Exit 0 when every non-skipped check is ok/warn; exit 1
-// when any check fails. Key material is never printed — only its source.
+// chain (config file parse + permissions, provider resolution, API key
+// provenance, shell completions, curl, endpoint reachability, optional
+// authenticated probe) and prints a JSON report on stdout. Exit 0 when every
+// non-skipped check is ok/warn; exit 1 when any check fails. Key material is
+// never printed — only its source.
+//
+// `--fix` remediates fixable outcomes: scaffold a missing config (init),
+// restore an unparseable one (moved to config.json.bak first), tighten POSIX
+// permission bits (0700 dir / 0600 file), install shell completions. Fixes
+// apply per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
+// non-interactive runs report them as skipped. The emitted report reflects
+// the post-fix state when anything was applied.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const term = @import("term.zig");
 const json = @import("json.zig");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
+const initmod = @import("init.zig");
+const setup = @import("setup.zig");
 const version = @import("version.zig").version;
 const Config = cfgmod.Config;
 
 pub const CheckStatus = enum { ok, warn, fail, skip };
+
+/// Remediations `tau doctor --fix` can apply. Attached to a check outcome
+/// when it is auto-fixable; `planFixes` collects them in check order and
+/// dedupes — several check outcomes can share one remediation.
+pub const FixKind = enum {
+    /// Write the `tau init` starter config (creates ~/.config/tau).
+    scaffold_config,
+    /// Move an unparseable config to config.json.bak, then scaffold.
+    restore_config,
+    /// chmod 0700 on ~/.config/tau and 0600 on config.json.
+    chmod_config,
+    /// Install/refresh shell completion scripts (+ rc hooks where needed).
+    install_completions,
+};
 
 pub const Check = struct {
     name: []const u8,
     status: CheckStatus,
     message: []const u8,
     hint: ?[]const u8 = null,
+    /// Internal signal for --fix planning; never serialized into the report.
+    fix: ?FixKind = null,
 };
 
 const Summary = struct { ok: u32 = 0, warn: u32 = 0, fail: u32 = 0, skip: u32 = 0 };
@@ -60,7 +87,7 @@ fn formatCheckJson(arena: std.mem.Allocator, c: Check) ![]u8 {
     return buf.toOwnedSlice(arena);
 }
 
-fn formatReportJson(arena: std.mem.Allocator, checks: []const Check) ![]u8 {
+fn formatReportJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome) ![]u8 {
     const s = summarize(checks);
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, if (s.fail == 0) "{\"ok\":true" else "{\"ok\":false");
@@ -71,7 +98,24 @@ fn formatReportJson(arena: std.mem.Allocator, checks: []const Check) ![]u8 {
         if (i != 0) try buf.append(arena, ',');
         try buf.appendSlice(arena, try formatCheckJson(arena, c));
     }
-    try buf.appendSlice(arena, "],\"summary\":{");
+    try buf.append(arena, ']');
+    if (fixes) |fx| {
+        try buf.appendSlice(arena, ",\"fixes\":[");
+        for (fx, 0..) |f, i| {
+            if (i != 0) try buf.append(arena, ',');
+            try buf.appendSlice(arena, "{\"id\":\"");
+            try json.escapeInto(arena, &buf, f.id);
+            try buf.appendSlice(arena, "\",\"check\":\"");
+            try json.escapeInto(arena, &buf, f.check);
+            try buf.appendSlice(arena, "\",\"status\":\"");
+            try buf.appendSlice(arena, @tagName(f.status));
+            try buf.appendSlice(arena, "\",\"detail\":\"");
+            try json.escapeInto(arena, &buf, f.detail);
+            try buf.appendSlice(arena, "\"}");
+        }
+        try buf.append(arena, ']');
+    }
+    try buf.appendSlice(arena, ",\"summary\":{");
     try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"ok\":{d},\"warn\":{d},\"fail\":{d},\"skip\":{d}", .{ s.ok, s.warn, s.fail, s.skip }));
     try buf.appendSlice(arena, "}}\n");
     return buf.toOwnedSlice(arena);
@@ -122,7 +166,8 @@ fn configBodyCheck(arena: std.mem.Allocator, path: []const u8, bytes: []const u8
             .name = "config_file",
             .status = .fail,
             .message = std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s}", .{path}) catch "config file has invalid JSON",
-            .hint = "fix the JSON syntax or delete the file",
+            .hint = "fix the JSON syntax, delete the file, or run 'tau doctor --fix' to move it aside and scaffold a fresh one",
+            .fix = .restore_config,
         };
     };
     if (parsed == .object) {
@@ -154,18 +199,124 @@ fn checkConfigFile(io: std.Io, arena: std.mem.Allocator, env: *std.process.Envir
             .name = "config_file",
             .status = .ok,
             .message = std.fmt.allocPrint(arena, "no config file at {s} — using defaults", .{p}) catch "no config file — using defaults",
+            .fix = .scaffold_config,
         },
         else => return .{
             .name = "config_file",
             .status = .fail,
             .message = std.fmt.allocPrint(arena, "cannot read config file: {s}", .{p}) catch "cannot read config file",
-            .hint = "check file permissions",
+            .hint = "check file permissions — 'tau doctor --fix' restricts them to 0600",
+            .fix = .chmod_config,
         },
     };
     return configBodyCheck(arena, p, bytes);
 }
 
-/// Check 2: effective provider/model/endpoint/context_window after overrides.
+/// Check 2 (POSIX only): ~/.config/tau dir and config.json permission bits.
+/// The file can hold API keys, so group/other access warns (auto-fixable to
+/// 0700/0600). Skips on Windows, when HOME is unset, or when no config file
+/// exists (the scaffold fix handles that case).
+fn checkConfigPermissions(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .name = "config_permissions", .status = .skip, .message = "skipped (POSIX permission bits do not apply on Windows)" };
+    }
+    const p = configfile.path(arena, env) orelse
+        return .{ .name = "config_permissions", .status = .skip, .message = "skipped (HOME is not set)" };
+    const fstat = std.Io.Dir.cwd().statFile(io, p, .{}) catch |err| switch (err) {
+        error.FileNotFound => return .{ .name = "config_permissions", .status = .skip, .message = "skipped (no config file)" },
+        else => return .{
+            .name = "config_permissions",
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "cannot stat config file: {s}", .{p}) catch "cannot stat config file",
+            .hint = "check directory permissions — 'tau doctor --fix' restricts them to 0700",
+            .fix = .chmod_config,
+        },
+    };
+
+    const file_mode = fstat.permissions.toMode() & 0o777;
+    var dir_mode: std.posix.mode_t = 0;
+    var have_dir = false;
+    if (std.mem.lastIndexOfScalar(u8, p, '/')) |idx| {
+        if (std.Io.Dir.cwd().statFile(io, p[0..idx], .{})) |ds| {
+            dir_mode = ds.permissions.toMode() & 0o777;
+            have_dir = true;
+        } else |_| {}
+    }
+
+    const file_loose = (file_mode & 0o077) != 0;
+    const dir_loose = have_dir and (dir_mode & 0o077) != 0;
+    if (!file_loose and !dir_loose) {
+        return .{
+            .name = "config_permissions",
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "config permissions are restrictive (dir {o:0>3}, file {o:0>3})", .{ dir_mode, file_mode }) catch "config permissions are restrictive",
+        };
+    }
+    var msg: std.ArrayList(u8) = .empty;
+    if (file_loose)
+        tryFmt(&msg, arena, "config file mode {o:0>3} grants group/other access", .{file_mode});
+    if (dir_loose) {
+        if (msg.items.len > 0) msg.appendSlice(arena, "; ") catch {};
+        tryFmt(&msg, arena, "config dir mode {o:0>3} grants group/other access", .{dir_mode});
+    }
+    return .{
+        .name = "config_permissions",
+        .status = .warn,
+        .message = msg.toOwnedSlice(arena) catch "config permissions grant group/other access",
+        .hint = "run 'tau doctor --fix' to restrict to 0600/0700 — the config file can hold API keys",
+        .fix = .chmod_config,
+    };
+}
+
+fn tryFmt(msg: *std.ArrayList(u8), arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) void {
+    const s = std.fmt.allocPrint(arena, fmt, args) catch return;
+    msg.appendSlice(arena, s) catch {};
+}
+
+/// Check: the detected (or --shell-selected) shells' completion scripts are
+/// installed and current. Warns (auto-fixable) when missing/outdated or the
+/// rc hook is absent; skips when HOME is unset or no shell resolves.
+fn checkCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) Check {
+    const home = env.get("HOME") orelse
+        return .{ .name = "shell_completions", .status = .skip, .message = "skipped (HOME is not set)" };
+    const shells = setup.resolveShells(arena, cfg, env) catch
+        return .{ .name = "shell_completions", .status = .warn, .message = "could not resolve shells" };
+    if (shells.len == 0) return .{
+        .name = "shell_completions",
+        .status = .skip,
+        .message = "skipped (could not detect shell from $SHELL)",
+        .hint = "pass --shell bash|zsh|fish|pwsh|all",
+    };
+
+    var names: std.ArrayList(u8) = .empty;
+    var bad: std.ArrayList(u8) = .empty;
+    for (shells, 0..) |k, i| {
+        const name = setup.shellName(k);
+        if (i != 0) names.appendSlice(arena, ",") catch {};
+        names.appendSlice(arena, name) catch {};
+        const st = setup.completionState(io, arena, home, k) catch setup.CompletionState.missing;
+        if (st != .installed) {
+            if (bad.items.len > 0) bad.appendSlice(arena, ",") catch {};
+            tryFmt(&bad, arena, "{s}:{s}", .{ name, @tagName(st) });
+        }
+    }
+    if (bad.items.len == 0) {
+        return .{
+            .name = "shell_completions",
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "completions installed for {s}", .{names.items}) catch "completions installed",
+        };
+    }
+    return .{
+        .name = "shell_completions",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "shell completions need attention: {s}", .{bad.items}) catch "shell completions need attention",
+        .hint = "run 'tau doctor --fix' to install/refresh completion scripts",
+        .fix = .install_completions,
+    };
+}
+
+/// Check 3: effective provider/model/endpoint/context_window after overrides.
 fn checkProvider(arena: std.mem.Allocator, cfg: Config) Check {
     if (cfg.doctor_bad_provider) |bad| {
         return .{
@@ -376,36 +527,220 @@ pub const Report = struct {
     json: []const u8,
 };
 
-/// Run every check and return the report. Split from run() so `tau setup` can
-/// embed the same report under a "doctor" step instead of printing it bare.
-pub fn collectReport(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !Report {
+/// Run every check and return the raw list. Local checks run first
+/// (config file, permissions, completions), then provider/key, then the
+/// curl-gated network checks.
+pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]Check {
     var checks: std.ArrayList(Check) = .empty;
     try checks.append(arena, checkConfigFile(io, arena, env));
+    try checks.append(arena, checkConfigPermissions(io, arena, env));
     try checks.append(arena, checkProvider(arena, cfg));
     const rk = cfgmod.resolveApiKeyInfo(cfg, env);
     try checks.append(arena, checkApiKey(arena, cfg, rk));
+    try checks.append(arena, checkCompletions(io, arena, cfg, env));
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try checks.append(arena, curl_check);
     try checks.append(arena, checkEndpoint(io, gpa, arena, cfg, curl_ok));
     try checks.append(arena, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok));
+    return checks.toOwnedSlice(arena);
+}
 
-    const report_json = try formatReportJson(arena, checks.items);
+/// Run every check and return the report. Split from run() so `tau setup` can
+/// embed the same report under a "doctor" step instead of printing it bare.
+pub fn collectReport(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !Report {
+    const checks = try collectChecks(io, gpa, arena, cfg, env);
+    const report_json = try formatReportJson(arena, checks, null);
     return .{
-        .ok = summarize(checks.items).fail == 0,
+        .ok = summarize(checks).fail == 0,
         // formatReportJson emits a trailing '\n' — drop it so callers can
         // embed the object inside a larger envelope.
         .json = if (report_json.len > 0 and report_json[report_json.len - 1] == '\n') report_json[0 .. report_json.len - 1] else report_json,
     };
 }
 
+// ---------------------------------------------------------------------------
+// --fix remediation
+// ---------------------------------------------------------------------------
+
+/// A remediation proposed for one check outcome.
+const PlannedFix = struct {
+    kind: FixKind,
+    check: []const u8,
+    description: []const u8,
+};
+
+/// One entry in the report's "fixes" array.
+pub const FixStatus = enum { applied, declined, skipped, failed };
+
+pub const FixOutcome = struct {
+    id: []const u8,
+    check: []const u8,
+    status: FixStatus,
+    detail: []const u8,
+};
+
+fn fixDescription(k: FixKind) []const u8 {
+    return switch (k) {
+        .scaffold_config => "create ~/.config/tau and write a commented starter config",
+        .restore_config => "move the invalid config to config.json.bak and write a starter config",
+        .chmod_config => "restrict permissions (~/.config/tau -> 0700, config.json -> 0600)",
+        .install_completions => "install/refresh shell completion scripts",
+    };
+}
+
+/// Collect fixable check outcomes into a deduped remediation plan.
+fn planFixes(arena: std.mem.Allocator, checks: []const Check) ![]PlannedFix {
+    var list: std.ArrayList(PlannedFix) = .empty;
+    for (checks) |c| {
+        const k = c.fix orelse continue;
+        var seen = false;
+        for (list.items) |pf| {
+            if (pf.kind == k) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) continue;
+        try list.append(arena, .{ .kind = k, .check = c.name, .description = fixDescription(k) });
+    }
+    return list.toOwnedSlice(arena);
+}
+
+/// Write the init scaffold to the config path, creating ~/.config/tau when
+/// missing. Returns the path written. Never run when a config already exists
+/// — callers only reach this for missing/restored configs.
+fn writeScaffold(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]const u8 {
+    const path = configfile.path(arena, env) orelse return error.HomeUnset;
+    const det = try initmod.detectKeys(arena, env);
+    const p = initmod.pickProvider(det, null);
+    const body = try initmod.renderConfig(arena, det, p);
+    _ = try setup.writeIfChanged(io, arena, path, body);
+    if (comptime builtin.os.tag != .windows) {
+        // The scaffold can hold API keys later — start restrictive so the
+        // config_permissions check is clean after one --fix pass.
+        if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx|
+            std.Io.Dir.cwd().setFilePermissions(io, path[0..idx], .fromMode(0o700), .{}) catch {};
+        std.Io.Dir.cwd().setFilePermissions(io, path, .fromMode(0o600), .{}) catch {};
+    }
+    return path;
+}
+
+/// The actual work behind each FixKind. Returns a human/agent-readable detail
+/// string on success; errors surface as a failed FixOutcome.
+fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, pf: PlannedFix) FixOutcome {
+    const detail = switch (pf.kind) {
+        .scaffold_config => blk: {
+            const path = writeScaffold(io, arena, env) catch |err| break :blk err;
+            break :blk std.fmt.allocPrint(arena, "wrote starter config: {s}", .{path}) catch "wrote starter config";
+        },
+        .restore_config => blk: {
+            const path = configfile.path(arena, env) orelse break :blk error.HomeUnset;
+            const backup = std.fmt.allocPrint(arena, "{s}.bak", .{path}) catch break :blk error.OutOfMemory;
+            // POSIX rename overwrites a stale .bak from an earlier --fix run.
+            std.Io.Dir.cwd().rename(path, std.Io.Dir.cwd(), backup, io) catch |err| break :blk err;
+            const written = writeScaffold(io, arena, env) catch |err| break :blk err;
+            break :blk std.fmt.allocPrint(arena, "moved invalid config to {s}; wrote {s}", .{ backup, written }) catch "restored config";
+        },
+        .chmod_config => blk: {
+            if (comptime builtin.os.tag == .windows) break :blk error.UnsupportedPlatform;
+            const path = configfile.path(arena, env) orelse break :blk error.HomeUnset;
+            var did: std.ArrayList(u8) = .empty;
+            if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+                std.Io.Dir.cwd().setFilePermissions(io, path[0..idx], .fromMode(0o700), .{}) catch |err| break :blk err;
+                did.appendSlice(arena, "dir -> 0700") catch {};
+            }
+            // The file may not exist (e.g. only the dir was loose).
+            if (std.Io.Dir.cwd().statFile(io, path, .{})) |_| {
+                std.Io.Dir.cwd().setFilePermissions(io, path, .fromMode(0o600), .{}) catch |err| break :blk err;
+                if (did.items.len > 0) did.appendSlice(arena, ", ") catch {};
+                did.appendSlice(arena, "config.json -> 0600") catch {};
+            } else |_| {}
+            if (did.items.len == 0) break :blk std.fmt.allocPrint(arena, "nothing to restrict: {s}", .{path}) catch "nothing to restrict";
+            break :blk std.fmt.allocPrint(arena, "restricted {s} ({s})", .{ did.items, path }) catch "restricted permissions";
+        },
+        .install_completions => blk: {
+            const home = env.get("HOME") orelse break :blk error.HomeUnset;
+            const shells = setup.resolveShells(arena, cfg, env) catch |err| break :blk err;
+            if (shells.len == 0) break :blk error.NoShellDetected;
+            var names: std.ArrayList(u8) = .empty;
+            for (shells, 0..) |k, i| {
+                _ = setup.installCompletion(io, arena, home, k) catch |err| break :blk err;
+                if (i != 0) names.appendSlice(arena, ",") catch {};
+                names.appendSlice(arena, setup.shellName(k)) catch {};
+            }
+            break :blk std.fmt.allocPrint(arena, "installed completions for {s}", .{names.items}) catch "installed completions";
+        },
+    } catch |err| {
+        return .{
+            .id = @tagName(pf.kind),
+            .check = pf.check,
+            .status = .failed,
+            .detail = std.fmt.allocPrint(arena, "fix failed: {s}", .{@errorName(err)}) catch "fix failed",
+        };
+    };
+    return .{ .id = @tagName(pf.kind), .check = pf.check, .status = .applied, .detail = detail };
+}
+
+/// Prompt on stderr and read one line from the (TTY) stdin reader. Only an
+/// explicit y/yes approves; empty lines, EOF, and read errors decline.
+fn confirmFix(arena: std.mem.Allocator, r: *std.Io.Reader, pf: PlannedFix) bool {
+    const prompt = std.fmt.allocPrint(arena, "doctor --fix: {s} — apply? [y/N] ", .{pf.description}) catch return false;
+    term.err(prompt);
+    const line = (r.takeDelimiter('\n') catch return false) orelse return false;
+    const t = std.mem.trim(u8, line, " \t\r");
+    return std.ascii.eqlIgnoreCase(t, "y") or std.ascii.eqlIgnoreCase(t, "yes");
+}
+
+fn anyApplied(outcomes: []const FixOutcome) bool {
+    for (outcomes) |o| {
+        if (o.status == .applied) return true;
+    }
+    return false;
+}
+
 /// Run all checks, print the JSON report on stdout, and return the process
 /// exit code: 0 when every non-skipped check is ok/warn, 1 when any fails.
+/// With cfg.doctor_fix, plan remediations first; each fix applies only when
+/// confirmed (--yes, or a y/yes answer on a TTY prompt). The emitted report
+/// carries a "fixes" array and reflects the post-fix state when anything was
+/// applied.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
-    const report = try collectReport(io, gpa, arena, cfg, env);
-    term.out(report.json);
-    term.out("\n");
-    return if (report.ok) 0 else 1;
+    if (!cfg.doctor_fix) {
+        const report = try collectReport(io, gpa, arena, cfg, env);
+        term.out(report.json);
+        term.out("\n");
+        return if (report.ok) 0 else 1;
+    }
+
+    const checks = try collectChecks(io, gpa, arena, cfg, env);
+    const planned = try planFixes(arena, checks);
+    var outcomes: std.ArrayList(FixOutcome) = .empty;
+    if (planned.len > 0) {
+        const interactive = !cfg.doctor_yes and (std.Io.File.stdin().isTty(io) catch false);
+        var rbuf: [512]u8 = undefined;
+        var fr = std.Io.File.stdin().reader(io, &rbuf);
+        for (planned) |pf| {
+            const approved = cfg.doctor_yes or (interactive and confirmFix(arena, &fr.interface, pf));
+            if (approved) {
+                try outcomes.append(arena, applyFix(io, arena, cfg, env, pf));
+            } else {
+                try outcomes.append(arena, .{
+                    .id = @tagName(pf.kind),
+                    .check = pf.check,
+                    .status = if (interactive) .declined else .skipped,
+                    .detail = if (interactive) "declined at prompt" else "not confirmed — pass --yes to apply non-interactively",
+                });
+            }
+        }
+    }
+
+    // Re-diagnose only when a fix actually changed something; the emitted
+    // report (and exit code) then reflects the post-remediation state.
+    const final_checks = if (anyApplied(outcomes.items)) try collectChecks(io, gpa, arena, cfg, env) else checks;
+    const report_json = try formatReportJson(arena, final_checks, outcomes.items);
+    term.out(report_json);
+    return if (summarize(final_checks).fail == 0) 0 else 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +783,7 @@ test "formatReportJson: ok=false with summary counts when a check fails" {
         .{ .name = "api_key", .status = .fail, .message = "no key", .hint = "set X env var" },
         .{ .name = "auth_probe", .status = .skip, .message = "skipped" },
     };
-    const got = try formatReportJson(a, &checks);
+    const got = try formatReportJson(a, &checks, null);
     try testing.expect(std.mem.startsWith(u8, got, "{\"ok\":false,\"version\":"));
     try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{\"ok\":1,\"warn\":0,\"fail\":1,\"skip\":1}") != null);
 }
@@ -731,7 +1066,7 @@ test "formatReportJson: warns do not flip the ok flag" {
         .{ .name = "api_key", .status = .ok, .message = "resolved" },
         .{ .name = "auth_probe", .status = .skip, .message = "skipped" },
     };
-    const got = try formatReportJson(a, &checks);
+    const got = try formatReportJson(a, &checks, null);
     try testing.expect(std.mem.startsWith(u8, got, "{\"ok\":true,"));
     try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{\"ok\":1,\"warn\":1,\"fail\":0,\"skip\":1}") != null);
 }
@@ -739,4 +1074,197 @@ test "formatReportJson: warns do not flip the ok flag" {
 test "curlHttpCode: spawn failure returns null" {
     const got = curlHttpCode(testing.io, testing.allocator, &.{"definitely-not-a-tau-binary-xyz"}, 1000);
     try testing.expect(got == null);
+}
+
+// ---------------------------------------------------------------------------
+// --fix tests
+// ---------------------------------------------------------------------------
+
+test "planFixes: collects fixable checks in order and dedupes kinds" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .fail, .message = "invalid JSON", .fix = .restore_config },
+        .{ .name = "config_permissions", .status = .warn, .message = "loose", .fix = .chmod_config },
+        .{ .name = "provider_resolution", .status = .ok, .message = "resolved" },
+        .{ .name = "api_key", .status = .fail, .message = "no key" },
+        // Second chmod outcome collapses into the first remediation.
+        .{ .name = "other_perms", .status = .warn, .message = "loose too", .fix = .chmod_config },
+        .{ .name = "shell_completions", .status = .warn, .message = "missing", .fix = .install_completions },
+    };
+    const plan = try planFixes(a, &checks);
+    try testing.expectEqual(@as(usize, 3), plan.len);
+    try testing.expectEqual(FixKind.restore_config, plan[0].kind);
+    try testing.expectEqual(FixKind.chmod_config, plan[1].kind);
+    try testing.expectEqual(FixKind.install_completions, plan[2].kind);
+    try testing.expectEqualStrings("config_file", plan[0].check);
+    try testing.expect(std.mem.indexOf(u8, plan[1].description, "0700") != null);
+}
+
+test "formatReportJson: emits the fixes array when provided" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .ok, .message = "parsed" },
+    };
+    const fixes = [_]FixOutcome{
+        .{ .id = "scaffold_config", .check = "config_file", .status = .applied, .detail = "wrote /x/config.json" },
+        .{ .id = "install_completions", .check = "shell_completions", .status = .skipped, .detail = "pass --yes" },
+    };
+    const got = try formatReportJson(a, &checks, &fixes);
+    try testing.expect(std.mem.indexOf(u8, got, "\"fixes\":[{\"id\":\"scaffold_config\",\"check\":\"config_file\",\"status\":\"applied\",\"detail\":\"wrote /x/config.json\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"status\":\"skipped\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{") != null);
+}
+
+test "confirmFix: only y/yes approves; blank, other text, and EOF decline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const pf = PlannedFix{ .kind = .scaffold_config, .check = "config_file", .description = "d" };
+
+    var r_yes = std.Io.Reader.fixed("y\n");
+    try testing.expect(confirmFix(a, &r_yes, pf));
+    var r_yes2 = std.Io.Reader.fixed(" YES \r\n");
+    try testing.expect(confirmFix(a, &r_yes2, pf));
+    var r_no = std.Io.Reader.fixed("n\n");
+    try testing.expect(!confirmFix(a, &r_no, pf));
+    var r_blank = std.Io.Reader.fixed("\n");
+    try testing.expect(!confirmFix(a, &r_blank, pf));
+    var r_eof = std.Io.Reader.fixed("");
+    try testing.expect(!confirmFix(a, &r_eof, pf));
+}
+
+test "applyFix scaffold_config writes a commented config under a fresh HOME" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+    std.Io.Dir.cwd().deleteFile(testing.io, cfg_path) catch {};
+
+    const out = applyFix(testing.io, a, .{}, &home.env, .{ .kind = .scaffold_config, .check = "config_file", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    try testing.expect(std.mem.indexOf(u8, out.detail, cfg_path) != null);
+
+    const body = try std.Io.Dir.cwd().readFileAlloc(testing.io, cfg_path, a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, body, "\"provider\"") != null);
+}
+
+test "applyFix restore_config moves an invalid config aside and re-scaffolds" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    try home.writeConfig(a, "{ not json ");
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+
+    const out = applyFix(testing.io, a, .{}, &home.env, .{ .kind = .restore_config, .check = "config_file", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+
+    // Original bytes preserved at .bak; the live path now parses.
+    const bak = try std.Io.Dir.cwd().readFileAlloc(testing.io, try std.fmt.allocPrint(a, "{s}.bak", .{cfg_path}), a, .unlimited);
+    try testing.expectEqualStrings("{ not json ", bak);
+    const body = try std.Io.Dir.cwd().readFileAlloc(testing.io, cfg_path, a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, body, "\"provider\"") != null);
+    const c = checkConfigFile(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c.status);
+}
+
+test "checkCompletions + install_completions fix round-trips under a mock HOME" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // No shell detected -> skip (env has only HOME).
+    const c_skip = checkCompletions(testing.io, a, .{}, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_skip.status);
+
+    // Explicit --shell bash: nothing installed -> warn, fixable.
+    const cfg = Config{ .setup_shell = "bash" };
+    const c_warn = checkCompletions(testing.io, a, cfg, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_warn.status);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "bash:missing") != null);
+    try testing.expectEqual(FixKind.install_completions, c_warn.fix.?);
+
+    // Apply the fix -> check goes ok, script landed at the bash path.
+    const out = applyFix(testing.io, a, cfg, &home.env, .{ .kind = .install_completions, .check = "shell_completions", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    try testing.expect(std.mem.indexOf(u8, out.detail, "bash") != null);
+    const c_ok = checkCompletions(testing.io, a, cfg, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+}
+
+test "checkConfigPermissions: loose file warns fixable, chmod fix tightens" {
+    if (comptime builtin.os.tag == .windows) return;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+    const dir_path = try std.fmt.allocPrint(a, "{s}/.config/tau", .{home.home});
+
+    // No config file -> skip.
+    std.Io.Dir.cwd().deleteFile(testing.io, cfg_path) catch {};
+    const c_skip = checkConfigPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_skip.status);
+
+    // World-readable config in a group-accessible dir -> warn, fixable.
+    try home.writeConfig(a, "{\"provider\":\"openai\"}");
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, cfg_path, .fromMode(0o644), .{});
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, dir_path, .fromMode(0o755), .{});
+    const c_warn = checkConfigPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_warn.status);
+    try testing.expectEqual(FixKind.chmod_config, c_warn.fix.?);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "group/other") != null);
+
+    // chmod fix -> dir 0700, file 0600, check goes ok.
+    const out = applyFix(testing.io, a, .{}, &home.env, .{ .kind = .chmod_config, .check = "config_permissions", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    const c_ok = checkConfigPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+    const fstat = try std.Io.Dir.cwd().statFile(testing.io, cfg_path, .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), fstat.permissions.toMode() & 0o777);
+    const dstat = try std.Io.Dir.cwd().statFile(testing.io, dir_path, .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), dstat.permissions.toMode() & 0o777);
+}
+
+test "collectChecks: fixable outcomes are attached to the right checks" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    // Missing config.json -> scaffold fix; SHELL unset -> completions skip.
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+    std.Io.Dir.cwd().deleteFile(testing.io, cfg_path) catch {};
+
+    const checks = try collectChecks(testing.io, testing.allocator, a, .{}, &home.env);
+    var saw_scaffold = false;
+    for (checks) |c| {
+        if (c.name.len == "config_file".len and std.mem.eql(u8, c.name, "config_file")) {
+            try testing.expectEqual(FixKind.scaffold_config, c.fix.?);
+            saw_scaffold = true;
+        }
+        // api_key/network checks are never auto-fixable.
+        if (std.mem.eql(u8, c.name, "api_key")) try testing.expect(c.fix == null);
+        if (std.mem.eql(u8, c.name, "curl")) try testing.expect(c.fix == null);
+        if (std.mem.eql(u8, c.name, "endpoint_reachable")) try testing.expect(c.fix == null);
+        if (std.mem.eql(u8, c.name, "auth_probe")) try testing.expect(c.fix == null);
+    }
+    try testing.expect(saw_scaffold);
 }

@@ -168,6 +168,12 @@ const help_text =
     \\      --offline                 Skip network checks
     \\      --deep                    Also run an authenticated probe (spends ~1 token)
     \\      --provider/--model/--api-key   Diagnose an override instead of the configured default
+    \\      --fix                     Propose remediations for fixable checks (missing
+    \\                              config, loose permissions, missing completions);
+    \\                              prompts per fix on a TTY
+    \\      --yes                     Apply --fix remediations without prompting
+    \\      --shell <name>            Completions shell: bash|zsh|fish|pwsh|all
+    \\                              (default: detect from $SHELL)
     \\
     \\
     \\Models:
@@ -303,7 +309,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + doctor health summary (NDJSON)." },
-    .{ .a = "tau doctor [--offline|--deep]", .b = "diagnose the setup chain (config, provider, key, connectivity) — JSON report." },
+    .{ .a = "tau doctor [--offline|--deep] [--fix [--yes]] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --fix remediates behind confirmation." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },

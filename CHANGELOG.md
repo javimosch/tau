@@ -33,6 +33,14 @@ are backward compatible.
 - `tau doctor` — JSON setup diagnostics (config file parse, provider
   resolution, API key provenance, curl on PATH, endpoint reachability, and an
   optional `--deep` authenticated probe); `--offline` skips network checks
+- `tau doctor --fix` — auto-remediates fixable outcomes behind confirmation:
+  scaffolds a missing config (init semantics), moves an unparseable config to
+  `config.json.bak` and re-scaffolds, tightens POSIX permissions to
+  `0700`/`0600`, and installs/refreshes shell completions. Each fix needs an
+  interactive y/N prompt (TTY) or `--yes` for non-interactive use; the report
+  gains a `fixes` array and reflects the post-fix state. Also adds two
+  diagnostics: `config_permissions` (loose dir/file bits warn — the file can
+  hold API keys) and `shell_completions` (missing/outdated scripts warn)
 - `tau init` — write a commented starter `~/.config/tau/config.json` seeded
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs
