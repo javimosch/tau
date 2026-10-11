@@ -273,8 +273,10 @@ test_group_fleet() {
   "$BIN" fleet >/dev/null 2>&1;                   ok "fleet (no sub) -> invalid_argument" "$?" 80
   # Unknown subcommand -> invalid_argument
   "$BIN" fleet bogus >/dev/null 2>&1;             ok "fleet bogus -> invalid_argument" "$?" 80
-  # run without --goal -> missing_required_field
-  "$BIN" fleet run >/dev/null 2>&1;               ok "fleet run without --goal -> missing_required_field" "$?" 82
+  # run without --goal -> missing_required_field (--api-key fake keeps this
+  # deterministic: key resolution runs before the --goal check, so a keyless
+  # environment would exit 106 instead of reaching it)
+  "$BIN" fleet run --api-key fake >/dev/null 2>&1; ok "fleet run without --goal -> missing_required_field" "$?" 82
   # status without id -> invalid_argument
   "$BIN" fleet status >/dev/null 2>&1;            ok "fleet status no id -> invalid_argument" "$?" 80
   # cancel without id -> invalid_argument
@@ -401,26 +403,34 @@ test_group_acp() {
 
   "$BIN" acp bogus >/dev/null 2>&1; ok "acp bogus -> invalid_argument" "$?" 80
 
-  # acp status accepted by parser (exit 0 if not running)
+  # acp status accepted by parser (exit 0 if not running). The daemon
+  # (start/stop/status) is POSIX-only: on Windows it exits 111 with an err
+  # envelope instead — both contracts are pinned here.
   capture acp_status "$BIN" acp status 2>&1
-  if [ "$acp_status_rc" = "0" ] && printf '%s' "$acp_status_out" | grep -q '"acp"'; then
-    ok "acp status -> exit 0 with acp JSON" 0 0
+  if printf '%s' "$acp_status_out" | grep -q '"code":111'; then
+    ok "acp status -> exit 111 err envelope (daemon unsupported on this platform)" "$acp_status_rc" 111
+    skip_test "acp status reports running:false" "daemon unsupported on this platform"
+    skip_test "acp stop" "daemon unsupported on this platform"
   else
-    ok "acp status: exit $acp_status_rc" 1 0
-  fi
-  # Verify status reports running:false when not running
-  if printf '%s' "$acp_status_out" | grep -q '"running":false'; then
-    ok "acp status reports running:false" 0 0
-  else
-    ok "acp status missing running:false" 1 0
-  fi
+    if [ "$acp_status_rc" = "0" ] && printf '%s' "$acp_status_out" | grep -q '"acp"'; then
+      ok "acp status -> exit 0 with acp JSON" 0 0
+    else
+      ok "acp status: exit $acp_status_rc" 1 0
+    fi
+    # Verify status reports running:false when not running
+    if printf '%s' "$acp_status_out" | grep -q '"running":false'; then
+      ok "acp status reports running:false" 0 0
+    else
+      ok "acp status missing running:false" 1 0
+    fi
 
-  # acp stop accepted by parser (exit 0 if not running)
-  capture acp_stop "$BIN" acp stop 2>&1
-  if [ "$acp_stop_rc" = "0" ] && printf '%s' "$acp_stop_out" | grep -q '"acp"'; then
-    ok "acp stop -> exit 0 with acp JSON" 0 0
-  else
-    ok "acp stop: exit $acp_stop_rc" 1 0
+    # acp stop accepted by parser (exit 0 if not running)
+    capture acp_stop "$BIN" acp stop 2>&1
+    if [ "$acp_stop_rc" = "0" ] && printf '%s' "$acp_stop_out" | grep -q '"acp"'; then
+      ok "acp stop -> exit 0 with acp JSON" 0 0
+    else
+      ok "acp stop: exit $acp_stop_rc" 1 0
+    fi
   fi
 
   # acp serve --max-iterations: bad value rejected at parse time
@@ -480,16 +490,19 @@ test_group_goal_offline() {
 
   note "goal mode subcommands (offline)"
 
+  # --api-key fake on every call: key resolution runs before goal/session
+  # validation, so a keyless environment would exit 106 before reaching the
+  # paths under test.
   # /goal subcommands require --session
-  "$BIN" "/goal status" >/dev/null 2>&1;   ok "/goal status without --session -> exit 80" "$?" 80
-  "$BIN" "/goal pause" >/dev/null 2>&1;    ok "/goal pause without --session -> exit 80" "$?" 80
-  "$BIN" "/goal resume" >/dev/null 2>&1;   ok "/goal resume without --session -> exit 80" "$?" 80
-  "$BIN" "/goal clear" >/dev/null 2>&1;    ok "/goal clear without --session -> exit 80" "$?" 80
-  "$BIN" "/goal complete" >/dev/null 2>&1; ok "/goal complete without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal status" >/dev/null 2>&1;   ok "/goal status without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal pause" >/dev/null 2>&1;    ok "/goal pause without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal resume" >/dev/null 2>&1;   ok "/goal resume without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal clear" >/dev/null 2>&1;    ok "/goal clear without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal complete" >/dev/null 2>&1; ok "/goal complete without --session -> exit 80" "$?" 80
 
   # /goal status with --session, no prior goal -> {"goal":null}
   GSESS_OFF="smoke-goal-offline-$$"
-  capture goal_status "$BIN" --session "$GSESS_OFF" --no-tools --no-stream "/goal status" 2>&1
+  capture goal_status "$BIN" --api-key fake --session "$GSESS_OFF" --no-tools --no-stream "/goal status" 2>&1
   ok "/goal status (no goal) exit" "$goal_status_rc" 0
   if printf '%s' "$goal_status_out" | grep -q '"goal":null'; then
     ok "/goal status (no goal) -> {\"goal\":null}" 0 0
@@ -501,7 +514,7 @@ test_group_goal_offline() {
   # /goal pause|resume|clear|complete with --session, no prior goal -> {"goal":null}
   for sub in pause resume clear complete; do
     sname="smoke-goal-off-${sub}-$$"
-    capture goal_sub "$BIN" --session "$sname" --no-tools --no-stream "/goal $sub" 2>&1
+    capture goal_sub "$BIN" --api-key fake --session "$sname" --no-tools --no-stream "/goal $sub" 2>&1
     ok "/goal $sub (no goal) exit" "$goal_sub_rc" 0
     if printf '%s' "$goal_sub_out" | grep -q '"goal":null'; then
       ok "/goal $sub (no goal) -> {\"goal\":null}" 0 0
@@ -553,7 +566,8 @@ test_group_dry_run() {
 
   # Error envelope for missing required field (exit 82)
   # fleet run without --goal writes to stdout via fleetRequires (term.out, not term.err)
-  capture err_82 "$BIN" fleet run 2>&1 >/dev/null
+  # --api-key fake: key resolution precedes the --goal check, so keyless would exit 106
+  capture err_82 "$BIN" fleet run --api-key fake 2>&1 >/dev/null
   if printf '%s' "$err_82_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 82' 2>/dev/null; then
     ok "error envelope code 82 exists" 0 0
   else

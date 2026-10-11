@@ -429,7 +429,13 @@ pub fn main(init: std.process.Init) !void {
     // Warn if the config file exists but has invalid JSON (load degrades silently).
     if (base_cfg.config_warning) |w| printWarnJson(w);
 
-    const parsed = argsmod.parse(io, arena, init.minimal.args, init.environ_map, base_cfg) catch {
+    // Materialize the platform argv vector (WTF-16 on Windows, UTF-8 bytes on
+    // POSIX) into a plain UTF-8 slice so the parser stays platform-agnostic.
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, arena);
+    while (args_it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
+
+    const parsed = argsmod.parse(io, arena, argv_list.items, init.environ_map, base_cfg) catch {
         printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "argument parsing failed", false);
         std.process.exit(@intFromEnum(ExitCode.internal_error));
     };
