@@ -1,0 +1,95 @@
+name: ci
+
+# Runs the zig unit test suite and the offline smoke groups on a native runner
+# for every platform the release workflow ships a binary for (linux x86_64 +
+# aarch64, macos x86_64 + aarch64, windows x86_64). Because release tags are
+# cut from master, a green matrix on master — and the tag push itself — means
+# no platform-specific regression reaches a published binary untested.
+#
+# Everything runs through `shell: bash` (Git Bash on Windows) so the same
+# commands work on every leg. Zig is invoked by absolute path — no PATH
+# mutation needed, which avoids POSIX↔Windows path translation pitfalls.
+#
+# `workflow_call` lets the release workflow gate publishing on this matrix
+# once both workflows are merged.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request: {}
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One leg per release artifact: the zig archive named here matches
+          # the archive layout at https://ziglang.org/download/0.16.0/.
+          - { os: ubuntu-latest,    label: linux-x86_64,   zig_pkg: zig-x86_64-linux-0.16.0,   ext: tar.xz, bin: tau }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,  zig_pkg: zig-aarch64-linux-0.16.0,  ext: tar.xz, bin: tau }
+          - { os: macos-15-intel,   label: macos-x86_64,   zig_pkg: zig-x86_64-macos-0.16.0,   ext: tar.xz, bin: tau }
+          - { os: macos-latest,     label: macos-aarch64,  zig_pkg: zig-aarch64-macos-0.16.0,  ext: tar.xz, bin: tau }
+          - { os: windows-latest,   label: windows-x86_64, zig_pkg: zig-x86_64-windows-0.16.0, ext: zip,    bin: tau.exe }
+    env:
+      TAU_BIN: ${{ github.workspace }}/zig-out/bin/${{ matrix.bin }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}" -o "$RUNNER_TEMP/zig.${{ matrix.ext }}"
+          mkdir -p "$HOME/zig"
+          tar -xf "$RUNNER_TEMP/zig.${{ matrix.ext }}" -C "$HOME/zig" --strip-components=1
+          "$HOME/zig/zig" version
+
+      - name: Install Zig 0.16.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}"
+          curl.exe -fsSL $url -o "$env:RUNNER_TEMP\zig.zip"
+          Expand-Archive "$env:RUNNER_TEMP\zig.zip" "$env:USERPROFILE"
+          Move-Item "$env:USERPROFILE\${{ matrix.zig_pkg }}" "$env:USERPROFILE\zig"
+          & "$env:USERPROFILE\zig\zig.exe" version
+
+      - name: Ensure python3 is available (Windows)
+        # The smoke harness drives several assertions through python3. GitHub
+        # Windows images ship `python`; expose it as `python3` if the alias is
+        # absent so scripts/smoke.sh runs unmodified.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if ! command -v python3 >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/shims"
+            printf '#!/bin/sh\nexec python "$@"\n' > "$RUNNER_TEMP/shims/python3"
+            chmod +x "$RUNNER_TEMP/shims/python3"
+            echo "$RUNNER_TEMP/shims" >> "$GITHUB_PATH"
+          fi
+
+      - name: Build
+        shell: bash
+        run: '"$HOME/zig/zig" build'
+
+      - name: Unit tests
+        shell: bash
+        run: '"$HOME/zig/zig" build test --summary all'
+
+      - name: Offline smoke groups
+        shell: bash
+        run: ./scripts/smoke.sh
+
+      - name: Offline feature smoke
+        shell: bash
+        run: ./scripts/smoke-features.sh --offline

@@ -31,6 +31,9 @@ are backward compatible.
   (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
+- `ci` workflow — unit tests + offline smoke groups run on a native
+  Linux/macOS/Windows runner matrix for every released platform on each PR,
+  push to `master`, and `v*` tag (#193)
 
 ### Fixed
 
