@@ -488,6 +488,15 @@ Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting
 
 ---
 
+## 🔐 Security & Privacy
+
+- **[SECURITY.md](SECURITY.md)** — supported versions and how to report a vulnerability (private via GitHub Security Advisories)
+- **[docs/security-and-privacy.md](docs/security-and-privacy.md)** — the full picture: data flows, credential handling, `--debug` log redaction guarantees, the tool-execution model, and a hardening checklist
+
+Quick facts: the only outbound traffic is HTTPS to your configured chat endpoint (no telemetry); keys resolve from flag/config/env and are never persisted; `--debug` writes a redacted `0600` diagnostic log under `~/.config/tau/debug/`; tools run with your privileges — use `--tools`/`--no-tools`/`--dry-run` to constrain them.
+
+---
+
 ## 🧱 Tech Stack
 
 | Layer | Technology |

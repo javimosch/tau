@@ -244,5 +244,7 @@ line pointing at a redacted diagnostic log under `~/.config/tau/debug/`
 (`TAU_DEBUG_LOG` overrides the path), and `{"err":...}` envelopes carry the
 same path in a `debug_log` field. Credentials are masked
 (`***REDACTED***`), but review the file before sharing — it still contains
-tool I/O and endpoint details. Attach it to a bug report:
+tool I/O and endpoint details (see
+[security-and-privacy.md](security-and-privacy.md) for exactly what is and
+isn't masked). Attach it to a bug report:
 <https://github.com/javimosch/tau/issues>

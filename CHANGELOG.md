@@ -34,6 +34,9 @@ are backward compatible.
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and
   `{"err":...}` envelopes carry a `debug_log` link when a log is active (#167)
+- `SECURITY.md` — vulnerability reporting policy (#191)
+- `docs/security-and-privacy.md` — data flows, credential handling, debug-log
+  redaction guarantees, tool-execution model, and a hardening checklist (#191)
 
 ### Fixed
 
