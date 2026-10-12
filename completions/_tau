@@ -153,6 +153,7 @@ _tau() {
                         '--deep[run an authenticated probe (spends ~1 token)]' \
                         '--fix[remediate fixable checks (prompts per fix)]' \
                         '--yes[apply --fix remediations without prompting]' \
+                        '--json[stream NDJSON check/fix events + done:true verdict]' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
                         '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \

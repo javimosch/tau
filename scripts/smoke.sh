@@ -747,6 +747,48 @@ PYEOF
   else
     skip_test "doctor live-probe checks" "python3 or curl not available"
   fi
+
+  # 16. --json streams NDJSON: {"check":{...},"done":false} per check plus a
+  #     terminal {"ok":...,"summary":{...},"done":true} verdict as the last
+  #     line. Exit code is unchanged (keyless -> 1).
+  rm -f "$mock_config/config.json"
+  capture doc_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --json
+  ok "doctor --json keyless exit 1" "$doc_json_rc" 1
+  if printf '%s\n' "$doc_json_out" | python3 -c '
+import sys, json
+lines = [l for l in sys.stdin.read().splitlines() if l.strip()]
+events = [json.loads(l) for l in lines]
+assert len(events) >= 2, "expected check events plus a verdict line"
+assert all(e.get("done") is False for e in events[:-1]), "a non-terminal event ended the stream"
+assert events[-1].get("done") is True, "last line is not the done:true verdict"
+assert "ok" in events[-1] and "summary" in events[-1], "verdict missing ok/summary"
+names = [e["check"]["name"] for e in events[:-1]]
+for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_reachable", "auth_probe"):
+    assert want in names, "missing check event: %s" % want
+' 2>/dev/null; then
+    ok "doctor --json emits well-formed NDJSON events" 0 0
+  else
+    ok "doctor --json emits well-formed NDJSON events" 1 0
+  fi
+  contains "check events carry the report check shape" "$doc_json_out" '"check":{"name":"api_key","status":"fail"'
+  contains "verdict reports ok:false" "$doc_json_out" '"ok":false'
+  contains "verdict line carries done:true" "$doc_json_out" '"done":true'
+
+  # 17. --json --fix --yes: fix events stream between the first-pass check
+  #     events and the verdict; re-diagnosed checks re-emit post-fix state.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  capture doc_json_fix env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --json --fix --yes
+  ok "doctor --json --fix --yes exits 0" "$doc_json_fix_rc" 0
+  contains "fix events carry done:false payload" "$doc_json_fix_out" '"fix":{"id":"scaffold_config","check":"config_file","status":"applied"'
+  contains "post-fix check re-emitted ok" "$doc_json_fix_out" '"check":{"name":"config_file","status":"ok","message":"config file parsed'
+  contains "verdict carries the fixes array" "$doc_json_fix_out" '"fixes":['
+  if printf '%s\n' "$doc_json_fix_out" | tail -n 1 | grep -q '"done":true'; then
+    ok "verdict is the last NDJSON line" 0 0
+  else
+    ok "verdict is the last NDJSON line" 1 0
+  fi
 }
 
 # Group: tau init — commented starter config scaffold
