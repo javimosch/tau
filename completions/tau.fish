@@ -173,6 +173,7 @@ complete -c tau -n $doctor -f -l deep -d 'run an authenticated probe (spends ~1 
 complete -c tau -n $doctor -f -l fix -d 'remediate fixable checks (prompts per fix)'
 complete -c tau -n $doctor -f -l yes -d 'apply --fix remediations without prompting'
 complete -c tau -n $doctor -f -s y -d 'apply --fix remediations without prompting'
+complete -c tau -n $doctor -f -l json -d 'stream NDJSON check/fix events + done:true verdict'
 complete -c tau -n $doctor -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
 complete -c tau -n $doctor -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'diagnose an override provider'
 complete -c tau -n $doctor -f -l model -x -d 'diagnose an override model'

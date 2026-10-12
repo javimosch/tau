@@ -41,6 +41,11 @@ are backward compatible.
   gains a `fixes` array and reflects the post-fix state. Also adds two
   diagnostics: `config_permissions` (loose dir/file bits warn — the file can
   hold API keys) and `shell_completions` (missing/outdated scripts warn)
+- `tau doctor --json` — stream diagnostics as NDJSON for CI and support
+  tooling: one `{"check":{...},"done":false}` event per check as it finishes,
+  one `{"fix":{...},"done":false}` event per remediation under `--fix`, and a
+  terminal `{"ok":...,"summary":{...},"done":true}` verdict. The default
+  single-object report is unchanged
 - `tau init` — write a commented starter `~/.config/tau/config.json` seeded
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs

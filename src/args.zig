@@ -136,10 +136,11 @@ pub fn parse(
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
-    // [--fix] [--yes] [--shell sh]` — setup diagnostics; a command, not a
-    // prompt. An unknown provider is carried into the report as a failed
+    // [--fix] [--yes] [--shell sh] [--json]` — setup diagnostics; a command, not
+    // a prompt. An unknown provider is carried into the report as a failed
     // check instead of exiting 80. --fix proposes remediations, --yes applies
-    // them without prompting (non-interactive use).
+    // them without prompting (non-interactive use). --json streams NDJSON
+    // check/fix events instead of the single-object report.
     if (argv.len > 0 and eq(argv[0], "doctor")) {
         var dcfg: Config = base;
         var provider_opt: ?[]const u8 = null;
@@ -169,6 +170,8 @@ pub fn parse(
                 // --yes implies --fix (nothing else to approve).
                 dcfg.doctor_fix = true;
                 dcfg.doctor_yes = true;
+            } else if (eq(a, "--json")) {
+                dcfg.doctor_json = true;
             } else if (eq(a, "--shell")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -1097,6 +1100,24 @@ test "parse: doctor rejects unknown arguments and missing values" {
     const missing_val = try parseArgv(a, &.{ "tau", "doctor", "--provider" }, .{});
     try std.testing.expectEqual(Action.err, missing_val.action);
     try std.testing.expectEqualStrings("missing value for --provider", missing_val.err_msg.?);
+}
+
+test "parse: doctor --json selects NDJSON event output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--json" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_json);
+
+    // Off by default and composable with --fix/--yes.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--fix" }, .{});
+    try std.testing.expect(!q.config.doctor_json);
+    const r = try parseArgv(a, &.{ "tau", "doctor", "--json", "--fix", "--yes" }, .{});
+    try std.testing.expect(r.config.doctor_json);
+    try std.testing.expect(r.config.doctor_fix);
+    try std.testing.expect(r.config.doctor_yes);
 }
 
 test "parse: doctor carries an unknown provider as a failed check, not exit 80" {

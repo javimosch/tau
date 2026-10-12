@@ -5,6 +5,11 @@
 // non-skipped check is ok/warn; exit 1 when any check fails. Key material is
 // never printed — only its source.
 //
+// `--json` streams NDJSON for CI/support tooling: one {"check":{...}} event
+// per check as it finishes (plus {"fix":{...}} events under --fix) and a
+// terminal {"ok":...,"done":true} verdict — the same line-delimited,
+// done-terminated shape as the rest of the CLI's stream output.
+//
 // `--fix` remediates fixable outcomes: scaffold a missing config (init),
 // restore an unparseable one (moved to config.json.bak first), tighten POSIX
 // permission bits (0700 dir / 0600 file), install shell completions. Fixes
@@ -103,21 +108,73 @@ fn formatReportJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]c
         try buf.appendSlice(arena, ",\"fixes\":[");
         for (fx, 0..) |f, i| {
             if (i != 0) try buf.append(arena, ',');
-            try buf.appendSlice(arena, "{\"id\":\"");
-            try json.escapeInto(arena, &buf, f.id);
-            try buf.appendSlice(arena, "\",\"check\":\"");
-            try json.escapeInto(arena, &buf, f.check);
-            try buf.appendSlice(arena, "\",\"status\":\"");
-            try buf.appendSlice(arena, @tagName(f.status));
-            try buf.appendSlice(arena, "\",\"detail\":\"");
-            try json.escapeInto(arena, &buf, f.detail);
-            try buf.appendSlice(arena, "\"}");
+            try buf.appendSlice(arena, try formatFixJson(arena, f));
         }
         try buf.append(arena, ']');
     }
     try buf.appendSlice(arena, ",\"summary\":{");
     try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"ok\":{d},\"warn\":{d},\"fail\":{d},\"skip\":{d}", .{ s.ok, s.warn, s.fail, s.skip }));
     try buf.appendSlice(arena, "}}\n");
+    return buf.toOwnedSlice(arena);
+}
+
+/// Serialize one fix outcome as a JSON object. Shared by the single report's
+/// "fixes" array and the --json "fix" NDJSON event.
+fn formatFixJson(arena: std.mem.Allocator, f: FixOutcome) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, "{\"id\":\"");
+    try json.escapeInto(arena, &buf, f.id);
+    try buf.appendSlice(arena, "\",\"check\":\"");
+    try json.escapeInto(arena, &buf, f.check);
+    try buf.appendSlice(arena, "\",\"status\":\"");
+    try buf.appendSlice(arena, @tagName(f.status));
+    try buf.appendSlice(arena, "\",\"detail\":\"");
+    try json.escapeInto(arena, &buf, f.detail);
+    try buf.appendSlice(arena, "\"}");
+    return buf.toOwnedSlice(arena);
+}
+
+/// One NDJSON check event for --json mode: the same object the single report
+/// carries in "checks", wrapped with done:false (stream-event shape).
+fn formatCheckEvent(arena: std.mem.Allocator, c: Check) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, "{\"check\":");
+    try buf.appendSlice(arena, try formatCheckJson(arena, c));
+    try buf.appendSlice(arena, ",\"done\":false}");
+    return buf.toOwnedSlice(arena);
+}
+
+/// One NDJSON fix event for --json --fix, emitted as each remediation is
+/// decided or applied.
+fn formatFixEvent(arena: std.mem.Allocator, f: FixOutcome) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, "{\"fix\":");
+    try buf.appendSlice(arena, try formatFixJson(arena, f));
+    try buf.appendSlice(arena, ",\"done\":false}");
+    return buf.toOwnedSlice(arena);
+}
+
+/// Terminal NDJSON verdict for --json mode — always the last line, always
+/// done:true. Carries ok + version + summary (and the fixes array when --fix
+/// ran) so a consumer reading only the last line still gets the full verdict.
+fn formatVerdictJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome) ![]u8 {
+    const s = summarize(checks);
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, if (s.fail == 0) "{\"ok\":true" else "{\"ok\":false");
+    try buf.appendSlice(arena, ",\"version\":\"");
+    try buf.appendSlice(arena, version);
+    try buf.appendSlice(arena, "\",\"summary\":{");
+    try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"ok\":{d},\"warn\":{d},\"fail\":{d},\"skip\":{d}", .{ s.ok, s.warn, s.fail, s.skip }));
+    try buf.append(arena, '}');
+    if (fixes) |fx| {
+        try buf.appendSlice(arena, ",\"fixes\":[");
+        for (fx, 0..) |f, i| {
+            if (i != 0) try buf.append(arena, ',');
+            try buf.appendSlice(arena, try formatFixJson(arena, f));
+        }
+        try buf.append(arena, ']');
+    }
+    try buf.appendSlice(arena, ",\"done\":true}");
     return buf.toOwnedSlice(arena);
 }
 
@@ -527,22 +584,32 @@ pub const Report = struct {
     json: []const u8,
 };
 
+/// Append a finished check and, in --json mode, emit its NDJSON event
+/// immediately so consumers see progress while later checks still run.
+fn addCheck(arena: std.mem.Allocator, list: *std.ArrayList(Check), c: Check, cfg: Config) !void {
+    try list.append(arena, c);
+    if (cfg.doctor_json) {
+        term.out(try formatCheckEvent(arena, c));
+        term.out("\n");
+    }
+}
+
 /// Run every check and return the raw list. Local checks run first
 /// (config file, permissions, completions), then provider/key, then the
 /// curl-gated network checks.
 pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]Check {
     var checks: std.ArrayList(Check) = .empty;
-    try checks.append(arena, checkConfigFile(io, arena, env));
-    try checks.append(arena, checkConfigPermissions(io, arena, env));
-    try checks.append(arena, checkProvider(arena, cfg));
+    try addCheck(arena, &checks, checkConfigFile(io, arena, env), cfg);
+    try addCheck(arena, &checks, checkConfigPermissions(io, arena, env), cfg);
+    try addCheck(arena, &checks, checkProvider(arena, cfg), cfg);
     const rk = cfgmod.resolveApiKeyInfo(cfg, env);
-    try checks.append(arena, checkApiKey(arena, cfg, rk));
-    try checks.append(arena, checkCompletions(io, arena, cfg, env));
+    try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
+    try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
-    try checks.append(arena, curl_check);
-    try checks.append(arena, checkEndpoint(io, gpa, arena, cfg, curl_ok));
-    try checks.append(arena, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok));
+    try addCheck(arena, &checks, curl_check, cfg);
+    try addCheck(arena, &checks, checkEndpoint(io, gpa, arena, cfg, curl_ok), cfg);
+    try addCheck(arena, &checks, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok), cfg);
     return checks.toOwnedSlice(arena);
 }
 
@@ -699,14 +766,24 @@ fn anyApplied(outcomes: []const FixOutcome) bool {
     return false;
 }
 
-/// Run all checks, print the JSON report on stdout, and return the process
-/// exit code: 0 when every non-skipped check is ok/warn, 1 when any fails.
-/// With cfg.doctor_fix, plan remediations first; each fix applies only when
-/// confirmed (--yes, or a y/yes answer on a TTY prompt). The emitted report
-/// carries a "fixes" array and reflects the post-fix state when anything was
-/// applied.
+/// Run all checks, print the report on stdout, and return the process exit
+/// code: 0 when every non-skipped check is ok/warn, 1 when any fails. The
+/// default report is one JSON object; --json streams NDJSON instead — one
+/// {"check":{...},"done":false} event per check as it finishes, one
+/// {"fix":{...},"done":false} event per remediation (--fix), and a terminal
+/// {"ok":...,"summary":{...},"done":true} verdict line. With cfg.doctor_fix,
+/// plan remediations first; each fix applies only when confirmed (--yes, or a
+/// y/yes answer on a TTY prompt). The report carries a "fixes" array and
+/// reflects the post-fix state when anything was applied — in --json mode a
+/// re-diagnosed check re-emits with its post-fix status.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     if (!cfg.doctor_fix) {
+        if (cfg.doctor_json) {
+            const checks = try collectChecks(io, gpa, arena, cfg, env);
+            term.out(try formatVerdictJson(arena, checks, null));
+            term.out("\n");
+            return if (summarize(checks).fail == 0) 0 else 1;
+        }
         const report = try collectReport(io, gpa, arena, cfg, env);
         term.out(report.json);
         term.out("\n");
@@ -722,15 +799,19 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
         var fr = std.Io.File.stdin().reader(io, &rbuf);
         for (planned) |pf| {
             const approved = cfg.doctor_yes or (interactive and confirmFix(arena, &fr.interface, pf));
-            if (approved) {
-                try outcomes.append(arena, applyFix(io, arena, cfg, env, pf));
-            } else {
-                try outcomes.append(arena, .{
+            const o = if (approved)
+                applyFix(io, arena, cfg, env, pf)
+            else
+                FixOutcome{
                     .id = @tagName(pf.kind),
                     .check = pf.check,
                     .status = if (interactive) .declined else .skipped,
                     .detail = if (interactive) "declined at prompt" else "not confirmed — pass --yes to apply non-interactively",
-                });
+                };
+            try outcomes.append(arena, o);
+            if (cfg.doctor_json) {
+                term.out(try formatFixEvent(arena, o));
+                term.out("\n");
             }
         }
     }
@@ -738,8 +819,13 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     // Re-diagnose only when a fix actually changed something; the emitted
     // report (and exit code) then reflects the post-remediation state.
     const final_checks = if (anyApplied(outcomes.items)) try collectChecks(io, gpa, arena, cfg, env) else checks;
-    const report_json = try formatReportJson(arena, final_checks, outcomes.items);
-    term.out(report_json);
+    if (cfg.doctor_json) {
+        term.out(try formatVerdictJson(arena, final_checks, outcomes.items));
+        term.out("\n");
+    } else {
+        const report_json = try formatReportJson(arena, final_checks, outcomes.items);
+        term.out(report_json);
+    }
     return if (summarize(final_checks).fail == 0) 0 else 1;
 }
 
@@ -1069,6 +1155,61 @@ test "formatReportJson: warns do not flip the ok flag" {
     const got = try formatReportJson(a, &checks, null);
     try testing.expect(std.mem.startsWith(u8, got, "{\"ok\":true,"));
     try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{\"ok\":1,\"warn\":1,\"fail\":0,\"skip\":1}") != null);
+}
+
+// ---------------------------------------------------------------------------
+// --json NDJSON event tests
+// ---------------------------------------------------------------------------
+
+test "formatCheckEvent: wraps the report check shape with done:false" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const ev = try formatCheckEvent(a, .{ .name = "curl", .status = .ok, .message = "curl available" });
+    try testing.expectEqualStrings(
+        "{\"check\":{\"name\":\"curl\",\"status\":\"ok\",\"message\":\"curl available\"},\"done\":false}",
+        ev,
+    );
+}
+
+test "formatFixEvent: fix events reuse the report's fixes payload" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const f = FixOutcome{ .id = "scaffold_config", .check = "config_file", .status = .applied, .detail = "wrote /x" };
+    try testing.expectEqualStrings(
+        "{\"id\":\"scaffold_config\",\"check\":\"config_file\",\"status\":\"applied\",\"detail\":\"wrote /x\"}",
+        try formatFixJson(a, f),
+    );
+    const ev = try formatFixEvent(a, f);
+    try testing.expect(std.mem.startsWith(u8, ev, "{\"fix\":{\"id\":\"scaffold_config\""));
+    try testing.expect(std.mem.endsWith(u8, ev, ",\"done\":false}"));
+}
+
+test "formatVerdictJson: terminal line carries ok/summary/done:true (+fixes)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .ok, .message = "parsed" },
+        .{ .name = "api_key", .status = .fail, .message = "no key" },
+    };
+    const v = try formatVerdictJson(a, &checks, null);
+    try testing.expect(std.mem.startsWith(u8, v, "{\"ok\":false,\"version\":"));
+    try testing.expect(std.mem.indexOf(u8, v, "\"summary\":{\"ok\":1,\"warn\":0,\"fail\":1,\"skip\":0}") != null);
+    try testing.expect(std.mem.endsWith(u8, v, ",\"done\":true}"));
+    // No fixes key unless a --fix pass ran (mirrors formatReportJson).
+    try testing.expect(std.mem.indexOf(u8, v, "\"fixes\"") == null);
+
+    const fixes = [_]FixOutcome{
+        .{ .id = "chmod_config", .check = "config_permissions", .status = .skipped, .detail = "not confirmed" },
+    };
+    const vf = try formatVerdictJson(a, &checks, &fixes);
+    try testing.expect(std.mem.indexOf(u8, vf, "\"fixes\":[{\"id\":\"chmod_config\"") != null);
+    try testing.expect(std.mem.endsWith(u8, vf, ",\"done\":true}"));
 }
 
 test "curlHttpCode: spawn failure returns null" {

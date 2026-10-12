@@ -182,6 +182,9 @@ pub const Config = struct {
     doctor_fix: bool = false,
     /// `tau doctor --yes` — apply --fix remediations without prompting.
     doctor_yes: bool = false,
+    /// `tau doctor --json` — emit NDJSON events (one per check/fix plus a
+    /// done:true verdict line) instead of the default single-object report.
+    doctor_json: bool = false,
 
     // --- Setup (src/setup.zig) ---
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —
