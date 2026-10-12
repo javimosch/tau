@@ -2,6 +2,9 @@
 
 Every error tau can print, what it means, and how to fix it.
 
+For install, API-key, and first-run questions start with
+**[docs/faq.md](faq.md)** — this page is the error catalog.
+
 tau reports failures on **stderr** as a single-line JSON envelope — even in
 `--mode text`:
 

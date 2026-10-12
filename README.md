@@ -477,6 +477,7 @@ Requires Zig 0.16.0 and `curl` on PATH.
 
 ## 🔧 Troubleshooting
 
+Common install/auth/first-run questions: **[docs/faq.md](docs/faq.md)**.
 Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it.
 
 | Symptom | Likely Cause | Fix |
