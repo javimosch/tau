@@ -183,7 +183,8 @@ fn printVersion() void {
 // Single source of truth for all CLI flags. printHelpJson and the test both
 // derive from this table; help_text Options section must be kept in sync.
 const FlagSpec = struct { long: []const u8, short: ?[]const u8 = null, arg: ?[]const u8 = null };
-const flag_specs = [_]FlagSpec{
+// Pub so args.zig can derive its did-you-mean candidate list from the same table.
+pub const flag_specs = [_]FlagSpec{
     .{ .long = "--print",                .short = "-p"           },
     .{ .long = "--provider",             .arg = "name"           },
     .{ .long = "--model",                .arg = "pattern"        },

@@ -34,6 +34,11 @@ are backward compatible.
 - Startup stderr warning for unknown/misspelled config keys — names each
   unknown top-level key (and `keys.<name>` entries matching no provider) with
   "did you mean" suggestions; keys are still ignored, stdout stays pure JSON
+- "Did you mean" suggestions across the CLI — mistyped subcommands
+  (`tau modles`), unknown flags (`--proivder`), mistyped subcommand arguments
+  (`tau acp strt`, `tau fleet stats`, `tau skills lod`, `tau guide --hman`),
+  and invalid `--role`/`--mode`/`--provider` values all suggest the closest
+  match within 2 edits, matching the config-key warning UX (#200)
 
 ### Fixed
 

@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "suggest:test_group_suggest"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -768,6 +769,67 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: did-you-mean suggestions for mistyped subcommands and flags (#200)
+test_group_suggest() {
+  local out rc
+
+  note "did-you-mean suggestions (subcommands, flags, args, values)"
+
+  capture sug1 "$BIN" modles
+  ok "tau modles -> exit 80" "$sug1_rc" 80
+  contains "modles suggests models" "$sug1_err" 'did you mean \"models\"'
+
+  capture sug2 "$BIN" --proivder x
+  ok "tau --proivder -> exit 80" "$sug2_rc" 80
+  contains "--proivder suggests --provider" "$sug2_err" 'did you mean \"--provider\"'
+
+  capture sug3 "$BIN" flett run
+  ok "tau flett run -> exit 80" "$sug3_rc" 80
+  contains "flett suggests fleet" "$sug3_err" 'did you mean \"fleet\"'
+
+  capture sug4 "$BIN" acp strt
+  ok "acp strt -> exit 80" "$sug4_rc" 80
+  contains "acp strt suggests start" "$sug4_err" 'did you mean \"start\"'
+
+  capture sug5 "$BIN" fleet stats
+  ok "fleet stats -> exit 80" "$sug5_rc" 80
+  contains "fleet stats suggests status" "$sug5_err" 'did you mean \"status\"'
+
+  capture sug6 "$BIN" skills lod
+  ok "skills lod -> exit 80" "$sug6_rc" 80
+  contains "skills lod suggests load" "$sug6_err" 'did you mean \"load\"'
+
+  capture sug7 "$BIN" guide --hman
+  ok "guide --hman -> exit 80" "$sug7_rc" 80
+  contains "guide --hman suggests --human" "$sug7_err" 'did you mean \"--human\"'
+
+  capture sug8 "$BIN" --role autor x
+  ok "--role autor -> exit 80" "$sug8_rc" 80
+  contains "--role autor suggests author" "$sug8_err" 'did you mean \"author\"'
+
+  capture sug9 "$BIN" --provider opnai x
+  ok "--provider opnai -> exit 80" "$sug9_rc" 80
+  contains "--provider opnai suggests openai" "$sug9_err" 'did you mean \"openai\"'
+
+  # An unrelated token still errors, but with no suggestion appended.
+  capture sug10 "$BIN" --zztopp x
+  ok "unrelated flag -> exit 80" "$sug10_rc" 80
+  if printf '%s' "$sug10_err" | grep -q 'did you mean'; then
+    ok "unrelated flag gets no suggestion" 1 0
+  else
+    ok "unrelated flag gets no suggestion" 0 0
+  fi
+
+  # A near-miss first word followed by ordinary prompt text stays a prompt
+  # (fake key -> fast auth failure, not a parse error).
+  "$BIN" model the auth flow --api-key fake --provider openai >/dev/null 2>&1; rc=$?
+  if [ "$rc" != "80" ]; then
+    ok "near-miss word + prompt text stays a prompt (exit $rc, not 80)" 0 0
+  else
+    ok "near-miss word + prompt text stays a prompt" 1 0
+  fi
 }
 
 # Group: --bench regression guard

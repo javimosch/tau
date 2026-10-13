@@ -128,37 +128,9 @@ fn unknownKeyLess(_: void, a: UnknownKey, b: UnknownKey) bool {
     return std.mem.order(u8, a.name, b.name) == .lt;
 }
 
-/// Levenshtein edit distance — config keys and provider names are short, so a
-/// two-row O(n·m) DP is plenty. Returns null on allocation failure.
-fn editDistance(arena: std.mem.Allocator, a: []const u8, b: []const u8) ?usize {
-    var p = arena.alloc(usize, b.len + 1) catch return null;
-    var c = arena.alloc(usize, b.len + 1) catch return null;
-    for (p, 0..) |*cell, j| cell.* = j;
-    for (a, 0..) |ca, i| {
-        c[0] = i + 1;
-        for (b, 0..) |cb, j| {
-            const sub = p[j] + @intFromBool(ca != cb);
-            c[j + 1] = @min(@min(c[j] + 1, p[j + 1] + 1), sub);
-        }
-        std.mem.swap([]usize, &p, &c);
-    }
-    return p[b.len];
-}
-
-/// Nearest candidate within 2 edits, else null — a 1–2 char typo always
-/// produces a suggestion, an unrelated name (e.g. "zztopp") never does.
-fn suggest(arena: std.mem.Allocator, name: []const u8, candidates: []const []const u8) ?[]const u8 {
-    var best: ?[]const u8 = null;
-    var best_d: usize = std.math.maxInt(usize);
-    for (candidates) |c| {
-        const d = editDistance(arena, name, c) orelse continue;
-        if (d <= 2 and d < best_d) {
-            best = c;
-            best_d = d;
-        }
-    }
-    return best;
-}
+// Levenshtein "did you mean" helper — shared with the CLI parser (args.zig)
+// so config-key and argv suggestions behave identically.
+const suggest = @import("suggest.zig").suggest;
 
 /// Re-scan the raw file bytes (the FileConfig parse swallows unknown keys via
 /// .ignore_unknown_fields) and build a warning naming every top-level key that
@@ -517,31 +489,6 @@ test "load: all-valid config produces no warning" {
 
     const cfg = load(testing.io, arena, &th.env);
     try testing.expectEqual(@as(?[]const u8, null), cfg.config_warning);
-}
-
-test "editDistance: exact, typo, and unrelated distances" {
-    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_inst.deinit();
-    const arena = arena_inst.allocator();
-
-    try testing.expectEqual(@as(?usize, 0), editDistance(arena, "mode", "mode"));
-    try testing.expectEqual(@as(?usize, 1), editDistance(arena, "temprature", "temperature"));
-    try testing.expectEqual(@as(?usize, 1), editDistance(arena, "opnai", "openai"));
-    try testing.expectEqual(@as(?usize, 0), editDistance(arena, "", ""));
-    try testing.expectEqual(@as(?usize, 3), editDistance(arena, "", "abc"));
-    try testing.expect(editDistance(arena, "zztopp", "temperature").? > 2);
-}
-
-test "suggest: typos resolve to nearest key, unrelated names get none" {
-    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_inst.deinit();
-    const arena = arena_inst.allocator();
-
-    try testing.expectEqualStrings("temperature", suggest(arena, "temprature", &known_keys).?);
-    try testing.expectEqualStrings("openai", suggest(arena, "opnai", &provider_names).?);
-    try testing.expectEqual(@as(?[]const u8, null), suggest(arena, "zztopp", &known_keys));
-    // Exact matches are never "unknown", but suggest still resolves them.
-    try testing.expectEqualStrings("mode", suggest(arena, "mode", &known_keys).?);
 }
 
 test "known_keys covers every FileConfig field" {
