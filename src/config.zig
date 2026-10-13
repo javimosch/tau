@@ -152,8 +152,9 @@ pub const Config = struct {
     /// Tokens of recent history kept verbatim during compaction (pi default).
     compact_keep_recent_tokens: u32 = 20_000,
 
-    /// Set by configfile.load() when the config file exists but has invalid JSON.
-    /// main.zig emits a warning and continues with defaults.
+    /// Set by configfile.load() when the config file exists but has invalid
+    /// JSON or contains unknown/misspelled keys. main.zig emits a warning on
+    /// stderr and continues (stdout stays pure JSON).
     config_warning: ?[]const u8 = null,
 };
 

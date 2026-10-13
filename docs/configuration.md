@@ -18,7 +18,13 @@ The file is **optional** — tau runs fine without it. Behavior on load:
 - Missing file, unreadable file, or unset `HOME` → all defaults are used.
 - Invalid JSON → a warning is printed to stderr and defaults are used; tau does
   not exit. Fix the syntax or delete the file.
-- Unknown keys are ignored silently, so the file is forward-compatible.
+- Unknown keys are still ignored (the file stays forward-compatible), but tau
+  prints a `{"warn": {...}}` line to **stderr** at startup naming each one —
+  with a *"did you mean"* suggestion when it looks like a typo, e.g.
+  `"temprature" (did you mean "temperature"?)`. Entries inside `keys` whose
+  name matches no provider are flagged the same way
+  (`"keys.opnai" (unknown provider — did you mean "openai"?)`), since a
+  misspelled provider key can never be resolved. Stdout stays pure JSON.
 - Keys set in the file become the *base* config; any matching CLI flag
   overrides them for that invocation.
 
