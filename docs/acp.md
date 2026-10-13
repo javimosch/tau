@@ -63,6 +63,176 @@ If `tau` is not on `PATH` inside Zed's spawn environment, use the absolute path:
 > the endpoint. The `env` map in `agent_servers` is the right place to inject
 > `TAU_API_KEY`, `TAU_ENDPOINT`, or a provider key for the spawned process.
 
+## Editor integrations
+
+Every client below does the same thing under the hood: spawn `tau acp serve`
+and speak JSON-RPC over stdio. Only the config file format differs. In all
+cases provider, model, and API keys come from `~/.config/tau/config.json` and
+the spawned process's environment — the `args` list must only contain
+`["acp", "serve"]` (see the note above for why).
+
+### JetBrains IDEs
+
+AI Assistant ships with ACP support (no JetBrains AI subscription required).
+Open the AI Chat tool window, click the options button, and choose **Add
+Custom Agent** — this creates `~/.jetbrains/acp.json`. Fill it in:
+
+```json
+{
+  "agent_servers": {
+    "tau": {
+      "command": "tau",
+      "args": ["acp", "serve"],
+      "env": {
+        "OPENAI_API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
+
+The key (`"tau"`) is the display name in the AI Chat agent selector. Note the
+differences from Zed's file: no `"type"` field, and an optional top-level
+`"default_mcp_settings"` object controls MCP passthrough. Custom agents are
+not supported under WSL — use a native Windows or Linux/macOS install.
+
+### VS Code
+
+Install the [ACP Client](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client)
+extension, then add to `settings.json`:
+
+```json
+{
+  "acp.agents": {
+    "tau": {
+      "command": "tau",
+      "args": ["acp", "serve"],
+      "env": {}
+    }
+  }
+}
+```
+
+Run **ACP: Connect to Agent** from the Command Palette, pick `tau`, then
+**ACP: New Conversation**. `tau` must be on the `PATH` the extension sees —
+launch VS Code from a shell where it resolves, or use the absolute path.
+
+### Neovim — avante.nvim
+
+[avante.nvim](https://github.com/yetone/avante.nvim) drives ACP agents via
+`acp_providers`:
+
+```lua
+require("avante").setup({
+  provider = "tau",
+  acp_providers = {
+    ["tau"] = {
+      command = "tau",
+      args = { "acp", "serve" },
+      env = {
+        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY"),
+      },
+    },
+  },
+})
+```
+
+If `tau` isn't the default `provider`, select it with `:AvanteSwitchProvider`.
+
+### Neovim — CodeCompanion.nvim
+
+[CodeCompanion](https://github.com/olimorris/codecompanion.nvim) has no preset
+tau adapter, but custom ACP adapters are supported directly in the config:
+
+```lua
+require("codecompanion").setup({
+  adapters = {
+    acp = {
+      tau = function()
+        local helpers = require("codecompanion.adapters.acp.helpers")
+        return {
+          name = "tau",
+          formatted_name = "tau",
+          type = "acp",
+          roles = {
+            llm = "assistant",
+            user = "user",
+          },
+          commands = {
+            default = { "tau", "acp", "serve" },
+          },
+          defaults = {
+            timeout = 20000, -- 20 seconds
+          },
+          parameters = {
+            protocolVersion = 1,
+            clientCapabilities = {
+              fs = { readTextFile = true, writeTextFile = true },
+            },
+            clientInfo = {
+              name = "CodeCompanion.nvim",
+              version = "1.0.0",
+            },
+          },
+          handlers = {
+            setup = function(self) return true end,
+            auth = function(self) return true end,
+            form_messages = function(self, messages, capabilities)
+              return helpers.form_messages(self, messages, capabilities)
+            end,
+            on_exit = function(self, code) end,
+          },
+        }
+      end,
+    },
+  },
+})
+```
+
+Then select the `tau` adapter in a chat buffer, or set
+`interactions.chat.adapter = "tau"` to make it the default.
+
+### Emacs — agent-shell
+
+[agent-shell](https://github.com/xenodium/agent-shell) (on MELPA, with its
+dependency [acp.el](https://github.com/xenodium/acp.el)) is a native Emacs
+client for ACP agents. Register tau as a custom agent:
+
+```elisp
+(defun agent-shell-make-tau-config ()
+  "Create a tau agent configuration for `agent-shell'."
+  (agent-shell-make-agent-config
+   :identifier 'tau
+   :mode-line-name "tau"
+   :buffer-name "tau"
+   :shell-prompt "tau> "
+   :shell-prompt-regexp "tau> "
+   :needs-authentication nil
+   :client-maker
+   (lambda ()
+     (acp-make-client
+      :command "tau"
+      :command-params '("acp" "serve")
+      :environment-variables '("OPENAI_API_KEY=sk-...")))))
+
+(add-to-list 'agent-shell-agent-configs (agent-shell-make-tau-config))
+```
+
+`:environment-variables` takes `"VAR=value"` strings; omit it entirely if tau
+authenticates via `~/.config/tau/config.json`. Run `M-x agent-shell` and pick
+`tau`.
+
+### Terminal — Toad
+
+[Toad](https://www.batrachian.ai/) is a terminal UI that can host any ACP
+agent in place — no config file needed:
+
+```bash
+toad acp "tau acp serve" .
+```
+
+The trailing `.` sets the agent's working directory to the project root.
+
 ## Other ACP clients
 
 Any client that can spawn a subprocess and speak ACP over **stdio** can use tau —
@@ -106,7 +276,8 @@ path is available — `start`/`stop`/`status` exit `111` (unimplemented).
 
 | Symptom | Likely cause / fix |
 |---------|--------------------|
-| Agent fails to start in Zed | `command` not found — use an absolute path to the tau binary. |
+| Agent fails to start in the editor | `command` not found — use an absolute path to the tau binary, and make sure it's on the `PATH` the editor's spawn environment sees (GUI apps often don't inherit shell init files). |
+| tau doesn't appear in JetBrains AI Chat | `~/.jetbrains/acp.json` has a syntax error — validate the JSON and restart the IDE. Custom agents are not supported under WSL. |
 | `unknown acp argument: --provider` | Only `serve`, `--acp-socket`, `--max-iterations` are valid in `args`. Set provider/model in `~/.config/tau/config.json` instead. |
 | Auth error (exit 106) in daemon/socket mode | The daemon inherits only its spawn environment — export the key before `tau acp start`, or put it in `config.json` / the Zed `env` block. |
 | Edits don't show as diffs | Client didn't advertise `fs.writeTextFile` capability, or rejected the write — tau falls back to direct file writes. |

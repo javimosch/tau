@@ -26,12 +26,19 @@ are backward compatible.
 - GitHub issue and PR templates (#63)
 - `docs/configuration.md` — configuration reference covering config keys, env
   vars, and precedence, including per-provider setup examples (#109, #120)
-- `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114)
+- `docs/acp.md` — ACP editor-integration guide (Zed `agent_servers` config) (#114);
+  expanded with copy-pasteable configs for JetBrains, VS Code, Neovim
+  (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 - Startup stderr warning for unknown/misspelled config keys — names each
   unknown top-level key (and `keys.<name>` entries matching no provider) with
   "did you mean" suggestions; keys are still ignored, stdout stays pure JSON
+- "Did you mean" suggestions across the CLI — mistyped subcommands
+  (`tau modles`), unknown flags (`--proivder`), mistyped subcommand arguments
+  (`tau acp strt`, `tau fleet stats`, `tau skills lod`, `tau guide --hman`),
+  and invalid `--role`/`--mode`/`--provider` values all suggest the closest
+  match within 2 edits, matching the config-key warning UX (#200)
 
 ### Fixed
 

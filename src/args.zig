@@ -1,6 +1,8 @@
 const std = @import("std");
 const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
+const suggest_mod = @import("suggest.zig");
+const main_mod = @import("main.zig");
 const Config = cfgmod.Config;
 
 pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
@@ -30,6 +32,85 @@ fn splitCsv(arena: std.mem.Allocator, s: []const u8) ![]const []const u8 {
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
+}
+
+// ── Did-you-mean candidate tables ───────────────────────────────────────────
+//
+// Error paths below append ` (did you mean "<candidate>"?)` when the offending
+// token is within 2 edits of a candidate — the same threshold and phrasing as
+// the config-file unknown-key warning (src/suggest.zig, src/configfile.zig).
+
+/// Every CLI flag (long + short forms), derived from main.zig's flag_specs so
+/// the suggestion candidate list can't drift from the real flag set.
+const flag_name_count = blk: {
+    var n: usize = 0;
+    for (main_mod.flag_specs) |f| {
+        n += 1;
+        if (f.short != null) n += 1;
+    }
+    break :blk n;
+};
+
+const flag_names = blk: {
+    var names: [flag_name_count][]const u8 = undefined;
+    var n: usize = 0;
+    for (main_mod.flag_specs) |f| {
+        names[n] = f.long;
+        n += 1;
+        if (f.short) |s| {
+            names[n] = s;
+            n += 1;
+        }
+    }
+    break :blk names;
+};
+
+const acp_args = [_][]const u8{ "start", "stop", "status", "serve", "--acp-socket", "--max-iterations" };
+const skills_subs = [_][]const u8{ "list", "search", "load" };
+const guide_args = [_][]const u8{"--human"};
+const fleet_args = [_][]const u8{ "run", "status", "list", "logs", "cancel", "--goal", "--id", "--api-key", "--provider", "--coordinator-model", "--model", "--worker-model", "--sequential", "--parallel", "--items", "--schema" };
+const role_values = [_][]const u8{ "author", "critic", "coordinator", "none" };
+const mode_values = [_][]const u8{ "text", "json" };
+
+/// Provider names, for --provider/--model-shorthand suggestions.
+const provider_names = blk: {
+    var names: [cfgmod.providers.len][]const u8 = undefined;
+    for (cfgmod.providers, 0..) |p, i| names[i] = p.name;
+    break :blk names;
+};
+
+const SubSpec = struct { name: []const u8, args: []const []const u8 };
+
+/// Top-level subcommands plus the argument words each accepts — powers both
+/// the per-subcommand argument suggestions and the "was that first token a
+/// subcommand typo?" check.
+const subcommand_specs = [_]SubSpec{
+    .{ .name = "acp", .args = &acp_args },
+    .{ .name = "fleet", .args = &fleet_args },
+    .{ .name = "skills", .args = &skills_subs },
+    .{ .name = "models", .args = &.{} },
+    .{ .name = "guide", .args = &guide_args },
+};
+
+const subcommand_names = blk: {
+    var names: [subcommand_specs.len][]const u8 = undefined;
+    for (subcommand_specs, 0..) |s, i| names[i] = s.name;
+    break :blk names;
+};
+
+/// True when a first token that merely resembles a subcommand is more likely
+/// a subcommand typo than the start of a prompt: bare (`tau modles`), followed
+/// by a flag (`tau gide --human`), or followed by one of that subcommand's own
+/// argument words (`tau flett run`). A near-miss word followed by ordinary
+/// prompt text stays a prompt (`tau model the auth flow`).
+fn looksLikeSubcommandTypo(argv: []const []const u8, spec: SubSpec) bool {
+    if (argv.len == 1) return true;
+    const next = argv[1];
+    if (next.len > 0 and next[0] == '-') return true;
+    for (spec.args) |a| {
+        if (eq(next, a)) return true;
+    }
+    return false;
 }
 
 /// Resolve `cfg.provider`/`endpoint`/`model` and `context_window` from CLI
@@ -125,7 +206,7 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 acfg.max_iterations = std.fmt.parseInt(u32, argv[j], 10) catch
                     return errResult(arena, "invalid --max-iterations: {s}", .{argv[j]});
-            } else return errResult(arena, "unknown acp argument: {s}", .{a});
+            } else return errResultSuggest(arena, "unknown acp argument: {s}", .{a}, a, &acp_args);
         }
         return .{ .action = .acp, .config = acfg };
     }
@@ -141,7 +222,7 @@ pub fn parse(
         var gcfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
-            if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResult(arena, "unknown guide argument: {s}", .{argv[j]});
+            if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResultSuggest(arena, "unknown guide argument: {s}", .{argv[j]}, argv[j], &guide_args);
         }
         return .{ .action = .guide, .config = gcfg };
     }
@@ -153,7 +234,7 @@ pub fn parse(
         scfg.skills_sub = argv[1];
         if (argv.len > 2) scfg.skills_arg = argv[2];
         if (!eq(argv[1], "list") and !eq(argv[1], "search") and !eq(argv[1], "load")) {
-            return errResult(arena, "invalid skills subcommand (want list|search|load): {s}", .{argv[1]});
+            return errResultSuggest(arena, "invalid skills subcommand (want list|search|load): {s}", .{argv[1]}, argv[1], &skills_subs);
         }
         return .{ .action = .skills, .config = scfg };
     }
@@ -222,7 +303,7 @@ pub fn parse(
                 if (fleet_id != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 fleet_id = a;
             } else {
-                return errResult(arena, "unknown fleet argument: {s}", .{a});
+                return errResultSuggest(arena, "unknown fleet argument: {s}", .{a}, a, &fleet_args);
             }
         }
         const m = mode orelse return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
@@ -237,6 +318,21 @@ pub fn parse(
         fcfg.fleet_goal = fleet_goal;
         fcfg.fleet_items = fleet_items;
         return .{ .action = .fleet, .config = fcfg };
+    }
+
+    // Did-you-mean for mistyped subcommands: a first token within 2 edits of a
+    // real subcommand is a typo, not a prompt — but only when the rest of argv
+    // looks like a subcommand invocation (bare, a flag, or one of that
+    // subcommand's own args), so near-miss prompt text is left alone.
+    if (argv.len > 0 and argv[0].len > 0 and argv[0][0] != '-' and argv[0][0] != '@') {
+        if (suggest_mod.suggest(arena, argv[0], &subcommand_names)) |near| {
+            const spec = for (subcommand_specs) |s| {
+                if (eq(s.name, near)) break s;
+            } else unreachable;
+            if (looksLikeSubcommandTypo(argv, spec)) {
+                return errResult(arena, "unknown subcommand: {s} (did you mean \"{s}\"?)", .{ argv[0], near });
+            }
+        }
     }
 
     // Start from `base` (config-file defaults). CLI flags below override it.
@@ -295,7 +391,7 @@ pub fn parse(
         }
         if (eq(a, "--role")) {
             const v = val(argv, &i) orelse return missing(arena, a);
-            if (eq(v, "author")) cfg.role = .author else if (eq(v, "critic")) cfg.role = .critic else if (eq(v, "coordinator")) cfg.role = .coordinator else if (eq(v, "none")) cfg.role = .none else return errResult(arena, "invalid --role (want author|critic|coordinator|none): {s}", .{v});
+            if (eq(v, "author")) cfg.role = .author else if (eq(v, "critic")) cfg.role = .critic else if (eq(v, "coordinator")) cfg.role = .coordinator else if (eq(v, "none")) cfg.role = .none else return errResultSuggest(arena, "invalid --role (want author|critic|coordinator|none): {s}", .{v}, v, &role_values);
             continue;
         }
         if (eq(a, "--compact-keep-recent")) {
@@ -373,7 +469,7 @@ pub fn parse(
             } else if (eq(v, "json")) {
                 cfg.mode = .json;
             } else {
-                return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
+                return errResultSuggest(arena, "invalid --mode (want text|json): {s}", .{v}, v, &mode_values);
             }
             continue;
         }
@@ -421,7 +517,7 @@ pub fn parse(
             continue;
         }
         if (a.len > 1 and a[0] == '-') {
-            return errResult(arena, "unknown option: {s}", .{a});
+            return errResultSuggest(arena, "unknown option: {s}", .{a}, a, &flag_names);
         }
         try msg_parts.append(arena, a); // positional message part
     }
@@ -492,6 +588,22 @@ fn missing(arena: std.mem.Allocator, flag: []const u8) Parsed {
 
 fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytype) !Parsed {
     return .{ .action = .err, .err_msg = try std.fmt.allocPrint(arena, fmt, fmtargs) };
+}
+
+/// Like errResult, but appends ` (did you mean "<candidate>"?)` when `input`
+/// is within 2 edits of one of `candidates`.
+fn errResultSuggest(
+    arena: std.mem.Allocator,
+    comptime fmt: []const u8,
+    fmtargs: anytype,
+    input: []const u8,
+    candidates: []const []const u8,
+) !Parsed {
+    const msg = try std.fmt.allocPrint(arena, fmt, fmtargs);
+    if (suggest_mod.suggest(arena, input, candidates)) |near| {
+        return .{ .action = .err, .err_msg = try std.fmt.allocPrint(arena, "{s} (did you mean \"{s}\"?)", .{ msg, near }) };
+    }
+    return .{ .action = .err, .err_msg = msg };
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -613,9 +725,10 @@ test "parse: unknown option is rejected" {
     defer ar.deinit();
     const a = ar.allocator();
 
-    const p = try parseArgv(a, &.{ "tau", "--nope" }, .{});
+    // "--zztopp" is >2 edits from every flag, so no did-you-mean is appended.
+    const p = try parseArgv(a, &.{ "tau", "--zztopp" }, .{});
     try std.testing.expectEqual(Action.err, p.action);
-    try std.testing.expectEqualStrings("unknown option: --nope", p.err_msg.?);
+    try std.testing.expectEqualStrings("unknown option: --zztopp", p.err_msg.?);
 }
 
 test "parse: --role accepts known roles and rejects others" {
@@ -975,6 +1088,95 @@ test "parse: fleet positional id and validation errors" {
     try std.testing.expectEqualStrings("unknown fleet argument: frob", bad.err_msg.?);
 }
 
+// ── Did-you-mean suggestions ────────────────────────────────────────────────
+//
+// Same threshold/phrasing as the config-file unknown-key warning: within 2
+// edits → ` (did you mean "<candidate>"?)` appended to the error; further →
+// the plain error message.
+
+test "parse: mistyped subcommand suggests the real one" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Bare near-miss word.
+    const bare = try parseArgv(a, &.{ "tau", "modles" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    try std.testing.expectEqualStrings("unknown subcommand: modles (did you mean \"models\"?)", bare.err_msg.?);
+
+    // Near-miss followed by one of that subcommand's own args.
+    const fl = try parseArgv(a, &.{ "tau", "flett", "run" }, .{});
+    try std.testing.expectEqual(Action.err, fl.action);
+    try std.testing.expectEqualStrings("unknown subcommand: flett (did you mean \"fleet\"?)", fl.err_msg.?);
+
+    const sk = try parseArgv(a, &.{ "tau", "skils", "list" }, .{});
+    try std.testing.expectEqual(Action.err, sk.action);
+    try std.testing.expect(std.mem.indexOf(u8, sk.err_msg.?, "did you mean \"skills\"?") != null);
+
+    // Near-miss followed by a flag.
+    const gd = try parseArgv(a, &.{ "tau", "gide", "--human" }, .{});
+    try std.testing.expectEqual(Action.err, gd.action);
+    try std.testing.expect(std.mem.indexOf(u8, gd.err_msg.?, "did you mean \"guide\"?") != null);
+
+    // Near-miss followed by ordinary prompt text stays a prompt.
+    const prompt = try parseArgv(a, &.{ "tau", "model", "the", "auth", "flow" }, .{});
+    try std.testing.expectEqual(Action.run, prompt.action);
+    try std.testing.expectEqualStrings("model the auth flow", prompt.config.prompt.?);
+
+    // Unrelated first word stays a prompt too.
+    const plain = try parseArgv(a, &.{ "tau", "hello" }, .{});
+    try std.testing.expectEqual(Action.run, plain.action);
+}
+
+test "parse: mistyped flag suggests the real flag" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Transposition (distance 2) is inside the suggestion boundary.
+    const p = try parseArgv(a, &.{ "tau", "--proivder", "x" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expectEqualStrings("unknown option: --proivder (did you mean \"--provider\"?)", p.err_msg.?);
+
+    // Short flags are candidates too.
+    const q = try parseArgv(a, &.{ "tau", "-ntt", "x" }, .{});
+    try std.testing.expectEqual(Action.err, q.action);
+    try std.testing.expectEqualStrings("unknown option: -ntt (did you mean \"-nt\"?)", q.err_msg.?);
+}
+
+test "parse: subcommand argument typos get suggestions" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const acp = try parseArgv(a, &.{ "tau", "acp", "strt" }, .{});
+    try std.testing.expectEqualStrings("unknown acp argument: strt (did you mean \"start\"?)", acp.err_msg.?);
+
+    const skills = try parseArgv(a, &.{ "tau", "skills", "lod" }, .{});
+    try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): lod (did you mean \"load\"?)", skills.err_msg.?);
+
+    const fleet = try parseArgv(a, &.{ "tau", "fleet", "stats" }, .{});
+    try std.testing.expectEqualStrings("unknown fleet argument: stats (did you mean \"status\"?)", fleet.err_msg.?);
+
+    const guide = try parseArgv(a, &.{ "tau", "guide", "--hman" }, .{});
+    try std.testing.expectEqualStrings("unknown guide argument: --hman (did you mean \"--human\"?)", guide.err_msg.?);
+}
+
+test "parse: flag value typos get suggestions" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const role = try parseArgv(a, &.{ "tau", "--role", "autor", "x" }, .{});
+    try std.testing.expectEqualStrings("invalid --role (want author|critic|coordinator|none): autor (did you mean \"author\"?)", role.err_msg.?);
+
+    const mode = try parseArgv(a, &.{ "tau", "--mode", "test", "x" }, .{});
+    try std.testing.expectEqualStrings("invalid --mode (want text|json): test (did you mean \"text\"?)", mode.err_msg.?);
+
+    const prov = try parseArgv(a, &.{ "tau", "--provider", "opnai", "x" }, .{});
+    try std.testing.expect(std.mem.indexOf(u8, prov.err_msg.?, "unknown provider 'opnai' (did you mean \"openai\"?)") != null);
+}
+
 test "parse: /goal prompt switches into goal mode and disables streaming" {
     var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer ar.deinit();
@@ -994,6 +1196,10 @@ fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {
         if (i != 0) try buf.appendSlice(arena, ", ");
         try buf.appendSlice(arena, p.name);
     }
-    const msg = try std.fmt.allocPrint(arena, "unknown provider '{s}' — valid providers: {s} (run 'tau models' for details)", .{ given, buf.items });
+    const hint: []const u8 = if (suggest_mod.suggest(arena, given, &provider_names)) |near|
+        try std.fmt.allocPrint(arena, " (did you mean \"{s}\"?)", .{near})
+    else
+        "";
+    const msg = try std.fmt.allocPrint(arena, "unknown provider '{s}'{s} — valid providers: {s} (run 'tau models' for details)", .{ given, hint, buf.items });
     return .{ .action = .err, .err_msg = msg };
 }
