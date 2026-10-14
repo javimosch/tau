@@ -135,6 +135,33 @@ pub fn parse(
         return .{ .action = .models, .config = base };
     }
 
+    // `tau version [--verbose] [--mode text|json]` — command form of
+    // -v/--version. Bare output is `tau 0.4.0` either way; --verbose adds
+    // build metadata (commit, target triple, build date, zig version) as a
+    // JSON object, or key: value lines under --mode text.
+    if (argv.len > 0 and eq(argv[0], "version")) {
+        var vcfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--verbose")) {
+                vcfg.version_verbose = true;
+            } else if (eq(a, "--mode")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const v = argv[j];
+                if (eq(v, "text")) {
+                    vcfg.mode = .text;
+                } else if (eq(v, "json")) {
+                    vcfg.mode = .json;
+                } else {
+                    return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
+                }
+            } else return errResult(arena, "unknown version argument: {s}", .{a});
+        }
+        return .{ .action = .version, .config = vcfg };
+    }
+
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
     // [--fix] [--yes] [--shell sh] [--json]` — setup diagnostics; a command, not
     // a prompt. An unknown provider is carried into the report as a failed
@@ -1134,6 +1161,49 @@ test "parse: doctor carries an unknown provider as a failed check, not exit 80" 
     const q = try parseArgv(a, &.{ "tau", "doctor" }, .{ .provider = "acme" });
     try std.testing.expectEqual(Action.doctor, q.action);
     try std.testing.expectEqualStrings("acme", q.config.doctor_bad_provider.?);
+}
+
+test "parse: version subcommand selects the version action" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(!p.config.version_verbose);
+}
+
+test "parse: version --verbose/--mode select build-metadata output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version", "--verbose" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(p.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    const q = try parseArgv(a, &.{ "tau", "version", "--verbose", "--mode", "text" }, .{});
+    try std.testing.expect(q.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, q.config.mode);
+}
+
+test "parse: version rejects unknown arguments and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "version", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown version argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "version", "--mode" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --mode", missing_val.err_msg.?);
+
+    const bad_mode = try parseArgv(a, &.{ "tau", "version", "--mode", "yaml" }, .{});
+    try std.testing.expectEqual(Action.err, bad_mode.action);
+    try std.testing.expectEqualStrings("invalid --mode (want text|json): yaml", bad_mode.err_msg.?);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {

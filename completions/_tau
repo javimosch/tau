@@ -70,6 +70,7 @@ _tau() {
                 'setup:one-shot onboarding (init + completions + doctor)'
                 'doctor:validate setup (config, provider, key, connectivity)'
                 'guide:print the embedded operator manual'
+                'version:print version (--verbose adds build metadata)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -166,6 +167,12 @@ _tau() {
 
                 models)
                     # `tau models` takes no further arguments.
+                    ;;
+
+                version)
+                    _arguments \
+                        '--verbose[include build metadata (commit, target, build date, zig version)]' \
+                        '--mode=[output mode]:mode:(text json)'
                     ;;
             esac
             ;;

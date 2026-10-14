@@ -247,7 +247,7 @@ tau doctor --offline                   # Skip network checks (reported as "skip"
 tau doctor --deep                      # Also run an authenticated probe (max_tokens=1)
 tau doctor --provider openai           # Diagnose an override instead of the configured default
 tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
-# → {"ok":bool,"version":..,"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
+# → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
 ```
 
 ```bash
@@ -292,6 +292,19 @@ tau setup --offline            # Skip network checks in the doctor step
 # works without a source checkout.
 ```
 
+#### 18. Version & Build Metadata
+```bash
+tau version                    # Same as -v/--version: "tau 0.4.0"
+tau version --verbose          # Build metadata as JSON
+# → {"name":"tau","version":"0.4.0","commit":"abc123","target":"x86_64-linux-gnu",
+#    "build_date":"2026-10-14T07:32:16Z","zig":"0.16.0"}
+tau version --verbose --mode text   # Same fields as key: value lines
+# Commit is the short hash of HEAD ("unknown" for tarball builds, "-dirty" on
+# uncommitted changes); build_date honors SOURCE_DATE_EPOCH so release builds
+# stay byte-reproducible. The same "build" object rides on `tau doctor`
+# (report and --json verdict) and as a `# build:` line in --debug log headers.
+```
+
 ### Storage Paths
 
 | Path | Purpose |
@@ -330,6 +343,7 @@ tau setup --offline            # Skip network checks in the doctor step
 | `src/tools/registry.zig` | Tool registry + allowlist/denylist | Registering new tools |
 | `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
 | `src/errors.zig` | Stable error-code catalog + shared `{"err"}` envelope emitter | Error codes/hints, envelope fields |
+| `src/version.zig` | Version const + build metadata (`build.*`, `buildJson`, `buildLine`) | Version bump, build metadata |
 | `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
 | `src/term.zig` | Portable stdout/stderr | Terminal output changes |
 

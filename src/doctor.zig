@@ -25,7 +25,8 @@ const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const initmod = @import("init.zig");
 const setup = @import("setup.zig");
-const version = @import("version.zig").version;
+const version_mod = @import("version.zig");
+const version = version_mod.version;
 const Config = cfgmod.Config;
 
 pub const CheckStatus = enum { ok, warn, fail, skip };
@@ -98,7 +99,9 @@ fn formatReportJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]c
     try buf.appendSlice(arena, if (s.fail == 0) "{\"ok\":true" else "{\"ok\":false");
     try buf.appendSlice(arena, ",\"version\":\"");
     try buf.appendSlice(arena, version);
-    try buf.appendSlice(arena, "\",\"checks\":[");
+    try buf.appendSlice(arena, "\",\"build\":");
+    try buf.appendSlice(arena, try version_mod.buildJson(arena));
+    try buf.appendSlice(arena, ",\"checks\":[");
     for (checks, 0..) |c, i| {
         if (i != 0) try buf.append(arena, ',');
         try buf.appendSlice(arena, try formatCheckJson(arena, c));
@@ -163,7 +166,9 @@ fn formatVerdictJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]
     try buf.appendSlice(arena, if (s.fail == 0) "{\"ok\":true" else "{\"ok\":false");
     try buf.appendSlice(arena, ",\"version\":\"");
     try buf.appendSlice(arena, version);
-    try buf.appendSlice(arena, "\",\"summary\":{");
+    try buf.appendSlice(arena, "\",\"build\":");
+    try buf.appendSlice(arena, try version_mod.buildJson(arena));
+    try buf.appendSlice(arena, ",\"summary\":{");
     try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"ok\":{d},\"warn\":{d},\"fail\":{d},\"skip\":{d}", .{ s.ok, s.warn, s.fail, s.skip }));
     try buf.append(arena, '}');
     if (fixes) |fx| {
@@ -872,6 +877,9 @@ test "formatReportJson: ok=false with summary counts when a check fails" {
     const got = try formatReportJson(a, &checks, null);
     try testing.expect(std.mem.startsWith(u8, got, "{\"ok\":false,\"version\":"));
     try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{\"ok\":1,\"warn\":0,\"fail\":1,\"skip\":1}") != null);
+    // Single-object report carries the same build metadata as the --json verdict.
+    try testing.expect(std.mem.indexOf(u8, got, "\"build\":{\"commit\":\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"target\":\"") != null);
 }
 
 test "configBodyCheck: invalid JSON fails with the path and a fix hint" {
@@ -1200,6 +1208,8 @@ test "formatVerdictJson: terminal line carries ok/summary/done:true (+fixes)" {
     const v = try formatVerdictJson(a, &checks, null);
     try testing.expect(std.mem.startsWith(u8, v, "{\"ok\":false,\"version\":"));
     try testing.expect(std.mem.indexOf(u8, v, "\"summary\":{\"ok\":1,\"warn\":0,\"fail\":1,\"skip\":0}") != null);
+    // Build metadata rides on the terminal verdict for support triage.
+    try testing.expect(std.mem.indexOf(u8, v, "\"build\":{\"commit\":\"") != null);
     try testing.expect(std.mem.endsWith(u8, v, ",\"done\":true}"));
     // No fixes key unless a --fix pass ran (mirrors formatReportJson).
     try testing.expect(std.mem.indexOf(u8, v, "\"fixes\"") == null);

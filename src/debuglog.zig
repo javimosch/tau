@@ -171,7 +171,11 @@ fn writeHeader(a: std.mem.Allocator, cfg: cfgmod.Config, p: []const u8, epoch_se
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(a);
     buf.appendSlice(a, "# tau diagnostic log — credentials are masked; review before attaching to a bug report\n") catch return;
-    headerLine(a, &buf, "version", @import("version.zig").version);
+    const version_mod = @import("version.zig");
+    headerLine(a, &buf, "version", version_mod.version);
+    // Build metadata (commit/target/date/zig) — lets a bug report pin down
+    // exactly which binary produced the log.
+    headerLine(a, &buf, "build", version_mod.buildLine(a) catch "unknown");
     headerLine(a, &buf, "created_utc", formatIso(a, epoch_secs, false) orelse "unknown");
     headerLine(a, &buf, "path", p);
     headerLine(a, &buf, "provider", cfg.provider);

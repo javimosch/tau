@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models|init|guide|doctor|setup)
+            acp|fleet|skills|models|init|guide|doctor|setup|version)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -137,9 +137,13 @@ _tau_complete() {
             # No additional completions for `models`.
             ;;
 
+        version)
+            COMPREPLY=($(compgen -W "--verbose --mode" -- "$cur"))
+            ;;
+
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet init guide doctor setup
+            local top_level="acp models skills fleet init guide doctor setup version
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream

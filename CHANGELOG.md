@@ -65,6 +65,14 @@ are backward compatible.
   the `docs` link — emitted from one shared formatter across main/agent/acp/
   fleet/helpers. Codes and `type` tags are documented as stable in
   docs/troubleshooting.md (#171)
+- `tau version` subcommand — same `tau 0.4.0` output as `-v/--version`, plus
+  `--verbose` for build metadata (git commit with `-dirty` marker, target
+  triple, UTC build date, zig version) as a JSON object (or `key: value`
+  lines under `--mode text`). The same `"build"` object now rides on the
+  `tau doctor` report and `--json` verdict, and the `--debug` log header
+  gains a `# build:` line — the triage trio for bug reports (#204). The
+  build date honors `SOURCE_DATE_EPOCH` so release binaries stay
+  byte-reproducible
 
 ### Fixed
 

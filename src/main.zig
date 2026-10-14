@@ -186,6 +186,12 @@ const help_text =
     \\                              (default: detect from $SHELL)
     \\
     \\
+    \\Version:
+    \\  tau version                   Print the version (same as -v/--version)
+    \\      --verbose                 Include build metadata: git commit, target
+    \\                              triple, build date, zig version (JSON;
+    \\                              --mode text prints key: value lines)
+    \\
     \\Models:
     \\  tau models                    List available providers and models
     \\
@@ -208,9 +214,19 @@ fn printHelp() void {
     writeOut(help_text);
 }
 
-fn printVersion() void {
-    const v = std.fmt.allocPrint(std.heap.page_allocator, "{s} {s}\n", .{ name, version }) catch return;
-    defer std.heap.page_allocator.free(v);
+fn printVersion(cfg: Config) void {
+    const a = std.heap.page_allocator;
+    const b = @import("version.zig").build;
+    const v = blk: {
+        if (!cfg.version_verbose) break :blk std.fmt.allocPrint(a, "{s} {s}\n", .{ name, version }) catch return;
+        if (cfg.mode == .text) break :blk std.fmt.allocPrint(a,
+            "name: {s}\nversion: {s}\ncommit: {s}\ntarget: {s}\nbuild_date: {s}\nzig: {s}\n",
+            .{ name, version, b.commit, b.target, b.date, b.zig }) catch return;
+        break :blk std.fmt.allocPrint(a,
+            "{{\"name\":\"{s}\",\"version\":\"{s}\",\"commit\":\"{s}\",\"target\":\"{s}\",\"build_date\":\"{s}\",\"zig\":\"{s}\"}}\n",
+            .{ name, version, b.commit, b.target, b.date, b.zig }) catch return;
+    };
+    defer a.free(v);
     writeOut(v);
 }
 
@@ -481,7 +497,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         },
         .version => {
-            printVersion();
+            printVersion(parsed.config);
             return;
         },
         .help_json => {
@@ -712,6 +728,7 @@ test {
     _ = @import("doctor.zig");
     _ = @import("init.zig");
     _ = @import("setup.zig");
+    _ = @import("version.zig");
 }
 
 test "flag_specs appear in help_text" {

@@ -18,7 +18,7 @@ function __tau_no_subcommand
     set -e tokens[1]
     for t in $tokens
         switch $t
-            case acp fleet skills models guide init doctor setup
+            case acp fleet skills models guide init doctor setup version
                 return 1
         end
     end
@@ -87,6 +87,7 @@ complete -c tau -n $top -f -a guide -d 'print the embedded operator manual'
 complete -c tau -n $top -f -a init -d 'write a commented starter config'
 complete -c tau -n $top -f -a doctor -d 'validate setup (config, provider, key, connectivity)'
 complete -c tau -n $top -f -a setup -d 'one-shot onboarding (init + completions + doctor)'
+complete -c tau -n $top -f -a version -d 'print version (--verbose adds build metadata)'
 
 complete -c tau -n $top -s h -l help -d 'show help text'
 complete -c tau -n $top -s v -l version -d 'show version'
@@ -186,5 +187,9 @@ complete -c tau -n $setup -f -l deep -d 'run an authenticated probe in the docto
 complete -c tau -n $setup -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'seed scaffold + diagnose provider'
 complete -c tau -n $setup -f -l model -x -d 'diagnose an override model'
 complete -c tau -n $setup -f -l api-key -x -d 'diagnose an override API key'
+
+set -l version '__tau_using_subcommand version'
+complete -c tau -n $version -f -l verbose -d 'include build metadata (commit, target, build date, zig version)'
+complete -c tau -n $version -f -l mode -x -a 'text json' -d 'output mode'
 
 # `tau models` takes no further arguments.

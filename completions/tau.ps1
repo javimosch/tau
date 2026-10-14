@@ -14,7 +14,7 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup', 'version')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
@@ -25,6 +25,7 @@ $TauArgumentCompleter = {
     $initFlags   = @('--force', '--stdout', '--provider')
     $doctorFlags = @('--offline', '--deep', '--fix', '--yes', '--json', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--offline', '--deep', '--provider', '--model', '--api-key')
+    $versionFlags = @('--verbose', '--mode')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
@@ -55,6 +56,7 @@ $TauArgumentCompleter = {
         'init'                = 'write a commented starter config'
         'doctor'              = 'validate setup (config, provider, key, connectivity)'
         'setup'               = 'one-shot onboarding (init + completions + doctor)'
+        'version'             = 'print version (--verbose adds build metadata)'
         'run'                 = 'decompose a goal and dispatch workers'
         'status'              = 'check status of a fleet by id'
         'list'                = 'list all known fleets / skills'
@@ -112,6 +114,7 @@ $TauArgumentCompleter = {
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
+        '--verbose'           = 'include build metadata in version output'
     }
 
     # Emit $candidates filtered by the word being completed.
@@ -219,6 +222,7 @@ $TauArgumentCompleter = {
         'init'   { return & $emit $initFlags 'ParameterName' }
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
         'setup'  { return & $emit $setupFlags 'ParameterName' }
+        'version' { return & $emit $versionFlags 'ParameterName' }
         'models' { return }
         'fleet'  {
             $fleetSub = ''

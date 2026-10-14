@@ -140,6 +140,11 @@ pub const Config = struct {
     /// `tau init --provider <name>` — scaffold for a specific provider.
     init_provider: ?[]const u8 = null,
 
+    // --- Version (src/version.zig) ---
+    /// `tau version --verbose` — include build metadata (git commit, target
+    /// triple, build date, zig version) for support triage.
+    version_verbose: bool = false,
+
     // --- Skills autodiscovery ---
     /// `tau skills <list|search|load>` subcommand selector. Null means no skills subcommand.
     skills_sub: ?[]const u8 = null,

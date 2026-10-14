@@ -76,6 +76,7 @@ ALL_TEST_GROUPS=(
   "fleet-flags:test_group_fleet_flags"
   "completions:test_group_completions"
   "debug:test_group_debug"
+  "version:test_group_version"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -202,6 +203,54 @@ test_group_help() {
     ok "--help-json is valid JSON" 0 0
   else
     ok "--help-json is not valid JSON" 1 0
+  fi
+}
+
+# version subcommand + build metadata surfaced across version --verbose,
+# tau doctor (report + NDJSON verdict), and the --debug log header.
+test_group_version() {
+  local out rc
+  local scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u TAU_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY)
+
+  out=$("$BIN" version); ok "version exit" "$?" 0
+  contains "version prints name + semver" "$out" "tau 0.4.0"
+
+  out=$("$BIN" -v); ok "-v exit" "$?" 0
+  contains "-v output unchanged" "$out" "tau 0.4.0"
+
+  # --verbose: JSON object with all four build metadata keys.
+  out=$("$BIN" version --verbose); ok "version --verbose exit" "$?" 0
+  printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); need=["name","version","commit","target","build_date","zig"]; sys.exit(0 if all(d.get(k) for k in need) and d["name"]=="tau" else 1)' 2>/dev/null
+  ok "version --verbose carries all metadata keys" "$?" 0
+
+  # --mode text: same metadata as key: value lines.
+  out=$("$BIN" version --verbose --mode text); ok "version --verbose --mode text exit" "$?" 0
+  contains "text mode has commit line" "$out" "commit: "
+  contains "text mode has target line" "$out" "target: "
+  contains "text mode has zig line" "$out" "zig: "
+
+  "$BIN" version --bogus >/dev/null 2>&1; ok "version rejects unknown arg (exit 80)" "$?" 80
+
+  # doctor --json: the terminal done:true verdict carries the build object.
+  local vout
+  vout=$("${scrub[@]}" HOME="$SMOKE_TEMP/vhome" "$BIN" doctor --json --offline 2>/dev/null | tail -1)
+  contains "doctor --json verdict carries build" "$vout" '"build":{"commit":"'
+  contains "doctor verdict build has zig" "$vout" '"zig":"'
+
+  # doctor single-object report carries it too (tau setup embeds this shape).
+  local rout
+  rout=$("${scrub[@]}" HOME="$SMOKE_TEMP/vhome" "$BIN" doctor --offline 2>/dev/null)
+  contains "doctor report carries build" "$rout" '"build":{"commit":"'
+
+  # --debug log header carries the one-line build stamp.
+  local dlog="$SMOKE_TEMP/version-debug.log"
+  "${scrub[@]}" HOME="$SMOKE_TEMP/vhome" TAU_DEBUG_LOG="$dlog" "$BIN" --debug --no-stream "hi" >/dev/null 2>&1
+  if [ -f "$dlog" ]; then
+    contains "debug log has build header" "$(cat "$dlog")" "# build: commit="
+    contains "debug log build has target" "$(cat "$dlog")" "target="
+  else
+    ok "debug log has build header" 1 0
+    ok "debug log build has target" 1 0
   fi
 }
 
