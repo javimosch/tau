@@ -30,10 +30,55 @@ are backward compatible.
   expanded with copy-pasteable configs for JetBrains, VS Code, Neovim
   (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
+- `tau doctor` — JSON setup diagnostics (config file parse, provider
+  resolution, API key provenance, curl on PATH, endpoint reachability, and an
+  optional `--deep` authenticated probe); `--offline` skips network checks
+- `tau doctor --fix` — auto-remediates fixable outcomes behind confirmation:
+  scaffolds a missing config (init semantics), moves an unparseable config to
+  `config.json.bak` and re-scaffolds, tightens POSIX permissions to
+  `0700`/`0600`, and installs/refreshes shell completions. Each fix needs an
+  interactive y/N prompt (TTY) or `--yes` for non-interactive use; the report
+  gains a `fixes` array and reflects the post-fix state. Also adds two
+  diagnostics: `config_permissions` (loose dir/file bits warn — the file can
+  hold API keys) and `shell_completions` (missing/outdated scripts warn)
+- `tau doctor --json` — stream diagnostics as NDJSON for CI and support
+  tooling: one `{"check":{...},"done":false}` event per check as it finishes,
+  one `{"fix":{...},"done":false}` event per remediation under `--fix`, and a
+  terminal `{"ok":...,"summary":{...},"done":true}` verdict. The default
+  single-object report is unchanged
+- `tau init` — write a commented starter `~/.config/tau/config.json` seeded
+  from detected provider env keys (`--force`, `--stdout`, `--provider`)
+- `tau setup` — one-shot onboarding: scaffolds the config (init), installs
+  shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+  to override; scripts are embedded in the binary), and embeds the `doctor`
+  health report; emits one NDJSON object per step plus a final verdict and
+  exits non-zero when any step fails; idempotent on re-run
+- Shell completions for fish and PowerShell (`completions/tau.fish`,
+  `completions/tau.ps1`); all four scripts now complete `init`, `setup`,
+  `doctor`, and `guide`
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
+- `--debug` now writes a redacted diagnostic log to
+  `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and
+  `{"err":...}` envelopes carry a `debug_log` link when a log is active (#167)
+- Stable error catalog (`src/errors.zig`): every `{"err":...}` envelope now
+  carries `code`, `type`, `message`, `recoverable`, a remediation `hint`, and
+  the `docs` link — emitted from one shared formatter across main/agent/acp/
+  fleet/helpers. Codes and `type` tags are documented as stable in
+  docs/troubleshooting.md (#171)
+- `tau version` subcommand — same `tau 0.4.0` output as `-v/--version`, plus
+  `--verbose` for build metadata (git commit with `-dirty` marker, target
+  triple, UTC build date, zig version) as a JSON object (or `key: value`
+  lines under `--mode text`). The same `"build"` object now rides on the
+  `tau doctor` report and `--json` verdict, and the `--debug` log header
+  gains a `# build:` line — the triage trio for bug reports (#204). The
+  build date honors `SOURCE_DATE_EPOCH` so release binaries stay
+  byte-reproducible
 
 ### Fixed
 
+- `tau doctor` no longer false-fails a commented (JSONC) config file — the
+  `config_file` check strips `//` and `/* */` comments before parsing, same
+  as the runtime loader, so a `tau init` scaffold reports `ok`
 - Streaming: honor `--timeout-ms` on SSE requests (#76); tolerate whitespace in
   SSE tool-call and reasoning parsers (#68)
 - Provider response parsing: whitespace after JSON colons (#66) and before
@@ -69,7 +114,8 @@ are backward compatible.
   (#39), ACP (#47), JSON helpers (#50), bash tool (#51), tool registry (#53),
   provider module (#58), `resolveApiKey` precedence (#59), goal + session
   (#63), AGENTS.md scanning (#110), agent loop tool dispatch (#112), SSE
-  streaming frames (#117), context compaction boundaries (#121)
+  streaming frames (#117), context compaction boundaries (#121), `tau doctor`
+  diagnostics incl. live-probe stub coverage (#165)
 - Smoke suite: `--role critic` network check (#88), `--api-key` parsing (#89)
 - Fixed SIGABRT in `scanAgentsMd` bad-path test (#55); restored truncated
   `extractToolCalls` test (#69)

@@ -38,7 +38,7 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `-xt, --exclude-tools <csv>` | string | — | Denylist tool names |
 | `-nt, --no-tools` | flag | — | Disable all tools |
 | `--thinking` | flag | off | Show thinking/reasoning chunks |
-| `--debug` | flag | off | Log perf stats + tool I/O to stderr |
+| `--debug` | flag | off | Perf stats + tool I/O to stderr; also writes a redacted diagnostic log to `~/.config/tau/debug/` (override: `TAU_DEBUG_LOG`) |
 | `--dry-run` | flag | off | Plan tool calls, execute none |
 | `--temperature <f>` | float | 0.7 | Sampling temperature |
 | `--max-tokens <n>` | int | — | Cap output tokens |
@@ -191,7 +191,8 @@ tau --append-system-prompt "A" --append-system-prompt "B" "x"  # Repeatable
 #### 9. Dry-Run & Debugging
 ```bash
 tau --dry-run --tools bash "touch /tmp/x"   # Plan only, no execution
-tau --debug "test"                          # Stderr: perf stats + tool I/O
+tau --debug "test"                          # Stderr: perf stats + tool I/O;
+                                            # plus redacted ~/.config/tau/debug/<ts>.log
 tau --thinking "complex reasoning task"     # Show model's thinking chunks
 tau --max-iterations 1 --tools bash "x"     # Cap tool loops
 ```
@@ -239,6 +240,16 @@ tau --auto-agents-md \
   --mode text "follow project rules"     # Auto-load cwd/AGENTS.md
 ```
 
+#### 15. Diagnostics
+```bash
+tau doctor                             # JSON setup report; exit 0 ok/warn, 1 on any fail
+tau doctor --offline                   # Skip network checks (reported as "skip")
+tau doctor --deep                      # Also run an authenticated probe (max_tokens=1)
+tau doctor --provider openai           # Diagnose an override instead of the configured default
+tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
+# → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
@@ -252,6 +263,48 @@ TAU_BIN="$HOME/ai/tau-custom/zig-out/bin/tau" a2a-spawn --cli tau --id custom --
 
 Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations 40 --timeout-ms 300000`.
 
+#### 16. Config Scaffolding
+```bash
+tau init                                 # Write commented starter ~/.config/tau/config.json
+tau init --stdout                        # Preview the scaffold without writing
+tau init --force                         # Overwrite an existing config
+tau init --provider openai               # Scaffold for a specific provider
+# Detects set provider env keys (marks them "*"), picks a matching provider,
+# and never copies secret values into the file. config.json is JSONC:
+# `//` and `/* */` comments are stripped on load.
+```
+
+#### 17. One-Shot Onboarding
+```bash
+tau setup                      # init + install completions ($SHELL-detected) + doctor summary
+tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
+tau setup --offline            # Skip network checks in the doctor step
+# Emits one NDJSON object per step plus a final verdict:
+#   {"step":"init","status":"created|exists|failed",...}
+#   {"step":"completions","status":"installed|skipped|failed","shells":[...]}
+#   {"step":"doctor","report":{...same shape as `tau doctor`...}}
+#   {"step":"setup","ok":bool,"version":..}
+# Idempotent: existing config is kept, rc edits carry a "# tau completions"
+# marker so re-runs don't duplicate. Exit 0 when every step is ok/skipped,
+# 1 on any failure (including a doctor report with failed checks).
+# Completion scripts are embedded in the binary at build time (build.zig
+# generates a `completions` module from completions/), so `tau setup`
+# works without a source checkout.
+```
+
+#### 18. Version & Build Metadata
+```bash
+tau version                    # Same as -v/--version: "tau 0.4.0"
+tau version --verbose          # Build metadata as JSON
+# → {"name":"tau","version":"0.4.0","commit":"abc123","target":"x86_64-linux-gnu",
+#    "build_date":"2026-10-14T07:32:16Z","zig":"0.16.0"}
+tau version --verbose --mode text   # Same fields as key: value lines
+# Commit is the short hash of HEAD ("unknown" for tarball builds, "-dirty" on
+# uncommitted changes); build_date honors SOURCE_DATE_EPOCH so release builds
+# stay byte-reproducible. The same "build" object rides on `tau doctor`
+# (report and --json verdict) and as a `# build:` line in --debug log headers.
+```
+
 ### Storage Paths
 
 | Path | Purpose |
@@ -262,6 +315,7 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `~/.config/tau/acp.sock` | ACP Unix socket (daemon mode) |
 | `~/.config/tau/acp.pid` | ACP daemon PID file |
 | `~/.config/tau/acp.log` | ACP daemon log |
+| `~/.config/tau/debug/<ts>.log` | Redacted diagnostic log written by `--debug` (override: `TAU_DEBUG_LOG`) |
 
 ### How to Extend Tau
 
@@ -277,6 +331,10 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `src/fleet.zig` | Fleet orchestration | Fleet command changes |
 | `src/config.zig` | `Config` struct + `Role` enum + key resolution | Adding config fields |
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
+| `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
+| `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
+| `src/setup.zig` | `tau setup` onboarding (init + completions + doctor) | Setup steps, install paths |
+| `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |
 | `src/llm/provider.zig` | LLM providers, HTTP, streaming | Adding providers |
@@ -284,6 +342,9 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `src/tools/*.zig` | Built-in tools (bash,read,write,edit,ls,grep,find) | Adding/modifying tools |
 | `src/tools/registry.zig` | Tool registry + allowlist/denylist | Registering new tools |
 | `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
+| `src/errors.zig` | Stable error-code catalog + shared `{"err"}` envelope emitter | Error codes/hints, envelope fields |
+| `src/version.zig` | Version const + build metadata (`build.*`, `buildJson`, `buildLine`) | Version bump, build metadata |
+| `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
 | `src/term.zig` | Portable stdout/stderr | Terminal output changes |
 
 #### Validation Commands
