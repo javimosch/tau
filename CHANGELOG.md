@@ -36,6 +36,10 @@ are backward compatible.
 - `tau config validate [path]` — offline config-file validation for CI and
   pre-commit hooks; JSON report on stdout, exit 1 listing every problem
   (unknown keys, type mismatches, bad provider/mode, range violations) (#177)
+- `tau config set|get|unset` — schema-validated, comment-preserving edits to
+  the config file (git-config model) for CI and agent-driven setup; `set`
+  creates the file atomically (`0600`), keys are `<field>` or `keys.<provider>`,
+  secrets are redacted in output unless `get --raw` (#202)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed

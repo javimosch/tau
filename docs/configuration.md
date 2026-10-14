@@ -13,7 +13,18 @@ Each section below lists the exact precedence order used by the code.
 
 Path: `~/.config/tau/config.json` (built from `$HOME`).
 
-The file is **optional** — tau runs fine without it. Behavior on load:
+The file is **optional** — tau runs fine without it. `tau init` scaffolds a
+commented starter: it detects which provider API keys are already in your
+environment, selects a matching `provider`, and lists every provider's env var
+in comments. It never copies secret values into the file, and refuses to
+overwrite an existing config unless `--force` is passed (`--stdout` previews
+without writing, `--provider <name>` picks a provider explicitly).
+
+The file is **JSONC**: `//` line comments and `/* */` block comments are
+stripped before parsing, so a commented config (like the one `tau init`
+writes) loads cleanly.
+
+Behavior on load:
 
 - Missing file, unreadable file, or unset `HOME` → all defaults are used.
 - Invalid JSON → a warning is printed to stderr and defaults are used; tau does
@@ -305,6 +316,46 @@ Example failure output:
 The validator is deliberately stricter than the loader: at startup tau ignores
 unknown keys, `null` values, and even invalid JSON, but `config validate`
 reports all of them — dead config is almost always a typo.
+
+## Editing the config file programmatically
+
+`tau config set|get|unset` edit the config **file** directly — the `git config`
+model, not the merged view (`config show` still reports effective values). They
+exist for CI and agent-driven setup, where shelling out to `jq` or hand-editing
+JSONC is fragile. With no `path` they operate on `~/.config/tau/config.json`.
+
+```bash
+tau config set provider openai          # write ~/.config/tau/config.json
+tau config set stream false             # booleans: true/false
+tau config set temperature 0.2          # numbers validated per field
+tau config set keys.openai sk-...       # per-provider API key
+tau config set keys '{"openai":"sk-"}'  # ...or the whole map as a JSON object
+tau config get provider                 # "openai"
+tau config get api_key --raw            # secrets are redacted without --raw
+tau config unset keys.openai            # remove a key
+tau config set provider openai ./ci.json  # explicit path (like validate)
+```
+
+- **Schema-checked**: `set` only accepts keys from the table above (plus
+  `keys.<provider>`), and values are coerced with the same rules
+  `config validate` reports — wrong types, unknown providers/modes, and
+  out-of-range numbers exit `80` before anything is written.
+- **Comment-preserving**: edits are surgical text splices, so the commented
+  `tau init` scaffold and hand-written comments survive a `config set`.
+- **Atomic**: writes go to a temp file renamed over the original; existing
+  permissions are kept, and a newly created file is `0600` (it may hold keys).
+  `set` creates the file — and `~/.config/tau/` — when they don't exist.
+- **git-config semantics**: `get`/`unset` of an absent key exit `1` with a
+  `not_found` envelope; a missing or malformed file also exits `1`. CLI misuse
+  (unknown key, bad value, stray args) exits `80`.
+- **Secrets**: `api_key` and `keys.*` values are masked (`***last4`) in all
+  `set`/`get` output; `get --raw` prints the stored value verbatim.
+
+JSON mode (the default) emits one object per invocation — e.g.
+`{"ok":true,"path":…,"key":"provider","value":"openai","created":false}` for
+`set`, `{"path":…,"key":…,"set":true,"value":…}` for `get`, and
+`{"ok":true,…,"removed":true}` for `unset`. `--mode text` prints the bare value
+for `get` and one human-readable line for `set`/`unset`.
 
 ---
 

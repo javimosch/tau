@@ -132,6 +132,14 @@ pub const Config = struct {
     /// If true, auto-inject the root-level AGENTS.md (cwd/AGENTS.md) on startup.
     auto_agents_md: bool = false,
 
+    // --- init (init.zig) ---
+    /// `tau init --force` — overwrite an existing config file.
+    init_force: bool = false,
+    /// `tau init --stdout` — print the starter config instead of writing it.
+    init_stdout: bool = false,
+    /// `tau init --provider <name>` — scaffold for a specific provider.
+    init_provider: ?[]const u8 = null,
+
     // --- Skills autodiscovery ---
     /// `tau skills <list|search|load>` subcommand selector. Null means no skills subcommand.
     skills_sub: ?[]const u8 = null,
@@ -165,6 +173,16 @@ pub const Config = struct {
     /// Positional file argument for `tau config validate` (null → default
     /// config path is validated).
     validate_path: ?[]const u8 = null,
+    /// Positional key argument for `tau config set|get|unset`
+    /// (`<field>` or `keys.<provider>`).
+    config_key: ?[]const u8 = null,
+    /// Positional value argument for `tau config set`.
+    config_value: ?[]const u8 = null,
+    /// Optional trailing file path for `tau config set|get|unset`
+    /// (null → the default ~/.config/tau/config.json).
+    edit_path: ?[]const u8 = null,
+    /// `tau config get --raw` — print secret values unredacted.
+    config_raw: bool = false,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau config show` so the
