@@ -26,7 +26,7 @@ _tau() {
         '--mode=[output mode]:mode:(text json)'
         '--stream[enable streaming output]'
         '--no-stream[disable streaming output]'
-        '--debug[show performance stats and tool calls]'
+        '--debug[show perf stats and tool calls; write redacted log to ~/.config/tau/debug/]'
         '--dry-run[report tool calls without executing them]'
         '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)'
         '--model=[model ID or provider/model shorthand]:model:'
