@@ -66,6 +66,7 @@ ALL_TEST_GROUPS=(
   "doctor:test_group_doctor"
   "init:test_group_init"
   "setup:test_group_setup"
+  "first-run:test_group_first_run"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -975,6 +976,81 @@ test_group_setup() {
   "$BIN" setup --bogus >/dev/null 2>&1; ok "setup --bogus -> exit 80" "$?" 80
   "$BIN" setup --shell tcsh >/dev/null 2>&1; ok "setup --shell tcsh -> exit 80" "$?" 80
   "$BIN" setup --shell >/dev/null 2>&1; ok "setup --shell (missing value) -> exit 80" "$?" 80
+}
+
+# Group: first-run onboarding hint — a keyless run with no config file gets a
+# guided 106 envelope pointing at `tau setup`; once a config file exists (even
+# an empty or invalid one) the message stays the plain env-var hint.
+test_group_first_run() {
+  local mock_home mock_home2 mock_home3
+  mock_home="$(mktemp -d)";  register_temp_dir "$mock_home"
+  mock_home2="$(mktemp -d)"; register_temp_dir "$mock_home2"
+  mock_home3="$(mktemp -d)"; register_temp_dir "$mock_home3"
+
+  note "first run: no config + no key -> guided 106 envelope"
+
+  # Fresh HOME, every provider key scrubbed -> guided AuthFailed envelope.
+  capture fr1 env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" "hi"
+  ok "no config + no key exits 106" "$fr1_rc" 106
+  contains "stderr carries an err envelope" "$fr1_err" '"err":{"code":106'
+  contains "envelope type is AuthFailed" "$fr1_err" '"type":"AuthFailed"'
+  contains "message points at tau setup" "$fr1_err" 'tau setup'
+  contains "message calls out first run" "$fr1_err" 'first run'
+  contains "message links the quickstart" "$fr1_err" 'github.com/javimosch/tau'
+  contains "message still offers direct key" "$fr1_err" 'env var'
+
+  # Bare `tau` (no prompt) never reaches the auth gate — it prints help, which
+  # already carries the onboarding pointers. Pin that.
+  capture fr_bare env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN"
+  ok "bare tau on fresh HOME exits 0" "$fr_bare_rc" 0
+  contains "help output points at tau setup" "$fr_bare_out" 'tau setup'
+  contains "help output points at tau init" "$fr_bare_out" 'tau init'
+
+  # fleet run resolves a key before the --goal check -> same guided envelope.
+  capture fr_fleet env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" fleet run --goal "x"
+  ok "fleet run keyless exits 106" "$fr_fleet_rc" 106
+  contains "fleet run points at tau setup" "$fr_fleet_err" 'tau setup'
+
+  # Config file exists but carries no key -> plain hint, NOT first-run text.
+  mkdir -p "$mock_home2/.config/tau"
+  printf '{"provider":"xiaomi"}\n' > "$mock_home2/.config/tau/config.json"
+  capture fr2 env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home2" "$BIN" "hi"
+  ok "config-without-key still exits 106" "$fr2_rc" 106
+  contains "plain hint names the env var" "$fr2_err" 'env var'
+  if printf '%s' "$fr2_err" | grep -q 'tau setup'; then
+    ok "existing config does not get the first-run hint" 1 0
+  else
+    ok "existing config does not get the first-run hint" 0 0
+  fi
+
+  # Unparseable config -> warning fires, config_path counts as "exists",
+  # so the failure stays the plain hint rather than the onboarding pointer.
+  mkdir -p "$mock_home3/.config/tau"
+  printf 'not json {{{\n' > "$mock_home3/.config/tau/config.json"
+  capture fr3 env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home3" "$BIN" "hi"
+  ok "invalid config still exits 106" "$fr3_rc" 106
+  contains "invalid JSON warning still fires" "$fr3_err" 'invalid JSON'
+  if printf '%s' "$fr3_err" | grep -q 'tau setup'; then
+    ok "invalid config does not get the first-run hint" 1 0
+  else
+    ok "invalid config does not get the first-run hint" 0 0
+  fi
+
+  # A resolvable key with no config -> NOT first-run text; the failure is
+  # whatever the (dead) endpoint returns, not the onboarding hint.
+  capture fr4 env -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" XIAOMI_API_KEY=smoke-key TAU_ENDPOINT=http://127.0.0.1:9/dead \
+    "$BIN" --no-tools --no-stream "hi"
+  if printf '%s' "$fr4_err" | grep -q 'tau setup'; then
+    ok "present env key does not get the first-run hint" 1 0
+  else
+    ok "present env key does not get the first-run hint" 0 0
+  fi
 }
 
 # Group: Issue #17 goal mode subcommands offline

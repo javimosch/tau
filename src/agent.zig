@@ -28,7 +28,7 @@ pub fn run(
     cfg: anytype,
     env_map: *std.process.Environ.Map,
 ) !struct { exit_code: u8, tokens_out: u64 } {
-    const api_key = cfgmod.resolveApiKey(cfg, env_map) orelse return .{ .exit_code = 106, .tokens_out = 0 };
+    const api_key = cfgmod.resolveApiKey(cfg, env_map) orelse return error.AuthFailed;
     var cfg_with_key = cfg;
     cfg_with_key.api_key = api_key;
 

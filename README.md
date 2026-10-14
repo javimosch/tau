@@ -96,6 +96,10 @@ export DEEPSEEK_API_KEY="..."        # use with --model deepseek/deepseek-chat
 
 Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table and [docs/configuration.md](docs/configuration.md) for the full reference.
 
+Skip this section entirely and run tau with no config and no key, and the
+exit-106 envelope on stderr tells you where to start — it points at
+`tau setup`, `tau init`, `tau doctor`, and back here.
+
 ### 4. First run
 
 ```bash
