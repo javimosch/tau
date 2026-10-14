@@ -36,6 +36,12 @@ same way (keeping an existing file instead of failing), installs shell
 completions for the detected shell, then prints the `tau doctor` health
 report — one NDJSON object per step, exit 0 only when everything is healthy.
 
+Run tau with no config file and no resolvable key and the exit-106
+`AuthFailed` envelope on stderr switches to a first-run variant: it points at
+`tau setup`, `tau init`, `tau doctor`, and the README quickstart instead of
+only naming the env vars. Once a config file exists (even an empty or invalid
+one) the message stays the plain key-resolution hint.
+
 The file is **JSONC**: `//` line comments and `/* */` block comments are
 stripped before parsing, so a commented config (like the one `tau init`
 writes) loads cleanly.

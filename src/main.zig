@@ -75,6 +75,21 @@ fn authHint(arena: std.mem.Allocator, provider: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "set {s} env var, or use --api-key <key>", .{buf.items}) catch "use --api-key <key>";
 }
 
+/// Build the detail message for a failed API-key resolution. When no config
+/// file was read at all (config_path null — configfile.load() only sets it
+/// after successfully reading a file), this is almost certainly a first run,
+/// so the message points at guided onboarding instead of only naming env vars.
+fn authFailureDetail(arena: std.mem.Allocator, cfg: Config) []const u8 {
+    const hint = authHint(arena, cfg.provider);
+    if (cfg.config_path == null) {
+        return std.fmt.allocPrint(arena,
+            "no config file found (~/.config/tau/config.json) and no API key for provider '{s}' — looks like a first run. Run `tau setup` for guided onboarding, `tau init` to write just a config file, or `tau doctor` to diagnose. Quickstart: https://github.com/javimosch/tau#readme — or {s}",
+            .{ cfg.provider, hint }) catch "missing API key";
+    }
+    return std.fmt.allocPrint(arena,
+        "no API key for provider '{s}' — {s}", .{ cfg.provider, hint }) catch "missing API key";
+}
+
 const help_text =
     \\tau - agent-first AI CLI (non-interactive Zig implementation of pi)
     \\
@@ -597,9 +612,7 @@ pub fn main(init: std.process.Init) !void {
                 if (cfgmod.resolveApiKey(fleet_cfg, init.environ_map)) |key| {
                     fleet_cfg.api_key = key;
                 } else {
-                    const hint = authHint(arena, fleet_cfg.provider);
-                    const msg = std.fmt.allocPrint(arena,
-                        "no API key for provider '{s}' — {s}", .{ fleet_cfg.provider, hint }) catch "missing API key";
+                    const msg = authFailureDetail(arena, fleet_cfg);
                     printErrorJson(@intFromEnum(ExitCode.auth_failed), "AuthFailed", msg, false);
                     std.process.exit(@intFromEnum(ExitCode.auth_failed));
                 }
@@ -662,9 +675,10 @@ pub fn main(init: std.process.Init) !void {
             else => .internal_error,
         };
         const detail = if (err == error.AuthFailed) blk: {
-            const hint = authHint(arena, cfg.provider);
+            if (cfgmod.resolveApiKey(cfg, init.environ_map) == null)
+                break :blk authFailureDetail(arena, cfg);
             break :blk std.fmt.allocPrint(arena,
-                "no API key for provider '{s}' — {s}", .{ cfg.provider, hint }) catch "missing API key";
+                "API key for provider '{s}' was rejected — {s}", .{ cfg.provider, authHint(arena, cfg.provider) }) catch "API key rejected";
         } else "request failed";
         printErrorJson(@intFromEnum(code), @errorName(err), detail, false);
         std.process.exit(@intFromEnum(code));
@@ -735,6 +749,54 @@ test "formatWarnJson escapes quotes and control characters" {
     defer gpa.free(got);
     try std.testing.expect(std.mem.indexOf(u8, got, "config \\\"broken\\\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "/path\\nfix it") != null);
+}
+
+test "authFailureDetail points first runs at tau setup when no config was read" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const cfg: Config = .{}; // config_path null — no config file was read
+    const msg = authFailureDetail(arena, cfg);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "first run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "tau setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "tau init") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "tau doctor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "github.com/javimosch/tau") != null);
+    // Still names the provider and a direct-key escape hatch.
+    try std.testing.expect(std.mem.indexOf(u8, msg, cfg.provider) != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "env var") != null);
+}
+
+test "authFailureDetail keeps the plain hint once a config file exists" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // config_path set — configfile.load() read a file, so this is not a first
+    // run even if the file carried no key (or bad JSON).
+    const cfg: Config = .{ .config_path = "/tmp/whatever/config.json" };
+    const msg = authFailureDetail(arena, cfg);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "no API key for provider") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "env var") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "tau setup") == null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "first run") == null);
+}
+
+test "authFailureDetail first-run message survives JSON escaping" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const cfg: Config = .{};
+    const msg = authFailureDetail(arena, cfg);
+    const env = try formatErrorJson(std.testing.allocator, 106, "AuthFailed", msg, false);
+    defer std.testing.allocator.free(env);
+    try std.testing.expect(std.mem.indexOf(u8, env, "\"code\":106") != null);
+    try std.testing.expect(std.mem.indexOf(u8, env, "tau setup") != null);
+    // Backticks and parens are plain chars — nothing in the message may break
+    // the JSON envelope shape.
+    try std.testing.expect(std.mem.indexOf(u8, env, "\"recoverable\":false") != null);
 }
 
 test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {

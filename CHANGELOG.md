@@ -46,6 +46,12 @@ are backward compatible.
   one `{"fix":{...},"done":false}` event per remediation under `--fix`, and a
   terminal `{"ok":...,"summary":{...},"done":true}` verdict. The default
   single-object report is unchanged
+- First-run onboarding hint — when no config file exists and no API key
+  resolves, tau exits 106 with a guided `AuthFailed` envelope that points to
+  `tau setup`, `tau init`, `tau doctor`, and the README quickstart instead of
+  a bare error (previously a silent exit for the chat path; `fleet run`
+  already emitted an envelope). A resolved-but-rejected key now reports
+  "API key was rejected" rather than "no API key"
 - `tau init` — write a commented starter `~/.config/tau/config.json` seeded
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs
