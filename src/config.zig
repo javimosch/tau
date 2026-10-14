@@ -173,6 +173,16 @@ pub const Config = struct {
     /// Positional file argument for `tau config validate` (null → default
     /// config path is validated).
     validate_path: ?[]const u8 = null,
+    /// Positional key argument for `tau config set|get|unset`
+    /// (`<field>` or `keys.<provider>`).
+    config_key: ?[]const u8 = null,
+    /// Positional value argument for `tau config set`.
+    config_value: ?[]const u8 = null,
+    /// Optional trailing file path for `tau config set|get|unset`
+    /// (null → the default ~/.config/tau/config.json).
+    edit_path: ?[]const u8 = null,
+    /// `tau config get --raw` — print secret values unredacted.
+    config_raw: bool = false,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau config show` so the

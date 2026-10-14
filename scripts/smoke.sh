@@ -65,6 +65,7 @@ ALL_TEST_GROUPS=(
   "config-file:test_group_config_file"
   "config-show:test_group_config_show"
   "config-validate:test_group_config_validate"
+  "config-edit:test_group_config_edit"
   "init:test_group_init"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
@@ -636,6 +637,100 @@ test_group_config_validate() {
   else
     ok "validate never echoes key values" 0 0
   fi
+}
+
+# Group: `tau config set|get|unset` — programmatic, schema-checked edits to the
+# config file. Offline; uses a mock HOME.
+test_group_config_edit() {
+  local out rc mock_home cfg
+
+  note "tau config set|get|unset"
+
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+  cfg="$mock_home/.config/tau/config.json"
+
+  # Usage errors -> invalid_argument (80).
+  "$BIN" config set onlykey >/dev/null 2>&1;      ok "config set missing value -> exit 80" "$?" 80
+  "$BIN" config get >/dev/null 2>&1;              ok "config get missing key -> exit 80" "$?" 80
+  "$BIN" config get k a b >/dev/null 2>&1;        ok "config get extra arg -> exit 80" "$?" 80
+  "$BIN" config set k v --bogus >/dev/null 2>&1;  ok "config set unknown flag -> exit 80" "$?" 80
+  "$BIN" config unset x --raw >/dev/null 2>&1;    ok "config unset --raw -> exit 80" "$?" 80
+  "$BIN" config set a.b.c v >/dev/null 2>&1;      ok "config set deep path -> exit 80" "$?" 80
+
+  # set creates the file (+ parents) when missing.
+  out=$(HOME="$mock_home" "$BIN" config set provider openai); rc=$?
+  ok "config set on missing file -> exit 0" "$rc" 0
+  contains "set reports created:true" "$out" '"created":true'
+  contains "set echoes key/value" "$out" '"key":"provider","value":"openai"'
+  if [ -f "$cfg" ]; then ok "config set wrote the file" 0 0; else ok "config set wrote the file" 1 0; fi
+  if [ "$(stat -c '%a' "$cfg" 2>/dev/null || stat -f '%Lp' "$cfg" 2>/dev/null)" = "600" ]; then
+    ok "new config file is 0600" 0 0
+  else
+    ok "new config file is 0600" 1 0
+  fi
+
+  # get returns the stored value (JSON + text modes).
+  out=$(HOME="$mock_home" "$BIN" config get provider); rc=$?
+  ok "config get -> exit 0" "$rc" 0
+  contains "get reports value" "$out" '"value":"openai"'
+  contains "get reports set:true" "$out" '"set":true'
+  out=$(HOME="$mock_home" "$BIN" config get provider --mode text)
+  if [ "$out" = "openai" ]; then ok "get --mode text prints bare value" 0 0; else ok "get --mode text prints bare value" 1 0; fi
+
+  # get/unset of an absent key -> exit 1 not_found.
+  HOME="$mock_home" "$BIN" config get model >/dev/null 2>&1;   ok "get unset key -> exit 1" "$?" 1
+  HOME="$mock_home" "$BIN" config unset model >/dev/null 2>&1; ok "unset absent key -> exit 1" "$?" 1
+
+  # Schema checks reject bad values before writing (file unchanged).
+  HOME="$mock_home" "$BIN" config set stream yes >/dev/null 2>&1;    ok "set wrong type -> exit 80" "$?" 80
+  HOME="$mock_home" "$BIN" config set bogus x >/dev/null 2>&1;       ok "set unknown key -> exit 80" "$?" 80
+  HOME="$mock_home" "$BIN" config set provider nope >/dev/null 2>&1; ok "set bad provider -> exit 80" "$?" 80
+  HOME="$mock_home" "$BIN" config set compact_threshold 2 >/dev/null 2>&1; ok "set out-of-range -> exit 80" "$?" 80
+  contains "file still holds only provider" "$(cat "$cfg")" '"provider"'
+
+  # keys.<provider> addressing + redaction.
+  out=$(HOME="$mock_home" "$BIN" config set keys.openai sk-secret-zz99)
+  contains "set keys.<p> ok" "$out" '"key":"keys.openai"'
+  if printf '%s' "$out" | grep -q 'sk-secret-zz99'; then
+    ok "set never echoes the secret" 1 0
+  else
+    ok "set redacts the secret in output" 0 0
+  fi
+  contains "secret stored in file" "$(cat "$cfg")" '"openai": "sk-secret-zz99"'
+  out=$(HOME="$mock_home" "$BIN" config get keys.openai --mode text)
+  if printf '%s' "$out" | grep -q 'sk-secret-zz99'; then
+    ok "get leaks the secret" 1 0
+  else
+    ok "get redacts secrets by default" 0 0
+  fi
+  out=$(HOME="$mock_home" "$BIN" config get keys.openai --raw --mode text)
+  if [ "$out" = "sk-secret-zz99" ]; then ok "get --raw prints the real value" 0 0; else ok "get --raw prints the real value" 1 0; fi
+
+  # unset removes the member; file stays valid JSON.
+  out=$(HOME="$mock_home" "$BIN" config unset keys.openai); rc=$?
+  ok "config unset -> exit 0" "$rc" 0
+  contains "unset reports removed" "$out" '"removed":true'
+  if printf '%s' "$(cat "$cfg")" | grep -q 'sk-secret-zz99'; then
+    ok "unset left the secret behind" 1 0
+  else
+    ok "unset removed the secret" 0 0
+  fi
+  out=$(HOME="$mock_home" "$BIN" config validate)
+  contains "file still validates after edits" "$out" '"ok":true'
+
+  # Edits preserve comments (JSONC): write a commented file and set into it.
+  printf '{\n  // user note\n  "provider": "deepseek"\n}\n' > "$cfg"
+  HOME="$mock_home" "$BIN" config set mode text >/dev/null
+  contains "comment preserved after set" "$(cat "$cfg")" '// user note'
+  contains "new key inserted" "$(cat "$cfg")" '"mode": "text"'
+  out=$(HOME="$mock_home" "$BIN" config get provider --mode text)
+  if [ "$out" = "deepseek" ]; then ok "get reads commented file" 0 0; else ok "get reads commented file" 1 0; fi
+
+  # Malformed file -> exit 1 invalid_config (never silently clobbers).
+  printf '{"provider": "openai",\n' > "$cfg"
+  out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?
+  ok "set on broken JSON -> exit 1" "$rc" 1
+  contains "broken JSON reported" "$out" 'invalid JSON'
 }
 
 # Group: tau init — commented starter config scaffold

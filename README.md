@@ -456,6 +456,17 @@ tau config show                          # what tau would use right now
 tau config show --provider openai        # preview flag overrides without running
 ```
 
+Edit the file programmatically (git-config style — comments preserved, values
+schema-checked, writes atomic):
+
+```bash
+tau config set provider openai           # creates the file if missing
+tau config set keys.openai sk-...        # per-provider API key
+tau config get provider                  # read a value (secrets redacted)
+tau config unset keys.openai             # remove a key
+tau config validate                      # offline schema check (CI/pre-commit)
+```
+
 ### Providers
 
 | Provider | Endpoint | Env var(s) | Default model |

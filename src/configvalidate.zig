@@ -191,7 +191,7 @@ fn checkKnownField(
 pub fn validate(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Report {
     var issues: std.ArrayList(Issue) = .empty;
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
+    const bytes_raw = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
         const why: []const u8 = switch (err) {
             error.FileNotFound => "file not found — run `tau init` to create one, or pass a path: tau config validate <path>",
             error.AccessDenied => "permission denied",
@@ -200,6 +200,9 @@ pub fn validate(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Report 
         try addIssue(arena, &issues, null, "cannot read config file {s}: {s}", .{ path, why });
         return .{ .path = path, .issues = issues.items };
     };
+    // Config files are JSONC (the `tau init` scaffold is commented) — strip
+    // comments before the strict parse, same as configfile.load does.
+    const bytes = configfile.stripComments(arena, bytes_raw) catch bytes_raw;
 
     // Parse with diagnostics so syntax errors get a line/column.
     var scanner = std.json.Scanner.initCompleteInput(arena, bytes);

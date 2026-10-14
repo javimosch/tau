@@ -257,6 +257,18 @@ tau config validate --mode text          # Human-readable error lines
 # values are never echoed. For CI/pre-commit gates.
 ```
 
+#### 15c. Config Editing (`tau config set|get|unset`)
+```bash
+tau config set provider openai           # Schema-checked write (creates file, 0600)
+tau config set keys.openai sk-...        # Per-provider key via keys.<provider>
+tau config get provider                  # Read a FILE value (JSON mode default)
+tau config get api_key --mode text       # → "***last4" (secrets redacted; --raw prints raw)
+tau config unset keys.openai             # Remove a key
+tau config set mode text ./ci.json       # Optional trailing path
+# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename).
+# Exit 0 ok; 1 = key/file not found or invalid file; 80 = bad key/value/args.
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
@@ -306,6 +318,7 @@ tau init --provider openai               # Scaffold for a specific provider
 | `src/fleet.zig` | Fleet orchestration | Fleet command changes |
 | `src/config.zig` | `Config` struct + `Role` enum + key resolution | Adding config fields |
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
+| `src/configedit.zig` | `tau config set|get|unset` JSONC splice editor | Config editing changes |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |
 | `src/llm/provider.zig` | LLM providers, HTTP, streaming | Adding providers |
