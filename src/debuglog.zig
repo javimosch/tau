@@ -135,34 +135,44 @@ pub fn emitPerf(io: std.Io, start: std.Io.Timestamp, tokens_out: u64, exit_code:
     emit(line);
 }
 
-/// Register a literal secret to mask in the file copy.
-fn registerSecret(a: std.mem.Allocator, s: []const u8) void {
+/// Append `s` to `out` when it is long enough to mask safely and not already
+/// listed. Items are duped into `a`.
+fn appendSecret(a: std.mem.Allocator, out: *std.ArrayList([]const u8), s: []const u8) void {
     if (s.len < min_secret_len) return;
-    for (g_secrets.items) |existing| {
+    for (out.items) |existing| {
         if (std.mem.eql(u8, existing, s)) return;
     }
     const owned = a.dupe(u8, s) catch return;
-    g_secrets.append(a, owned) catch {};
+    out.append(a, owned) catch {};
 }
 
-/// Mask every credential the run could leak — not just the winning key. The
-/// resolved key plus the flag/config/env losers all get registered so a value
-/// echoed into tool output or a response body can't slip through.
-fn registerSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: cfgmod.Config) void {
-    if (cfgmod.resolveApiKey(cfg, env)) |k| registerSecret(a, k);
-    if (cfg.api_key) |k| registerSecret(a, k);
-    if (cfg.config_api_key) |k| registerSecret(a, k);
+/// Collect every credential the run could leak — not just the winning key.
+/// The resolved key plus the flag/config/env losers are all listed so a value
+/// echoed into tool output, a response body, or the `tau doctor --report`
+/// config dump can't slip through. The list is `a`-allocated and
+/// duped/deduped; callers may keep it for redactAlloc or register it globally.
+pub fn collectSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: cfgmod.Config) []const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    if (cfgmod.resolveApiKey(cfg, env)) |k| appendSecret(a, &out, k);
+    if (cfg.api_key) |k| appendSecret(a, &out, k);
+    if (cfg.config_api_key) |k| appendSecret(a, &out, k);
     if (cfg.keys) |km| {
         var it = km.valueIterator();
-        while (it.next()) |v| registerSecret(a, v.*);
+        while (it.next()) |v| appendSecret(a, &out, v.*);
     }
-    if (env.get("TAU_API_KEY")) |v| registerSecret(a, v);
+    if (env.get("TAU_API_KEY")) |v| appendSecret(a, &out, v);
     for (cfgmod.providers) |p| {
         for (p.env_keys) |ek| {
-            if (env.get(ek)) |v| registerSecret(a, v);
+            if (env.get(ek)) |v| appendSecret(a, &out, v);
         }
-        if (p.builtin_key) |bk| registerSecret(a, bk);
+        if (p.builtin_key) |bk| appendSecret(a, &out, bk);
     }
+    return out.items;
+}
+
+/// Register the collected secrets to mask in the file copy.
+fn registerSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: cfgmod.Config) void {
+    g_secrets.appendSlice(a, collectSecrets(a, env, cfg)) catch {};
 }
 
 /// Provenance header at the top of every log: what version/config produced

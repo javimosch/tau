@@ -839,6 +839,49 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   else
     ok "verdict is the last NDJSON line" 1 0
   fi
+
+  # 18. --report renders a redacted Markdown bundle: verdict, build metadata,
+  #     the checks table, effective settings, and the config file verbatim
+  #     (credentials masked). Exit code is unchanged (keyless -> 1).
+  rm -f "$mock_config/config.json"
+  capture doc_report env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --report
+  ok "doctor --report keyless exit 1" "$doc_report_rc" 1
+  contains "report has a markdown title" "$doc_report_out" '# tau doctor report'
+  contains "report states the verdict" "$doc_report_out" '**Verdict:** **FAILING**'
+  contains "report has a build table" "$doc_report_out" '| commit | `'
+  contains "build table carries zig version" "$doc_report_out" '| zig | `'
+  contains "report has a checks table" "$doc_report_out" '| check | status | message | hint |'
+  contains "checks table lists api_key fail" "$doc_report_out" '| `api_key` | **fail** |'
+  contains "endpoint skip row present" "$doc_report_out" '| `endpoint_reachable` | skip |'
+  contains "report has effective config" "$doc_report_out" '## Effective configuration'
+  contains "key source reports none resolved" "$doc_report_out" '| api_key_source | `none resolved` |'
+  contains "missing config noted" "$doc_report_out" '_No config file at `'
+  if printf '%s' "$doc_report_out" | grep -q '"ok"'; then
+    ok "report is not the JSON shape" 1 0
+  else
+    ok "report is not the JSON shape" 0 0
+  fi
+
+  # 19. --report embeds the config file with credentials masked: the literal
+  #     key under keys.openai never appears in the bundle.
+  printf '{ "provider": "openai", "keys": { "openai": "sk-report-secret-456" } }' > "$mock_config/config.json"
+  capture doc_report_cfg env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --report --provider openai
+  ok "report with config + env-less key exits 0" "$doc_report_cfg_rc" 0
+  contains "config dump is embedded" "$doc_report_cfg_out" '```jsonc'
+  contains "key source attributed to config keys" "$doc_report_cfg_out" '| api_key_source | `keys[openai]` |'
+  if printf '%s' "$doc_report_cfg_out" | grep -qF 'sk-report-secret-456'; then
+    ok "report never prints key material" 1 0
+  else
+    ok "report never prints key material" 0 0
+  fi
+  contains "key literal is masked" "$doc_report_cfg_out" '***REDACTED***'
+  rm -f "$mock_config/config.json"
+
+  # 20. --report + --json is an invalid-argument error (mutually exclusive).
+  "$BIN" doctor --report --json >/dev/null 2>&1; ok "doctor --report --json -> exit 80" "$?" 80
+  "$BIN" --help 2>&1 | grep -q -- "--report" && ok "--help mentions --report" 0 0 || ok "--help mentions --report" 1 0
 }
 
 # Group: tau init — commented starter config scaffold

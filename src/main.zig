@@ -182,6 +182,10 @@ const help_text =
     \\      --yes                     Apply --fix remediations without prompting
     \\      --json                    Stream NDJSON check/fix events + a done:true
     \\                              verdict instead of the single-object report
+    \\      --report                  Print a Markdown diagnostics bundle (build
+    \\                              metadata, checks, sanitized config file) for
+    \\                              pasting into a bug report; mutually exclusive
+    \\                              with --json
     \\      --shell <name>            Completions shell: bash|zsh|fish|pwsh|all
     \\                              (default: detect from $SHELL)
     \\
@@ -335,7 +339,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + doctor health summary (NDJSON)." },
-    .{ .a = "tau doctor [--offline|--deep] [--fix [--yes]] [--json] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --json streams NDJSON events; --fix remediates behind confirmation." },
+    .{ .a = "tau doctor [--offline|--deep] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
