@@ -40,6 +40,10 @@ are backward compatible.
   the config file (git-config model) for CI and agent-driven setup; `set`
   creates the file atomically (`0600`), keys are `<field>` or `keys.<provider>`,
   secrets are redacted in output unless `get --raw` (#202)
+- `tau config edit [path]` — open the config in `$EDITOR` (`TAU_EDITOR` >
+  `VISUAL` > `EDITOR` > `vi`/`notepad`), validated on save with the same
+  checks as `config validate`; a missing file is seeded with the `tau init`
+  scaffold and misspelled keys get `did you mean "…"?` hints (#212)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed

@@ -168,6 +168,8 @@ const help_text =
     \\                                 (keys are <field> or keys.<provider>; creates the file)
     \\  tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
     \\  tau config unset <key> [path] Remove a key from the config file
+    \\  tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
+    \\                              VISUAL > EDITOR > vi/notepad); validates on save
     \\
     \\
     \\Models:
@@ -308,6 +310,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau config set <key> <value> [path]", .b = "schema-checked edit to the config FILE (<field> or keys.<provider>); creates the file if missing." },
     .{ .a = "tau config get <key> [path] [--raw]", .b = "print a config file value; secrets are redacted unless --raw." },
     .{ .a = "tau config unset <key> [path]", .b = "remove a key from the config file." },
+    .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
@@ -328,6 +331,7 @@ const guide_gotchas = [_][]const u8{
     "The tool loop ends when the model stops calling tools or hits --max-iterations (default backstop).",
     "tau config validate is fully offline — it only checks the file, so it works in CI and pre-commit hooks.",
     "tau config set|get|unset edit the FILE (git-config style), not the merged view — `config show` still reports effective values. set is schema-checked; get redacts secrets unless --raw.",
+    "tau config edit opens the file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi) and runs the `config validate` checks on save — a validation failure exits 1 and lists every problem, but the edits stay on disk.",
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
@@ -779,6 +783,35 @@ pub fn main(init: std.process.Init) !void {
                 std.process.exit(if (report.ok()) 0 else @intFromEnum(ExitCode.generic_failure));
             }
             const config_sub = parsed.config.config_sub orelse "show";
+            if (std.mem.eql(u8, config_sub, "edit")) {
+                const cedit = @import("configedit.zig");
+                const outcome = cedit.runEditor(
+                    io,
+                    arena,
+                    parsed.config.edit_path,
+                    init.environ_map,
+                    parsed.config.mode,
+                ) catch |err| {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "config edit failed", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                };
+                switch (outcome) {
+                    .ok => |s| {
+                        term.out(s);
+                        return;
+                    },
+                    // Validation report on stdout (same channel/shape as
+                    // `config validate`), exit 1 — the saved file needs fixes.
+                    .invalid => |s| {
+                        term.out(s);
+                        std.process.exit(@intFromEnum(ExitCode.generic_failure));
+                    },
+                    .fail => |f| {
+                        printErrorJson(f.code, f.type_name, f.message, false);
+                        std.process.exit(f.code);
+                    },
+                }
+            }
             if (std.meta.stringToEnum(@import("configedit.zig").Sub, config_sub)) |csub| {
                 const cedit = @import("configedit.zig");
                 const outcome = cedit.run(

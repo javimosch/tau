@@ -179,6 +179,7 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 | `DEEPSEEK_API_KEY` | API key for the `deepseek` provider. |
 | `OPENCODE_API_KEY` | API key for the `opencode-go` provider. |
 | `HOME` | Root of all tau state: `~/.config/tau/` and `~/.agents/skills/`. If unset, config file, sessions, fleets, skills, and the ACP daemon are all disabled. |
+| `TAU_EDITOR`, `VISUAL`, `EDITOR` | Editor for `tau config edit`, tried in that order (fallback: `vi` / `notepad`). May include arguments, e.g. `TAU_EDITOR="code --wait"`. |
 
 ### Read by the a2a-spawn launcher (not tau)
 
@@ -356,6 +357,32 @@ JSON mode (the default) emits one object per invocation — e.g.
 `set`, `{"path":…,"key":…,"set":true,"value":…}` for `get`, and
 `{"ok":true,…,"removed":true}` for `unset`. `--mode text` prints the bare value
 for `get` and one human-readable line for `set`/`unset`.
+
+## Editing the config file interactively
+
+`tau config edit [path]` opens the config file in your editor — the human
+counterpart to `config set`, for when you'd rather edit JSONC by hand. The
+editor command resolves like git's: `TAU_EDITOR` > `VISUAL` > `EDITOR` >
+`vi` (`notepad` on Windows), run through the system shell so values with
+arguments like `EDITOR="code --wait"` work.
+
+```bash
+tau config edit                     # edit ~/.config/tau/config.json
+tau config edit ./ci.json           # edit an explicit file
+TAU_EDITOR="code --wait" tau config edit
+```
+
+- **Missing file**: seeded with the commented `tau init` scaffold first
+  (`"created":true` in the JSON output), so the editor opens on real content.
+- **Validated on save**: when the editor exits cleanly, the file is checked
+  with the same rules as `config validate`. On a clean save the JSON report is
+  `{"ok":true,"path":…,"editor":…,"created":bool,"valid":true}` (or
+  `<path>: ok` in text mode). On failure the report lists every problem —
+  misspelled keys include `did you mean "…"?` hints — the file stays on disk
+  so you can rerun `tau config edit` (or fix with `config set`), and tau exits
+  `1`.
+- **Editor failures**: an editor that exits non-zero or can't be launched
+  emits an `editor_failed` envelope and exits `1`; `80` for CLI misuse.
 
 ---
 

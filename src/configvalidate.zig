@@ -11,6 +11,7 @@ const std = @import("std");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const json = @import("json.zig");
+const suggest = @import("suggest.zig");
 
 /// One validation problem. `key` is the offending config key when the issue is
 /// tied to one (`"provider"`, `"keys.openai"`); null for file-level problems
@@ -31,6 +32,15 @@ pub const Report = struct {
 
 // Comptime view of the file schema.
 const file_fields = @typeInfo(configfile.FileConfig).@"struct".fields;
+
+/// All valid top-level config key names — the candidate list for did-you-mean
+/// suggestions on misspelled keys.
+const field_names: []const []const u8 = blk: {
+    var names: [file_fields.len][]const u8 = undefined;
+    for (file_fields, 0..) |f, i| names[i] = f.name;
+    const frozen = names;
+    break :blk &frozen;
+};
 
 /// Expected JSON value kind for a FileConfig field type.
 const Kind = enum { string, boolean, integer, number, any_json };
@@ -86,6 +96,17 @@ fn providerNames(arena: std.mem.Allocator) ![]const u8 {
     return b.toOwnedSlice(arena);
 }
 
+/// A `did you mean "<name>"?` fragment for a mistyped provider name, falling
+/// back to the full "valid providers: ..." list when nothing is close.
+fn providerHint(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (cfgmod.providers) |p| try names.append(arena, p.name);
+    if (suggest.suggest(arena, name, names.items)) |s| {
+        return try std.fmt.allocPrint(arena, "did you mean \"{s}\"?", .{s});
+    }
+    return try std.fmt.allocPrint(arena, "valid providers: {s}", .{try providerNames(arena)});
+}
+
 /// Validate one known key's value against its FileConfig field type, then run
 /// the value-level checks the type alone can't express. `field` is comptime —
 /// the checks below compile down to only what each field needs.
@@ -104,7 +125,7 @@ fn checkKnownField(
             }
             if (comptime std.mem.eql(u8, name, "provider")) {
                 if (cfgmod.findProvider(val.string) == null) {
-                    try addIssue(arena, issues, name, "\"provider\" is not a known provider: \"{s}\" — valid providers: {s}", .{ val.string, try providerNames(arena) });
+                    try addIssue(arena, issues, name, "\"provider\" is not a known provider: \"{s}\" — {s}", .{ val.string, try providerHint(arena, val.string) });
                 }
             } else if (comptime std.mem.eql(u8, name, "mode")) {
                 if (!std.mem.eql(u8, val.string, "text") and !std.mem.eql(u8, val.string, "json")) {
@@ -177,7 +198,7 @@ fn checkKnownField(
                     } else if (e.value_ptr.*.string.len == 0) {
                         try addIssue(arena, issues, kkey, "\"keys.{s}\" is an empty string — remove it or set a key", .{pname});
                     } else if (cfgmod.findProvider(pname) == null) {
-                        try addIssue(arena, issues, kkey, "\"keys.{s}\" is not a known provider — valid providers: {s}", .{ pname, try providerNames(arena) });
+                        try addIssue(arena, issues, kkey, "\"keys.{s}\" is not a known provider — {s}", .{ pname, try providerHint(arena, pname) });
                     }
                 }
             }
@@ -230,7 +251,13 @@ pub fn validate(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Report 
                 continue :outer;
             }
         }
-        try addIssue(arena, &issues, key, "\"{s}\" is not a tau config key — check the spelling or remove it (see docs/configuration.md)", .{key});
+        // Did-you-mean on misspelled keys — an unknown key is almost always a
+        // typo, and the suggestion beats the generic "check the spelling".
+        const hint: []const u8 = if (suggest.suggest(arena, key, field_names)) |s|
+            try std.fmt.allocPrint(arena, " — did you mean \"{s}\"?", .{s})
+        else
+            " — check the spelling or remove it (see docs/configuration.md)";
+        try addIssue(arena, &issues, key, "\"{s}\" is not a tau config key{s}", .{ key, hint });
     }
 
     return .{ .path = path, .issues = issues.items };
