@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"skills subcommand required: list | search | load","recoverable":false}}
