@@ -3,10 +3,12 @@
 //! shares.
 //!
 //! The codes (which double as process exit codes) and `type` strings are a
-//! stable contract documented in docs/troubleshooting.md — scripts and
-//! agents branch on them. Never renumber a code or rename a `type_name`;
-//! add a new entry instead. Keep hints actionable: one line naming the flag,
-//! env var, or command that fixes it.
+//! stable contract documented in docs/troubleshooting.md and mirrored by the
+//! generated docs/errors.md — scripts and agents branch on them. Never
+//! renumber a code or rename a `type_name`; add a new entry instead. Keep
+//! hints actionable: one line naming the flag, env var, or command that fixes
+//! it. After changing this file run `python3 scripts/gen-errors-doc.py` —
+//! `zig build test` and the errors-doc smoke group fail on drift.
 
 const std = @import("std");
 const json = @import("json.zig");
@@ -17,14 +19,17 @@ const doc_url = @import("version.zig").troubleshooting_doc_url;
 const providers_doc_url = @import("version.zig").providers_doc_url;
 
 /// One entry in the stable error catalog (docs/troubleshooting.md mirrors
-/// it). `code` doubles as the process exit code; `type_name` is the wire tag
+/// it; docs/errors.md is generated from it by scripts/gen-errors-doc.py).
+/// `code` doubles as the process exit code; `type_name` is the wire tag
 /// in err.type — it keeps legacy spellings like "AuthFailed"/"Timeout" since
-/// the string itself is the contract. `docs` is the envelope's guide link —
-/// it defaults to the troubleshooting page; auth failures point at the
-/// per-provider credential guide instead.
+/// the string itself is the contract. `cause` is doc-only: one line naming
+/// when this error is raised, rendered into the generated catalog. `docs` is
+/// the envelope's guide link — it defaults to the troubleshooting page; auth
+/// failures point at the per-provider credential guide instead.
 pub const Spec = struct {
     code: u8,
     type_name: []const u8,
+    cause: []const u8,
     hint: []const u8,
     recoverable: bool = false,
     docs: []const u8 = doc_url,
@@ -33,42 +38,50 @@ pub const Spec = struct {
 pub const not_found = Spec{
     .code = 1,
     .type_name = "not_found",
+    .cause = "a named resource is missing — the message identifies the file, skill, or session",
     .hint = "the message names what was not found — check the name/path and retry",
 };
 pub const invalid_argument = Spec{
     .code = 80,
     .type_name = "invalid_argument",
+    .cause = "an unknown flag, bad flag value, invalid subcommand, or malformed argument was passed",
     .hint = "run `tau --help` (or `tau --help-json`) for the valid flags and values",
 };
 pub const missing_required_field = Spec{
     .code = 82,
     .type_name = "missing_required_field",
+    .cause = "a required input is missing (e.g. `tau fleet run` without --goal, `tau skills load` without a name)",
     .hint = "the message names the missing input — supply it and retry",
 };
 pub const timeout = Spec{
     .code = 105,
     .type_name = "Timeout",
+    .cause = "an HTTP request to the provider endpoint exceeded --timeout-ms",
     .hint = "raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)",
 };
 pub const auth_failed = Spec{
     .code = 106,
     .type_name = "AuthFailed",
+    .cause = "the provider rejected the API key, or no key was found anywhere in the resolution chain",
     .hint = "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY",
     .docs = providers_doc_url,
 };
 pub const internal_error = Spec{
     .code = 110,
     .type_name = "internal_error",
+    .cause = "an HTTP failure, JSON parse error, tool crash, or the --max-iterations cap was hit",
     .hint = "re-run with --debug to write a diagnostic log, then file a bug report",
 };
 pub const unimplemented = Spec{
     .code = 111,
     .type_name = "unimplemented",
+    .cause = "the operation is not supported on this platform (e.g. `tau acp` daemon commands are POSIX-only)",
     .hint = "not supported on this platform — the message names the workaround",
 };
 
 /// The stable catalog, ordered by code. Snapshot-tested byte-for-byte and
-/// cross-checked against docs/troubleshooting.md and --help-json.
+/// cross-checked against docs/troubleshooting.md, the generated
+/// docs/errors.md, and --help-json.
 pub const specs = [_]Spec{
     not_found,           invalid_argument, missing_required_field, timeout,
     auth_failed,         internal_error,   unimplemented,
@@ -84,6 +97,7 @@ pub fn specFor(code: u8) Spec {
     return .{
         .code = code,
         .type_name = internal_error.type_name,
+        .cause = "an exit code outside the stable catalog was raised",
         .hint = internal_error.hint,
     };
 }
@@ -247,6 +261,34 @@ test "docs/troubleshooting.md documents the whole catalog" {
         // ...and its hint is quoted verbatim in the doc.
         if (std.mem.indexOf(u8, doc, s.hint) == null) {
             std.debug.print("troubleshooting.md missing hint for code {d}\n", .{s.code});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "docs/errors.md generated catalog mirrors the registry" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "docs/errors.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    // The file must declare itself generated so nobody hand-edits it.
+    try testing.expect(std.mem.indexOf(u8, doc, "GENERATED FILE") != null);
+    try testing.expect(std.mem.indexOf(u8, doc, "scripts/gen-errors-doc.py") != null);
+    for (specs) |s| {
+        // Catalog rows and causes are doc-only contract: every entry must
+        // carry a non-empty cause for the generated table.
+        try testing.expect(s.cause.len > 0);
+        var buf: [160]u8 = undefined;
+        const row = std.fmt.bufPrint(&buf, "| `{d}` | `{s}` |", .{ s.code, s.type_name }) catch unreachable;
+        if (std.mem.indexOf(u8, doc, row) == null) {
+            std.debug.print("errors.md catalog missing row '{s}'\n", .{row});
+            return error.TestUnexpectedResult;
+        }
+        if (std.mem.indexOf(u8, doc, s.hint) == null) {
+            std.debug.print("errors.md missing hint for code {d}\n", .{s.code});
+            return error.TestUnexpectedResult;
+        }
+        if (std.mem.indexOf(u8, doc, s.cause) == null) {
+            std.debug.print("errors.md missing cause for code {d}\n", .{s.code});
             return error.TestUnexpectedResult;
         }
     }

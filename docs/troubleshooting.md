@@ -39,6 +39,10 @@ Some emitters override `type` with the underlying Zig error name (e.g.
 `HTTPRequestFailed` on exit 110) while keeping `code` stable — branch on
 `code` first, `type` second.
 
+[docs/errors.md](errors.md) is a **generated** mirror of this catalog (with
+per-code causes and the silent-exit paths) rendered from the registry in
+`src/errors.zig` — CI fails if it drifts.
+
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
 run continues.
 
