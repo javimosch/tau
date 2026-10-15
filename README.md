@@ -477,7 +477,7 @@ Requires Zig 0.16.0 and `curl` on PATH.
 
 ## 🔧 Troubleshooting
 
-Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it.
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**.
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|

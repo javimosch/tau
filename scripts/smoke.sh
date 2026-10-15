@@ -72,6 +72,7 @@ ALL_TEST_GROUPS=(
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
   "debug:test_group_debug"
+  "errors-doc:test_group_errors_doc"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -923,6 +924,52 @@ STUB
   capture r7 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$elog" "$BIN" --debug "/goal status"
   ok "debug: /goal status without session exits 80" "$r7_rc" 80
   contains "debug: literal envelope links debug_log" "$r7_err" '"debug_log":"'
+}
+
+# Group: generated docs/errors.md drift check
+# docs/errors.md is rendered from the Spec catalog in src/errors.zig by
+# scripts/gen-errors-doc.py; --check regenerates in memory and fails on drift.
+test_group_errors_doc() {
+  note "generated docs/errors.md drift check"
+
+  local doc="$ROOT/docs/errors.md"
+  local gen="$ROOT/scripts/gen-errors-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "errors-doc: docs/errors.md exists" 0 0
+    contains "errors-doc: doc declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "errors-doc: docs/errors.md exists" 1 0
+    contains "errors-doc: doc declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "errors-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "errors-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "errors-doc: --check passes (no drift)" 0 0
+  else
+    ok "errors-doc: --check passes (no drift)" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/errors.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "errors-doc: --check detects a stale doc" 0 1
+    else
+      ok "errors-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/errors.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/errors.md.bak" "$doc"
+  else
+    skip_test "errors-doc: --check detects a stale doc" "docs/errors.md missing"
+  fi
 }
 
 # Group: --bench regression guard
