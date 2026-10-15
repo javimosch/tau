@@ -1,6 +1,7 @@
 const std = @import("std");
 const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
+const suggest = @import("suggest.zig");
 const Config = cfgmod.Config;
 
 pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, config, err };
@@ -260,18 +261,19 @@ pub fn parse(
         return .{ .action = .fleet, .config = fcfg };
     }
 
-    // `tau config <show|validate|set|get|unset>` — config inspection and
-    // programmatic editing.
+    // `tau config <show|validate|set|get|unset|edit>` — config inspection and
+    // programmatic/interactive editing.
     // `show` falls through to the generic flag loop below so every override
     // flag (--provider/--model/--api-key/--mode/...) is reflected in the
     // merged output. `validate` checks a config FILE (default:
     // ~/.config/tau/config.json) and returns early like acp/fleet — the
     // override flags don't apply to file validation. `set`/`get`/`unset`
     // also return early: they edit or read the FILE (like git config), not
-    // the merged view — use `config show` for effective values.
+    // the merged view — use `config show` for effective values. `edit` opens
+    // the file in $EDITOR and validates on save.
     var config_show = false;
     if (argv.len > 0 and eq(argv[0], "config")) {
-        if (argv.len < 2) return errResult(arena, "config subcommand required: show | validate | set | get | unset", .{});
+        if (argv.len < 2) return errResult(arena, "config subcommand required: show | validate | set | get | unset | edit", .{});
         if (eq(argv[1], "validate")) {
             var vcfg: Config = base;
             vcfg.config_sub = "validate";
@@ -296,6 +298,32 @@ pub fn parse(
                 }
             }
             return .{ .action = .config, .config = vcfg };
+        }
+        if (eq(argv[1], "edit")) {
+            // tau config edit [path] [--mode text|json]
+            var ecfg: Config = base;
+            ecfg.config_sub = "edit";
+            var j: usize = 2;
+            while (j < argv.len) : (j += 1) {
+                const a = argv[j];
+                if (eq(a, "--mode")) {
+                    j += 1;
+                    if (j >= argv.len) return missing(arena, a);
+                    if (eq(argv[j], "text")) {
+                        ecfg.mode = .text;
+                    } else if (eq(argv[j], "json")) {
+                        ecfg.mode = .json;
+                    } else {
+                        return errResult(arena, "invalid --mode (want text|json): {s}", .{argv[j]});
+                    }
+                } else if (a.len > 0 and a[0] != '-') {
+                    if (ecfg.edit_path != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
+                    ecfg.edit_path = a;
+                } else {
+                    return errResult(arena, "unknown config edit argument: {s}", .{a});
+                }
+            }
+            return .{ .action = .config, .config = ecfg };
         }
         if (eq(argv[1], "set") or eq(argv[1], "get") or eq(argv[1], "unset")) {
             // tau config set <key> <value> [path] [--mode text|json]
@@ -346,7 +374,14 @@ pub fn parse(
             }
             return .{ .action = .config, .config = ecfg };
         }
-        if (!eq(argv[1], "show")) return errResult(arena, "invalid config subcommand (want show|validate|set|get|unset): {s}", .{argv[1]});
+        if (!eq(argv[1], "show")) {
+            const subs = [_][]const u8{ "show", "validate", "set", "get", "unset", "edit" };
+            const hint: []const u8 = if (suggest.suggest(arena, argv[1], &subs)) |s|
+                try std.fmt.allocPrint(arena, " — did you mean \"{s}\"?", .{s})
+            else
+                "";
+            return errResult(arena, "invalid config subcommand (want show|validate|set|get|unset|edit): {s}{s}", .{ argv[1], hint });
+        }
         config_show = true;
         argv = argv[2..];
     }
@@ -1106,11 +1141,37 @@ test "parse: config requires a subcommand and validates it" {
 
     const bare = try parseArgv(a, &.{ "tau", "config" }, .{});
     try std.testing.expectEqual(Action.err, bare.action);
-    try std.testing.expectEqualStrings("config subcommand required: show | validate | set | get | unset", bare.err_msg.?);
+    try std.testing.expectEqualStrings("config subcommand required: show | validate | set | get | unset | edit", bare.err_msg.?);
 
     const bad = try parseArgv(a, &.{ "tau", "config", "bogus" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
-    try std.testing.expectEqualStrings("invalid config subcommand (want show|validate|set|get|unset): bogus", bad.err_msg.?);
+    try std.testing.expectEqualStrings("invalid config subcommand (want show|validate|set|get|unset|edit): bogus", bad.err_msg.?);
+
+    // A close typo gets a did-you-mean hint.
+    const typo = try parseArgv(a, &.{ "tau", "config", "edti" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expect(std.mem.indexOf(u8, typo.err_msg.?, "did you mean \"edit\"?") != null);
+}
+
+test "parse: config edit accepts an optional path and --mode" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "config", "edit" }, .{});
+    try std.testing.expectEqual(Action.config, bare.action);
+    try std.testing.expectEqualStrings("edit", bare.config.config_sub.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), bare.config.edit_path);
+
+    const with_path = try parseArgv(a, &.{ "tau", "config", "edit", "ci.json", "--mode", "text" }, .{});
+    try std.testing.expectEqualStrings("edit", with_path.config.config_sub.?);
+    try std.testing.expectEqualStrings("ci.json", with_path.config.edit_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, with_path.config.mode);
+
+    const extra = try parseArgv(a, &.{ "tau", "config", "edit", "a", "b" }, .{});
+    try std.testing.expectEqual(Action.err, extra.action);
+    const bad_flag = try parseArgv(a, &.{ "tau", "config", "edit", "--raw" }, .{});
+    try std.testing.expectEqual(Action.err, bad_flag.action);
 }
 
 test "parse: config set|get|unset capture key, value, path, --raw" {

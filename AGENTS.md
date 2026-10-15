@@ -269,6 +269,17 @@ tau config set mode text ./ci.json       # Optional trailing path
 # Exit 0 ok; 1 = key/file not found or invalid file; 80 = bad key/value/args.
 ```
 
+#### 15d. Interactive Config Editing (`tau config edit`)
+```bash
+tau config edit                        # Open ~/.config/tau/config.json in $EDITOR
+TAU_EDITOR="code --wait" tau config edit  # Editor: TAU_EDITOR > VISUAL > EDITOR > vi/notepad
+tau config edit ./ci.json              # Explicit path
+# Missing file → seeded with the commented `tau init` scaffold first.
+# On editor exit the file is validated (same checks/report as `config
+# validate`, incl. did-you-mean on misspelled keys); bad saves exit 1 but
+# stay on disk. Editor non-zero exit → editor_failed envelope, exit 1.
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt

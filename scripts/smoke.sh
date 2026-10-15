@@ -66,6 +66,7 @@ ALL_TEST_GROUPS=(
   "config-show:test_group_config_show"
   "config-validate:test_group_config_validate"
   "config-edit:test_group_config_edit"
+  "config-editor:test_group_config_editor"
   "init:test_group_init"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
@@ -731,6 +732,61 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?
   ok "set on broken JSON -> exit 1" "$rc" 1
   contains "broken JSON reported" "$out" 'invalid JSON'
+}
+
+# Group: `tau config edit` — interactive $EDITOR edit, schema-checked on save.
+# TAU_EDITOR is stubbed so the group runs fully offline/non-interactive.
+test_group_config_editor() {
+  local out rc mock_home cfg
+
+  note "tau config edit (stubbed editor)"
+
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+  cfg="$mock_home/.config/tau/config.json"
+
+  # Usage errors -> invalid_argument (80).
+  "$BIN" config edit a b >/dev/null 2>&1;        ok "config edit two paths -> exit 80" "$?" 80
+  "$BIN" config edit --bogus >/dev/null 2>&1;    ok "config edit unknown flag -> exit 80" "$?" 80
+  "$BIN" config bogus >/dev/null 2>&1;           ok "config bogus subcommand -> exit 80" "$?" 80
+  capture edti "$BIN" config edti
+  contains "subcommand typo gets a hint" "$edti_err" 'did you mean \"edit\"?'
+
+  # Missing file: seeded with the init scaffold, then the stubbed editor is a
+  # no-op -> the scaffold validates clean.
+  out=$(env -u VISUAL -u EDITOR HOME="$mock_home" TAU_EDITOR=true "$BIN" config edit); rc=$?
+  ok "config edit missing file -> exit 0" "$rc" 0
+  contains "edit reports ok:true" "$out" '"ok":true'
+  contains "edit reports created:true" "$out" '"created":true'
+  contains "edit reports valid" "$out" '"valid":true'
+  if grep -q '^// ' "$cfg" 2>/dev/null && grep -q '"provider"' "$cfg"; then
+    ok "missing file got the commented scaffold" 0 0
+  else
+    ok "missing file got the commented scaffold" 1 0
+  fi
+
+  # Editor that writes a misspelled key -> exit 1, validation report on stdout
+  # with a did-you-mean hint; the bad content stays on disk.
+  out=$(env -u VISUAL -u EDITOR HOME="$mock_home" TAU_EDITOR="printf '{\"proivder\":\"openai\"}' >" "$BIN" config edit); rc=$?
+  ok "config edit bad save -> exit 1" "$rc" 1
+  contains "report lists the typo" "$out" '"key":"proivder"'
+  contains "did-you-mean hint on unknown key" "$out" 'did you mean \"provider\"?'
+  contains "bad edit stays on disk" "$(cat "$cfg")" '"proivder"'
+
+  # Editor exiting non-zero -> editor_failed envelope on stderr, exit 1.
+  capture edfail env -u VISUAL -u EDITOR HOME="$mock_home" TAU_EDITOR=false "$BIN" config edit
+  ok "editor exit 1 -> exit 1" "$edfail_rc" 1
+  contains "editor_failed envelope on stderr" "$edfail_err" '"type":"editor_failed"'
+
+  # --mode text prints the human-readable ok line.
+  printf '{"provider":"openai"}' > "$cfg"
+  out=$(env -u VISUAL -u EDITOR HOME="$mock_home" TAU_EDITOR=true "$BIN" config edit --mode text)
+  contains "text mode ok line" "$out" ': ok'
+
+  # Explicit path argument (existing file, no HOME needed for resolution).
+  printf '{"proivder":true}' > "$mock_home/bad.json"
+  out=$(env -u VISUAL -u EDITOR HOME="$mock_home" TAU_EDITOR=true "$BIN" config edit "$mock_home/bad.json"); rc=$?
+  ok "config edit explicit path -> exit 1" "$rc" 1
+  contains "explicit path in report" "$out" 'bad.json'
 }
 
 # Group: tau init — commented starter config scaffold

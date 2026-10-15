@@ -858,6 +858,132 @@ fn renderUnset(arena: std.mem.Allocator, path: []const u8, key: []const u8, mode
 }
 
 // ---------------------------------------------------------------------------
+// `tau config edit` — interactive edit via $EDITOR, schema-checked on save
+// ---------------------------------------------------------------------------
+
+/// Outcome of `config edit`: `ok`/`invalid` carry a stdout payload (success
+/// object or validation report — the command's result, like
+/// `config validate`); `fail` carries an {"err"} envelope for stderr.
+pub const EditOutcome = union(enum) {
+    ok: []const u8,
+    invalid: []const u8,
+    fail: Fail,
+};
+
+/// Resolve the editor command: $TAU_EDITOR > $VISUAL > $EDITOR > platform
+/// fallback (vi / notepad) — git's editor-precedence model. Empty env values
+/// are skipped. The command may carry args (`EDITOR="code --wait"`); it runs
+/// through the system shell.
+fn editorCommand(env: *std.process.Environ.Map) []const u8 {
+    for ([_][]const u8{ "TAU_EDITOR", "VISUAL", "EDITOR" }) |name| {
+        if (env.get(name)) |v| {
+            if (v.len > 0) return v;
+        }
+    }
+    return if (builtin.os.tag == .windows) "notepad" else "vi";
+}
+
+/// Spawn `editor` on `path` through the system shell so commands with args
+/// work (`sh -c '<editor> "$@"'` — git's trick). stdio is inherited so
+/// full-screen editors get the tty.
+fn launchEditor(io: std.Io, arena: std.mem.Allocator, editor: []const u8, path: []const u8) !std.process.Child.Term {
+    const argv: []const []const u8 = if (builtin.os.tag == .windows)
+        &.{ "cmd", "/C", try std.fmt.allocPrint(arena, "{s} \"{s}\"", .{ editor, path }) }
+    else
+        &.{ "sh", "-c", try std.fmt.allocPrint(arena, "{s} \"$@\"", .{editor}), editor, path };
+    var child = try std.process.spawn(io, .{ .argv = argv });
+    return child.wait(io);
+}
+
+/// `tau config edit [path]` — open the config file in the user's editor, then
+/// validate the result with the same checks `config validate` runs (including
+/// did-you-mean hints on misspelled keys). A missing file is seeded with the
+/// commented `tau init` scaffold first.
+pub fn runEditor(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    path_opt: ?[]const u8,
+    env: *std.process.Environ.Map,
+    mode: cfgmod.OutputMode,
+) !EditOutcome {
+    const path = path_opt orelse (configfile.path(arena, env) orelse {
+        return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = "no config path given and HOME is unset — pass a path: tau config edit <path>" } };
+    });
+
+    var created = false;
+    const missing = blk: {
+        _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| break :blk err == error.FileNotFound;
+        break :blk false;
+    };
+    if (missing) {
+        const initmod = @import("init.zig");
+        const det = try initmod.detectKeys(arena, env);
+        const body = try initmod.renderConfig(arena, det, initmod.pickProvider(det, null));
+        if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+            std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
+        }
+        try writeAtomic(io, arena, path, body);
+        created = true;
+    }
+
+    const editor = editorCommand(env);
+    const editor_term = launchEditor(io, arena, editor, path) catch |err| {
+        const msg = std.fmt.allocPrint(arena, "could not launch editor \"{s}\" ({s}) — set TAU_EDITOR, VISUAL, or EDITOR to an installed editor", .{ editor, @errorName(err) }) catch "could not launch editor";
+        return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+    };
+    switch (editor_term) {
+        .exited => |code| {
+            if (code != 0) {
+                const msg = std.fmt.allocPrint(arena, "editor \"{s}\" exited with status {d}", .{ editor, code }) catch "editor exited non-zero";
+                return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+            }
+        },
+        .signal, .stopped => |sig| {
+            const msg = std.fmt.allocPrint(arena, "editor \"{s}\" was killed by signal {s}", .{ editor, @tagName(sig) }) catch "editor killed by signal";
+            return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+        },
+        .unknown => |code| {
+            const msg = std.fmt.allocPrint(arena, "editor \"{s}\" exited abnormally ({d})", .{ editor, code }) catch "editor exited abnormally";
+            return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+        },
+    }
+
+    // Validate whatever the editor left behind. The report shape (and the
+    // stdout channel) matches `config validate`; on failure the file stays on
+    // disk so the user can rerun `tau config edit` and fix the listed issues.
+    const cval = @import("configvalidate.zig");
+    const report = cval.validate(io, arena, path) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{ .fail = .{ .code = 110, .type_name = "internal_error", .message = "config validation failed" } };
+    };
+    if (!report.ok()) {
+        const out = if (mode == .text)
+            try cval.formatText(arena, report)
+        else
+            try cval.formatJson(arena, report);
+        return .{ .invalid = out };
+    }
+    return .{ .ok = try renderEditOk(arena, path, editor, created, mode) };
+}
+
+fn renderEditOk(arena: std.mem.Allocator, path: []const u8, editor: []const u8, created: bool, mode: cfgmod.OutputMode) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    if (mode == .text) {
+        try b.appendSlice(arena, path);
+        try b.appendSlice(arena, ": ok\n");
+        return b.toOwnedSlice(arena);
+    }
+    try b.appendSlice(arena, "{\"ok\":true,\"path\":");
+    try appendJsonStr(arena, &b, path);
+    try b.appendSlice(arena, ",\"editor\":");
+    try appendJsonStr(arena, &b, editor);
+    try b.appendSlice(arena, ",\"created\":");
+    try b.appendSlice(arena, if (created) "true" else "false");
+    try b.appendSlice(arena, ",\"valid\":true}\n");
+    return b.toOwnedSlice(arena);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 const testing = std.testing;
@@ -1066,4 +1192,112 @@ test "writeAtomic: writes a file and preserves content" {
     try writeAtomic(testing.io, arena, path, "{\n  \"a\": 1\n}\n");
     const back = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, arena, .unlimited);
     try testing.expectEqualStrings("{\n  \"a\": 1\n}\n", back);
+}
+
+test "editorCommand: TAU_EDITOR > VISUAL > EDITOR > platform default" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var env = std.process.Environ.Map.init(arena);
+    try testing.expectEqualStrings(if (builtin.os.tag == .windows) "notepad" else "vi", editorCommand(&env));
+
+    try env.put("EDITOR", "ed");
+    try env.put("VISUAL", "vis");
+    try testing.expectEqualStrings("vis", editorCommand(&env));
+    try env.put("TAU_EDITOR", "tau-ed");
+    try testing.expectEqualStrings("tau-ed", editorCommand(&env));
+    // Empty values are skipped.
+    try env.put("TAU_EDITOR", "");
+    try testing.expectEqualStrings("vis", editorCommand(&env));
+}
+
+test "runEditor: seeds the init scaffold, runs the editor, reports ok" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // sh -c is POSIX
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/nested/config.json", .{tmp.sub_path[0..]});
+
+    var env = std.process.Environ.Map.init(arena);
+    try env.put("TAU_EDITOR", "true"); // exits 0, leaves the scaffold untouched
+    const outcome = try runEditor(testing.io, arena, path, &env, .json);
+    const out = switch (outcome) {
+        .ok => |s| s,
+        .invalid => |s| @panic(s),
+        .fail => |f| @panic(f.message),
+    };
+    try testing.expect(std.mem.indexOf(u8, out, "\"created\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"valid\":true") != null);
+    // The scaffold on disk is the commented JSONC starter.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, arena, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, bytes, "//") != null);
+    try testing.expect(std.mem.indexOf(u8, bytes, "\"provider\"") != null);
+}
+
+test "runEditor: invalid save reports issues on stdout payload with did-you-mean" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/config.json", .{tmp.sub_path[0..]});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = "{}\n" });
+
+    var env = std.process.Environ.Map.init(arena);
+    // "Editor" that overwrites the config with a misspelled key.
+    try env.put("TAU_EDITOR", "printf '{\"proivder\":\"openai\"}' >");
+    const outcome = try runEditor(testing.io, arena, path, &env, .json);
+    const out = switch (outcome) {
+        .invalid => |s| s,
+        .ok => |s| @panic(s),
+        .fail => |f| @panic(f.message),
+    };
+    try testing.expect(std.mem.indexOf(u8, out, "\"ok\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "not a tau config key") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "did you mean \\\"provider\\\"?") != null);
+    // The bad edit stays on disk — the user reruns edit/validate to fix it.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, arena, .unlimited);
+    try testing.expectEqualStrings("{\"proivder\":\"openai\"}", bytes);
+}
+
+test "runEditor: editor exit non-zero is an editor_failed envelope" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/config.json", .{tmp.sub_path[0..]});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = "{}\n" });
+
+    var env = std.process.Environ.Map.init(arena);
+    try env.put("TAU_EDITOR", "false");
+    const outcome = try runEditor(testing.io, arena, path, &env, .json);
+    switch (outcome) {
+        .fail => |f| {
+            try testing.expectEqual(@as(u8, 1), f.code);
+            try testing.expectEqualStrings("editor_failed", f.type_name);
+            try testing.expect(std.mem.indexOf(u8, f.message, "status 1") != null);
+        },
+        else => @panic("expected editor_failed"),
+    }
+}
+
+test "runEditor: no path and no HOME is an argument error" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    var env = std.process.Environ.Map.init(arena);
+    const outcome = try runEditor(testing.io, arena, null, &env, .json);
+    switch (outcome) {
+        .fail => |f| try testing.expectEqual(@as(u8, 80), f.code),
+        else => @panic("expected invalid_argument"),
+    }
 }

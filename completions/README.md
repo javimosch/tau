@@ -16,7 +16,7 @@ Tab-complete `tau` flags, options, and subcommands in Bash or Zsh.
 | `tau acp` | `start stop status serve` |
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
-| `tau config` | `show validate set get unset` (+ global flags, zsh) |
+| `tau config` | `show validate set get unset edit` (+ global flags, zsh) |
 | `tau init` | `--force`, `--stdout`, `--provider` |
 
 ---
