@@ -190,6 +190,10 @@ pub const Config = struct {
     /// `tau doctor --json` — emit NDJSON events (one per check/fix plus a
     /// done:true verdict line) instead of the default single-object report.
     doctor_json: bool = false,
+    /// `tau doctor --report` — emit a Markdown diagnostics bundle (build
+    /// metadata, checks, sanitized config file) for pasting into a bug
+    /// report, instead of the JSON report. Mutually exclusive with --json.
+    doctor_report: bool = false,
 
     // --- Setup (src/setup.zig) ---
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —

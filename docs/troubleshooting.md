@@ -263,6 +263,7 @@ any of them.
 | `tau --dry-run --tools bash,read "<prompt>"` | See planned tool calls, execute none |
 | `tau --thinking "<prompt>"` | Show model reasoning chunks |
 | `tau models` | List providers + default models (JSON) |
+| `tau doctor --report` | Redacted Markdown diagnostics bundle (build metadata, checks, sanitized config) — paste straight into a bug report |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |
 | `tau acp status` | Is the ACP daemon running? |

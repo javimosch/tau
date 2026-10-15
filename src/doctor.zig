@@ -16,6 +16,12 @@
 // apply per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
 // non-interactive runs report them as skipped. The emitted report reflects
 // the post-fix state when anything was applied.
+//
+// `--report` renders the same run as a Markdown diagnostics bundle for
+// pasting into a GitHub issue: verdict, build metadata, the checks table,
+// fix outcomes under --fix, effective settings, and the config file verbatim
+// — run through the same credential masking as the --debug log. Mutually
+// exclusive with --json (arg parse rejects the combination with exit 80).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -25,6 +31,7 @@ const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const initmod = @import("init.zig");
 const setup = @import("setup.zig");
+const debuglog = @import("debuglog.zig");
 const version_mod = @import("version.zig");
 const version = version_mod.version;
 const Config = cfgmod.Config;
@@ -180,6 +187,107 @@ fn formatVerdictJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]
         try buf.append(arena, ']');
     }
     try buf.appendSlice(arena, ",\"done\":true}");
+    return buf.toOwnedSlice(arena);
+}
+
+/// Append a value as a Markdown table cell: a `|` would split the row and a
+/// newline would break the table, so both are rewritten.
+fn appendMdCell(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    for (s) |ch| {
+        switch (ch) {
+            '|' => try buf.appendSlice(arena, "\\|"),
+            '\n', '\r' => try buf.append(arena, ' '),
+            else => try buf.append(arena, ch),
+        }
+    }
+}
+
+fn appendMdRow(arena: std.mem.Allocator, buf: *std.ArrayList(u8), k: []const u8, v: []const u8) !void {
+    try buf.appendSlice(arena, "| ");
+    try appendMdCell(arena, buf, k);
+    try buf.appendSlice(arena, " | `");
+    try appendMdCell(arena, buf, v);
+    try buf.appendSlice(arena, "` |\n");
+}
+
+/// Render the report as a Markdown diagnostics bundle for pasting into a
+/// GitHub issue: verdict, build metadata, the checks table, --fix outcomes
+/// when a fix pass ran, effective settings, and the config file verbatim —
+/// passed through the same credential masking as the --debug log (literal
+/// secrets from every source plus the generic Bearer/`"api_key":`/NAME=
+/// patterns). Paths stay visible, same convention as the debug log; the
+/// footer reminds the user to review before attaching.
+fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
+    const s = summarize(checks);
+    const b = version_mod.build;
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, "# tau doctor report\n\n**Verdict:** ");
+    try buf.appendSlice(arena, if (s.fail == 0) "ok" else "**FAILING**");
+    try buf.appendSlice(arena, try std.fmt.allocPrint(arena, " — {d} ok, {d} warn, {d} fail, {d} skip\n\n", .{ s.ok, s.warn, s.fail, s.skip }));
+
+    try buf.appendSlice(arena, "## Build\n\n| field | value |\n| --- | --- |\n");
+    try appendMdRow(arena, &buf, "version", version);
+    try appendMdRow(arena, &buf, "commit", b.commit);
+    try appendMdRow(arena, &buf, "target", b.target);
+    try appendMdRow(arena, &buf, "build_date", b.date);
+    try appendMdRow(arena, &buf, "zig", b.zig);
+
+    try buf.appendSlice(arena, "\n## Checks\n\n| check | status | message | hint |\n| --- | --- | --- | --- |\n");
+    for (checks) |c| {
+        try buf.appendSlice(arena, "| `");
+        try appendMdCell(arena, &buf, c.name);
+        try buf.appendSlice(arena, "` | ");
+        try buf.appendSlice(arena, if (c.status == .fail) "**fail**" else @tagName(c.status));
+        try buf.appendSlice(arena, " | ");
+        try appendMdCell(arena, &buf, c.message);
+        try buf.appendSlice(arena, " | ");
+        if (c.hint) |h| try appendMdCell(arena, &buf, h) else try buf.appendSlice(arena, "—");
+        try buf.appendSlice(arena, " |\n");
+    }
+
+    if (fixes) |fx| {
+        try buf.appendSlice(arena, "\n## Fixes\n\n| fix | check | status | detail |\n| --- | --- | --- | --- |\n");
+        for (fx) |f| {
+            try buf.appendSlice(arena, "| `");
+            try appendMdCell(arena, &buf, f.id);
+            try buf.appendSlice(arena, "` | `");
+            try appendMdCell(arena, &buf, f.check);
+            try buf.appendSlice(arena, "` | ");
+            try buf.appendSlice(arena, @tagName(f.status));
+            try buf.appendSlice(arena, " | ");
+            try appendMdCell(arena, &buf, f.detail);
+            try buf.appendSlice(arena, " |\n");
+        }
+    }
+
+    try buf.appendSlice(arena, "\n## Effective configuration\n\n| field | value |\n| --- | --- |\n");
+    try appendMdRow(arena, &buf, "provider", cfg.provider);
+    try appendMdRow(arena, &buf, "model", cfg.model);
+    try appendMdRow(arena, &buf, "endpoint", cfg.endpoint);
+    try appendMdRow(arena, &buf, "context_window", try std.fmt.allocPrint(arena, "{d}", .{cfg.context_window}));
+    const key_source = if (cfgmod.resolveApiKeyInfo(cfg, env)) |rk|
+        keySourceLabel(arena, cfg, rk)
+    else
+        "none resolved";
+    try appendMdRow(arena, &buf, "api_key_source", key_source);
+
+    try buf.appendSlice(arena, "\n## Config file\n\n");
+    const cfg_path = configfile.path(arena, env);
+    if (cfg_path == null) {
+        try buf.appendSlice(arena, "_No config file (HOME is not set) — defaults in use._\n");
+    } else if (std.Io.Dir.cwd().readFileAlloc(io, cfg_path.?, arena, .unlimited)) |bytes| {
+        const secrets = debuglog.collectSecrets(arena, env, cfg);
+        const redacted = try debuglog.redactAlloc(arena, bytes, secrets);
+        try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "`{s}`:\n\n```jsonc\n", .{cfg_path.?}));
+        try buf.appendSlice(arena, redacted);
+        if (redacted.len == 0 or redacted[redacted.len - 1] != '\n') try buf.append(arena, '\n');
+        try buf.appendSlice(arena, "```\n");
+    } else |err| switch (err) {
+        error.FileNotFound => try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "_No config file at `{s}` — defaults in use._\n", .{cfg_path.?})),
+        else => try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "`{s}` exists but could not be read ({s}).\n", .{ cfg_path.?, @errorName(err) })),
+    }
+
+    try buf.appendSlice(arena, "\n_Generated by `tau doctor --report` — credentials are masked (`***REDACTED***`); filesystem paths are left visible. Review before attaching to a bug report._\n");
     return buf.toOwnedSlice(arena);
 }
 
@@ -776,17 +884,24 @@ fn anyApplied(outcomes: []const FixOutcome) bool {
 /// default report is one JSON object; --json streams NDJSON instead — one
 /// {"check":{...},"done":false} event per check as it finishes, one
 /// {"fix":{...},"done":false} event per remediation (--fix), and a terminal
-/// {"ok":...,"summary":{...},"done":true} verdict line. With cfg.doctor_fix,
-/// plan remediations first; each fix applies only when confirmed (--yes, or a
-/// y/yes answer on a TTY prompt). The report carries a "fixes" array and
-/// reflects the post-fix state when anything was applied — in --json mode a
-/// re-diagnosed check re-emits with its post-fix status.
+/// {"ok":...,"summary":{...},"done":true} verdict line; --report prints a
+/// redacted Markdown bundle instead (mutually exclusive with --json, enforced
+/// at parse time). With cfg.doctor_fix, plan remediations first; each fix
+/// applies only when confirmed (--yes, or a y/yes answer on a TTY prompt).
+/// The report carries a "fixes" array and reflects the post-fix state when
+/// anything was applied — in --json mode a re-diagnosed check re-emits with
+/// its post-fix status.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     if (!cfg.doctor_fix) {
         if (cfg.doctor_json) {
             const checks = try collectChecks(io, gpa, arena, cfg, env);
             term.out(try formatVerdictJson(arena, checks, null));
             term.out("\n");
+            return if (summarize(checks).fail == 0) 0 else 1;
+        }
+        if (cfg.doctor_report) {
+            const checks = try collectChecks(io, gpa, arena, cfg, env);
+            term.out(try formatReportMarkdown(io, arena, checks, null, cfg, env));
             return if (summarize(checks).fail == 0) 0 else 1;
         }
         const report = try collectReport(io, gpa, arena, cfg, env);
@@ -827,6 +942,8 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     if (cfg.doctor_json) {
         term.out(try formatVerdictJson(arena, final_checks, outcomes.items));
         term.out("\n");
+    } else if (cfg.doctor_report) {
+        term.out(try formatReportMarkdown(io, arena, final_checks, outcomes.items, cfg, env));
     } else {
         const report_json = try formatReportJson(arena, final_checks, outcomes.items);
         term.out(report_json);
@@ -1225,6 +1342,85 @@ test "formatVerdictJson: terminal line carries ok/summary/done:true (+fixes)" {
 test "curlHttpCode: spawn failure returns null" {
     const got = curlHttpCode(testing.io, testing.allocator, &.{"definitely-not-a-tau-binary-xyz"}, 1000);
     try testing.expect(got == null);
+}
+
+// ---------------------------------------------------------------------------
+// --report Markdown bundle tests
+// ---------------------------------------------------------------------------
+
+test "appendMdCell: escapes pipes and flattens newlines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var buf: std.ArrayList(u8) = .empty;
+    try appendMdCell(a, &buf, "a|b\nc\rd");
+    try testing.expectEqualStrings("a\\|b c d", buf.items);
+}
+
+test "formatReportMarkdown: verdict, build table, checks, and fixes render" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .ok, .message = "config file parsed: /tmp/x" },
+        .{ .name = "api_key", .status = .fail, .message = "no API key", .hint = "pass --shell bash|zsh" },
+    };
+    const fixes = [_]FixOutcome{
+        .{ .id = "scaffold_config", .check = "config_file", .status = .applied, .detail = "wrote /tmp/x" },
+    };
+    var env = std.process.Environ.Map.init(a); // no HOME -> no config file
+    const cfg = Config{ .provider = "openai", .model = "gpt-4o-mini", .endpoint = "https://example.test/x", .context_window = 128_000 };
+    const md = try formatReportMarkdown(testing.io, a, &checks, &fixes, cfg, &env);
+
+    try testing.expect(std.mem.startsWith(u8, md, "# tau doctor report\n"));
+    try testing.expect(std.mem.indexOf(u8, md, "**Verdict:** **FAILING** — 1 ok, 0 warn, 1 fail, 0 skip") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "| version | `0.4.0` |") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "| commit | `") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "| zig | `") != null);
+    // Pipe in a hint must be escaped so the table row stays intact.
+    try testing.expect(std.mem.indexOf(u8, md, "| `api_key` | **fail** | no API key | pass --shell bash\\|zsh |") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "| `scaffold_config` | `config_file` | applied | wrote /tmp/x |") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "| provider | `openai` |") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "| api_key_source | `none resolved` |") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "_No config file (HOME is not set)") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Generated by `tau doctor --report`") != null);
+}
+
+test "formatReportMarkdown: missing config file notes defaults; fixes section absent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const checks = [_]Check{ .{ .name = "api_key", .status = .ok, .message = "resolved" } };
+    const md = try formatReportMarkdown(testing.io, a, &checks, null, .{}, &home.env);
+    try testing.expect(std.mem.indexOf(u8, md, "_No config file at `") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "## Fixes") == null);
+    try testing.expect(std.mem.indexOf(u8, md, "**Verdict:** ok — 1 ok, 0 warn, 0 fail, 0 skip") != null);
+}
+
+test "formatReportMarkdown: embedded config dump masks credential literals" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    // The key sits under keys.<provider>, whose field name is not a generic
+    // credential name — only the collected literal secret masks it.
+    try home.writeConfig(a, "{ \"provider\": \"openai\", \"keys\": { \"openai\": \"sk-report-secret-789\" } }");
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("openai", "sk-report-secret-789");
+    const cfg = Config{ .provider = "openai", .keys = km };
+    const checks = [_]Check{ .{ .name = "api_key", .status = .ok, .message = "resolved" } };
+    const md = try formatReportMarkdown(testing.io, a, &checks, null, cfg, &home.env);
+
+    try testing.expect(std.mem.indexOf(u8, md, "```jsonc\n") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "sk-report-secret-789") == null);
+    try testing.expect(std.mem.indexOf(u8, md, debuglog.mask) != null);
+    try testing.expect(std.mem.indexOf(u8, md, "| api_key_source | `keys[openai]` |") != null);
 }
 
 // ---------------------------------------------------------------------------
