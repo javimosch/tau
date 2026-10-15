@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "golden-errors:test_group_golden_errors"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -745,6 +746,158 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: golden error-contract snapshots (Issue #208)
+# Byte-locks the agent-facing failure contract: every deterministic error path
+# is run fully offline (API keys scrubbed, isolated HOME) and its exit status
+# plus exact stdout/stderr bytes are compared against tests/golden/<case>.*.
+# The snapshots intentionally pin today's three envelope shapes and channels:
+#   stderr {"err":{code,type,message,recoverable}}  (printErrorJson, main.zig)
+#   stdout {"err":{code,message}}                  (fleetRequires, helpers.zig)
+#   stderr {"err":{code,type,message}}             (goalSubcommand, agent.zig)
+# ...plus the silent exits (missing API key -> bare 106, empty streams).
+# Regenerate after an intentional contract change:
+#   GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-errors
+
+# _golden_env <cmd...> — run cmd with every provider key + TAU_ENDPOINT scrubbed
+# and HOME pointed at an isolated dir so a contributor's real config.json or
+# exported keys cannot leak into a snapshot.
+_golden_env() {
+  if [ -z "${_GOLDEN_HOME:-}" ]; then
+    _GOLDEN_HOME="$(mktemp -d)"
+    register_temp_dir "$_GOLDEN_HOME"
+  fi
+  env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY \
+      -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
+      HOME="$_GOLDEN_HOME" "$@"
+}
+
+# _golden_stream <name.stdout|name.stderr> <actual-file> — byte-compare, or
+# regenerate when GOLDEN_UPDATE=1.
+_golden_stream() {
+  local gold="$GOLDEN_DIR/$1" actual="$2"
+  if [ "${GOLDEN_UPDATE:-0}" = "1" ]; then
+    mkdir -p "$GOLDEN_DIR"
+    cp "$actual" "$gold"
+    ok "golden $1 (regenerated)" 0 0
+    return
+  fi
+  if [ ! -f "$gold" ]; then
+    diag "missing golden $gold — regenerate with GOLDEN_UPDATE=1"
+    ok "golden $1" 1 0
+    return
+  fi
+  if cmp -s "$gold" "$actual"; then
+    ok "golden $1" 0 0
+  else
+    [ "$SMOKE_DEBUG" = "1" ] && { diag "golden mismatch ($gold):"; diff -u "$gold" "$actual" >&2; }
+    ok "golden $1" 1 0
+  fi
+}
+
+# golden_check <name> <want-exit> <cmd...> — capture and pin exit + both streams.
+golden_check() {
+  local name="$1" want="$2"; shift 2
+  local of ef rc
+  of="$(mktemp)"; ef="$(mktemp)"
+  register_temp_file "$of"
+  register_temp_file "$ef"
+  _golden_env "$@" >"$of" 2>"$ef"; rc=$?
+  ok "golden $name exit" "$rc" "$want"
+  _golden_stream "$name.stdout" "$of"
+  _golden_stream "$name.stderr" "$ef"
+}
+
+test_group_golden_errors() {
+  GOLDEN_DIR="$ROOT/tests/golden"
+  local closed_port open_port port_f listener_pid wait_i
+
+  # ── argv parsing failures → stderr envelope, exit 80 ──
+  golden_check unknown-option            80 "$BIN" --bogus x
+  golden_check unknown-provider          80 "$BIN" --provider nope x
+  golden_check model-bad-provider        80 "$BIN" --model nope/m x
+  golden_check invalid-mode              80 "$BIN" --mode bad x
+  golden_check invalid-role              80 "$BIN" --role boss x
+  golden_check invalid-temperature       80 "$BIN" --temperature notafloat x
+  golden_check missing-flag-value        80 "$BIN" --api-key
+  golden_check missing-at-file           80 "$BIN" "@/nonexistent-tau-golden-file" x
+  golden_check acp-unknown-arg           80 "$BIN" acp bogus
+  golden_check guide-unknown-arg         80 "$BIN" guide --bogus
+  golden_check fleet-no-subcommand       80 "$BIN" fleet
+  golden_check fleet-unknown-subcommand  80 "$BIN" fleet bogus
+  golden_check skills-no-subcommand      80 "$BIN" skills
+
+  # ── runtime validation failures ──
+  golden_check skills-load-missing-name  82 "$BIN" skills load
+  golden_check skills-load-not-found      1 "$BIN" skills load nosuchskillname
+  golden_check agents-md-not-found        1 "$BIN" --load-agents-md /nonexistent-tau-golden-agents x
+
+  # ── auth failures (exit 106): the prompt path is SILENT, the fleet path
+  #    prints the remediation-hint envelope — pin both behaviors ──
+  golden_check missing-api-key-silent   106 "$BIN" x
+  golden_check fleet-run-missing-key    106 "$BIN" fleet run --goal "ship it"
+
+  # ── fleet "requires" envelopes print on STDOUT in the short shape ──
+  golden_check fleet-status-missing-id   80 "$BIN" fleet status
+  golden_check fleet-cancel-missing-id   80 "$BIN" fleet cancel
+  golden_check fleet-logs-missing-id     80 "$BIN" fleet logs
+  golden_check fleet-run-missing-goal    82 "$BIN" fleet run --api-key fake
+
+  # ── goal subcommands need --session (third envelope shape, on stderr) ──
+  golden_check goal-needs-session        80 "$BIN" --api-key fake "/goal status"
+
+  # ── provider transport failures (105/110) via loopback stubs ──
+  if ! command -v curl >/dev/null 2>&1; then
+    skip_test "golden endpoint-unreachable" "curl not on PATH"
+    skip_test "golden endpoint-timeout" "curl not on PATH"
+    skip_test "golden fleet-coordinator-unreachable" "curl not on PATH"
+  elif ! command -v python3 >/dev/null 2>&1; then
+    skip_test "golden endpoint-unreachable" "python3 required for loopback stub"
+    skip_test "golden endpoint-timeout" "python3 required for silent listener"
+    skip_test "golden fleet-coordinator-unreachable" "python3 required for loopback stub"
+  else
+    # A port bound then immediately closed -> deterministic connection refused.
+    closed_port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()' 2>/dev/null)"
+    if [ -n "$closed_port" ]; then
+      golden_check endpoint-unreachable 110 \
+        env TAU_ENDPOINT="http://127.0.0.1:$closed_port/" \
+        "$BIN" --api-key fake --no-stream --timeout-ms 10000 x
+      golden_check fleet-coordinator-unreachable 110 \
+        env TAU_ENDPOINT="http://127.0.0.1:$closed_port/" \
+        "$BIN" fleet run --goal "ship it" --api-key fake
+    else
+      skip_test "golden endpoint-unreachable" "could not reserve a closed loopback port"
+      skip_test "golden fleet-coordinator-unreachable" "could not reserve a closed loopback port"
+    fi
+
+    # A listener that accepts but never replies -> curl --max-time fires.
+    port_f="$SMOKE_TEMP/golden-listener-port"
+    python3 - "$port_f" >/dev/null 2>&1 <<'PY' &
+import socket, sys, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(8)
+with open(sys.argv[1], "w") as fh:
+    fh.write(str(s.getsockname()[1]))
+time.sleep(60)
+PY
+    listener_pid=$!
+    open_port=""
+    for wait_i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      [ -s "$port_f" ] && { open_port="$(cat "$port_f")"; break; }
+      sleep 0.2
+    done
+    if [ -n "$open_port" ]; then
+      golden_check endpoint-timeout 105 \
+        env TAU_ENDPOINT="http://127.0.0.1:$open_port/" \
+        "$BIN" --api-key fake --no-stream --timeout-ms 1500 x
+    else
+      skip_test "golden endpoint-timeout" "silent listener did not start"
+    fi
+    kill "$listener_pid" 2>/dev/null || true
+  fi
 }
 
 # Group: --bench regression guard

@@ -687,3 +687,44 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
 }
+
+test "ExitCode numeric values are pinned to the documented contract" {
+    // These numbers are a stable integration contract (README + --help-json);
+    // renumbering breaks every agent/script that branches on them.
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(ExitCode.success));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(ExitCode.generic_failure));
+    try std.testing.expectEqual(@as(u8, 80), @intFromEnum(ExitCode.invalid_argument));
+    try std.testing.expectEqual(@as(u8, 82), @intFromEnum(ExitCode.missing_required_field));
+    try std.testing.expectEqual(@as(u8, 105), @intFromEnum(ExitCode.connection_timeout));
+    try std.testing.expectEqual(@as(u8, 106), @intFromEnum(ExitCode.auth_failed));
+    try std.testing.expectEqual(@as(u8, 110), @intFromEnum(ExitCode.internal_error));
+    try std.testing.expectEqual(@as(u8, 111), @intFromEnum(ExitCode.unimplemented));
+}
+
+test "--help-json advertises every ExitCode at its pinned value" {
+    const gpa = std.testing.allocator;
+    const got = try formatHelpJson(gpa);
+    defer gpa.free(got);
+    inline for (@typeInfo(ExitCode).@"enum".fields) |f| {
+        const needle = try std.fmt.allocPrint(gpa, "\"{d}\":\"{s}\"", .{ f.value, f.name });
+        defer gpa.free(needle);
+        // generic_failure (1) is a shell-style catch-all and is deliberately
+        // absent from the semantic-code table advertised to agents.
+        const advertised = f.value != @intFromEnum(ExitCode.generic_failure);
+        try std.testing.expect((std.mem.indexOf(u8, got, needle) != null) == advertised);
+    }
+}
+
+test "authHint names provider env vars and the --api-key fallback" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings(
+        "set XIAOMI_API_KEY or PIZIG_API_KEY env var, or use --api-key <key>",
+        authHint(a, "xiaomi"));
+    try std.testing.expectEqualStrings(
+        "set OPENAI_API_KEY env var, or use --api-key <key>",
+        authHint(a, "openai"));
+    // Unknown provider / no env keys -> bare fallback.
+    try std.testing.expectEqualStrings("use --api-key <key>", authHint(a, "nope"));
+}

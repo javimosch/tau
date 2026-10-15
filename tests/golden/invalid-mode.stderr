@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --mode (want text|json): bad","recoverable":false}}
