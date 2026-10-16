@@ -1,0 +1,1 @@
+{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'xiaomi' — set XIAOMI_API_KEY or PIZIG_API_KEY env var, or use --api-key <key>","recoverable":false}}

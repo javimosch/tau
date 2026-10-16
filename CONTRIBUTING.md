@@ -76,6 +76,22 @@ Useful environment variables for debugging smoke failures:
 | `SMOKE_VERBOSE=1` | Print each test name as it runs |
 | `SMOKE_DEBUG=1` | Verbose debug output |
 | `TAU_BIN=/path/to/tau` | Override which binary is tested |
+| `GOLDEN_UPDATE=1` | Regenerate `tests/golden/` snapshots instead of comparing |
+
+### Golden error-contract snapshots
+
+The `golden-errors` smoke group byte-compares stdout, stderr, and the exit
+status of every deterministic failure path against snapshots in
+`tests/golden/` (`<case>.stdout` / `<case>.stderr`). It pins the error codes,
+envelope shapes, and remediation hints that agents and scripts depend on.
+
+If you intentionally change an error message, envelope field, stream
+(stdout vs stderr), or exit code, refresh the snapshots and include the
+resulting golden diff in your PR so reviewers can see the contract change:
+
+```bash
+GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-errors
+```
 
 ### Resource benchmark
 
@@ -107,6 +123,7 @@ src/
 build.zig           # Zig build script
 scripts/            # smoke.sh, benchmark-resources.sh
 completions/        # bash (tau.bash), zsh (_tau), fish (tau.fish), PowerShell (tau.ps1)
+tests/golden/       # byte-exact stdout/stderr snapshots for the error contract
 examples/           # annotated real-world workflow scripts
 docs/               # changelog, roadmap, architecture notes
 ```

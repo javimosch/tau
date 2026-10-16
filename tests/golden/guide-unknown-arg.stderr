@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"unknown guide argument: --bogus","recoverable":false}}

@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --role (want author|critic|coordinator|none): boss","recoverable":false}}
