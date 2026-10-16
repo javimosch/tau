@@ -93,6 +93,18 @@ resulting golden diff in your PR so reviewers can see the contract change:
 GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-errors
 ```
 
+The `golden-onboarding` group applies the same technique to the first-run
+surface — `tau init`, `tau setup` (incl. `--client`), and `tau config edit`.
+In addition to stdout/stderr/exit-code snapshots it byte-locks generated
+files (`tests/golden/<case>.config`, `.zshrc`, `.json`, `.lua`, `.snippet`).
+Volatile values (the temporary `$HOME`, the tau binary path embedded in
+editor configs, and the curl version in the embedded doctor report) are
+normalized to `<HOME>` / `<TAU>` / `<VER>` before comparing. Regenerate with:
+
+```bash
+GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-onboarding
+```
+
 ### Resource benchmark
 
 ```bash

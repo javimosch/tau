@@ -104,6 +104,10 @@ are backward compatible.
   (#63), AGENTS.md scanning (#110), agent loop tool dispatch (#112), SSE
   streaming frames (#117), context compaction boundaries (#121), `tau doctor`
   diagnostics incl. live-probe stub coverage (#165)
+- Golden/snapshot smoke groups: `golden-errors` byte-locks error envelopes and
+  exit codes (#208); `golden-onboarding` byte-locks the first-run surface —
+  `tau init`, `tau setup` (incl. `--client`), and `tau config edit` —
+  including generated file contents, with volatile paths normalized (#223)
 - Smoke suite: `--role critic` network check (#88), `--api-key` parsing (#89)
 - Fixed SIGABRT in `scanAgentsMd` bad-path test (#55); restored truncated
   `extractToolCalls` test (#69)

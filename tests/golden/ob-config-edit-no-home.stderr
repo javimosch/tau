@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"no config path given and HOME is unset — pass a path: tau config edit <path>","recoverable":false}}

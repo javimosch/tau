@@ -80,6 +80,7 @@ ALL_TEST_GROUPS=(
   "fleet-flags:test_group_fleet_flags"
   "completions:test_group_completions"
   "golden-errors:test_group_golden_errors"
+  "golden-onboarding:test_group_golden_onboarding"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -1674,6 +1675,173 @@ PY
     fi
     kill "$listener_pid" 2>/dev/null || true
   fi
+}
+
+# Group: golden onboarding snapshots (Issue #223)
+# Byte-locks the whole first-run surface end-to-end — `tau init`, `tau setup`
+# (incl. --client), and `tau config edit`: exit codes, the stdout/stderr
+# transcript, AND the generated file contents (config.json scaffold, shell rc
+# block, editor settings files/snippets). Everything runs offline against a
+# scrubbed env and an isolated HOME; the volatile bits (the $HOME path, the
+# tau binary path embedded in client configs, and the curl version string in
+# the embedded doctor report) are normalized to <HOME>/<TAU>/<VER> before
+# comparing. Regenerate after an intentional contract change:
+#   GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-onboarding
+
+# _golden_fresh_home — point _golden_env at a brand-new isolated HOME so each
+# scenario starts on a clean machine.
+_golden_fresh_home() {
+  _GOLDEN_HOME="$(mktemp -d "$SMOKE_TEMP/golden-home-XXXXXX")"
+  register_temp_dir "$_GOLDEN_HOME"
+}
+
+# _golden_norm <file> — rewrite volatile paths/versions into placeholders so
+# snapshots stay byte-stable across machines and temp dirs.
+_golden_norm() {
+  sed -i \
+    -e "s|$_GOLDEN_HOME|<HOME>|g" \
+    -e "s|$_GOLDEN_BIN|<TAU>|g" \
+    -e 's|curl available: curl [0-9][0-9.]*|curl available: curl <VER>|g' \
+    "$1"
+}
+
+# golden_check_n <name> <want-exit> <cmd...> — golden_check + normalization,
+# for outputs that embed $HOME or the binary's absolute path.
+golden_check_n() {
+  local name="$1" want="$2"; shift 2
+  local of ef rc
+  of="$(mktemp)"; ef="$(mktemp)"
+  register_temp_file "$of"
+  register_temp_file "$ef"
+  _golden_env "$@" >"$of" 2>"$ef"; rc=$?
+  _golden_norm "$of"; _golden_norm "$ef"
+  ok "golden $name exit" "$rc" "$want"
+  _golden_stream "$name.stdout" "$of"
+  _golden_stream "$name.stderr" "$ef"
+}
+
+# golden_file <name> <path> — byte-compare a generated file against
+# tests/golden/<name> after normalization.
+golden_file() {
+  local name="$1" src="$2" tmp
+  tmp="$(mktemp)"
+  register_temp_file "$tmp"
+  if [ ! -f "$src" ]; then
+    diag "golden_file: expected file missing: $src"
+    ok "golden $name" 1 0
+    return
+  fi
+  cp "$src" "$tmp"
+  _golden_norm "$tmp"
+  _golden_stream "$name" "$tmp"
+}
+
+test_group_golden_onboarding() {
+  GOLDEN_DIR="$ROOT/tests/golden"
+  _GOLDEN_BIN="$(realpath "$BIN" 2>/dev/null || printf '%s' "$BIN")"
+
+  # ── tau init ──
+  _golden_fresh_home
+  golden_check_n ob-init              0 "$BIN" init
+  golden_file    ob-init.config       "$_GOLDEN_HOME/.config/tau/config.json"
+  golden_check_n ob-init-rerun        1 "$BIN" init
+  golden_check_n ob-init-force        0 "$BIN" init --force
+  golden_check_n ob-init-bogus-flag  80 "$BIN" init --bogus
+
+  _golden_fresh_home
+  golden_check_n ob-init-stdout       0 "$BIN" init --stdout
+  if [ -f "$_GOLDEN_HOME/.config/tau/config.json" ]; then
+    ok "init --stdout wrote no file" 1 0
+  else
+    ok "init --stdout wrote no file" 0 0
+  fi
+
+  _golden_fresh_home
+  golden_check_n ob-init-provider     0 "$BIN" init --provider openai
+  golden_file    ob-init-openai.config "$_GOLDEN_HOME/.config/tau/config.json"
+
+  _golden_fresh_home
+  golden_check_n ob-init-detects-key  0 env OPENAI_API_KEY=sk-golden "$BIN" init
+  golden_file    ob-init-key.config   "$_GOLDEN_HOME/.config/tau/config.json"
+
+  golden_check_n ob-init-no-home    110 env -u HOME "$BIN" init
+
+  # ── tau setup ──
+  # Arg-validation failures never reach the doctor step — pin unconditionally.
+  golden_check_n ob-setup-bad-client 80 "$BIN" setup --client emacs
+  golden_check_n ob-setup-bad-shell  80 "$BIN" setup --shell tcsh
+
+  # The doctor step embeds a report whose curl check text depends on the
+  # installed curl — with curl present it normalizes to <VER>; without curl
+  # the report's status changes, so these snapshots are pinned only when the
+  # toolchain the snapshots were generated under is available.
+  if ! command -v curl >/dev/null 2>&1; then
+    skip_test "golden setup transcript" "curl not on PATH (doctor report differs)"
+  else
+    _golden_fresh_home
+    golden_check_n ob-setup           0 env SHELL=/bin/zsh XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline
+    golden_file    ob-setup.config    "$_GOLDEN_HOME/.config/tau/config.json"
+    golden_file    ob-setup.zshrc     "$_GOLDEN_HOME/.zshrc"
+    # The installed completion script is byte-identical to the shipped one.
+    if cmp -s "$ROOT/completions/_tau" "$_GOLDEN_HOME/.zsh/completions/_tau"; then
+      ok "setup installed _tau identical to completions/_tau" 0 0
+    else
+      ok "setup installed _tau differs from completions/_tau" 1 0
+    fi
+    # Idempotent re-run: init reports exists, completions already_installed.
+    golden_check_n ob-setup-rerun     0 env SHELL=/bin/zsh XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline
+
+    _golden_fresh_home
+    golden_check_n ob-setup-keyless   1 env SHELL=/bin/bash "$BIN" setup --offline
+    if cmp -s "$ROOT/completions/tau.bash" "$_GOLDEN_HOME/.local/share/bash-completion/completions/tau"; then
+      ok "setup installed tau.bash identical to completions/tau.bash" 0 0
+    else
+      ok "setup installed tau.bash differs from completions/tau.bash" 1 0
+    fi
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-zed 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client zed
+    golden_file    ob-setup-zed.json  "$_GOLDEN_HOME/.config/zed/settings.json"
+
+    # An existing editor settings file is never rewritten — a paste-ready
+    # snippet lands in ~/.config/tau/snippets/ instead.
+    _golden_fresh_home
+    mkdir -p "$_GOLDEN_HOME/.config/zed"
+    printf '{\n  // user comment must survive\n  "vim_mode": true\n}\n' > "$_GOLDEN_HOME/.config/zed/settings.json"
+    golden_check_n ob-setup-zed-existing 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client zed
+    golden_file    ob-setup-zed.snippet "$_GOLDEN_HOME/.config/tau/snippets/zed.jsonc"
+    if printf '{\n  // user comment must survive\n  "vim_mode": true\n}\n' | cmp -s - "$_GOLDEN_HOME/.config/zed/settings.json"; then
+      ok "existing zed settings left byte-identical" 0 0
+    else
+      ok "existing zed settings were modified" 1 0
+    fi
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-nvim 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client nvim
+    golden_file    ob-setup-nvim.lua  "$_GOLDEN_HOME/.config/tau/snippets/nvim.lua"
+  fi
+
+  # ── tau config edit ──  (editor stubbed via TAU_EDITOR; VISUAL/EDITOR are
+  # scrubbed so ambient values can't change precedence)
+  _golden_fresh_home
+  golden_check_n ob-config-edit         0 env -u VISUAL -u EDITOR TAU_EDITOR=true "$BIN" config edit
+  golden_file    ob-config-edit.config  "$_GOLDEN_HOME/.config/tau/config.json"
+
+  _golden_fresh_home
+  golden_check_n ob-config-edit-text    0 env -u VISUAL -u EDITOR TAU_EDITOR=true "$BIN" config edit --mode text
+
+  _golden_fresh_home
+  golden_check_n ob-config-edit-invalid 1 env -u VISUAL -u EDITOR TAU_EDITOR="printf '{\"proivder\":true}' >" "$BIN" config edit
+  # The failed save stays on disk so the user can fix and re-run.
+  golden_file    ob-config-edit-invalid.config "$_GOLDEN_HOME/.config/tau/config.json"
+
+  _golden_fresh_home
+  golden_check_n ob-config-edit-editor-fails 1 env -u VISUAL -u EDITOR TAU_EDITOR=false "$BIN" config edit
+  # The scaffold is seeded before the editor runs — it exists even when the
+  # editor fails.
+  golden_file    ob-config-edit-editor-fails.config "$_GOLDEN_HOME/.config/tau/config.json"
+
+  golden_check_n ob-config-edit-no-home 80 env -u HOME "$BIN" config edit
 }
 
 # Group: --bench regression guard
