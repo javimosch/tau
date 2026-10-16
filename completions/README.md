@@ -29,7 +29,7 @@ PowerShell.
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
 | `tau init` | `--force`, `--stdout`, `--provider` |
-| `tau doctor` | `--offline`, `--deep`, `--fix`, `--yes`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
+| `tau doctor` | `--offline`, `--deep`, `--probe`, `--fix`, `--yes`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau setup` | `--shell`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key` |
 | `tau guide` | `--human` |
 

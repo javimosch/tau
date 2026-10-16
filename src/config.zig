@@ -194,6 +194,10 @@ pub const Config = struct {
     /// metadata, checks, sanitized config file) for pasting into a bug
     /// report, instead of the JSON report. Mutually exclusive with --json.
     doctor_report: bool = false,
+    /// `tau doctor --probe` — live-verify every provider in the registry:
+    /// endpoint reachability plus, when a credential resolves for that
+    /// provider, an authenticated probe (spends ~1 token per keyed provider).
+    doctor_probe: bool = false,
 
     // --- Setup (src/setup.zig) ---
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —

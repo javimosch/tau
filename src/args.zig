@@ -163,10 +163,12 @@ pub fn parse(
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
-    // [--fix] [--yes] [--shell sh] [--json] [--report]` — setup diagnostics; a
-    // command, not a prompt. An unknown provider is carried into the report as
-    // a failed check instead of exiting 80. --fix proposes remediations, --yes
-    // applies them without prompting (non-interactive use). --json streams
+    // [--probe] [--fix] [--yes] [--shell sh] [--json] [--report]` — setup
+    // diagnostics; a command, not a prompt. An unknown provider is carried
+    // into the report as a failed check instead of exiting 80. --fix proposes
+    // remediations, --yes applies them without prompting (non-interactive
+    // use). --probe live-verifies connectivity and credentials for every
+    // provider in the registry (per-provider pass/fail rows). --json streams
     // NDJSON check/fix events instead of the single-object report; --report
     // renders a redacted Markdown bundle for bug reports (--json and --report
     // are mutually exclusive).
@@ -193,6 +195,8 @@ pub fn parse(
                 dcfg.doctor_offline = true;
             } else if (eq(a, "--deep")) {
                 dcfg.doctor_deep = true;
+            } else if (eq(a, "--probe")) {
+                dcfg.doctor_probe = true;
             } else if (eq(a, "--fix")) {
                 dcfg.doctor_fix = true;
             } else if (eq(a, "--yes") or eq(a, "-y")) {
@@ -1097,6 +1101,7 @@ test "parse: doctor selects the doctor action with defaults" {
     try std.testing.expectEqual(Action.doctor, p.action);
     try std.testing.expect(!p.config.doctor_offline);
     try std.testing.expect(!p.config.doctor_deep);
+    try std.testing.expect(!p.config.doctor_probe);
     try std.testing.expect(!p.config.doctor_json);
     try std.testing.expect(!p.config.doctor_report);
     try std.testing.expect(p.config.doctor_bad_provider == null);
@@ -1153,6 +1158,21 @@ test "parse: doctor --report sets the flag; --report + --json is invalid" {
 
     const both_rev = try parseArgv(a, &.{ "tau", "doctor", "--json", "--report" }, .{});
     try std.testing.expectEqual(Action.err, both_rev.action);
+}
+
+test "parse: doctor --probe sets the flag and composes with other doctor flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--probe" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_probe);
+
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--probe", "--json", "--provider", "openai" }, .{});
+    try std.testing.expect(q.config.doctor_probe);
+    try std.testing.expect(q.config.doctor_json);
+    try std.testing.expectEqualStrings("openai", q.config.provider);
 }
 
 test "parse: doctor --json selects NDJSON event output" {

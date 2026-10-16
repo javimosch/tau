@@ -46,6 +46,12 @@ are backward compatible.
   one `{"fix":{...},"done":false}` event per remediation under `--fix`, and a
   terminal `{"ok":...,"summary":{...},"done":true}` verdict. The default
   single-object report is unchanged
+- `tau doctor --probe` — live-verify connectivity and credentials for every
+  provider in the registry, not just the configured one: a `probe_<name>`
+  reachability row plus a `probe_<name>_auth` row that resolves the provider's
+  key (reporting its source only) and POSTs a one-token completion when one
+  is found. Emits NDJSON check events under `--json`; skipped under
+  `--offline`
 - `tau init` — write a commented starter `~/.config/tau/config.json` seeded
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs

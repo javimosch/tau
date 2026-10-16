@@ -882,6 +882,114 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   # 20. --report + --json is an invalid-argument error (mutually exclusive).
   "$BIN" doctor --report --json >/dev/null 2>&1; ok "doctor --report --json -> exit 80" "$?" 80
   "$BIN" --help 2>&1 | grep -q -- "--report" && ok "--help mentions --report" 0 0 || ok "--help mentions --report" 1 0
+
+  # 21. --probe live-verifies every provider: without it a single
+  #     provider_probes row advertises the sweep; with it each registry
+  #     provider gets a connectivity row (probe_<name>) and a credential row
+  #     (probe_<name>_auth). Offline keeps everything skipped; the stub
+  #     server exercises real pass/fail for the configured provider.
+  rm -f "$mock_config/config.json"
+  capture doc_noprobe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  contains "default run advertises --probe" "$doc_noprobe_out" '"name":"provider_probes","status":"skip"'
+  contains "placeholder hint mentions --probe" "$doc_noprobe_out" 'pass --probe'
+  if printf '%s' "$doc_noprobe_out" | grep -qF '"name":"probe_openai"'; then
+    ok "no per-provider rows without --probe" 1 0
+  else
+    ok "no per-provider rows without --probe" 0 0
+  fi
+
+  capture doc_probe_off env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --probe
+  ok "doctor --offline --probe keyless exit 1" "$doc_probe_off_rc" 1
+  contains "probe connectivity row skipped offline" "$doc_probe_off_out" '"name":"probe_openai","status":"skip"'
+  contains "probe auth row skipped offline" "$doc_probe_off_out" '"name":"probe_openai_auth","status":"skip"'
+  contains "probe sweep covers xiaomi" "$doc_probe_off_out" '"name":"probe_xiaomi","status":"skip"'
+  contains "probe sweep covers deepseek" "$doc_probe_off_out" '"name":"probe_deepseek_auth","status":"skip"'
+  contains "probe sweep covers opencode-go" "$doc_probe_off_out" '"name":"probe_opencode-go","status":"skip"'
+  if printf '%s' "$doc_probe_off_out" | grep -qF '"name":"provider_probes"'; then
+    ok "no placeholder row once --probe runs" 1 0
+  else
+    ok "no placeholder row once --probe runs" 0 0
+  fi
+
+  # --probe streams its per-provider rows as NDJSON check events under --json.
+  capture doc_probe_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --probe --json
+  contains "--probe rows stream as check events" "$doc_probe_json_out" '"check":{"name":"probe_openai","status":"skip"'
+  contains "--probe auth rows stream too" "$doc_probe_json_out" '"check":{"name":"probe_deepseek_auth","status":"skip"'
+  contains "--json verdict still terminates" "$doc_probe_json_out" '"done":true'
+
+  # Live sweep against the stub: the configured provider (openai) probes the
+  # stub via TAU_ENDPOINT; a 401 rejects its credential (exit 1), a 200
+  # verifies it. Other providers' rows are not asserted — their endpoints are
+  # real and connectivity depends on the runner's network.
+  if command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    local pstub_dir pstub_port pstub_pid doc_probe
+    pstub_dir="$(mktemp -d)"
+    register_temp_dir "$pstub_dir"
+    echo 401 > "$pstub_dir/code"
+    cat > "$pstub_dir/stub.py" <<'PYEOF'
+import http.server, socketserver, sys
+code_file, port = sys.argv[1], int(sys.argv[2])
+class H(http.server.BaseHTTPRequestHandler):
+    def _respond(self):
+        try:
+            code = int(open(code_file).read().strip())
+        except Exception:
+            code = 500
+        body = b'{}'
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_GET = _respond
+    do_POST = _respond
+    def log_message(self, *args):
+        pass
+socketserver.TCPServer(('127.0.0.1', port), H).serve_forever()
+PYEOF
+    pstub_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+    python3 "$pstub_dir/stub.py" "$pstub_dir/code" "$pstub_port" &
+    pstub_pid=$!
+    local _i
+    for _i in $(seq 1 50); do
+      python3 -c "import socket; s=socket.create_connection(('127.0.0.1',$pstub_port),1); s.close()" 2>/dev/null && break
+      sleep 0.1
+    done
+
+    capture doc_probe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-probe-stub TAU_ENDPOINT="http://127.0.0.1:$pstub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --probe
+    ok "probe sweep with a rejected key exits 1" "$doc_probe_rc" 1
+    contains "stub endpoint counts as reachable" "$doc_probe_out" '"name":"probe_openai","status":"ok"'
+    contains "reachable reports HTTP status" "$doc_probe_out" 'endpoint reachable (HTTP 401)'
+    contains "probe auth fails on 401" "$doc_probe_out" '"name":"probe_openai_auth","status":"fail"'
+    contains "rejection names the redacted source" "$doc_probe_out" 'credentials rejected (HTTP 401, source: env:OPENAI_API_KEY)'
+    # Unkeyed providers always skip their credential row — the message varies
+    # with connectivity ("endpoint unreachable" vs "no credentials resolved").
+    contains "unkeyed provider auth skips" "$doc_probe_out" '"name":"probe_deepseek_auth","status":"skip"'
+    if printf '%s' "$doc_probe_out" | grep -qF 'sk-probe-stub'; then
+      ok "probe sweep never prints key material" 1 0
+    else
+      ok "probe sweep never prints key material" 0 0
+    fi
+
+    echo 200 > "$pstub_dir/code"
+    capture doc_probe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-probe-stub TAU_ENDPOINT="http://127.0.0.1:$pstub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --probe
+    contains "probe auth verifies on 200" "$doc_probe_out" '"name":"probe_openai_auth","status":"ok"'
+    contains "verification reports source" "$doc_probe_out" 'credentials verified (HTTP 200, source: env:OPENAI_API_KEY)'
+
+    kill "$pstub_pid" 2>/dev/null
+    wait "$pstub_pid" 2>/dev/null
+  else
+    skip_test "doctor --probe live sweep" "python3 or curl not available"
+  fi
+
+  "$BIN" --help 2>&1 | grep -q -- "--probe" && ok "--help mentions --probe" 0 0 || ok "--help mentions --probe" 1 0
 }
 
 # Group: tau init — commented starter config scaffold
