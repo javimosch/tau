@@ -114,7 +114,7 @@ _tau_complete() {
             ;;
 
         config)
-            COMPREPLY=($(compgen -W "show validate set get unset edit" -- "$cur"))
+            COMPREPLY=($(compgen -W "show validate set get unset edit schema" -- "$cur"))
             ;;
 
         init)

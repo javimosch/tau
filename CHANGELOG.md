@@ -44,6 +44,11 @@ are backward compatible.
   `VISUAL` > `EDITOR` > `vi`/`notepad`), validated on save with the same
   checks as `config validate`; a missing file is seeded with the `tau init`
   scaffold and misspelled keys get `did you mean "…"?` hints (#212)
+- `tau config schema` — emit the config file's JSON Schema (draft 2020-12),
+  generated from the same `FileConfig` the loader and `config validate` use
+  so it cannot drift; a canonical copy is published at
+  `schema/tau-config.schema.json` and `tau init` writes a `$schema` key so
+  editors give autocomplete/validation out of the box (#218)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed

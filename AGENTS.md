@@ -280,6 +280,16 @@ tau config edit ./ci.json              # Explicit path
 # stay on disk. Editor non-zero exit → editor_failed envelope, exit 1.
 ```
 
+#### 15e. Config Schema (`tau config schema`)
+```bash
+tau config schema                          # JSON Schema (draft 2020-12) on stdout
+tau config schema > tau-config.schema.json # Export for editor wiring
+# Generated from FileConfig (can't drift); canonical copy checked in at
+# schema/tau-config.schema.json — regenerate after key changes with the
+# redirect above. `tau init` writes a "$schema" key pointing at the
+# published URL so editors autocomplete out of the box.
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
