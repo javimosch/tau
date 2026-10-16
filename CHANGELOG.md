@@ -37,7 +37,10 @@ are backward compatible.
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs
   shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
-  to override; scripts are embedded in the binary), and embeds the `doctor`
+  to override; scripts are embedded in the binary), configures editor ACP
+  clients (`--client zed|nvim|vscode|jetbrains|all` — writes a minimal
+  settings file or a paste-ready snippet under `~/.config/tau/snippets/`;
+  without the flag it reports detected editors), and embeds the `doctor`
   health report; emits one NDJSON object per step plus a final verdict and
   exits non-zero when any step fails; idempotent on re-run
 - Shell completions for fish and PowerShell (`completions/tau.fish`,

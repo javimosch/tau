@@ -214,8 +214,10 @@ pub fn parse(
     }
 
     // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
-    // [--api-key K] [--offline] [--deep]` — one-shot onboarding: scaffold the
-    // config (init), install shell completions, embed a doctor health report.
+    // [--api-key K] [--offline] [--deep] [--client <zed|nvim|vscode|jetbrains|all>]`
+    // — one-shot onboarding: scaffold the config (init), install shell
+    // completions, write/detect editor ACP client config, embed a doctor
+    // health report.
     // A command, not a prompt; an unknown provider rides into the doctor step
     // as a failed check (same convention as `tau doctor`).
     if (argv.len > 0 and eq(argv[0], "setup")) {
@@ -233,6 +235,14 @@ pub fn parse(
                     !eq(s, "powershell") and !eq(s, "all"))
                     return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
                 scfg.setup_shell = s;
+            } else if (eq(a, "--client")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const c = argv[j];
+                if (!eq(c, "zed") and !eq(c, "nvim") and !eq(c, "vscode") and
+                    !eq(c, "jetbrains") and !eq(c, "code") and !eq(c, "all"))
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|vscode|jetbrains|all)", .{c});
+                scfg.setup_client = c;
             } else if (eq(a, "--provider")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
