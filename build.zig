@@ -30,6 +30,27 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("tools", tools_module);
 
+    // Embed the shipped shell-completion scripts into the binary so `tau
+    // setup` can install them without depending on a source checkout.
+    // completions/ stays the single source of truth.
+    const wf = b.addWriteFiles();
+    const completions_module = b.createModule(.{
+        .root_source_file = wf.add("completions.zig",
+            \\pub const bash = @embedFile("tau.bash");
+            \\pub const zsh = @embedFile("_tau");
+            \\pub const fish = @embedFile("tau.fish");
+            \\pub const pwsh = @embedFile("tau.ps1");
+            \\
+        ),
+        .target = target,
+        .optimize = optimize,
+    });
+    _ = wf.addCopyFile(b.path("completions/tau.bash"), "tau.bash");
+    _ = wf.addCopyFile(b.path("completions/_tau"), "_tau");
+    _ = wf.addCopyFile(b.path("completions/tau.fish"), "tau.fish");
+    _ = wf.addCopyFile(b.path("completions/tau.ps1"), "tau.ps1");
+    exe.root_module.addImport("completions", completions_module);
+
     b.installArtifact(exe);
 
     // zig build run — run directly
@@ -47,6 +68,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe_tests.root_module.addImport("completions", completions_module);
     const run_tests = b.addRunArtifact(exe_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);

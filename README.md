@@ -66,6 +66,26 @@ export PATH="$PWD/zig-out/bin:$PATH"
 
 ### 3. Configure an API key
 
+Optional — scaffold a commented starter config first (detects which provider
+API keys are already exported, picks a matching provider, never copies secret
+values into the file):
+
+```bash
+./zig-out/bin/tau init          # writes ~/.config/tau/config.json
+./zig-out/bin/tau init --stdout # preview without writing
+```
+
+Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
+installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+to override), can write ACP client config for your editor
+(`--client zed|nvim|vscode|jetbrains|all` — see [docs/acp.md](docs/acp.md)),
+and finishes with the `tau doctor` health report:
+
+```bash
+./zig-out/bin/tau setup                    # detect everything, write nothing extra
+./zig-out/bin/tau setup --client zed       # also configure Zed's agent_servers
+```
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
@@ -130,6 +150,8 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
+- **Setup diagnostics** — `tau doctor` validates the config file, provider, API key resolution, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe)
+- **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -424,7 +446,8 @@ Streaming output:
 
 ### Config File
 
-Optional config at `~/.config/tau/config.json`:
+Optional config at `~/.config/tau/config.json`. `tau init` writes a commented
+starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 
 ```json
 {
@@ -438,6 +461,24 @@ Optional config at `~/.config/tau/config.json`:
 ```
 
 CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md).
+
+Inspect the resolved effective config (config file + env + CLI flags merged) with `tau config show` — output is JSON and API keys are always redacted:
+
+```bash
+tau config show                          # what tau would use right now
+tau config show --provider openai        # preview flag overrides without running
+```
+
+Edit the file programmatically (git-config style — comments preserved, values
+schema-checked, writes atomic):
+
+```bash
+tau config set provider openai           # creates the file if missing
+tau config set keys.openai sk-...        # per-provider API key
+tau config get provider                  # read a value (secrets redacted)
+tau config unset keys.openai             # remove a key
+tau config validate                      # offline schema check (CI/pre-commit)
+```
 
 ### Providers
 
@@ -472,6 +513,12 @@ zig build test
 ```
 
 Requires Zig 0.16.0 and `curl` on PATH.
+
+### Shell Completions
+
+Tab-completion scripts for Bash (`tau.bash`), Zsh (`_tau`), Fish (`tau.fish`),
+and PowerShell (`tau.ps1`) live in [`completions/`](completions/README.md) with
+per-shell install instructions.
 
 ---
 

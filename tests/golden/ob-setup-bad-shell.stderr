@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --shell: tcsh (want bash|zsh|fish|pwsh|all)","recoverable":false}}

@@ -33,8 +33,8 @@ _tau() {
         '--api-key=[API key (overrides env vars)]:key:'
         '--system-prompt=[set (replace) system prompt]:prompt:'
         '--append-system-prompt=[append to system prompt (repeatable)]:prompt:'
-        '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
-        '--exclude-tools=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
+        '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
+        '--exclude-tools=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
         '(-nt --no-tools)'{-nt,--no-tools}'[disable all built-in tools]'
         '--temperature=[sampling temperature (0.0–2.0)]:float:'
         '--max-tokens=[maximum output tokens]:n:'
@@ -66,6 +66,11 @@ _tau() {
                 'models:list available providers and models'
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+                'init:write a commented starter config (~/.config/tau/config.json)'
+                'config:inspect, validate, or edit the config (show|validate|set|get|unset|edit)'
+                'setup:one-shot onboarding (init + completions + doctor)'
+                'doctor:validate setup (config, provider, key, connectivity)'
+                'guide:print the embedded operator manual'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -83,6 +88,19 @@ _tau() {
 
                 fleet)
                     local curcontext="$curcontext" state line
+                    local -a fleet_flags=(
+                        '--goal=[fleet objective (natural language)]:text:'
+                        '--id=[fleet identifier]:id:'
+                        '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)'
+                        '--model=[model ID]:model:'
+                        '--api-key=[API key]:key:'
+                        '--coordinator-model=[coordinator agent model override]:model:'
+                        '--worker-model=[worker agent model override]:model:'
+                        '--sequential[run worker agents sequentially]'
+                        '--parallel[run worker agents in parallel (default)]'
+                        '--items=[pre-supplied work items, skips coordinator (JSON)]:json:'
+                        '--schema=[JSON Schema for work-item breakdown]:schema:_files'
+                    )
                     _arguments -C \
                         '1: :->fleet_sub' \
                         '*:: :->fleet_opts'
@@ -95,21 +113,11 @@ _tau() {
                                 'logs:stream worker session logs for a fleet ID'
                                 'cancel:cancel a running fleet by ID'
                             )
-                            _describe 'fleet subcommand' fleet_cmds
+                            # Flags are valid before the sub-subcommand too.
+                            _arguments '1: :_describe "fleet subcommand" fleet_cmds' $fleet_flags
                             ;;
                         fleet_opts)
-                            _arguments \
-                                '--goal=[fleet objective (natural language)]:text:' \
-                                '--id=[fleet identifier]:id:' \
-                                '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)' \
-                                '--model=[model ID]:model:' \
-                                '--api-key=[API key]:key:' \
-                                '--coordinator-model=[coordinator agent model override]:model:' \
-                                '--worker-model=[worker agent model override]:model:' \
-                                '--sequential[run worker agents sequentially]' \
-                                '--parallel[run worker agents in parallel (default)]' \
-                                '--items=[pre-supplied work items, skips coordinator (JSON)]:json:' \
-                                '--schema=[JSON Schema for work-item breakdown]:schema:_files'
+                            _arguments $fleet_flags
                             ;;
                     esac
                     ;;
@@ -121,6 +129,97 @@ _tau() {
                         'load:load a skill into the system context by name'
                     )
                     _arguments '1: :_describe skill_subcommand skill_cmds'
+                    ;;
+
+                config)
+                    local curcontext="$curcontext" state line
+                    _arguments -C \
+                        '1: :->config_sub' \
+                        '*:: :->config_opts'
+                    case $state in
+                        config_sub)
+                            local -a config_cmds=(
+                                'show:print the resolved effective config (keys redacted)'
+                                'validate:check a config file (CI/pre-commit)'
+                                'set:set a config key to a value'
+                                'get:print a config key value (secrets redacted)'
+                                'unset:remove a config key'
+                                'edit:open the config in $EDITOR (validates on save)'
+                            )
+                            _describe 'config subcommand' config_cmds
+                            ;;
+                        config_opts)
+                            # $line[1] is the config subcommand just typed.
+                            case ${line[1]} in
+                                validate)
+                                    _arguments \
+                                        '--mode=[report format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                set)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '2:value:' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                get)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '--raw[print secret values unredacted]' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                unset)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                edit)
+                                    _arguments \
+                                        '--mode=[report format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                *)
+                                    # `config show` accepts the normal override
+                                    # flags so the merged result is previewed.
+                                    _arguments $global_opts
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+
+                init)
+                    _arguments \
+                        '--force[overwrite an existing config file]' \
+                        '--stdout[print the starter config without writing it]' \
+                        '--provider=[scaffold for a specific provider]:provider:(xiaomi openai deepseek opencode-go)'
+                    ;;
+
+                setup)
+                    _arguments \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--client=[editor ACP client]:client:(zed nvim vscode jetbrains all)' \
+                        '--offline[skip network checks in the doctor step]' \
+                        '--deep[run an authenticated probe in the doctor step]' \
+                        '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:'
+                    ;;
+
+                doctor)
+                    _arguments \
+                        '--offline[skip network checks]' \
+                        '--deep[run an authenticated probe (spends ~1 token)]' \
+                        '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:'
+                    ;;
+
+                guide)
+                    _arguments '--human[render the guide as markdown]'
                     ;;
 
                 models)
