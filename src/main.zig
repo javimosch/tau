@@ -127,6 +127,14 @@ const help_text =
     \\      --force                 Overwrite an existing config file
     \\      --provider <name>       Scaffold for a specific provider
     \\      --stdout                Print the starter config without writing it
+    \\  tau setup                   One-shot onboarding: init + install shell
+    \\                              completions + editor ACP config + doctor
+    \\                              health summary (NDJSON)
+    \\      --shell <name>          Completions shell: bash|zsh|fish|pwsh|all
+    \\                              (default: detect from $SHELL)
+    \\      --client <name>         Editor ACP client: zed|nvim|vscode|
+    \\                              jetbrains|all (default: detect only)
+    \\      --offline/--deep        Passed through to the doctor step
     \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
@@ -158,6 +166,12 @@ const help_text =
     \\  tau skills list               List all discoverable skills
     \\  tau skills search <query>     Search skills by keyword
     \\  tau skills load <name>        Load a skill into system context
+    \\
+    \\Diagnostics:
+    \\  tau doctor                    Validate setup (config file, provider, API key, connectivity)
+    \\      --offline                 Skip network checks
+    \\      --deep                    Also run an authenticated probe (spends ~1 token)
+    \\      --provider/--model/--api-key   Diagnose an override instead of the configured default
     \\
     \\Config:
     \\  tau config show [flags]       Print the resolved effective config as JSON
@@ -304,6 +318,8 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
+    .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON)." },
+    .{ .a = "tau doctor [--offline|--deep]", .b = "diagnose the setup chain (config, provider, key, connectivity) — JSON report." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau config show [--flags]", .b = "print the resolved effective config (file+env+flags merged; keys redacted)." },
     .{ .a = "tau config validate [path]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit)." },
@@ -670,10 +686,26 @@ pub fn main(init: std.process.Init) !void {
             printGuide(parsed.config.guide_human);
             return;
         },
+        .doctor => {
+            const doctor = @import("doctor.zig");
+            const code = doctor.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "doctor failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
         .init => {
             const initmod = @import("init.zig");
             const code = initmod.run(io, arena, init.environ_map, parsed.config.init_force, parsed.config.init_stdout, parsed.config.init_provider) catch |err| {
                 printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "init failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
+        .setup => {
+            const setup = @import("setup.zig");
+            const code = setup.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "setup failed", false);
                 std.process.exit(@intFromEnum(ExitCode.internal_error));
             };
             std.process.exit(code);
@@ -938,9 +970,11 @@ test {
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
+    _ = @import("doctor.zig");
     _ = @import("init.zig");
     _ = @import("configvalidate.zig");
     _ = @import("configedit.zig");
+    _ = @import("setup.zig");
 }
 
 test "flag_specs appear in help_text" {

@@ -4,7 +4,7 @@ const goalmod = @import("goal.zig");
 const suggest = @import("suggest.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, config, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, config, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -1269,6 +1269,71 @@ test "parse: config validate rejects a second positional and unknown flags" {
     const badmode = try parseArgv(a, &.{ "tau", "config", "validate", "--mode", "yaml" }, .{});
     try std.testing.expectEqual(Action.err, badmode.action);
     try std.testing.expect(std.mem.indexOf(u8, badmode.err_msg.?, "invalid --mode") != null);
+}
+
+// ── `tau doctor` ────────────────────────────────────────────────────────────
+
+test "parse: doctor selects the doctor action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(!p.config.doctor_offline);
+    try std.testing.expect(!p.config.doctor_deep);
+    try std.testing.expect(p.config.doctor_bad_provider == null);
+    // Default provider resolved like a normal run.
+    try std.testing.expectEqualStrings(provider_mod.providers[0].name, p.config.provider);
+}
+
+test "parse: doctor accepts --offline/--deep and provider/model/api-key overrides" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "openai", "--offline", "--deep" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_offline);
+    try std.testing.expect(p.config.doctor_deep);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(provider_mod.findProvider("openai").?.default_model, p.config.model);
+
+    // --model provider/id shorthand resolves provider + model.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--model", "deepseek/deepseek-reasoner", "--api-key", "sk-x" }, .{});
+    try std.testing.expectEqualStrings("deepseek", q.config.provider);
+    try std.testing.expectEqualStrings("deepseek-reasoner", q.config.model);
+    try std.testing.expectEqualStrings("sk-x", q.config.api_key.?);
+}
+
+test "parse: doctor rejects unknown arguments and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "doctor", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown doctor argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "doctor", "--provider" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --provider", missing_val.err_msg.?);
+}
+
+test "parse: doctor carries an unknown provider as a failed check, not exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // From a flag override...
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expectEqualStrings("acme", p.config.doctor_bad_provider.?);
+
+    // ...and from a config-file provider with no flag override.
+    const q = try parseArgv(a, &.{ "tau", "doctor" }, .{ .provider = "acme" });
+    try std.testing.expectEqual(Action.doctor, q.action);
+    try std.testing.expectEqualStrings("acme", q.config.doctor_bad_provider.?);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {

@@ -75,6 +75,17 @@ values into the file):
 ./zig-out/bin/tau init --stdout # preview without writing
 ```
 
+Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
+installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+to override), can write ACP client config for your editor
+(`--client zed|nvim|vscode|jetbrains|all` — see [docs/acp.md](docs/acp.md)),
+and finishes with the `tau doctor` health report:
+
+```bash
+./zig-out/bin/tau setup                    # detect everything, write nothing extra
+./zig-out/bin/tau setup --client zed       # also configure Zed's agent_servers
+```
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
@@ -139,6 +150,8 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
+- **Setup diagnostics** — `tau doctor` validates the config file, provider, API key resolution, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe)
+- **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -500,6 +513,12 @@ zig build test
 ```
 
 Requires Zig 0.16.0 and `curl` on PATH.
+
+### Shell Completions
+
+Tab-completion scripts for Bash (`tau.bash`), Zsh (`_tau`), Fish (`tau.fish`),
+and PowerShell (`tau.ps1`) live in [`completions/`](completions/README.md) with
+per-shell install instructions.
 
 ---
 

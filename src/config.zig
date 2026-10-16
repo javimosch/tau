@@ -167,6 +167,25 @@ pub const Config = struct {
     /// (set even when the JSON is invalid — config_warning covers that case).
     config_path: ?[]const u8 = null,
 
+    // --- Doctor (src/doctor.zig) ---
+    /// `tau doctor --offline` — skip network checks (reported as "skip").
+    doctor_offline: bool = false,
+    /// `tau doctor --deep` — run an authenticated probe (spends ~1 token).
+    doctor_deep: bool = false,
+    /// Provider name that failed table lookup while parsing `tau doctor` args.
+    /// Doctor reports it as a failed check instead of exiting 80 so the report
+    /// still carries diagnostics for the rest of the setup chain.
+    doctor_bad_provider: ?[]const u8 = null,
+
+    // --- Setup (src/setup.zig) ---
+    /// `tau setup --shell <name>` — completions shell override
+    /// (bash|zsh|fish|pwsh|all). Null means detect from $SHELL.
+    setup_shell: ?[]const u8 = null,
+    /// `tau setup --client <name>` — ACP editor client to configure
+    /// (zed|nvim|vscode|jetbrains|all). Null skips the clients step.
+    setup_client: ?[]const u8 = null,
+
+    // --- Config subcommands (src/configedit.zig / src/configvalidate.zig) ---
     /// `tau config` subcommand carried through parse. Null/absent means the
     /// default (`config show`); `config validate` sets this to "validate".
     config_sub: ?[]const u8 = null,
@@ -178,14 +197,15 @@ pub const Config = struct {
     config_key: ?[]const u8 = null,
     /// Positional value argument for `tau config set`.
     config_value: ?[]const u8 = null,
-    /// Optional trailing file path for `tau config set|get|unset`
+    /// Optional trailing file path for `tau config set|get|unset`/`edit`
     /// (null → the default ~/.config/tau/config.json).
     edit_path: ?[]const u8 = null,
     /// `tau config get --raw` — print secret values unredacted.
     config_raw: bool = false,
 };
 
-/// Where the resolved API key came from. Surfaced by `tau config show` so the
+/// Where the resolved API key came from. Surfaced by `tau doctor` and
+/// `tau config show` so the
 /// key's provenance can be reported without printing the key itself.
 pub const ApiKeySource = enum {
     /// `--api-key` CLI flag.
@@ -219,6 +239,7 @@ pub fn redactApiKey(arena: std.mem.Allocator, key: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "***{s}", .{key[key.len - 4 ..]}) catch "***";
 }
 
+
 /// Resolve the effective API key with provenance. Precedence:
 /// 1. `--api-key` (explicit flag)
 /// 2. config `keys[selected_provider]`
@@ -227,8 +248,8 @@ pub fn redactApiKey(arena: std.mem.Allocator, key: []const u8) []const u8 {
 /// 5. `TAU_API_KEY`
 /// 6. provider builtin / keyless
 /// `source` reports which level supplied the key and, for env-var sources,
-/// `env_name` says which variable. `tau config show` uses this to print
-/// provenance alongside the redacted key.
+/// `env_name` says which variable. `tau doctor` and `tau config show` use
+/// this to report provenance without printing the key.
 pub fn resolveApiKeyInfo(cfg: Config, env: *std.process.Environ.Map) ?ResolvedKey {
     // 1. --api-key (explicit flag)
     if (cfg.api_key) |k| {

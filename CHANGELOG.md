@@ -30,6 +30,22 @@ are backward compatible.
   expanded with copy-pasteable configs for JetBrains, VS Code, Neovim
   (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
+- `tau doctor` — JSON setup diagnostics (config file parse, provider
+  resolution, API key provenance, curl on PATH, endpoint reachability, and an
+  optional `--deep` authenticated probe); `--offline` skips network checks
+- `tau init` — write a commented starter `~/.config/tau/config.json` seeded
+  from detected provider env keys (`--force`, `--stdout`, `--provider`)
+- `tau setup` — one-shot onboarding: scaffolds the config (init), installs
+  shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+  to override; scripts are embedded in the binary), configures editor ACP
+  clients (`--client zed|nvim|vscode|jetbrains|all` — writes a minimal
+  settings file or a paste-ready snippet under `~/.config/tau/snippets/`;
+  without the flag it reports detected editors), and embeds the `doctor`
+  health report; emits one NDJSON object per step plus a final verdict and
+  exits non-zero when any step fails; idempotent on re-run
+- Shell completions for fish and PowerShell (`completions/tau.fish`,
+  `completions/tau.ps1`); all four scripts now complete `init`, `setup`,
+  `doctor`, and `guide`
 - `tau config show` — print the resolved effective config (config file + env +
   CLI flags merged) as JSON with API keys redacted and their source reported
   (#140)
@@ -48,6 +64,9 @@ are backward compatible.
 
 ### Fixed
 
+- `tau doctor` no longer false-fails a commented (JSONC) config file — the
+  `config_file` check strips `//` and `/* */` comments before parsing, same
+  as the runtime loader, so a `tau init` scaffold reports `ok`
 - Streaming: honor `--timeout-ms` on SSE requests (#76); tolerate whitespace in
   SSE tool-call and reasoning parsers (#68)
 - Provider response parsing: whitespace after JSON colons (#66) and before
@@ -83,7 +102,8 @@ are backward compatible.
   (#39), ACP (#47), JSON helpers (#50), bash tool (#51), tool registry (#53),
   provider module (#58), `resolveApiKey` precedence (#59), goal + session
   (#63), AGENTS.md scanning (#110), agent loop tool dispatch (#112), SSE
-  streaming frames (#117), context compaction boundaries (#121)
+  streaming frames (#117), context compaction boundaries (#121), `tau doctor`
+  diagnostics incl. live-probe stub coverage (#165)
 - Smoke suite: `--role critic` network check (#88), `--api-key` parsing (#89)
 - Fixed SIGABRT in `scanAgentsMd` bad-path test (#55); restored truncated
   `extractToolCalls` test (#69)
