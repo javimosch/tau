@@ -23,7 +23,7 @@ $TauArgumentCompleter = {
     $skillSubs   = @('list', 'search', 'load')
     $guideFlags  = @('--human')
     $initFlags   = @('--force', '--stdout', '--provider')
-    $doctorFlags = @('--offline', '--deep', '--fix', '--yes', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
+    $doctorFlags = @('--offline', '--deep', '--probe', '--fix', '--yes', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--offline', '--deep', '--provider', '--model', '--api-key')
     $versionFlags = @('--verbose', '--mode')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
@@ -114,6 +114,7 @@ $TauArgumentCompleter = {
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
+        '--probe'             = 'live-verify connectivity and credentials for every provider'
         '--verbose'           = 'include build metadata in version output'
     }
 

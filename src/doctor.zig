@@ -22,6 +22,12 @@
 // fix outcomes under --fix, effective settings, and the config file verbatim
 // — run through the same credential masking as the --debug log. Mutually
 // exclusive with --json (arg parse rejects the combination with exit 80).
+//
+// `--probe` live-verifies every provider in the registry, not just the
+// configured one: a `probe_<name>` connectivity row plus a `probe_<name>_auth`
+// credential row that resolves that provider's key and POSTs a one-token
+// completion when one is found. Without --probe a single skipped
+// provider_probes row advertises the sweep.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -266,7 +272,7 @@ fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Ch
     try appendMdRow(arena, &buf, "endpoint", cfg.endpoint);
     try appendMdRow(arena, &buf, "context_window", try std.fmt.allocPrint(arena, "{d}", .{cfg.context_window}));
     const key_source = if (cfgmod.resolveApiKeyInfo(cfg, env)) |rk|
-        keySourceLabel(arena, cfg, rk)
+        keySourceLabel(arena, cfg.provider, rk)
     else
         "none resolved";
     try appendMdRow(arena, &buf, "api_key_source", key_source);
@@ -314,10 +320,11 @@ fn keyHint(arena: std.mem.Allocator, provider: []const u8) []const u8 {
 }
 
 /// Human-readable label for the resolved key's source (never the key itself).
-fn keySourceLabel(arena: std.mem.Allocator, cfg: Config, rk: cfgmod.ResolvedKey) []const u8 {
+/// `provider` is the name used for the config_keys label (keys[<provider>]).
+fn keySourceLabel(arena: std.mem.Allocator, provider: []const u8, rk: cfgmod.ResolvedKey) []const u8 {
     return switch (rk.source) {
         .flag => "--api-key",
-        .config_keys => std.fmt.allocPrint(arena, "keys[{s}]", .{cfg.provider}) catch "keys[?]",
+        .config_keys => std.fmt.allocPrint(arena, "keys[{s}]", .{provider}) catch "keys[?]",
         .env_provider, .env_tau => std.fmt.allocPrint(arena, "env:{s}", .{rk.env_name orelse "?"}) catch "env:?",
         .config_global => "config.api_key",
         .builtin => "builtin",
@@ -515,7 +522,7 @@ fn checkApiKey(arena: std.mem.Allocator, cfg: Config, rk: ?cfgmod.ResolvedKey) C
     return .{
         .name = "api_key",
         .status = .ok,
-        .message = std.fmt.allocPrint(arena, "API key resolved (source: {s})", .{keySourceLabel(arena, cfg, r)}) catch "API key resolved",
+        .message = std.fmt.allocPrint(arena, "API key resolved (source: {s})", .{keySourceLabel(arena, cfg.provider, r)}) catch "API key resolved",
     };
 }
 
@@ -689,6 +696,126 @@ fn checkAuthProbe(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, 
     };
 }
 
+// ---------------------------------------------------------------------------
+// --probe per-provider sweep
+// ---------------------------------------------------------------------------
+
+/// The endpoint/model a probe targets for provider p: the configured provider
+/// is probed at its fully-resolved endpoint and model (TAU_ENDPOINT and
+/// --model overrides honored); every other provider probes its registry entry.
+fn probeTarget(cfg: Config, p: cfgmod.Provider) struct { endpoint: []const u8, model: []const u8 } {
+    if (cfg.doctor_bad_provider == null and std.mem.eql(u8, p.name, cfg.provider))
+        return .{ .endpoint = cfg.endpoint, .model = cfg.model };
+    return .{ .endpoint = p.endpoint, .model = p.default_model };
+}
+
+/// --probe connectivity row for one provider (`probe_<name>`): any HTTP
+/// response counts as reachable (even 401/405); DNS/connect failure or a
+/// timeout fails. Runs for every provider in the registry when --probe is
+/// passed, not just the configured one.
+fn checkProviderProbe(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, p: cfgmod.Provider, curl_ok: bool) Check {
+    const name = std.fmt.allocPrint(arena, "probe_{s}", .{p.name}) catch "probe_?";
+    if (cfg.doctor_offline)
+        return .{ .name = name, .status = .skip, .message = "skipped (--offline)" };
+    if (!curl_ok)
+        return .{ .name = name, .status = .skip, .message = "skipped (curl unavailable)" };
+
+    const t = probeTarget(cfg, p);
+    const code = curlHttpCode(io, gpa, &.{
+        "curl",       "-s",                                                            "-o",         "/dev/null", "-w", "%{http_code}",
+        "--max-time", std.fmt.allocPrint(arena, "{d}", .{probe_max_time_s}) catch "5", t.endpoint,
+    }, (probe_max_time_s + 10) * 1000) orelse {
+        return .{
+            .name = name,
+            .status = .fail,
+            .message = std.fmt.allocPrint(arena, "endpoint unreachable: {s}", .{t.endpoint}) catch "endpoint unreachable",
+            .hint = "check network/proxy; TAU_ENDPOINT overrides the configured provider's endpoint",
+        };
+    };
+    defer gpa.free(code);
+    const n = std.fmt.parseInt(u16, std.mem.trim(u8, code, " \t\r\n"), 10) catch 0;
+    if (n == 0) {
+        return .{
+            .name = name,
+            .status = .fail,
+            .message = std.fmt.allocPrint(arena, "endpoint unreachable: {s}", .{t.endpoint}) catch "endpoint unreachable",
+            .hint = "check network/proxy; TAU_ENDPOINT overrides the configured provider's endpoint",
+        };
+    }
+    return .{
+        .name = name,
+        .status = .ok,
+        .message = std.fmt.allocPrint(arena, "endpoint reachable (HTTP {d})", .{n}) catch "endpoint reachable",
+    };
+}
+
+/// --probe credential row for one provider (`probe_<name>_auth`): resolves a
+/// key exactly as a run configured for that provider would (--api-key >
+/// keys[<name>] > provider env vars > config api_key > TAU_API_KEY > builtin)
+/// and POSTs a one-token completion when one resolves. Only the key's source
+/// label is reported — never the key itself. Skips when the endpoint probe
+/// failed (the POST would just time out) or no credential resolves.
+fn checkProviderAuthProbe(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, p: cfgmod.Provider, reachable: bool, curl_ok: bool) Check {
+    const name = std.fmt.allocPrint(arena, "probe_{s}_auth", .{p.name}) catch "probe_?_auth";
+    if (cfg.doctor_offline)
+        return .{ .name = name, .status = .skip, .message = "skipped (--offline)" };
+    if (!curl_ok)
+        return .{ .name = name, .status = .skip, .message = "skipped (curl unavailable)" };
+    if (!reachable)
+        return .{ .name = name, .status = .skip, .message = "skipped (endpoint unreachable)" };
+
+    var pcfg = cfg;
+    pcfg.provider = p.name;
+    const r = cfgmod.resolveApiKeyInfo(pcfg, env) orelse
+        return .{ .name = name, .status = .skip, .message = "skipped (no credentials resolved)", .hint = keyHint(arena, p.name) };
+    const source = keySourceLabel(arena, p.name, r);
+    const t = probeTarget(cfg, p);
+
+    var body: std.ArrayList(u8) = .empty;
+    body.appendSlice(arena, "{\"model\":\"") catch return .{ .name = name, .status = .fail, .message = "out of memory" };
+    json.escapeInto(arena, &body, t.model) catch return .{ .name = name, .status = .fail, .message = "out of memory" };
+    body.appendSlice(arena, "\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1,\"stream\":false}") catch return .{ .name = name, .status = .fail, .message = "out of memory" };
+
+    const auth = std.fmt.allocPrint(arena, "Authorization: Bearer {s}", .{r.key}) catch
+        return .{ .name = name, .status = .fail, .message = "out of memory" };
+    const code = curlHttpCode(io, gpa, &.{
+        "curl",       "-s",                                                                  "-o",                             "/dev/null",  "-w",         "%{http_code}",
+        "--max-time", std.fmt.allocPrint(arena, "{d}", .{auth_probe_max_time_s}) catch "15", "-X",                             "POST",       t.endpoint,   "-H",
+        auth,         "-H",                                                                  "Content-Type: application/json", "--data-raw", body.items,
+    }, (auth_probe_max_time_s + 15) * 1000) orelse {
+        return .{
+            .name = name,
+            .status = .fail,
+            .message = "auth probe request failed",
+            .hint = std.fmt.allocPrint(arena, "endpoint unreachable or timed out — see the probe_{s} check", .{p.name}) catch "endpoint unreachable or timed out",
+        };
+    };
+    defer gpa.free(code);
+    const n = std.fmt.parseInt(u16, std.mem.trim(u8, code, " \t\r\n"), 10) catch 0;
+    return switch (probeStatus(n)) {
+        .ok => .{
+            .name = name,
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "credentials verified (HTTP {d}, source: {s})", .{ n, source }) catch "credentials verified",
+        },
+        .fail => .{
+            .name = name,
+            .status = .fail,
+            .message = std.fmt.allocPrint(arena, "credentials rejected (HTTP {d}, source: {s})", .{ n, source }) catch "credentials rejected",
+            .hint = std.fmt.allocPrint(arena, "verify the key is valid for provider '{s}'", .{p.name}) catch "verify the key",
+        },
+        else => if (n == 429) Check{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "rate limited (HTTP 429) — key validity undetermined (source: {s})", .{source}) catch "rate limited",
+        } else Check{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "unexpected HTTP {d} from endpoint (source: {s})", .{ n, source }) catch "unexpected response",
+        },
+    };
+}
+
 /// The collected doctor verdict: `ok` mirrors the exit code (all non-skipped
 /// checks ok/warn) and `json` is the serialized report object with no trailing
 /// newline — callers (tau setup) can embed it in a larger envelope.
@@ -723,6 +850,27 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     try addCheck(arena, &checks, curl_check, cfg);
     try addCheck(arena, &checks, checkEndpoint(io, gpa, arena, cfg, curl_ok), cfg);
     try addCheck(arena, &checks, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok), cfg);
+    if (cfg.doctor_probe) {
+        // The --probe sweep emits two rows per registry provider: connectivity
+        // (probe_<name>) then credentials (probe_<name>_auth). The auth row
+        // skips when its connectivity row failed — no point in a 15s POST
+        // against a dead endpoint.
+        for (cfgmod.providers) |p| {
+            const probe = checkProviderProbe(io, gpa, arena, cfg, p, curl_ok);
+            const reachable = probe.status == .ok;
+            try addCheck(arena, &checks, probe, cfg);
+            try addCheck(arena, &checks, checkProviderAuthProbe(io, gpa, arena, cfg, env, p, reachable, curl_ok), cfg);
+        }
+    } else {
+        // One placeholder row advertises the opt-in sweep without filling the
+        // default report with per-provider skip rows.
+        try addCheck(arena, &checks, .{
+            .name = "provider_probes",
+            .status = .skip,
+            .message = "skipped",
+            .hint = "pass --probe to live-verify connectivity and credentials for every provider",
+        }, cfg);
+    }
     return checks.toOwnedSlice(arena);
 }
 
@@ -1065,14 +1213,14 @@ test "keySourceLabel: covers every precedence level" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const cfg = Config{ .provider = "openai" };
 
-    try testing.expectEqualStrings("--api-key", keySourceLabel(a, cfg, .{ .key = "k", .source = .flag }));
-    try testing.expectEqualStrings("keys[openai]", keySourceLabel(a, cfg, .{ .key = "k", .source = .config_keys }));
-    try testing.expectEqualStrings("env:OPENAI_API_KEY", keySourceLabel(a, cfg, .{ .key = "k", .source = .env_provider, .env_name = "OPENAI_API_KEY" }));
-    try testing.expectEqualStrings("config.api_key", keySourceLabel(a, cfg, .{ .key = "k", .source = .config_global }));
-    try testing.expectEqualStrings("env:TAU_API_KEY", keySourceLabel(a, cfg, .{ .key = "k", .source = .env_tau, .env_name = "TAU_API_KEY" }));
-    try testing.expectEqualStrings("builtin", keySourceLabel(a, cfg, .{ .key = "k", .source = .builtin }));
+    try testing.expectEqualStrings("--api-key", keySourceLabel(a, "openai", .{ .key = "k", .source = .flag }));
+    try testing.expectEqualStrings("keys[openai]", keySourceLabel(a, "openai", .{ .key = "k", .source = .config_keys }));
+    try testing.expectEqualStrings("keys[deepseek]", keySourceLabel(a, "deepseek", .{ .key = "k", .source = .config_keys }));
+    try testing.expectEqualStrings("env:OPENAI_API_KEY", keySourceLabel(a, "openai", .{ .key = "k", .source = .env_provider, .env_name = "OPENAI_API_KEY" }));
+    try testing.expectEqualStrings("config.api_key", keySourceLabel(a, "openai", .{ .key = "k", .source = .config_global }));
+    try testing.expectEqualStrings("env:TAU_API_KEY", keySourceLabel(a, "openai", .{ .key = "k", .source = .env_tau, .env_name = "TAU_API_KEY" }));
+    try testing.expectEqualStrings("builtin", keySourceLabel(a, "openai", .{ .key = "k", .source = .builtin }));
 }
 
 test "probeStatus: 2xx ok, 401/403 fail, 429/other warn" {
@@ -1614,4 +1762,144 @@ test "collectChecks: fixable outcomes are attached to the right checks" {
         if (std.mem.eql(u8, c.name, "auth_probe")) try testing.expect(c.fix == null);
     }
     try testing.expect(saw_scaffold);
+}
+
+// ---------------------------------------------------------------------------
+// --probe sweep tests
+// ---------------------------------------------------------------------------
+
+test "probeTarget: configured provider uses resolved endpoint/model, others use the registry" {
+    const cfg = Config{
+        .provider = "openai",
+        .model = "gpt-custom",
+        .endpoint = "http://127.0.0.1:9/override",
+    };
+    const openai = cfgmod.findProvider("openai").?.*;
+    const t_cfg = probeTarget(cfg, openai);
+    try testing.expectEqualStrings("http://127.0.0.1:9/override", t_cfg.endpoint);
+    try testing.expectEqualStrings("gpt-custom", t_cfg.model);
+
+    const deepseek = cfgmod.findProvider("deepseek").?.*;
+    const t_other = probeTarget(cfg, deepseek);
+    try testing.expectEqualStrings(deepseek.endpoint, t_other.endpoint);
+    try testing.expectEqualStrings(deepseek.default_model, t_other.model);
+
+    // An unresolved configured provider means cfg.endpoint/model describe
+    // nothing real — everyone probes the registry entry.
+    const cfg_bad = Config{ .provider = "openai", .endpoint = "http://127.0.0.1:9/x", .doctor_bad_provider = "acme" };
+    const t_bad = probeTarget(cfg_bad, openai);
+    try testing.expectEqualStrings(openai.endpoint, t_bad.endpoint);
+}
+
+test "checkProviderProbe: offline/no-curl skip, refused connection fails" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const p = cfgmod.findProvider("openai").?.*;
+
+    const off = checkProviderProbe(testing.io, testing.allocator, a, .{ .doctor_offline = true }, p, true);
+    try testing.expectEqual(CheckStatus.skip, off.status);
+    try testing.expectEqualStrings("probe_openai", off.name);
+
+    const nocurl = checkProviderProbe(testing.io, testing.allocator, a, .{}, p, false);
+    try testing.expectEqual(CheckStatus.skip, nocurl.status);
+    try testing.expect(std.mem.indexOf(u8, nocurl.message, "curl unavailable") != null);
+
+    // Configured provider probing a refused endpoint -> fail.
+    const fail = checkProviderProbe(testing.io, testing.allocator, a, .{
+        .provider = "openai",
+        .endpoint = "http://127.0.0.1:1/",
+    }, p, true);
+    try testing.expectEqual(CheckStatus.fail, fail.status);
+    try testing.expect(std.mem.indexOf(u8, fail.message, "endpoint unreachable") != null);
+    try testing.expect(std.mem.indexOf(u8, fail.message, "127.0.0.1:1") != null);
+}
+
+test "checkProviderAuthProbe: gates, credential resolution, and redaction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const p = cfgmod.findProvider("openai").?.*;
+
+    var env = std.process.Environ.Map.init(a);
+
+    const off = checkProviderAuthProbe(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &env, p, true, true);
+    try testing.expectEqual(CheckStatus.skip, off.status);
+    try testing.expectEqualStrings("probe_openai_auth", off.name);
+
+    const nocurl = checkProviderAuthProbe(testing.io, testing.allocator, a, .{}, &env, p, true, false);
+    try testing.expectEqual(CheckStatus.skip, nocurl.status);
+
+    const unreachable_ep = checkProviderAuthProbe(testing.io, testing.allocator, a, .{}, &env, p, false, true);
+    try testing.expectEqual(CheckStatus.skip, unreachable_ep.status);
+    try testing.expect(std.mem.indexOf(u8, unreachable_ep.message, "endpoint unreachable") != null);
+
+    // Reachable + curl but no credential for this provider -> skip with a
+    // hint naming its env vars (not the configured provider's).
+    const no_key = checkProviderAuthProbe(testing.io, testing.allocator, a, .{}, &env, p, true, true);
+    try testing.expectEqual(CheckStatus.skip, no_key.status);
+    try testing.expect(std.mem.indexOf(u8, no_key.message, "no credentials") != null);
+    try testing.expect(std.mem.indexOf(u8, no_key.hint.?, "OPENAI_API_KEY") != null);
+
+    // A resolved key reaches the POST stage: refused connection fails with
+    // the request-failed message (configured provider -> cfg.endpoint), and
+    // the key literal never leaks into the check.
+    try env.put("OPENAI_API_KEY", "sk-probe-secret-123");
+    const refused = checkProviderAuthProbe(testing.io, testing.allocator, a, .{
+        .provider = "openai",
+        .endpoint = "http://127.0.0.1:1/",
+    }, &env, p, true, true);
+    try testing.expectEqual(CheckStatus.fail, refused.status);
+    try testing.expect(std.mem.indexOf(u8, refused.message, "auth probe request failed") != null);
+    try testing.expect(std.mem.indexOf(u8, refused.message, "sk-probe-secret-123") == null);
+    if (refused.hint) |h| try testing.expect(std.mem.indexOf(u8, h, "sk-probe-secret-123") == null);
+
+    // Keys resolve per-provider: a key for a non-configured provider reaches
+    // the POST stage instead of skipping (outcome depends on the live
+    // endpoint — only "not skip" is deterministic).
+    try env.put("DEEPSEEK_API_KEY", "sk-deep-456");
+    const dp = cfgmod.findProvider("deepseek").?.*;
+    const keyed = checkProviderAuthProbe(testing.io, testing.allocator, a, .{ .provider = "xiaomi" }, &env, dp, true, true);
+    try testing.expect(keyed.status != .skip);
+    try testing.expect(std.mem.indexOf(u8, keyed.message, "sk-deep-456") == null);
+    if (keyed.hint) |h| try testing.expect(std.mem.indexOf(u8, h, "sk-deep-456") == null);
+}
+
+test "collectChecks: provider_probes placeholder without --probe, per-provider rows with it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+    std.Io.Dir.cwd().deleteFile(testing.io, cfg_path) catch {};
+
+    // Default run: one advertising skip row, no per-provider rows.
+    const plain = try collectChecks(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &home.env);
+    var saw_placeholder = false;
+    for (plain) |c| {
+        if (std.mem.eql(u8, c.name, "provider_probes")) {
+            saw_placeholder = true;
+            try testing.expectEqual(CheckStatus.skip, c.status);
+            try testing.expect(std.mem.indexOf(u8, c.hint.?, "--probe") != null);
+        }
+        try testing.expect(!std.mem.startsWith(u8, c.name, "probe_"));
+    }
+    try testing.expect(saw_placeholder);
+
+    // --probe --offline: one connectivity + one auth row per registry
+    // provider, all skipped; the placeholder is gone.
+    const probed = try collectChecks(testing.io, testing.allocator, a, .{ .doctor_offline = true, .doctor_probe = true }, &home.env);
+    var probe_rows: usize = 0;
+    var auth_rows: usize = 0;
+    for (probed) |c| {
+        try testing.expect(!std.mem.eql(u8, c.name, "provider_probes"));
+        if (std.mem.startsWith(u8, c.name, "probe_")) {
+            try testing.expectEqual(CheckStatus.skip, c.status);
+            if (std.mem.endsWith(u8, c.name, "_auth")) auth_rows += 1 else probe_rows += 1;
+        }
+    }
+    try testing.expectEqual(cfgmod.providers.len, probe_rows);
+    try testing.expectEqual(cfgmod.providers.len, auth_rows);
 }
