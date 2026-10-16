@@ -140,6 +140,7 @@ _tau() {
                 setup)
                     _arguments \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--client=[editor ACP client]:client:(zed nvim vscode jetbrains all)' \
                         '--offline[skip network checks in the doctor step]' \
                         '--deep[run an authenticated probe in the doctor step]' \
                         '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \

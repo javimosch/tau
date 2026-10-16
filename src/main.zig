@@ -127,9 +127,12 @@ const help_text =
     \\      --provider <name>       Scaffold for a specific provider
     \\      --stdout                Print the starter config without writing it
     \\  tau setup                   One-shot onboarding: init + install shell
-    \\                              completions + doctor health summary (NDJSON)
+    \\                              completions + editor ACP config + doctor
+    \\                              health summary (NDJSON)
     \\      --shell <name>          Completions shell: bash|zsh|fish|pwsh|all
     \\                              (default: detect from $SHELL)
+    \\      --client <name>         Editor ACP client: zed|nvim|vscode|
+    \\                              jetbrains|all (default: detect only)
     \\      --offline/--deep        Passed through to the doctor step
     \\
     \\Goal mode (in the prompt):
@@ -302,7 +305,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
-    .{ .a = "tau setup [--shell <sh>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + doctor health summary (NDJSON)." },
+    .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON)." },
     .{ .a = "tau doctor [--offline|--deep]", .b = "diagnose the setup chain (config, provider, key, connectivity) — JSON report." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
