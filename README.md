@@ -465,6 +465,7 @@ tau config set keys.openai sk-...        # per-provider API key
 tau config get provider                  # read a value (secrets redacted)
 tau config unset keys.openai             # remove a key
 tau config validate                      # offline schema check (CI/pre-commit)
+tau config schema                        # JSON Schema for editor autocomplete
 ```
 
 ### Providers

@@ -67,7 +67,7 @@ _tau() {
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
                 'init:write a commented starter config (~/.config/tau/config.json)'
-                'config:inspect, validate, or edit the config (show|validate|set|get|unset|edit)'
+                'config:inspect, validate, or edit the config (show|validate|set|get|unset|edit|schema)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -139,6 +139,7 @@ _tau() {
                                 'get:print a config key value (secrets redacted)'
                                 'unset:remove a config key'
                                 'edit:open the config in $EDITOR (validates on save)'
+                                'schema:print the config file JSON Schema (draft 2020-12)'
                             )
                             _describe 'config subcommand' config_cmds
                             ;;
@@ -174,6 +175,10 @@ _tau() {
                                     _arguments \
                                         '--mode=[report format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
+                                    ;;
+                                schema)
+                                    _arguments \
+                                        '--mode=[output format]:mode:(text json)'
                                     ;;
                                 *)
                                     # `config show` accepts the normal override

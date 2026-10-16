@@ -245,6 +245,15 @@ pub fn validate(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Report 
     outer: while (it.next()) |entry| {
         const key = entry.key_ptr.*;
         const val = entry.value_ptr.*;
+        // "$schema" is the JSON-Schema self-declaration editors read for
+        // autocomplete (`tau init` writes it) — editor metadata, not a tau
+        // config key, but a permitted member all the same.
+        if (std.mem.eql(u8, key, "$schema")) {
+            if (val != .string) {
+                try addIssue(arena, &issues, key, "\"$schema\" must be a string (a schema URL), got {s}", .{kindName(val)});
+            }
+            continue :outer;
+        }
         inline for (file_fields) |f| {
             if (std.mem.eql(u8, key, f.name)) {
                 try checkKnownField(arena, &issues, f, val);
@@ -508,6 +517,27 @@ test "validate: never echoes API key values in messages" {
     const out = try formatJson(arena, rep);
     try testing.expect(std.mem.indexOf(u8, out, "sk-do-not-leak-me") == null);
     try testing.expect(std.mem.indexOf(u8, out, "123") == null);
+}
+
+test "validate: $schema key is permitted (string) or flagged (non-string)" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // $schema is editor metadata (`tau init` writes it) — a string value is
+    // accepted alongside normal keys.
+    var tc = try TmpConfig.init(arena, "{ \"$schema\": \"https://example.com/s.json\", \"provider\": \"openai\" }");
+    defer tc.deinit();
+    const rep = try validate(testing.io, arena, tc.path);
+    try testing.expect(rep.ok());
+
+    // A non-string $schema is the only way to misuse it.
+    var tc2 = try TmpConfig.init(arena, "{ \"$schema\": 42 }");
+    defer tc2.deinit();
+    const rep2 = try validate(testing.io, arena, tc2.path);
+    try testing.expect(!rep2.ok());
+    try testing.expectEqualStrings("$schema", rep2.issues[0].key.?);
+    try testing.expect(std.mem.indexOf(u8, rep2.issues[0].message, "must be a string") != null);
 }
 
 test "formatJson: ok report and error report shapes" {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
+const configschema = @import("configschema.zig");
 const jsonmod = @import("json.zig");
 const term = @import("term.zig");
 
@@ -96,6 +97,15 @@ pub fn renderConfig(arena: std.mem.Allocator, det: Detection, p: cfgmod.Provider
         try buf.appendSlice(arena, "//   none detected -- export one of the env vars above, or set \"api_key\" below\n");
     }
     try buf.appendSlice(arena, "//\n{\n");
+
+    // "$schema" wires editors to the published JSON Schema (`tau config
+    // schema`) for autocomplete/validation; the loader accepts and ignores it.
+    try buf.appendSlice(arena,
+        \\  // JSON Schema for editor autocomplete/validation (`tau config schema`).
+        \\  "$schema": "
+    );
+    try buf.appendSlice(arena, configschema.schema_url);
+    try buf.appendSlice(arena, "\",\n\n");
 
     try buf.appendSlice(arena,
         \\  // Active provider. One of:
@@ -301,6 +311,9 @@ test "renderConfig emits a commented JSONC config that never leaks key values" {
     try testing.expect(std.mem.indexOf(u8, body, "//") != null);
     try testing.expect(std.mem.indexOf(u8, body, "OPENAI_API_KEY") != null);
     try testing.expect(std.mem.indexOf(u8, body, "\"provider\": \"openai\"") != null);
+    // "$schema" points editors at the published JSON Schema.
+    const schema_line = try std.fmt.allocPrint(a, "\"$schema\": \"{s}\"", .{configschema.schema_url});
+    try testing.expect(std.mem.indexOf(u8, body, schema_line) != null);
     // The secret value itself must never be written.
     try testing.expect(std.mem.indexOf(u8, body, "sk-secret-value") == null);
 
