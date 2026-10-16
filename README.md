@@ -66,6 +66,23 @@ export PATH="$PWD/zig-out/bin:$PATH"
 
 ### 3. Configure an API key
 
+Optional — scaffold a commented starter config first (detects which provider
+API keys are already exported, picks a matching provider, never copies secret
+values into the file):
+
+```bash
+./zig-out/bin/tau init          # writes ~/.config/tau/config.json
+./zig-out/bin/tau init --stdout # preview without writing
+```
+
+Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
+installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+to override), and finishes with the `tau doctor` health report:
+
+```bash
+./zig-out/bin/tau setup
+```
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
@@ -77,7 +94,7 @@ export OPENAI_API_KEY="sk-..."       # use with --model openai/gpt-4o-mini
 export DEEPSEEK_API_KEY="..."        # use with --model deepseek/deepseek-chat
 ```
 
-Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table and [docs/configuration.md](docs/configuration.md) for the full reference.
+Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table, [docs/providers.md](docs/providers.md) for per-provider credential setup, and [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ### 4. First run
 
@@ -130,6 +147,8 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
+- **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling; `--fix` remediates common issues (missing config, loose permissions, missing completions) behind per-fix confirmation, and `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network
+- **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, and embeds the `doctor` health report as one NDJSON transcript
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -424,7 +443,8 @@ Streaming output:
 
 ### Config File
 
-Optional config at `~/.config/tau/config.json`:
+Optional config at `~/.config/tau/config.json`. `tau init` writes a commented
+starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 
 ```json
 {
@@ -473,14 +493,22 @@ zig build test
 
 Requires Zig 0.16.0 and `curl` on PATH.
 
+### Shell Completions
+
+Tab-completion scripts for Bash (`tau.bash`), Zsh (`_tau`), Fish (`tau.fish`),
+and PowerShell (`tau.ps1`) live in [`completions/`](completions/README.md) with
+per-shell install instructions.
+
 ---
 
 ## 🔧 Troubleshooting
 
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it.
+
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | Empty response with no args | Expected behavior (shows help) | Use `tau --help` or provide a prompt |
-| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var |
+| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var — [docs/providers.md](docs/providers.md) |
 | Timeout (exit 105) | Request too slow | Increase `--timeout-ms` (default: 120000) |
 | Tool not found | Tool name mismatch | Check tool name in tool_calls |
 

@@ -7,13 +7,42 @@ Resolution model: **CLI flags > environment > config file > in-code defaults.**
 The config file is loaded first as the base, then command-line flags override it.
 Each section below lists the exact precedence order used by the code.
 
+> **Tip:** `tau doctor` validates this whole chain end-to-end and prints a JSON
+> report — config file parse + permission bits, resolved provider/model/endpoint,
+> which source supplied the API key (never the key itself), shell completions,
+> curl availability, endpoint reachability, and (with `--deep`) an authenticated
+> probe. Exit code is `0` when no check fails, `1` otherwise; `--offline` skips
+> network checks. `tau doctor --selftest` adds a credential-free end-to-end
+> session against a loopback stub provider — it runs even under `--offline`
+> since it never touches the real network. `tau doctor --fix` remediates the fixable outcomes — scaffold
+> a missing config (or move an unparseable one to `config.json.bak` and
+> re-scaffold), tighten permissions to `0700`/`0600`, install completions —
+> prompting per fix on a TTY; `--yes` applies without prompting for
+> non-interactive use.
+
 ---
 
 ## Config file
 
 Path: `~/.config/tau/config.json` (built from `$HOME`).
 
-The file is **optional** — tau runs fine without it. Behavior on load:
+The file is **optional** — tau runs fine without it. `tau init` scaffolds a
+commented starter: it detects which provider API keys are already in your
+environment, selects a matching `provider`, and lists every provider's env var
+in comments. It never copies secret values into the file, and refuses to
+overwrite an existing config unless `--force` is passed (`--stdout` previews
+without writing, `--provider <name>` picks a provider explicitly).
+
+`tau setup` wraps this into one-shot onboarding: it scaffolds the config the
+same way (keeping an existing file instead of failing), installs shell
+completions for the detected shell, then prints the `tau doctor` health
+report — one NDJSON object per step, exit 0 only when everything is healthy.
+
+The file is **JSONC**: `//` line comments and `/* */` block comments are
+stripped before parsing, so a commented config (like the one `tau init`
+writes) loads cleanly.
+
+Behavior on load:
 
 - Missing file, unreadable file, or unset `HOME` → all defaults are used.
 - Invalid JSON → a warning is printed to stderr and defaults are used; tau does
@@ -33,7 +62,7 @@ The file is **optional** — tau runs fine without it. Behavior on load:
 | `mode` | `"text"` \| `"json"` | `"json"` | `--mode <text\|json>` | Unrecognized values are ignored (stays `json`). |
 | `stream` | bool | `true` | `--stream` / `--no-stream` | SSE token streaming; `--no-stream` for batch. |
 | `thinking` | bool | `false` | `--thinking` | Emit reasoning/thinking chunks. |
-| `debug` | bool | `false` | `--debug` | Perf stats + tool I/O on stderr. |
+| `debug` | bool | `false` | `--debug` | Perf stats + tool I/O on stderr, plus a redacted diagnostic log under `~/.config/tau/debug/`. |
 | `temperature` | float | `0.7` | `--temperature <f>` | Sampling temperature. |
 | `max_tokens` | int | — (uncapped) | `--max-tokens <n>` | Output token cap. |
 | `timeout_ms` | int | `120000` | `--timeout-ms <n>` | HTTP request timeout in milliseconds. |
@@ -86,6 +115,8 @@ provider table (also visible via `tau models`):
 
 No provider currently ships a built-in key — supply one via any of the
 mechanisms below. An unknown provider name is rejected with exit code `80`.
+Per-provider credential setup and auth troubleshooting:
+[providers.md](providers.md).
 
 ---
 
@@ -163,6 +194,7 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 |----------|---------|
 | `TAU_API_KEY` | Fallback API key, used after provider-specific env vars. |
 | `TAU_ENDPOINT` | Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers. |
+| `TAU_DEBUG_LOG` | Overrides the `--debug` diagnostic log destination (default `~/.config/tau/debug/<timestamp>.log`). |
 | `XIAOMI_API_KEY`, `PIZIG_API_KEY` | API keys for the `xiaomi` provider (tried in that order). |
 | `OPENAI_API_KEY` | API key for the `openai` provider. |
 | `DEEPSEEK_API_KEY` | API key for the `deepseek` provider. |
