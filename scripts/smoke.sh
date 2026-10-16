@@ -990,6 +990,46 @@ PYEOF
   fi
 
   "$BIN" --help 2>&1 | grep -q -- "--probe" && ok "--help mentions --probe" 0 0 || ok "--help mentions --probe" 1 0
+
+  # 22. --selftest: credential-free end-to-end run — the check spawns the tau
+  #     binary itself with a scrubbed env (throwaway HOME, stub TAU_API_KEY,
+  #     TAU_ENDPOINT -> 127.0.0.1) and requires the canned reply back. It is
+  #     loopback-only by construction, so it runs under --offline. Without
+  #     the flag the row advertises it instead of running.
+  contains "default run advertises --selftest" "$doc_noprobe_out" '"name":"selftest","status":"skip"'
+  contains "selftest placeholder hint names the flag" "$doc_noprobe_out" 'pass --selftest'
+
+  if command -v curl >/dev/null 2>&1; then
+    capture doc_selftest env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest
+    contains "selftest runs end-to-end under --offline" "$doc_selftest_out" '"name":"selftest","status":"ok"'
+    contains "selftest reports the stub session" "$doc_selftest_out" 'loopback stub provider succeeded'
+
+    # Credential-free guarantee: ambient keys + a dead ambient TAU_ENDPOINT
+    # must not leak into the child — a passing row proves the scrub.
+    capture doc_selftest_iso env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-should-not-leak TAU_ENDPOINT="http://127.0.0.1:1/dead" \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest
+    contains "selftest ignores ambient endpoint and keys" "$doc_selftest_iso_out" '"name":"selftest","status":"ok"'
+    if printf '%s' "$doc_selftest_iso_out" | grep -qF 'sk-should-not-leak'; then
+      ok "selftest never prints ambient key material" 1 0
+    else
+      ok "selftest never prints ambient key material" 0 0
+    fi
+
+    # --json streams the selftest row as a check event like any other check.
+    capture doc_selftest_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest --json
+    contains "selftest streams as a check event" "$doc_selftest_json_out" '"check":{"name":"selftest","status":"ok"'
+    contains "selftest json verdict terminates" "$doc_selftest_json_out" '"done":true'
+  else
+    capture doc_selftest_nocurl env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest
+    contains "selftest skips without curl" "$doc_selftest_nocurl_out" '"name":"selftest","status":"skip"'
+    contains "selftest skip names curl" "$doc_selftest_nocurl_out" 'curl unavailable'
+  fi
+
+  "$BIN" --help 2>&1 | grep -q -- "--selftest" && ok "--help mentions --selftest" 0 0 || ok "--help mentions --selftest" 1 0
 }
 
 # Group: tau init — commented starter config scaffold

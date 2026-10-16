@@ -153,6 +153,7 @@ _tau() {
                         '--offline[skip network checks]' \
                         '--deep[run an authenticated probe (spends ~1 token)]' \
                         '--probe[live-verify connectivity and credentials for every provider]' \
+                        '--selftest[credential-free end-to-end session against a loopback stub]' \
                         '--fix[remediate fixable checks (prompts per fix)]' \
                         '--yes[apply --fix remediations without prompting]' \
                         '--json[stream NDJSON check/fix events + done:true verdict]' \

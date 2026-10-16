@@ -198,6 +198,10 @@ pub const Config = struct {
     /// endpoint reachability plus, when a credential resolves for that
     /// provider, an authenticated probe (spends ~1 token per keyed provider).
     doctor_probe: bool = false,
+    /// `tau doctor --selftest` — spawn tau itself against a loopback stub
+    /// provider with a credential-free environment to verify the installed
+    /// binary works end-to-end.
+    doctor_selftest: bool = false,
 
     // --- Setup (src/setup.zig) ---
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —

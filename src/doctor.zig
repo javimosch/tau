@@ -816,6 +816,211 @@ fn checkProviderAuthProbe(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.All
     };
 }
 
+// ---------------------------------------------------------------------------
+// --selftest end-to-end check
+// ---------------------------------------------------------------------------
+
+/// The canned assistant reply the loopback stub returns; the check asserts
+/// the child's stdout carries this marker end-to-end.
+const selftest_marker = "tau-selftest-ok";
+/// Hard bound on the child run — the loopback stub should answer in <1s.
+const selftest_timeout_ms = 30_000;
+/// Cap on the stub's request drain; the real POST body is ~300 bytes.
+const selftest_req_cap = 64 * 1024;
+/// How many connections the stub serves before giving up (the child's HTTP
+/// layer retries transient failures, so one shot is not enough).
+const selftest_max_serves = 4;
+
+/// Minimal OpenAI-style non-streaming chat completion. `extractString` only
+/// needs a `"content":"<marker>"` pair; `classifyBody` needs no top-level
+/// `error` key.
+const selftest_response_body =
+    "{\"id\":\"selftest\",\"object\":\"chat.completion\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"" ++
+    selftest_marker ++ "\"},\"finish_reason\":\"stop\"}]}";
+
+/// Pull the Content-Length out of a raw request header block (headers are
+/// case-insensitive; missing/unparseable -> 0).
+fn selftestContentLength(headers: []const u8) usize {
+    var it = std.mem.splitSequence(u8, headers, "\r\n");
+    while (it.next()) |line| {
+        const at = std.ascii.indexOfIgnoreCase(line, "content-length:") orelse continue;
+        const v = std.mem.trim(u8, line[at + "content-length:".len ..], " \t");
+        return std.fmt.parseInt(usize, v, 10) catch 0;
+    }
+    return 0;
+}
+
+/// Serve one accepted connection: drain the request (headers + Content-Length
+/// body — leaving request bytes unread risks an RST that discards our reply
+/// before curl reads it), then write the canned completion and return. All
+/// errors are swallowed: the check verdict comes from the child run, the stub
+/// is best-effort plumbing.
+fn selftestServeStream(io: std.Io, stream: std.Io.net.Stream) void {
+    var rbuf: [8 * 1024]u8 = undefined;
+    var sr = stream.reader(io, &rbuf);
+    const r = &sr.interface;
+    var want: ?usize = null;
+    while (true) {
+        const buf = r.buffered();
+        if (want == null) {
+            if (std.mem.indexOf(u8, buf, "\r\n\r\n")) |i|
+                want = i + 4 + selftestContentLength(buf[0..i]);
+        }
+        if (want) |w| {
+            if (buf.len >= @min(w, selftest_req_cap)) break;
+        }
+        if (buf.len >= rbuf.len) break;
+        r.fillMore() catch break;
+    }
+    var wbuf: [512]u8 = undefined;
+    var sw = stream.writer(io, &wbuf);
+    const w = &sw.interface;
+    w.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{selftest_response_body.len}) catch return;
+    w.writeAll(selftest_response_body) catch return;
+    w.flush() catch return;
+}
+
+/// Stub provider loop: accept+serve until `done` is raised or the serve cap is
+/// hit. Runs on a concurrent task while the parent blocks in std.process.run.
+/// Returns the number of connections served (diagnostic detail only).
+fn selftestServe(io: std.Io, server: *std.Io.net.Server, done: *std.atomic.Value(bool)) u32 {
+    var served: u32 = 0;
+    while (served < selftest_max_serves) {
+        if (done.load(.acquire)) break;
+        const stream = server.accept(io) catch break;
+        served += 1;
+        selftestServeStream(io, stream);
+        stream.close(io);
+    }
+    return served;
+}
+
+/// Build the child's environment: clone the real one, strip every credential
+/// source (provider env keys + TAU_API_KEY/TAU_ENDPOINT/TAU_DEBUG_LOG), then
+/// point HOME at a throwaway dir (a real config api_key would outrank the
+/// stub key) and inject the stub credentials.
+fn selftestChildEnv(gpa: std.mem.Allocator, env: *std.process.Environ.Map, home: []const u8, endpoint: []const u8) !std.process.Environ.Map {
+    var m = try env.clone(gpa);
+    errdefer m.deinit();
+    for (cfgmod.providers) |p| {
+        for (p.env_keys) |ek| _ = m.swapRemove(ek);
+    }
+    _ = m.swapRemove("TAU_API_KEY");
+    _ = m.swapRemove("TAU_ENDPOINT");
+    _ = m.swapRemove("TAU_DEBUG_LOG");
+    try m.put("HOME", home);
+    try m.put("TAU_API_KEY", "tau-selftest-stub-key");
+    try m.put("TAU_ENDPOINT", endpoint);
+    return m;
+}
+
+/// Create a throwaway HOME under the system temp dir. The child never writes
+/// into it — it exists only so no real config.json is read.
+fn selftestHome(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) ?[]const u8 {
+    var base = env.get("TMPDIR") orelse env.get("TEMP") orelse env.get("TMP") orelse "/tmp";
+    while (base.len > 1 and base[base.len - 1] == '/') base = base[0 .. base.len - 1];
+    const nonce: u64 = @intCast(@max(0, std.Io.Timestamp.now(io, .real).toNanoseconds()));
+    const home = std.fmt.allocPrint(arena, "{s}/tau-selftest-{d}", .{ base, nonce }) catch return null;
+    std.Io.Dir.cwd().createDirPath(io, home) catch return null;
+    return home;
+}
+
+/// Truncate a captured child stream for a fail message.
+fn selftestExcerpt(arena: std.mem.Allocator, s: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    const cap = @min(trimmed.len, 200);
+    return std.fmt.allocPrint(arena, "{s}{s}", .{ trimmed[0..cap], if (trimmed.len > cap) "..." else "" }) catch "output unavailable";
+}
+
+/// Check (--selftest only): spawn the running tau binary with a scrubbed,
+/// credential-free environment (throwaway HOME, stub TAU_API_KEY) pointed at
+/// a loopback HTTP stub via TAU_ENDPOINT, and require the canned marker to
+/// come back end-to-end. Proves the installed binary can drive a full
+/// non-streaming provider session without real credentials or network.
+fn checkSelftest(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, curl_ok: bool) Check {
+    if (!cfg.doctor_selftest)
+        return .{ .name = "selftest", .status = .skip, .message = "skipped", .hint = "pass --selftest to run a credential-free end-to-end session against a local stub provider" };
+    // Deliberately NOT gated on --offline: the stub is loopback-only, so
+    // `tau doctor --offline --selftest` is a fully hermetic end-to-end check —
+    // exactly what an airgapped/CI install verification needs.
+    if (!curl_ok)
+        return .{ .name = "selftest", .status = .skip, .message = "skipped (curl unavailable)" };
+
+    const exe = std.process.executablePathAlloc(io, arena) catch
+        return .{ .name = "selftest", .status = .fail, .message = "cannot resolve the running executable's path" };
+
+    const home = selftestHome(io, arena, env) orelse
+        return .{ .name = "selftest", .status = .fail, .message = "cannot create a temporary HOME for the child run" };
+    defer std.Io.Dir.deleteDirAbsolute(io, home) catch {};
+
+    var addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var server = addr.listen(io, .{ .reuse_address = true }) catch
+        return .{ .name = "selftest", .status = .fail, .message = "cannot bind the loopback stub provider", .hint = "loopback sockets may be restricted in this environment" };
+    defer server.deinit(io);
+    const endpoint = std.fmt.allocPrint(arena, "http://127.0.0.1:{d}/v1/chat/completions", .{server.socket.address.getPort()}) catch
+        return .{ .name = "selftest", .status = .fail, .message = "out of memory" };
+
+    var done = std.atomic.Value(bool).init(false);
+    var stub = io.concurrent(selftestServe, .{ io, &server, &done }) catch
+        return .{ .name = "selftest", .status = .fail, .message = "cannot start the loopback stub provider" };
+    // Release a possibly-blocked accept() before collecting the task: after
+    // `done` is set, one extra loopback connection unblocks accept so the
+    // serve loop can observe the flag and exit. The kick must target the
+    // BOUND address (server.socket.address carries the resolved ephemeral
+    // port — `addr` still says :0). Runs after process.run on every path
+    // below (the child is finished by then).
+    defer {
+        done.store(true, .release);
+        if (server.socket.address.connect(io, .{ .mode = .stream })) |kick| {
+            kick.close(io);
+        } else |_| {}
+        _ = stub.await(io);
+    }
+
+    var child_env = selftestChildEnv(gpa, env, home, endpoint) catch
+        return .{ .name = "selftest", .status = .fail, .message = "out of memory" };
+    defer child_env.deinit();
+
+    const res = std.process.run(gpa, io, .{
+        .argv = &.{ exe, "--no-tools", "--no-stream", "--timeout-ms", "10000", "selftest ping" },
+        .environ_map = &child_env,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(selftest_timeout_ms), .clock = .awake } },
+    }) catch |err| {
+        return .{
+            .name = "selftest",
+            .status = .fail,
+            .message = std.fmt.allocPrint(arena, "selftest child run failed: {s}", .{@errorName(err)}) catch "selftest child run failed",
+            .hint = "the child timed out or could not be spawned",
+        };
+    };
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+
+    const code: ?u8 = switch (res.term) {
+        .exited => |c| c,
+        else => null,
+    };
+    if (code == null)
+        return .{ .name = "selftest", .status = .fail, .message = "selftest child did not exit cleanly" };
+    if (code.? != 0)
+        return .{
+            .name = "selftest",
+            .status = .fail,
+            .message = std.fmt.allocPrint(arena, "selftest child exited {d}: {s}", .{ code.?, selftestExcerpt(arena, res.stderr) }) catch "selftest child failed",
+            .hint = "the binary could not complete a stubbed session — reinstall or file a bug with tau doctor --report",
+        };
+    if (std.mem.indexOf(u8, res.stdout, selftest_marker) == null)
+        return .{
+            .name = "selftest",
+            .status = .fail,
+            .message = std.fmt.allocPrint(arena, "selftest child exited 0 but the stub reply was lost: {s}", .{selftestExcerpt(arena, res.stdout)}) catch "selftest reply missing",
+            .hint = "provider response parsing may be broken — file a bug",
+        };
+    return .{ .name = "selftest", .status = .ok, .message = "end-to-end session against the loopback stub provider succeeded" };
+}
+
 /// The collected doctor verdict: `ok` mirrors the exit code (all non-skipped
 /// checks ok/warn) and `json` is the serialized report object with no trailing
 /// newline — callers (tau setup) can embed it in a larger envelope.
@@ -871,6 +1076,9 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
             .hint = "pass --probe to live-verify connectivity and credentials for every provider",
         }, cfg);
     }
+    // Last and heaviest: a self-spawned end-to-end session against a loopback
+    // stub (opt-in via --selftest; a skip row otherwise).
+    try addCheck(arena, &checks, checkSelftest(io, gpa, arena, cfg, env, curl_ok), cfg);
     return checks.toOwnedSlice(arena);
 }
 
@@ -1902,4 +2110,112 @@ test "collectChecks: provider_probes placeholder without --probe, per-provider r
     }
     try testing.expectEqual(cfgmod.providers.len, probe_rows);
     try testing.expectEqual(cfgmod.providers.len, auth_rows);
+}
+
+// ── --selftest ──────────────────────────────────────────────────────────────
+
+test "checkSelftest: gates — flag off and missing curl skip" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    const off = checkSelftest(testing.io, testing.allocator, a, .{}, &env, true);
+    try testing.expectEqual(CheckStatus.skip, off.status);
+    try testing.expect(std.mem.indexOf(u8, off.hint.?, "--selftest") != null);
+
+    // --offline does NOT gate (loopback stub is not "the network") — the
+    // flag-off skip fires first, so the gate order is safe to pin here.
+    const offline_no_flag = checkSelftest(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &env, true);
+    try testing.expectEqual(CheckStatus.skip, offline_no_flag.status);
+    try testing.expect(std.mem.indexOf(u8, offline_no_flag.hint.?, "--selftest") != null);
+
+    const nocurl = checkSelftest(testing.io, testing.allocator, a, .{ .doctor_selftest = true }, &env, false);
+    try testing.expectEqual(CheckStatus.skip, nocurl.status);
+    try testing.expect(std.mem.indexOf(u8, nocurl.message, "curl") != null);
+}
+
+test "selftestContentLength: case-insensitive header parse, missing -> 0" {
+    try testing.expectEqual(@as(usize, 42), selftestContentLength("POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 42"));
+    try testing.expectEqual(@as(usize, 7), selftestContentLength("POST /x\r\ncontent-length:7"));
+    try testing.expectEqual(@as(usize, 0), selftestContentLength("POST /x\r\nHost: h"));
+    try testing.expectEqual(@as(usize, 0), selftestContentLength("Content-Length: nope"));
+}
+
+test "selftestChildEnv: scrubs every credential source, injects stub env" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var env = std.process.Environ.Map.init(a);
+    try env.put("HOME", "/real/home");
+    try env.put("PATH", "/usr/bin");
+    try env.put("TAU_API_KEY", "real-tau-key");
+    try env.put("TAU_ENDPOINT", "https://real.example.com");
+    try env.put("TAU_DEBUG_LOG", "/tmp/real.log");
+    try env.put("XIAOMI_API_KEY", "real-xiaomi");
+    try env.put("OPENAI_API_KEY", "real-openai");
+
+    var m = try selftestChildEnv(a, &env, "/tmp/stubhome", "http://127.0.0.1:9/v1/chat/completions");
+    defer m.deinit();
+
+    // Every provider env key in the registry must be gone — no real key can
+    // leak into the selftest child.
+    for (cfgmod.providers) |p| {
+        for (p.env_keys) |ek| try testing.expect(m.get(ek) == null);
+    }
+    try testing.expect(m.get("TAU_DEBUG_LOG") == null);
+    try testing.expectEqualStrings("/tmp/stubhome", m.get("HOME").?);
+    try testing.expectEqualStrings("tau-selftest-stub-key", m.get("TAU_API_KEY").?);
+    try testing.expectEqualStrings("http://127.0.0.1:9/v1/chat/completions", m.get("TAU_ENDPOINT").?);
+    // Non-credential vars pass through.
+    try testing.expectEqualStrings("/usr/bin", m.get("PATH").?);
+}
+
+test "selftestHome: creates a real throwaway dir under the temp base" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    const home = selftestHome(testing.io, a, &env) orelse return error.SkipZigTest;
+    defer std.Io.Dir.deleteDirAbsolute(testing.io, home) catch {};
+    try testing.expect(std.mem.indexOf(u8, home, "tau-selftest-") != null);
+    // Really exists as a directory.
+    var d = try std.Io.Dir.openDirAbsolute(testing.io, home, .{});
+    d.close(testing.io);
+}
+
+test "selftestServe: drains a POST and answers with the canned completion" {
+    var addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(0) };
+    var server = addr.listen(testing.io, .{}) catch return error.SkipZigTest;
+    defer server.deinit(testing.io);
+    var done = std.atomic.Value(bool).init(false);
+    var stub = testing.io.concurrent(selftestServe, .{ testing.io, &server, &done }) catch return error.SkipZigTest;
+
+    const client = server.socket.address.connect(testing.io, .{ .mode = .stream }) catch return error.SkipZigTest;
+    defer client.close(testing.io);
+
+    var cwbuf: [256]u8 = undefined;
+    var cw = client.writer(testing.io, &cwbuf);
+    const req = "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nbody";
+    cw.interface.writeAll(req) catch return error.SkipZigTest;
+    cw.interface.flush() catch return error.SkipZigTest;
+
+    // Read the full canned response (Connection: close + stub close -> EOF).
+    var crbuf: [512]u8 = undefined;
+    var cr = client.reader(testing.io, &crbuf);
+    var resp: std.ArrayList(u8) = .empty;
+    defer resp.deinit(testing.allocator);
+    cr.interface.appendRemainingUnlimited(testing.allocator, &resp) catch return error.SkipZigTest;
+
+    try testing.expect(std.mem.indexOf(u8, resp.items, "HTTP/1.1 200 OK") != null);
+    try testing.expect(std.mem.indexOf(u8, resp.items, selftest_marker) != null);
+
+    done.store(true, .release);
+    if (server.socket.address.connect(testing.io, .{ .mode = .stream })) |kick| {
+        kick.close(testing.io);
+    } else |_| {}
+    const served = stub.await(testing.io);
+    try testing.expect(served >= 1);
 }

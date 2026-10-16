@@ -246,6 +246,7 @@ tau doctor                             # JSON setup report; exit 0 ok/warn, 1 on
 tau doctor --offline                   # Skip network checks (reported as "skip")
 tau doctor --deep                      # Also run an authenticated probe (max_tokens=1)
 tau doctor --probe                     # Live-verify connectivity + credentials for every provider
+tau doctor --selftest                  # Credential-free e2e check: self-spawn against a loopback stub
 tau doctor --provider openai           # Diagnose an override instead of the configured default
 tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
 # → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}

@@ -265,6 +265,7 @@ any of them.
 | `tau models` | List providers + default models (JSON) |
 | `tau doctor --report` | Redacted Markdown diagnostics bundle (build metadata, checks, sanitized config) — paste straight into a bug report |
 | `tau doctor --probe` | Live-verify every provider: per-provider connectivity + credential pass/fail rows (key sources only, never key material) |
+| `tau doctor --selftest` | Credential-free end-to-end check: spawns tau against a loopback stub provider (throwaway HOME, stub key) — verifies the installed binary works without real credentials or network; runs under `--offline` |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |
 | `tau acp status` | Is the ACP daemon running? |

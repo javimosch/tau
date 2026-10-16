@@ -52,6 +52,14 @@ are backward compatible.
   key (reporting its source only) and POSTs a one-token completion when one
   is found. Emits NDJSON check events under `--json`; skipped under
   `--offline`
+- `tau doctor --selftest` — credential-free end-to-end verification that the
+  installed binary actually works: spawns tau itself with a scrubbed
+  environment (throwaway `HOME`, every provider key + `TAU_API_KEY`/
+  `TAU_ENDPOINT`/`TAU_DEBUG_LOG` stripped, stub `TAU_API_KEY` injected) against
+  a built-in loopback HTTP stub, and requires the canned reply to come back
+  end-to-end. Loopback-only, so it runs under `--offline` — `tau doctor
+  --offline --selftest` is a fully hermetic install check. Emits an NDJSON
+  check event under `--json`; skips only when curl is unavailable
 - `tau init` — write a commented starter `~/.config/tau/config.json` seeded
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs

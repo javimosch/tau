@@ -12,7 +12,9 @@ Each section below lists the exact precedence order used by the code.
 > which source supplied the API key (never the key itself), shell completions,
 > curl availability, endpoint reachability, and (with `--deep`) an authenticated
 > probe. Exit code is `0` when no check fails, `1` otherwise; `--offline` skips
-> network checks. `tau doctor --fix` remediates the fixable outcomes — scaffold
+> network checks. `tau doctor --selftest` adds a credential-free end-to-end
+> session against a loopback stub provider — it runs even under `--offline`
+> since it never touches the real network. `tau doctor --fix` remediates the fixable outcomes — scaffold
 > a missing config (or move an unparseable one to `config.json.bak` and
 > re-scaffold), tighten permissions to `0700`/`0600`, install completions —
 > prompting per fix on a TTY; `--yes` applies without prompting for

@@ -178,6 +178,9 @@ const help_text =
     \\      --probe                   Live-verify connectivity + credentials for every
     \\                              provider (per-provider pass/fail rows; spends
     \\                              ~1 token per keyed provider)
+    \\      --selftest                Credential-free end-to-end check: spawn tau
+    \\                              against a loopback stub provider and verify the
+    \\                              canned reply comes back (no real keys/network)
     \\      --provider/--model/--api-key   Diagnose an override instead of the configured default
     \\      --fix                     Propose remediations for fixable checks (missing
     \\                              config, loose permissions, missing completions);
@@ -342,7 +345,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + doctor health summary (NDJSON)." },
-    .{ .a = "tau doctor [--offline|--deep|--probe] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
+    .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
