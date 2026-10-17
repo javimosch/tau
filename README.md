@@ -130,6 +130,7 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
+- **Offline error catalog** — `tau explain <code|type>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md))
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -477,7 +478,7 @@ Requires Zig 0.16.0 and `curl` on PATH.
 
 ## 🔧 Troubleshooting
 
-Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**.
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**, or readable offline via `tau explain <code|type>` (e.g. `tau explain 106`; `--human` for prose, no argument to list all).
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|

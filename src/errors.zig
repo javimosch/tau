@@ -154,6 +154,48 @@ pub fn printOut(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opt
     term.out(j);
 }
 
+/// Resolve a `tau explain` query to a catalog entry. Decimal input is an
+/// exit-code lookup: codes outside the catalog still resolve to the generic
+/// internal_error spec (mirroring the "uncataloged codes inherit
+/// internal_error" rule in docs/errors.md), while 0 is success and never an
+/// error. Anything else is matched case-insensitively against `type_name`
+/// (`tau explain AuthFailed` ≡ `tau explain 106`). Returns null when nothing
+/// matches.
+pub fn findSpec(query: []const u8) ?Spec {
+    const q = std.mem.trim(u8, query, " \t");
+    if (q.len == 0) return null;
+    if (std.fmt.parseInt(u8, q, 10)) |code| {
+        if (code == 0) return null;
+        return specFor(code);
+    } else |_| {}
+    for (specs) |s| {
+        if (std.ascii.eqlIgnoreCase(q, s.type_name)) return s;
+    }
+    return null;
+}
+
+/// Serialize one catalog entry for `tau explain` (no trailing newline — the
+/// caller owns framing, like skills.zig's formatEntryJson):
+/// {"code":N,"type":"T","recoverable":B,"cause":"C","hint":"H","docs":"U"}
+/// Caller owns the returned slice.
+pub fn formatEntryJson(a: std.mem.Allocator, spec: Spec) ![]u8 {
+    const te = try json.escapeAlloc(a, spec.type_name);
+    defer a.free(te);
+    const ce = try json.escapeAlloc(a, spec.cause);
+    defer a.free(ce);
+    const he = try json.escapeAlloc(a, spec.hint);
+    defer a.free(he);
+    const de = try json.escapeAlloc(a, spec.docs);
+    defer a.free(de);
+    return std.fmt.allocPrint(a, "{{\"code\":{d},\"type\":\"{s}\",\"recoverable\":{},\"cause\":\"{s}\",\"hint\":\"{s}\",\"docs\":\"{s}\"}}", .{ spec.code, te, spec.recoverable, ce, he, de });
+}
+
+/// Human-readable `tau explain --human` rendering — drawn from the same Spec
+/// so the prose and JSON forms can never drift apart.
+pub fn formatEntryHuman(a: std.mem.Allocator, spec: Spec) ![]u8 {
+    return std.fmt.allocPrint(a, "exit {d}  {s} (recoverable: {})\n  cause: {s}\n  fix:   {s}\n  docs:  {s}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.cause, spec.hint, spec.docs });
+}
+
 /// OOM path: spec fields and doc_url are comptime-trusted literals (no
 /// escaping needed), formatted into a stack buffer.
 fn emitFallback(write: *const fn ([]const u8) void, spec: Spec) void {
@@ -292,4 +334,40 @@ test "docs/errors.md generated catalog mirrors the registry" {
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "findSpec resolves codes, type tags, and uncataloged codes" {
+    try testing.expectEqual(@as(u8, 106), findSpec("106").?.code);
+    try testing.expectEqualStrings("AuthFailed", findSpec("AuthFailed").?.type_name);
+    try testing.expectEqual(@as(u8, 106), findSpec("authfailed").?.code);
+    try testing.expectEqual(@as(u8, 80), findSpec(" 80 ").?.code);
+    // Uncataloged code inherits the generic internal_error spec, keeping code.
+    const u = findSpec("42").?;
+    try testing.expectEqual(@as(u8, 42), u.code);
+    try testing.expectEqualStrings(internal_error.type_name, u.type_name);
+    // 0 is success — never an error; unknown tags and junk return null.
+    try testing.expect(findSpec("0") == null);
+    try testing.expect(findSpec("bogus") == null);
+    try testing.expect(findSpec("") == null);
+    try testing.expect(findSpec("999") == null);
+}
+
+test "formatEntryJson emits the explain entry shape" {
+    const gpa = testing.allocator;
+    const got = try formatEntryJson(gpa, auth_failed);
+    defer gpa.free(got);
+    try testing.expectEqualStrings(
+        "{\"code\":106,\"type\":\"AuthFailed\",\"recoverable\":false,\"cause\":\"the provider rejected the API key, or no key was found anywhere in the resolution chain\",\"hint\":\"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY\",\"docs\":\"" ++ providers_doc_url ++ "\"}",
+        got,
+    );
+}
+
+test "formatEntryHuman renders cause, hint, and docs from the spec" {
+    const gpa = testing.allocator;
+    const got = try formatEntryHuman(gpa, timeout);
+    defer gpa.free(got);
+    try testing.expectEqualStrings(
+        "exit 105  Timeout (recoverable: false)\n  cause: an HTTP request to the provider endpoint exceeded --timeout-ms\n  fix:   raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)\n  docs:  " ++ doc_url ++ "\n",
+        got,
+    );
 }

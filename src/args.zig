@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, explain, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -144,6 +144,26 @@ pub fn parse(
             if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResult(arena, "unknown guide argument: {s}", .{argv[j]});
         }
         return .{ .action = .guide, .config = gcfg };
+    }
+
+    // `tau explain [<code|type>] [--human]` — offline error-catalog lookup
+    // (the same Spec registry that generates docs/errors.md). Command, not a
+    // prompt: `explain` is always consumed as the subcommand word.
+    if (argv.len > 0 and eq(argv[0], "explain")) {
+        var ecfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--human")) {
+                ecfg.explain_human = true;
+            } else if (a.len > 0 and a[0] != '-') {
+                if (ecfg.explain_arg != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
+                ecfg.explain_arg = a;
+            } else {
+                return errResult(arena, "unknown explain argument: {s}", .{a});
+            }
+        }
+        return .{ .action = .explain, .config = ecfg };
     }
 
     // `tau skills <list|search|load> [args]` — parallel to `tau acp` / `tau fleet`.
@@ -864,6 +884,32 @@ test "parse: models subcommand" {
 
     const p = try parseArgv(a, &.{ "tau", "models" }, .{});
     try std.testing.expectEqual(Action.models, p.action);
+}
+
+test "parse: explain subcommand" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "explain" }, .{});
+    try std.testing.expectEqual(Action.explain, bare.action);
+    try std.testing.expect(bare.config.explain_arg == null);
+    try std.testing.expect(!bare.config.explain_human);
+
+    const code = try parseArgv(a, &.{ "tau", "explain", "106" }, .{});
+    try std.testing.expectEqualStrings("106", code.config.explain_arg.?);
+
+    const tagged = try parseArgv(a, &.{ "tau", "explain", "--human", "AuthFailed" }, .{});
+    try std.testing.expectEqualStrings("AuthFailed", tagged.config.explain_arg.?);
+    try std.testing.expect(tagged.config.explain_human);
+
+    const bad_flag = try parseArgv(a, &.{ "tau", "explain", "--nope" }, .{});
+    try std.testing.expectEqual(Action.err, bad_flag.action);
+    try std.testing.expectEqualStrings("unknown explain argument: --nope", bad_flag.err_msg.?);
+
+    const extra = try parseArgv(a, &.{ "tau", "explain", "80", "106" }, .{});
+    try std.testing.expectEqual(Action.err, extra.action);
+    try std.testing.expectEqualStrings("unexpected extra argument: 106", extra.err_msg.?);
 }
 
 test "parse: skills subcommand validation" {
