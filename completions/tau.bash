@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models)
+            acp|fleet|skills|models|explain)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -117,9 +117,14 @@ _tau_complete() {
             # No additional completions for `models`.
             ;;
 
+        explain)
+            # Exit codes mirror the stable catalog in src/errors.zig.
+            COMPREPLY=($(compgen -W "1 80 82 105 106 110 111 --human" -- "$cur"))
+            ;;
+
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet
+            local top_level="acp models skills fleet explain
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream

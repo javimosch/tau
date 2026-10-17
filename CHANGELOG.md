@@ -39,6 +39,11 @@ are backward compatible.
   the `docs` link — emitted from one shared formatter across main/agent/acp/
   fleet/helpers. Codes and `type` tags are documented as stable in
   docs/troubleshooting.md (#171)
+- `tau explain [<code|type>] [--human]` — offline error-catalog lookup:
+  prints a stable entry's cause, remediation hint, and docs link as JSON
+  (`--human` for prose), or lists the whole catalog with no argument.
+  Sourced from the same `src/errors.zig` registry that generates
+  docs/errors.md (#226)
 
 ### Fixed
 

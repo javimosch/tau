@@ -138,6 +138,12 @@ pub const Config = struct {
     /// Argument to the skills subcommand (e.g. skill name for `load`, query for `search`).
     skills_arg: ?[]const u8 = null,
 
+    // --- Error catalog (`tau explain`) ---
+    /// `tau explain <code|type>` query. Null means list the whole catalog.
+    explain_arg: ?[]const u8 = null,
+    /// `tau explain --human` → prose rendering instead of JSON.
+    explain_human: bool = false,
+
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.
     context_window: u32 = 256_000,

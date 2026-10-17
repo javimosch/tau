@@ -49,6 +49,22 @@ inherit the `internal_error` type and hint while keeping their own `code`.
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope
 and the run continues.
 
+## Reading this catalog offline
+
+`tau explain` renders the same registry from the CLI — no network or
+API key needed:
+
+```sh
+tau explain              # every catalog entry (JSON)
+tau explain 106          # one entry by exit code
+tau explain AuthFailed   # one entry by `type` tag
+tau explain --human 80   # prose instead of JSON
+```
+
+Numeric codes outside the table still resolve to the generic
+`internal_error` entry (code preserved), mirroring the envelope rule
+above; `0` and unrecognized names exit `1` with a `not_found` envelope.
+
 ## Silent exit paths
 
 Not every failure prints an envelope. These paths exit with a bare status
