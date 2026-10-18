@@ -137,6 +137,14 @@ are backward compatible.
 - `ci` workflow — unit tests + offline smoke groups run on a native
   Linux/macOS/Windows runner matrix for every released platform on each PR,
   push to `master`, and `v*` tag (#193)
+- Clean-environment first-run e2e: a `first-run` job in the `ci` workflow
+  builds tau on every released platform, stages it as a local release tree,
+  installs it through `install.sh` (POSIX) / `install.ps1` (Windows) against a
+  `file://` `TAU_BASE_URL`, then drives `tau setup --yes` and
+  `tau doctor --selftest` in a scratch HOME with every credential scrubbed —
+  `scripts/e2e-first-run.sh` / `scripts/e2e-first-run.ps1`. The release
+  workflow's install-smoke jobs assert the shipped artifact self-verifies
+  the same way (#233)
 
 ### Fixed
 

@@ -93,3 +93,81 @@ jobs:
       - name: Offline feature smoke
         shell: bash
         run: ./scripts/smoke-features.sh --offline
+
+  first-run:
+    # Clean-environment first-run e2e: builds tau, stages it as a local
+    # release tree (srv/latest/download/<asset> + SHA256SUMS.txt — the exact
+    # layout the installers fetch), installs it through the shipped installer
+    # (install.sh on POSIX, install.ps1 on Windows) against a file://
+    # TAU_BASE_URL so nothing touches the network, then drives the documented
+    # first-run path — `tau setup --yes` and `tau doctor --selftest` — in a
+    # scratch HOME with every credential source scrubbed. Locks the
+    # install → onboard → self-verify chain for every released platform.
+    name: first-run (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One leg per release artifact, same zig archives as the test job.
+          - { os: ubuntu-latest,    label: linux-x86_64,   zig_pkg: zig-x86_64-linux-0.16.0,   ext: tar.xz, asset: tau-linux-x86_64.tar.gz }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,  zig_pkg: zig-aarch64-linux-0.16.0,  ext: tar.xz, asset: tau-linux-aarch64.tar.gz }
+          - { os: macos-15-intel,   label: macos-x86_64,   zig_pkg: zig-x86_64-macos-0.16.0,   ext: tar.xz, asset: tau-macos-x86_64.tar.gz }
+          - { os: macos-latest,     label: macos-aarch64,  zig_pkg: zig-aarch64-macos-0.16.0,  ext: tar.xz, asset: tau-macos-aarch64.tar.gz }
+          - { os: windows-latest,   label: windows-x86_64, zig_pkg: zig-x86_64-windows-0.16.0, ext: zip,    asset: tau-windows-x86_64.zip }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}" -o "$RUNNER_TEMP/zig.${{ matrix.ext }}"
+          mkdir -p "$HOME/zig"
+          tar -xf "$RUNNER_TEMP/zig.${{ matrix.ext }}" -C "$HOME/zig" --strip-components=1
+          "$HOME/zig/zig" version
+
+      - name: Install Zig 0.16.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}"
+          curl.exe -fsSL $url -o "$env:RUNNER_TEMP\zig.zip"
+          Expand-Archive "$env:RUNNER_TEMP\zig.zip" "$env:USERPROFILE"
+          Move-Item "$env:USERPROFILE\${{ matrix.zig_pkg }}" "$env:USERPROFILE\zig"
+          & "$env:USERPROFILE\zig\zig.exe" version
+
+      - name: Build
+        shell: bash
+        run: '"$HOME/zig/zig" build'
+
+      - name: Install via install.sh and run the first-run path
+        # Stage the built binary exactly where install.sh looks for a latest
+        # release, point TAU_BASE_URL at the staged tree, then run the clean
+        # HOME e2e driver on the INSTALLED binary — not the build output.
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p srv/latest/download
+          tar -czf "srv/latest/download/${{ matrix.asset }}" -C zig-out/bin tau
+          (cd srv/latest/download && { sha256sum "${{ matrix.asset }}" 2>/dev/null || shasum -a 256 "${{ matrix.asset }}"; } > SHA256SUMS.txt)
+          TAU_BASE_URL="file://$PWD/srv" sh ./install.sh --dir "$RUNNER_TEMP/tau-bin"
+          "$RUNNER_TEMP/tau-bin/tau" --version
+          ./scripts/e2e-first-run.sh "$RUNNER_TEMP/tau-bin/tau"
+
+      - name: Install via install.ps1 and run the first-run path (Windows)
+        # Same staging contract as the POSIX legs; the staged tree is reached
+        # via a file:// TAU_BASE_URL. SHA256SUMS.txt is written in the exact
+        # '<hash>  <name>' format the installer matches on.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force srv/latest/download | Out-Null
+          Compress-Archive zig-out/bin/tau.exe "srv/latest/download/${{ matrix.asset }}"
+          $h = (Get-FileHash -Algorithm SHA256 "srv/latest/download/${{ matrix.asset }}").Hash.ToLower()
+          Set-Content -Path srv/latest/download/SHA256SUMS.txt -Value "$h  ${{ matrix.asset }}" -Encoding ASCII
+          $env:TAU_BASE_URL = "file:///" + (Resolve-Path srv).Path.Replace('\','/')
+          ./install.ps1 -Dir "$env:RUNNER_TEMP/tau-bin"
+          & "$env:RUNNER_TEMP/tau-bin/tau.exe" --version
+          & ./scripts/e2e-first-run.ps1 -Tau "$env:RUNNER_TEMP/tau-bin\tau.exe"

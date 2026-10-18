@@ -78,6 +78,7 @@ ALL_TEST_GROUPS=(
   "debug:test_group_debug"
   "version:test_group_version"
   "release:test_group_release"
+  "first-run:test_group_first_run"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -2719,6 +2720,70 @@ test_group_release() {
     rm -rf "$we2e"
   else
     note "release: skipping install.ps1 e2e (pwsh or python3 unavailable)"
+  fi
+}
+
+# Group: first-run e2e — clean-environment install → setup → selftest contract.
+# Pins scripts/e2e-first-run.{sh,ps1} and the ci.yml first-run job wiring, then
+# runs the POSIX driver end-to-end against $BIN in a scratch HOME (offline:
+# the selftest stub is loopback-only, --offline skips live endpoint checks).
+test_group_first_run() {
+  local out rc fh
+  local shdrv="$ROOT/scripts/e2e-first-run.sh"
+  local psdrv="$ROOT/scripts/e2e-first-run.ps1"
+  local ci="$ROOT/.github/workflows/ci.yml"
+  local rwf="$ROOT/.github/workflows/release.yml"
+
+  note "first-run: e2e drivers + CI wiring"
+
+  # ── POSIX driver surface ──
+  [ -f "$shdrv" ];  ok "e2e-first-run.sh exists" "$?" 0
+  [ -x "$shdrv" ];  ok "e2e-first-run.sh is executable" "$?" 0
+  bash -n "$shdrv" 2>/dev/null; ok "e2e-first-run.sh passes bash -n" "$?" 0
+  contains "e2e driver runs unattended setup" "$(cat "$shdrv")" "setup --yes --offline"
+  contains "e2e driver runs selftest" "$(cat "$shdrv")" "doctor --offline --selftest"
+  contains "e2e driver scrubs provider keys" "$(cat "$shdrv")" "XIAOMI_API_KEY"
+  contains "e2e driver uses a scratch HOME" "$(cat "$shdrv")" 'HOME="$FH"'
+  contains "e2e driver asserts the selftest check row" "$(cat "$shdrv")" '"name":"selftest","status":"ok"'
+
+  # ── PowerShell driver surface ──
+  [ -f "$psdrv" ]; ok "e2e-first-run.ps1 exists" "$?" 0
+  contains "ps1 driver runs unattended setup" "$(cat "$psdrv")" "setup --yes --offline"
+  contains "ps1 driver runs selftest" "$(cat "$psdrv")" "doctor --offline --selftest"
+  contains "ps1 driver asserts the selftest check row" "$(cat "$psdrv")" '"name":"selftest","status":"ok"'
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -LiteralPath '$psdrv' -Raw)) | Out-Null" 2>/dev/null
+    ok "e2e-first-run.ps1 parses under pwsh" "$?" 0
+  else
+    note "first-run: skipping ps1 parse check (pwsh unavailable)"
+  fi
+
+  # ── ci.yml wiring (drift guards for the first-run job) ──
+  [ -f "$ci" ]; ok "ci.yml exists" "$?" 0
+  contains "ci has a first-run job" "$(cat "$ci")" "first-run:"
+  contains "ci POSIX leg stages latest/download" "$(cat "$ci")" "srv/latest/download"
+  contains "ci POSIX leg installs via install.sh" "$(cat "$ci")" "sh ./install.sh --dir"
+  contains "ci POSIX leg uses file:// TAU_BASE_URL" "$(cat "$ci")" 'TAU_BASE_URL="file://'
+  contains "ci POSIX leg runs the e2e driver" "$(cat "$ci")" "e2e-first-run.sh"
+  contains "ci windows leg installs via install.ps1" "$(cat "$ci")" "./install.ps1 -Dir"
+  contains "ci windows leg stages via file://" "$(cat "$ci")" "file:///"
+  contains "ci windows leg runs the ps1 driver" "$(cat "$ci")" "e2e-first-run.ps1"
+
+  # ── release workflow self-verifies shipped artifacts too ──
+  [ -f "$rwf" ]; ok "release.yml exists" "$?" 0
+  contains "release smoke asserts the selftest check row" "$(cat "$rwf")" '"name":"selftest","status":"ok"'
+
+  # ── end-to-end: run the POSIX driver against $BIN ──
+  if [ -x "$BIN" ]; then
+    fh="$(mktemp -d)"
+    out=$("$shdrv" "$BIN" "$fh/home" 2>&1); rc=$?
+    ok "e2e-first-run.sh exit" "$rc" 0
+    contains "e2e-first-run reports PASS" "$out" "e2e-first-run: PASS"
+    contains "e2e scaffolded config via setup --yes" "$out" "setup --yes --offline ok"
+    contains "e2e keyless selftest reported ok" "$out" "credential-free doctor --selftest reports ok"
+    rm -rf "$fh"
+  else
+    skip_test "e2e-first-run end-to-end" "no built tau binary at $BIN"
   fi
 }
 

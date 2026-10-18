@@ -176,6 +176,19 @@ jobs:
           tau --help > /dev/null
           tau --help | grep 'Usage:'
 
+      - name: First-run selftest (credential-free)
+        # The shipped artifact must self-verify end-to-end: doctor --selftest
+        # runs a full stubbed session with no keys. The verdict exits non-zero
+        # in a keyless runner (api_key fails honestly), so assert the selftest
+        # check row itself, not the exit code.
+        shell: bash
+        run: |
+          fh="$RUNNER_TEMP/first-run-home"; mkdir -p "$fh"
+          env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY \
+            -u OPENCODE_API_KEY -u TAU_API_KEY \
+            HOME="$fh" tau doctor --offline --selftest > "$fh/doctor.json" || true
+          grep -q '"name":"selftest","status":"ok"' "$fh/doctor.json"
+
   smoke-windows:
     # Installs the Windows zip end-to-end through install.ps1 on a native
     # Windows runner and verifies the binary runs. Same staging trick as the
@@ -216,6 +229,19 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or "$ver" -notmatch '^tau \d+\.\d+\.\d+$') { throw "unexpected tau --version output: $ver" }
           $help = & "$env:RUNNER_TEMP/tau-bin/tau.exe" --help
           if ($LASTEXITCODE -ne 0 -or "$help" -notmatch 'Usage:') { throw "unexpected tau --help output" }
+
+      - name: First-run selftest (credential-free)
+        # Same contract as the POSIX smoke leg: the shipped artifact must
+        # self-verify end-to-end; assert the selftest check row, not the
+        # keyless verdict's exit code.
+        shell: pwsh
+        run: |
+          $fh = "$env:RUNNER_TEMP\first-run-home"
+          New-Item -ItemType Directory -Force $fh | Out-Null
+          $env:HOME = $fh
+          foreach ($k in 'XIAOMI_API_KEY','PIZIG_API_KEY','OPENAI_API_KEY','DEEPSEEK_API_KEY','OPENCODE_API_KEY','TAU_API_KEY') { Remove-Item "env:$k" -ErrorAction SilentlyContinue }
+          & "$env:RUNNER_TEMP/tau-bin/tau.exe" doctor --offline --selftest > "$fh\doctor.json"
+          if (-not (Select-String -Path "$fh\doctor.json" -Pattern '"name":"selftest","status":"ok"' -SimpleMatch -Quiet)) { throw 'keyless selftest did not report ok' }
 
   smoke-action:
     # Exercises the repo-root action.yml the way adopters consume it —

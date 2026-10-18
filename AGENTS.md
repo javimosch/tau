@@ -384,7 +384,16 @@ The `ci` GitHub Actions workflow runs `zig build test` + `scripts/smoke.sh` +
 `scripts/smoke-features.sh --offline` on native runners for every released
 platform (ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest,
 windows-latest) on PRs, pushes to master, and v* tags — so platform
-regressions are caught before a release is cut.
+regressions are caught before a release is cut. Its `first-run` job adds a
+clean-environment e2e per platform: the built binary is staged as a local
+release tree, installed through `install.sh` (POSIX) / `install.ps1`
+(Windows) via `TAU_BASE_URL=file://…`, then `scripts/e2e-first-run.{sh,ps1}`
+drives `tau setup --yes` + `tau doctor --selftest` in a scratch HOME with all
+credentials scrubbed. The same driver runs standalone:
+
+```bash
+./scripts/e2e-first-run.sh ./zig-out/bin/tau   # local first-run e2e (offline)
+```
 
 #### Zig 0.16 Gotchas
 
