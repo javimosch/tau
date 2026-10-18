@@ -77,6 +77,7 @@ ALL_TEST_GROUPS=(
   "completions:test_group_completions"
   "debug:test_group_debug"
   "version:test_group_version"
+  "release:test_group_release"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -2250,6 +2251,466 @@ test_group_completions() {
       ok "$f missing words:$missing" 1 0
     fi
   done
+}
+
+# Group: release surface — install.sh installer + release workflow drift guards.
+# Fully offline: uses --dry-run and TAU_OS/TAU_ARCH overrides, never downloads.
+test_group_release() {
+  local out rc
+  local inst="$ROOT/install.sh"
+  local wf="$ROOT/.github/workflows/release.yml"
+
+  note "release: install.sh + workflow surface"
+
+  # ── install.sh basics ──
+  [ -f "$inst" ];  ok "install.sh exists" "$?" 0
+  [ -x "$inst" ];  ok "install.sh is executable" "$?" 0
+  sh -n "$inst" 2>/dev/null;   ok "install.sh passes sh -n syntax check" "$?" 0
+  bash -n "$inst" 2>/dev/null; ok "install.sh passes bash -n syntax check" "$?" 0
+
+  out=$("$inst" --help 2>&1); rc=$?
+  ok "install.sh --help exit" "$rc" 0
+  contains "install.sh --help shows usage" "$out" "--version"
+
+  # ── platform → asset name mapping (dry-run, no network) ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1); rc=$?
+  ok "dry-run linux/x86_64 exit" "$rc" 0
+  contains "dry-run linux/x86_64 asset" "$out" "tau-linux-x86_64.tar.gz"
+  contains "dry-run default hits latest" "$out" "releases/latest/download/"
+
+  out=$(TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/arm64 → macos-aarch64" "$out" "tau-macos-aarch64.tar.gz"
+
+  out=$(TAU_OS=darwin TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/x86_64 → macos-x86_64" "$out" "tau-macos-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=aarch64 "$inst" --dry-run 2>&1)
+  contains "dry-run linux/aarch64 asset" "$out" "tau-linux-aarch64.tar.gz"
+
+  # ── version pinning ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version 1.2.3 2>&1)
+  contains "dry-run --version pins tag URL" "$out" "releases/download/v1.2.3/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version v1.2.3 2>&1)
+  contains "dry-run --version strips leading v" "$out" "releases/download/v1.2.3/"
+
+  # ── TAU_BASE_URL override (the release workflow's smoke job relies on it) ──
+  out=$(TAU_BASE_URL=http://127.0.0.1:18923 TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "TAU_BASE_URL overrides download base" "$out" "http://127.0.0.1:18923/latest/download/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_BASE_URL=file:///tmp/staged TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run --version 2.0.0 2>&1)
+  contains "TAU_BASE_URL composes with --version" "$out" "file:///tmp/staged/download/v2.0.0/tau-macos-aarch64.tar.gz"
+
+  # ── error paths ──
+  TAU_OS=plan9 TAU_ARCH=x "$inst" --dry-run >/dev/null 2>&1
+  ok "dry-run rejects unsupported OS" "$?" 1
+
+  "$inst" --bogus-flag >/dev/null 2>&1
+  ok "install.sh rejects unknown flag" "$?" 1
+
+  TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version notaversion >/dev/null 2>&1
+  ok "install.sh rejects malformed --version" "$?" 1
+
+  # ── install.ps1 basics (Windows installer; needs pwsh to exercise) ──
+  local ps1="$ROOT/install.ps1"
+  [ -f "$ps1" ]; ok "install.ps1 exists" "$?" 0
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -LiteralPath '$ps1' -Raw)) | Out-Null" 2>/dev/null
+    ok "install.ps1 parses under pwsh" "$?" 0
+
+    out=$(pwsh -NoProfile -File "$ps1" --help 2>&1); rc=$?
+    ok "install.ps1 --help exit" "$rc" 0
+    contains "install.ps1 --help shows usage" "$out" "-Version"
+
+    out=$(pwsh -NoProfile -File "$ps1" --dry-run 2>&1)
+    contains "install.ps1 dry-run targets the windows zip" "$out" "tau-windows-x86_64.zip"
+    contains "install.ps1 dry-run default hits latest" "$out" "releases/latest/download/"
+
+    out=$(pwsh -NoProfile -File "$ps1" --dry-run --version 1.2.3 2>&1)
+    contains "install.ps1 dry-run --version pins tag URL" "$out" "releases/download/v1.2.3/tau-windows-x86_64.zip"
+
+    out=$(pwsh -NoProfile -File "$ps1" --dry-run --version=v1.2.3 2>&1)
+    contains "install.ps1 dry-run --version= strips leading v" "$out" "releases/download/v1.2.3/"
+
+    out=$(TAU_BASE_URL=file:///tmp/staged pwsh -NoProfile -File "$ps1" -DryRun -Version 2.0.0 2>&1)
+    contains "install.ps1 TAU_BASE_URL composes with -Version" "$out" "file:///tmp/staged/download/v2.0.0/tau-windows-x86_64.zip"
+
+    pwsh -NoProfile -File "$ps1" --bogus-flag >/dev/null 2>&1
+    ok "install.ps1 rejects unknown flag" "$?" 1
+
+    pwsh -NoProfile -File "$ps1" --dry-run --version notaversion >/dev/null 2>&1
+    ok "install.ps1 rejects malformed --version" "$?" 1
+
+    TAU_ARCH=arm64 pwsh -NoProfile -File "$ps1" --dry-run >/dev/null 2>&1
+    ok "install.ps1 rejects non-x64 arch" "$?" 1
+  else
+    note "release: skipping install.ps1 checks (pwsh unavailable)"
+  fi
+
+  # ── workflow drift guards ──
+  [ -f "$wf" ]; ok "release workflow exists" "$?" 0
+  if [ -f "$wf" ]; then
+    contains "workflow triggers on v* tags" "$(cat "$wf")" 'tags:'
+    contains "workflow builds linux-x86_64" "$(cat "$wf")" "linux-x86_64"
+    contains "workflow builds linux-aarch64" "$(cat "$wf")" "linux-aarch64"
+    contains "workflow builds macos-x86_64" "$(cat "$wf")" "macos-x86_64"
+    contains "workflow builds macos-aarch64" "$(cat "$wf")" "macos-aarch64"
+    contains "workflow pins zig 0.16.0" "$(cat "$wf")" "0.16.0"
+    contains "workflow guards tag vs version.zig" "$(cat "$wf")" "version.zig"
+    contains "workflow publishes checksums" "$(cat "$wf")" "SHA256SUMS"
+
+    # ── smoke job drift guards ──
+    contains "workflow has a smoke job" "$(cat "$wf")" "  smoke:"
+    contains "smoke job needs build" "$(cat "$wf")" "needs: build"
+    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-windows, smoke-action]"
+    contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
+    contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
+    contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
+    contains "smoke covers macos-aarch64" "$(cat "$wf")" "artifact: macos-aarch64"
+    contains "smoke installs via install.sh" "$(cat "$wf")" "install.sh --dir"
+    contains "smoke redirects install base URL" "$(cat "$wf")" "TAU_BASE_URL"
+    contains "smoke verifies --version" "$(cat "$wf")" "tau --version"
+    contains "smoke verifies --help" "$(cat "$wf")" "tau --help"
+
+    # ── windows target + smoke-windows job drift guards (task #182) ──
+    contains "workflow builds windows-x86_64" "$(cat "$wf")" "x86_64-windows-gnu"
+    contains "workflow packages tau.exe as zip" "$(cat "$wf")" "zig-out/bin/tau.exe"
+    contains "workflow checksums cover zips" "$(cat "$wf")" "sha256sum *.tar.gz *.zip"
+    contains "release job publishes zips" "$(cat "$wf")" "dist/*.zip"
+    contains "release notes mention install.ps1" "$(cat "$wf")" "install.ps1 | iex"
+    contains "workflow has a smoke-windows job" "$(cat "$wf")" "  smoke-windows:"
+    contains "smoke-windows runs on windows-latest" "$(cat "$wf")" "runs-on: windows-latest"
+    contains "smoke-windows installs via install.ps1" "$(cat "$wf")" "install.ps1 -Dir"
+    contains "smoke-windows stages via file://" "$(cat "$wf")" "file:///"
+
+    # ── winget job drift guards (task #182) ──
+    contains "workflow has a winget job" "$(cat "$wf")" "  winget:"
+    contains "winget job runs after release" "$(cat "$wf")" "needs: release"
+    contains "winget job runs the manifest generator" "$(cat "$wf")" "generate-winget-manifest.sh"
+    contains "winget job uploads the manifest artifact" "$(cat "$wf")" "winget-manifest-"
+    contains "winget job gates submission on a token" "$(cat "$wf")" "WINGET_PKGS_TOKEN"
+    contains "winget job targets winget-pkgs" "$(cat "$wf")" "wingetcreate submit"
+
+    # ── scoop job drift guards (task #182) ──
+    contains "workflow has a scoop job" "$(cat "$wf")" "  scoop:"
+    contains "scoop job runs the manifest generator" "$(cat "$wf")" "generate-scoop-manifest.sh"
+    contains "scoop job gates publish on a token" "$(cat "$wf")" "SCOOP_BUCKET_TOKEN"
+    contains "scoop job publishes to the bucket repo" "$(cat "$wf")" "javimosch/scoop-bucket"
+    contains "scoop job writes bucket/tau.json" "$(cat "$wf")" "bucket/tau.json"
+
+    # ── smoke-action job drift guards (exercises action.yml via uses: ./) ──
+    contains "workflow has a smoke-action job" "$(cat "$wf")" "  smoke-action:"
+    contains "smoke-action needs build" "$(cat "$wf")" "needs: build"
+    contains "smoke-action uses the local action" "$(cat "$wf")" "uses: ./"
+    contains "smoke-action passes base-url" "$(cat "$wf")" "base-url: http://127.0.0.1:"
+    contains "smoke-action checks outputs" "$(cat "$wf")" "steps.setup.outputs.tau-path"
+
+    # ── checksum chain drift guards (task #161) ──
+    contains "build emits per-asset checksums" "$(cat "$wf")" ".tar.gz.sha256"
+    contains "smoke verifies artifact checksum" "$(cat "$wf")" "Verify artifact checksum"
+    contains "smoke checks tarball against .sha256" "$(cat "$wf")" 'sha256sum -c "tau-'
+    contains "release self-verifies SHA256SUMS.txt" "$(cat "$wf")" "sha256sum -c SHA256SUMS.txt"
+
+    # ── homebrew tap job drift guards (task #175) ──
+    contains "workflow has a homebrew job" "$(cat "$wf")" "  homebrew:"
+    contains "homebrew job runs after release" "$(cat "$wf")" "needs: release"
+    contains "homebrew job gates on tags" "$(cat "$wf")" "github.ref_type == 'tag'"
+    contains "homebrew job runs the formula generator" "$(cat "$wf")" "generate-homebrew-formula.sh"
+    contains "homebrew job pushes to the tap repo" "$(cat "$wf")" "javimosch/homebrew-tap"
+    contains "homebrew job writes Formula/tau.rb" "$(cat "$wf")" "Formula/tau.rb"
+    contains "homebrew job uses the tap token secret" "$(cat "$wf")" "HOMEBREW_TAP_TOKEN"
+    contains "homebrew job skips pre-release tags" "$(cat "$wf")" 'is a pre-release'
+    contains "release notes mention brew install" "$(cat "$wf")" "brew install javimosch/tap/tau"
+  fi
+
+  # ── Homebrew formula generator ──
+  local gen="$ROOT/scripts/generate-homebrew-formula.sh"
+  [ -f "$gen" ];  ok "formula generator exists" "$?" 0
+  [ -x "$gen" ];  ok "formula generator is executable" "$?" 0
+  sh -n "$gen" 2>/dev/null;   ok "formula generator passes sh -n syntax check" "$?" 0
+  bash -n "$gen" 2>/dev/null; ok "formula generator passes bash -n syntax check" "$?" 0
+
+  out=$("$gen" --help 2>&1); rc=$?
+  ok "formula generator --help exit" "$rc" 0
+  contains "formula generator --help shows usage" "$out" "--version"
+
+  local fdir
+  fdir="$(mktemp -d)"
+  printf '%064d  %s\n' 11 tau-macos-aarch64.tar.gz  > "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 22 tau-macos-x86_64.tar.gz  >> "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 33 tau-linux-x86_64.tar.gz  >> "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 44 tau-linux-aarch64.tar.gz >> "$fdir/SHA256SUMS.txt"
+
+  out=$("$gen" --version 1.2.3 --sums "$fdir/SHA256SUMS.txt" 2>&1); rc=$?
+  ok "formula generator renders" "$rc" 0
+  contains "formula class is Tau" "$out" "class Tau < Formula"
+  contains "formula carries the version" "$out" 'version "1.2.3"'
+  contains "formula is MIT licensed" "$out" 'license "MIT"'
+  contains "formula has macos arm block" "$out" "on_arm do"
+  contains "formula has macos intel block" "$out" "on_intel do"
+  contains "formula has linux block" "$out" "on_linux do"
+  contains "formula macos-arm url" "$out" "releases/download/v1.2.3/tau-macos-aarch64.tar.gz"
+  contains "formula macos-intel url" "$out" "releases/download/v1.2.3/tau-macos-x86_64.tar.gz"
+  contains "formula linux-x86_64 url" "$out" "releases/download/v1.2.3/tau-linux-x86_64.tar.gz"
+  contains "formula linux-aarch64 url" "$out" "releases/download/v1.2.3/tau-linux-aarch64.tar.gz"
+  contains "formula macos-arm sha" "$out" 'sha256 "0000000000000000000000000000000000000000000000000000000000000011"'
+  contains "formula linux-aarch64 sha" "$out" 'sha256 "0000000000000000000000000000000000000000000000000000000000000044"'
+  contains "formula installs the tau binary" "$out" 'bin.install "tau"'
+  contains "formula test runs --version" "$out" 'tau --version'
+
+  out=$("$gen" --version v2.0.0 --sums "$fdir/SHA256SUMS.txt" 2>&1)
+  contains "leading v is stripped from version" "$out" 'version "2.0.0"'
+
+  # fail-closed paths: no blank checksums, no malformed versions
+  "$gen" --version 1.0.0 --sums "$fdir/missing.txt" >/dev/null 2>&1
+  ok "generator rejects missing manifest" "$?" 1
+  printf 'deadbeef  tau-macos-aarch64.tar.gz\n' > "$fdir/partial.txt"
+  "$gen" --version 1.0.0 --sums "$fdir/partial.txt" >/dev/null 2>&1
+  ok "generator rejects manifest missing assets" "$?" 1
+  "$gen" --version notaversion --sums "$fdir/SHA256SUMS.txt" >/dev/null 2>&1
+  ok "generator rejects malformed version" "$?" 1
+  "$gen" --bogus >/dev/null 2>&1
+  ok "generator rejects unknown flag" "$?" 1
+  rm -rf "$fdir"
+
+  # ── winget manifest generator ──
+  local wgen="$ROOT/scripts/generate-winget-manifest.sh"
+  [ -f "$wgen" ];  ok "winget generator exists" "$?" 0
+  [ -x "$wgen" ];  ok "winget generator is executable" "$?" 0
+  sh -n "$wgen" 2>/dev/null;   ok "winget generator passes sh -n syntax check" "$?" 0
+  bash -n "$wgen" 2>/dev/null; ok "winget generator passes bash -n syntax check" "$?" 0
+
+  out=$("$wgen" --help 2>&1); rc=$?
+  ok "winget generator --help exit" "$rc" 0
+  contains "winget generator --help shows usage" "$out" "--output-dir"
+
+  local wdir
+  wdir="$(mktemp -d)"
+  printf '%064d  %s\n' 55 tau-windows-x86_64.zip > "$wdir/SHA256SUMS.txt"
+
+  "$wgen" --version 1.2.3 --sums "$wdir/SHA256SUMS.txt" --output-dir "$wdir/out" >/dev/null 2>&1; rc=$?
+  ok "winget generator renders" "$rc" 0
+  [ -f "$wdir/out/javimosch.tau.yaml" ];              ok "winget version manifest written" "$?" 0
+  [ -f "$wdir/out/javimosch.tau.installer.yaml" ];    ok "winget installer manifest written" "$?" 0
+  [ -f "$wdir/out/javimosch.tau.locale.en-US.yaml" ]; ok "winget locale manifest written" "$?" 0
+  contains "winget version file carries version" "$(cat "$wdir/out/javimosch.tau.yaml")" "PackageVersion: 1.2.3"
+  contains "winget installer is a zip" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" "InstallerType: zip"
+  contains "winget installer nests a portable exe" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" "RelativeFilePath: tau.exe"
+  contains "winget installer url" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" "releases/download/v1.2.3/tau-windows-x86_64.zip"
+  contains "winget installer sha" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" 'InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000055'
+  contains "winget locale file identifies package" "$(cat "$wdir/out/javimosch.tau.locale.en-US.yaml")" "PackageIdentifier: javimosch.tau"
+  if python3 -c 'import yaml' 2>/dev/null; then
+    python3 -c 'import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' "$wdir/out/"*.yaml 2>/dev/null
+    ok "winget manifests parse as YAML" "$?" 0
+  else
+    note "release: skipping winget YAML parse (PyYAML unavailable)"
+  fi
+
+  "$wgen" --version 1.0.0 --sums "$wdir/missing.txt" --output-dir "$wdir/o2" >/dev/null 2>&1
+  ok "winget generator rejects missing manifest" "$?" 1
+  printf 'deadbeef  tau-macos-aarch64.tar.gz\n' > "$wdir/partial.txt"
+  "$wgen" --version 1.0.0 --sums "$wdir/partial.txt" --output-dir "$wdir/o3" >/dev/null 2>&1
+  ok "winget generator rejects manifest missing the zip" "$?" 1
+  "$wgen" --version notaversion --sums "$wdir/SHA256SUMS.txt" --output-dir "$wdir/o4" >/dev/null 2>&1
+  ok "winget generator rejects malformed version" "$?" 1
+  "$wgen" --bogus >/dev/null 2>&1
+  ok "winget generator rejects unknown flag" "$?" 1
+  rm -rf "$wdir"
+
+  # ── Scoop manifest generator ──
+  local sgen="$ROOT/scripts/generate-scoop-manifest.sh"
+  [ -f "$sgen" ];  ok "scoop generator exists" "$?" 0
+  [ -x "$sgen" ];  ok "scoop generator is executable" "$?" 0
+  sh -n "$sgen" 2>/dev/null;   ok "scoop generator passes sh -n syntax check" "$?" 0
+  bash -n "$sgen" 2>/dev/null; ok "scoop generator passes bash -n syntax check" "$?" 0
+
+  out=$("$sgen" --help 2>&1); rc=$?
+  ok "scoop generator --help exit" "$rc" 0
+  contains "scoop generator --help shows usage" "$out" "--sums"
+
+  local sdir
+  sdir="$(mktemp -d)"
+  printf '%064d  %s\n' 77 tau-windows-x86_64.zip > "$sdir/SHA256SUMS.txt"
+
+  out=$("$sgen" --version 1.2.3 --sums "$sdir/SHA256SUMS.txt" 2>&1); rc=$?
+  ok "scoop generator renders" "$rc" 0
+  contains "scoop manifest carries the version" "$out" '"version": "1.2.3"'
+  contains "scoop manifest zip url" "$out" "releases/download/v1.2.3/tau-windows-x86_64.zip"
+  contains "scoop manifest sha256 hash" "$out" 'sha256:0000000000000000000000000000000000000000000000000000000000000077'
+  contains "scoop manifest declares tau.exe bin" "$out" '"bin": "tau.exe"'
+  contains "scoop manifest has autoupdate" "$out" '"autoupdate"'
+  contains "scoop manifest has checkver" "$out" '"checkver"'
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$out" | python3 -m json.tool >/dev/null 2>&1
+    ok "scoop manifest is valid JSON" "$?" 0
+  fi
+
+  out=$("$sgen" --version v2.0.0 --sums "$sdir/SHA256SUMS.txt" 2>&1)
+  contains "scoop generator strips leading v" "$out" '"version": "2.0.0"'
+
+  "$sgen" --version 1.0.0 --sums "$sdir/missing.txt" >/dev/null 2>&1
+  ok "scoop generator rejects missing manifest" "$?" 1
+  printf 'deadbeef  tau-macos-aarch64.tar.gz\n' > "$sdir/partial.txt"
+  "$sgen" --version 1.0.0 --sums "$sdir/partial.txt" >/dev/null 2>&1
+  ok "scoop generator rejects manifest missing the zip" "$?" 1
+  "$sgen" --version notaversion --sums "$sdir/SHA256SUMS.txt" >/dev/null 2>&1
+  ok "scoop generator rejects malformed version" "$?" 1
+  "$sgen" --bogus >/dev/null 2>&1
+  ok "scoop generator rejects unknown flag" "$?" 1
+  rm -rf "$sdir"
+
+  # ── setup-tau composite action (repo-root action.yml) ──
+  local act="$ROOT/action.yml"
+  [ -f "$act" ]; ok "action.yml exists at repo root" "$?" 0
+  if [ -f "$act" ]; then
+    contains "action.yml is a composite action" "$(cat "$act")" "using: composite"
+    contains "action.yml invokes repo install.sh" "$(cat "$act")" 'GITHUB_ACTION_PATH/install.sh'
+    contains "action.yml exposes version input" "$(cat "$act")" "version:"
+    contains "action.yml exposes install-dir input" "$(cat "$act")" "install-dir:"
+    contains "action.yml exposes base-url input" "$(cat "$act")" "base-url:"
+    contains "action.yml maps version input to TAU_VERSION" "$(cat "$act")" "TAU_VERSION"
+    contains "action.yml maps install-dir input to TAU_INSTALL_DIR" "$(cat "$act")" "TAU_INSTALL_DIR"
+    contains "action.yml maps base-url input to TAU_BASE_URL" "$(cat "$act")" "TAU_BASE_URL"
+    contains "action.yml puts install dir on PATH" "$(cat "$act")" "GITHUB_PATH"
+    contains "action.yml emits step outputs" "$(cat "$act")" "GITHUB_OUTPUT"
+    contains "action.yml surfaces tau-path output" "$(cat "$act")" "tau-path"
+    contains "action.yml surfaces version output" "$(cat "$act")" "steps.install.outputs.version"
+    contains "action.yml uses bash for the run step" "$(cat "$act")" "shell: bash"
+
+    if python3 -c 'import yaml' 2>/dev/null; then
+      python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$act" 2>/dev/null
+      ok "action.yml parses as YAML" "$?" 0
+    else
+      note "release: skipping action.yml YAML parse (PyYAML unavailable)"
+    fi
+  fi
+
+  # ── asset-name contract between workflow and installer ──
+  contains "installer emits workflow-style asset names" "$(cat "$inst")" 'tau-$PLATFORM.tar.gz'
+
+  # ── fail-closed checksum contract (task #161) ──
+  contains "installer documents TAU_SKIP_CHECKSUM" "$(cat "$inst")" "TAU_SKIP_CHECKSUM"
+  contains "installer fail-closes on missing manifest" "$(cat "$inst")" "refusing to install an unverified binary"
+  contains "installer reports asset absent from manifest" "$(cat "$inst")" "not listed in \$SUMS"
+
+  # ── offline end-to-end install via file:// (needs a built binary) ──
+  # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
+  # install through install.sh against TAU_BASE_URL=file://…, run the binary.
+  if [ -x "$ROOT/zig-out/bin/tau" ]; then
+    local asset_os asset_arch
+    case "$(uname -s)" in
+      Linux)  asset_os=linux ;;
+      Darwin) asset_os=macos ;;
+      *)      asset_os="" ;;
+    esac
+    asset_arch="$(uname -m)"
+    case "$asset_arch" in
+      amd64) asset_arch=x86_64 ;;
+      arm64) asset_arch=aarch64 ;;
+      x86_64|aarch64) ;;
+      *) asset_arch="" ;;
+    esac
+
+    if [ -n "$asset_os" ] && [ -n "$asset_arch" ]; then
+      local e2e asset
+      e2e="$(mktemp -d)"
+      asset="tau-$asset_os-$asset_arch.tar.gz"
+      mkdir -p "$e2e/srv/latest/download"
+      tar -czf "$e2e/srv/latest/download/$asset" -C "$ROOT/zig-out/bin" tau
+      (cd "$e2e/srv/latest/download" && \
+        { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
+
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin" 2>&1); rc=$?
+      ok "e2e file:// install exit" "$rc" 0
+      contains "e2e install reports dest" "$out" "installed tau -> $e2e/bin/tau"
+      [ -x "$e2e/bin/tau" ]; ok "e2e installed binary is executable" "$?" 0
+
+      out=$("$e2e/bin/tau" --version 2>&1); rc=$?
+      ok "e2e installed tau --version exit" "$rc" 0
+      contains "e2e tau --version shape" "$out" "tau "
+      out=$("$e2e/bin/tau" --help 2>&1); rc=$?
+      ok "e2e installed tau --help exit" "$rc" 0
+      contains "e2e tau --help shows usage" "$out" "Usage:"
+
+      # corrupted checksum must abort the install
+      printf '%064d  %s\n' 0 "$asset" > "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin2" 2>&1); rc=$?
+      ok "e2e rejects checksum mismatch" "$rc" 1
+      contains "e2e checksum failure message" "$out" "checksum verification failed"
+
+      # asset absent from the manifest must abort (fail closed)
+      printf '%064d  %s\n' 0 "tau-other-thing.tar.gz" > "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin3" 2>&1); rc=$?
+      ok "e2e rejects asset missing from manifest" "$rc" 1
+      contains "e2e manifest-miss message" "$out" "not listed in SHA256SUMS.txt"
+
+      # no manifest at all must abort (an attacker could strip it to hide tampering)
+      rm -f "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin4" 2>&1); rc=$?
+      ok "e2e rejects missing checksum manifest" "$rc" 1
+      contains "e2e missing-manifest message" "$out" "unverified binary"
+
+      # documented opt-out: bypass installs anyway, with a loud warning
+      out=$(TAU_SKIP_CHECKSUM=1 TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin5" 2>&1); rc=$?
+      ok "e2e TAU_SKIP_CHECKSUM bypass exit" "$rc" 0
+      contains "e2e skip-checksum warns" "$out" "TAU_SKIP_CHECKSUM=1"
+      [ -x "$e2e/bin5/tau" ]; ok "e2e skip-checksum installed binary" "$?" 0
+
+      rm -rf "$e2e"
+    else
+      note "release: skipping e2e install (unsupported host platform)"
+    fi
+  else
+    note "release: skipping e2e install (no zig-out/bin/tau build present)"
+  fi
+
+  # ── offline end-to-end install.ps1 via file:// (needs pwsh + python3) ──
+  # Stages a stand-in tau.exe zip + SHA256SUMS.txt, installs through
+  # install.ps1 against TAU_BASE_URL=file://…, and exercises the same
+  # fail-closed checksum contract as the install.sh e2e above. A real Windows
+  # binary run is covered by the release workflow's windows-latest leg.
+  if command -v pwsh >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    local we2e
+    we2e="$(mktemp -d)"
+    mkdir -p "$we2e/srv/latest/download" "$we2e/stage"
+    printf 'not a real exe\n' > "$we2e/stage/tau.exe"
+    (cd "$we2e/stage" && python3 -m zipfile -c "$we2e/srv/latest/download/tau-windows-x86_64.zip" tau.exe)
+    (cd "$we2e/srv/latest/download" && \
+      { sha256sum tau-windows-x86_64.zip 2>/dev/null || shasum -a 256 tau-windows-x86_64.zip; } > SHA256SUMS.txt)
+
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin" 2>&1); rc=$?
+    ok "e2e ps1 file:// install exit" "$rc" 0
+    contains "e2e ps1 checksum verified" "$out" "checksum verified against SHA256SUMS.txt"
+    [ -f "$we2e/bin/tau.exe" ]; ok "e2e ps1 installed tau.exe" "$?" 0
+
+    # corrupted checksum must abort the install
+    printf '%064d  %s\n' 0 tau-windows-x86_64.zip > "$we2e/srv/latest/download/SHA256SUMS.txt"
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin2" 2>&1); rc=$?
+    ok "e2e ps1 rejects checksum mismatch" "$rc" 1
+    contains "e2e ps1 checksum failure message" "$out" "checksum verification failed"
+
+    # asset absent from the manifest must abort (fail closed)
+    printf '%064d  %s\n' 0 tau-other-thing.zip > "$we2e/srv/latest/download/SHA256SUMS.txt"
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin3" 2>&1); rc=$?
+    ok "e2e ps1 rejects asset missing from manifest" "$rc" 1
+    contains "e2e ps1 manifest-miss message" "$out" "not listed in SHA256SUMS.txt"
+
+    # no manifest at all must abort
+    rm -f "$we2e/srv/latest/download/SHA256SUMS.txt"
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin4" 2>&1); rc=$?
+    ok "e2e ps1 rejects missing checksum manifest" "$rc" 1
+    contains "e2e ps1 missing-manifest message" "$out" "unverified binary"
+
+    # documented opt-out: bypass installs anyway, with a loud warning
+    out=$(TAU_SKIP_CHECKSUM=1 TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin5" 2>&1); rc=$?
+    ok "e2e ps1 TAU_SKIP_CHECKSUM bypass exit" "$rc" 0
+    contains "e2e ps1 skip-checksum warns" "$out" "TAU_SKIP_CHECKSUM=1"
+    [ -f "$we2e/bin5/tau.exe" ]; ok "e2e ps1 skip-checksum installed tau.exe" "$?" 0
+
+    rm -rf "$we2e"
+  else
+    note "release: skipping install.ps1 e2e (pwsh or python3 unavailable)"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

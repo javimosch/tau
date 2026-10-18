@@ -359,6 +359,10 @@ tau version --verbose --mode text   # Same fields as key: value lines
 | `src/version.zig` | Version const + build metadata (`build.*`, `buildJson`, `buildLine`) | Version bump, build metadata |
 | `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
 | `src/term.zig` | Portable stdout/stderr | Terminal output changes |
+| `install.sh` | curl-able installer for prebuilt releases | Installer/flag/env changes |
+| `action.yml` | `setup-tau` composite GitHub Action (wraps `install.sh`) | Action inputs/outputs |
+| `.github/workflows/release.yml` | Tag-triggered release build + smoke + publish + Homebrew tap update | Release process changes |
+| `scripts/generate-homebrew-formula.sh` | Renders `Formula/tau.rb` from a version + `SHA256SUMS.txt` | Formula field/asset changes |
 
 #### Validation Commands
 

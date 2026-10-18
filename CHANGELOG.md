@@ -96,12 +96,53 @@ are backward compatible.
   gains a `# build:` line — the triage trio for bug reports (#204). The
   build date honors `SOURCE_DATE_EPOCH` so release binaries stay
   byte-reproducible
+- CI release workflow (`.github/workflows/release.yml`) publishing prebuilt
+  `tau-<os>-<arch>.tar.gz` binaries for Linux and macOS on `v*` tags, plus a
+  curl-able `install.sh` so adopters don't need a Zig toolchain (#143)
+- Release smoke gate: every built tarball is installed through `install.sh`
+  on its matching OS/arch runner and verified with `--version`/`--help`
+  before the release is published (#147)
+- `install.sh` `TAU_BASE_URL` env override — point the installer at a staging
+  dir (`file://…`) or mirror instead of GitHub releases (#147)
+- Fail-closed SHA256 verification in `install.sh`: installs now abort when the
+  `SHA256SUMS.txt` manifest is unreachable, the asset isn't listed in it, or no
+  checksum tool is available — previously these only warned and continued
+  (#161). `TAU_SKIP_CHECKSUM=1` opts out. The release workflow also emits
+  per-asset `.sha256` files verified by the smoke jobs, and re-checks
+  `SHA256SUMS.txt` before publishing
+- `setup-tau` composite GitHub Action (repo-root `action.yml`) — install tau
+  in CI with a single `uses: javimosch/tau@<ref>` line; wraps `install.sh`,
+  puts `tau` on `PATH`, and exposes `tau-path`/`version` outputs (#151)
+- Homebrew tap — `brew install javimosch/tap/tau` on macOS and Linux. A
+  `homebrew` job in the release workflow regenerates `Formula/tau.rb`
+  (`scripts/generate-homebrew-formula.sh` + the published `SHA256SUMS.txt`)
+  and pushes it to `javimosch/homebrew-tap` on every stable tag, so
+  `brew upgrade` tracks releases (#175). Requires a `HOMEBREW_TAP_TOKEN`
+  repository secret to publish; releases proceed without it
+- Windows support: the release workflow cross-compiles
+  `x86_64-windows-gnu` and ships `tau-windows-x86_64.zip` in
+  `SHA256SUMS.txt`; `install.ps1` (PowerShell) mirrors the `install.sh`
+  contract — `-Version`/`-Dir`/`-DryRun`, `TAU_*` env overrides, and
+  fail-closed `Get-FileHash` verification — installing to
+  `%LOCALAPPDATA%\Programs\tau`; a `smoke-windows` job installs the zip
+  end-to-end on a native `windows-latest` runner before publish (#182)
+- Scoop + winget manifests: `scripts/generate-scoop-manifest.sh` and
+  `scripts/generate-winget-manifest.sh` render the package manifests from the
+  published checksums on every stable tag; the `scoop` job pushes
+  `bucket/tau.json` to `javimosch/scoop-bucket` (behind `SCOOP_BUCKET_TOKEN`,
+  warn-and-skip until the repo and secret exist), and the `winget` job
+  validates + uploads the three-file manifest for microsoft/winget-pkgs
+  submission (auto-submits via `wingetcreate` when `WINGET_PKGS_TOKEN` is
+  configured) (#182)
 
 ### Fixed
 
 - `tau doctor` no longer false-fails a commented (JSONC) config file — the
   `config_file` check strips `//` and `/* */` comments before parsing, same
   as the runtime loader, so a `tau init` scaffold reports `ok`
+- `install.sh` checksum matching now tolerates `./`-prefixed filenames in
+  `SHA256SUMS.txt`, and the release workflow emits clean filenames — a
+  mismatch that would have made every real install abort (#147)
 - Streaming: honor `--timeout-ms` on SSE requests (#76); tolerate whitespace in
   SSE tool-call and reasoning parsers (#68)
 - Provider response parsing: whitespace after JSON colons (#66) and before

@@ -39,7 +39,67 @@ tau --session myproject "/goal status"
 
 Zero to your first response in five steps. Every command below is copy-pasteable.
 
-### 1. Prerequisites
+### 1. Get tau
+
+**Prebuilt binary (recommended — no Zig toolchain needed):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+```
+
+The installer detects your OS/arch (Linux and macOS, x86_64 and aarch64),
+downloads the matching `tau-<os>-<arch>.tar.gz` from the latest GitHub release,
+verifies it against `SHA256SUMS.txt`, and installs to `~/.local/bin`. Options:
+`--version X.Y.Z` to pin a release, `--dir DIR` to change the install location,
+`--dry-run` to see the plan. Checksum verification is mandatory and fail-fast:
+the install aborts if the `SHA256SUMS.txt` manifest is unreachable, the asset
+isn't listed in it, no `sha256sum`/`shasum` is available, or the digest
+mismatches — so a tampered or corrupted binary can never be installed
+(`TAU_SKIP_CHECKSUM=1` opts out, e.g. for air-gapped mirrors). All assets are
+built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on
+version tags — and before publish, each archive is smoke-tested on its
+matching OS/arch runner by installing it through `install.sh`/`install.ps1`
+and running `tau --version`/`--help`.
+
+**Windows (PowerShell — installs `tau-windows-x86_64.zip` to
+`%LOCALAPPDATA%\Programs\tau`):**
+
+```powershell
+irm https://raw.githubusercontent.com/javimosch/tau/master/install.ps1 | iex
+```
+
+`install.ps1` mirrors the `install.sh` contract: `-Version X.Y.Z`,
+`-Dir DIR`, `-DryRun`, plus `TAU_VERSION`/`TAU_INSTALL_DIR`/`TAU_BASE_URL`/
+`TAU_SKIP_CHECKSUM` overrides, and the same fail-closed `SHA256SUMS.txt`
+verification via `Get-FileHash`. Scoop and winget manifests are generated and
+validated on every release by the `scoop`/`winget` jobs in
+[`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+**Homebrew (macOS and Linux — `brew upgrade` tracks new releases):**
+
+```bash
+brew install javimosch/tap/tau
+```
+
+The [`javimosch/homebrew-tap`](https://github.com/javimosch/homebrew-tap)
+formula is regenerated with the correct per-platform checksums and pushed by
+the release workflow on every stable version tag, so `brew update && brew
+upgrade tau` always lands on the latest release.
+
+**In GitHub Actions (one `uses:` line):**
+
+```yaml
+- uses: javimosch/tau@master        # or pin a release tag, e.g. @v0.5.0
+  with:
+    version: "0.4.0"                # optional — defaults to the latest release
+```
+
+The repo-root [`action.yml`](action.yml) is a composite action wrapping
+`install.sh`: it puts `tau` on `PATH` for later steps and exposes
+`tau-path`/`version` outputs. The same smoke suite verifies the action
+end-to-end via `uses: ./` before every release.
+
+**From source:**
 
 - **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against
 - **`curl`** on your `PATH` — tau shells out to it for HTTP
@@ -51,6 +111,8 @@ curl --version | head -1
 ```
 
 ### 2. Clone and build
+
+(Skip this step if you installed a prebuilt binary above.)
 
 ```bash
 git clone https://github.com/javimosch/tau.git
@@ -496,7 +558,9 @@ zig build test
 ./scripts/smoke.sh --net
 ```
 
-Requires Zig 0.16.0 and `curl` on PATH.
+Requires Zig 0.16.0 and `curl` on PATH. To install a prebuilt binary instead,
+run `./install.sh` (or `install.ps1` on Windows) — no Zig needed; see
+[Getting Started](#-getting-started).
 
 ### Shell Completions
 
