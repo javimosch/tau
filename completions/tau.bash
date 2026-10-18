@@ -138,7 +138,7 @@ _tau_complete() {
             ;;
 
         version)
-            COMPREPLY=($(compgen -W "--verbose --mode" -- "$cur"))
+            COMPREPLY=($(compgen -W "--verbose --check --mode" -- "$cur"))
             ;;
 
         *)

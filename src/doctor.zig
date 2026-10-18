@@ -38,6 +38,7 @@ const configfile = @import("configfile.zig");
 const initmod = @import("init.zig");
 const setup = @import("setup.zig");
 const debuglog = @import("debuglog.zig");
+const update = @import("update.zig");
 const version_mod = @import("version.zig");
 const version = version_mod.version;
 const Config = cfgmod.Config;
@@ -696,6 +697,46 @@ fn checkAuthProbe(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, 
     };
 }
 
+/// Check: a newer tau release exists upstream. Advisory only — warn at most,
+/// never fail; the fetch is a short-timeout curl GET and the row skips under
+/// --offline, TAU_NO_UPDATE_CHECK, or a missing curl.
+fn checkUpdateAvailable(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, curl_ok: bool) Check {
+    const name = "update_available";
+    if (cfg.doctor_offline)
+        return .{ .name = name, .status = .skip, .message = "skipped (--offline)" };
+    if (update.disabled(env))
+        return .{ .name = name, .status = .skip, .message = "skipped (TAU_NO_UPDATE_CHECK)" };
+    if (!curl_ok)
+        return .{ .name = name, .status = .skip, .message = "skipped (curl unavailable)" };
+    const res = update.check(io, gpa, arena, env);
+    if (!res.checked)
+        return .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "update check unavailable: {s}", .{res.reason orelse "unknown"}) catch "update check unavailable",
+            .hint = "check network/proxy; TAU_UPDATE_URL overrides the lookup URL",
+        };
+    const latest = res.latest orelse
+        return .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "unparseable release tag '{s}'", .{res.tag orelse ""}) catch "unparseable release tag",
+            .hint = version_mod.releases_page_url,
+        };
+    if (res.update_available)
+        return .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "new release available: {s} (running {s})", .{ latest, version }) catch "new release available",
+            .hint = "upgrade via install.sh or your package manager — " ++ version_mod.releases_page_url,
+        };
+    return .{
+        .name = name,
+        .status = .ok,
+        .message = std.fmt.allocPrint(arena, "tau {s} is up to date (latest release {s})", .{ version, latest }) catch "tau is up to date",
+    };
+}
+
 // ---------------------------------------------------------------------------
 // --probe per-provider sweep
 // ---------------------------------------------------------------------------
@@ -1076,6 +1117,9 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
             .hint = "pass --probe to live-verify connectivity and credentials for every provider",
         }, cfg);
     }
+    // Advisory only: warns when a newer release exists upstream. Never fails;
+    // opts out via --offline, TAU_NO_UPDATE_CHECK, or a missing curl.
+    try addCheck(arena, &checks, checkUpdateAvailable(io, gpa, arena, cfg, env, curl_ok), cfg);
     // Last and heaviest: a self-spawned end-to-end session against a loopback
     // stub (opt-in via --selftest; a skip row otherwise).
     try addCheck(arena, &checks, checkSelftest(io, gpa, arena, cfg, env, curl_ok), cfg);
