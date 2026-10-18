@@ -76,6 +76,7 @@ ALL_TEST_GROUPS=(
   "fleet-flags:test_group_fleet_flags"
   "completions:test_group_completions"
   "debug:test_group_debug"
+  "redaction:test_group_redaction"
   "version:test_group_version"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
@@ -1626,6 +1627,67 @@ STUB
   capture r7 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$elog" "$BIN" --debug "/goal status"
   ok "debug: /goal status without session exits 80" "$r7_rc" 80
   contains "debug: literal envelope links debug_log" "$r7_err" '"debug_log":"'
+}
+
+# Group: credential-redaction invariants across every user-facing surface.
+# Every credential source (config file, per-provider keys map, env vars,
+# TAU_API_KEY, endpoint userinfo password) is seeded, then asserted absent
+# from doctor --report/--json/--probe output and {"err"} envelopes.
+test_group_redaction() {
+  local r_home
+  r_home="$(mktemp -d)"
+  register_temp_dir "$r_home"
+  mkdir -p "$r_home/.config/tau"
+  local scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
+
+  note "credential redaction invariants (doctor report/json/probe, err envelope)"
+
+  # 1. doctor --report: every credential source is masked in the bundle —
+  #    the file's api_key, the keys[<provider>] map, env vars, TAU_API_KEY.
+  printf '{ "provider": "openai", "api_key": "sk-redact-CFG1", "keys": { "openai": "sk-redact-KEY2" } }' > "$r_home/.config/tau/config.json"
+  capture rep "${scrub[@]}" OPENAI_API_KEY=sk-redact-ENV3 TAU_API_KEY=sk-redact-TAU4 \
+    HOME="$r_home" "$BIN" doctor --report --offline --provider openai
+  contains "doctor --report emits markdown bundle" "$rep_out" '# tau doctor report'
+  contains "doctor --report emits mask marker" "$rep_out" '***REDACTED***'
+  for sec in sk-redact-CFG1 sk-redact-KEY2 sk-redact-ENV3 sk-redact-TAU4; do
+    lacks "doctor --report redacts $sec" "$rep_out" "$sec"
+  done
+
+  # 2. doctor --json (NDJSON) never prints key material from any source.
+  capture jsn "${scrub[@]}" OPENAI_API_KEY=sk-redact-ENV3 TAU_API_KEY=sk-redact-TAU4 \
+    HOME="$r_home" "$BIN" doctor --json --offline --provider openai
+  contains "doctor --json verdict line present" "$jsn_out" '"done":true'
+  for sec in sk-redact-CFG1 sk-redact-KEY2 sk-redact-ENV3 sk-redact-TAU4; do
+    lacks "doctor --json redacts $sec" "$jsn_out" "$sec"
+  done
+
+  # 3. doctor --probe sweep: same invariant across the per-provider rows.
+  capture prb "${scrub[@]}" OPENAI_API_KEY=sk-redact-ENV3 HOME="$r_home" \
+    "$BIN" doctor --probe --offline --provider openai
+  contains "doctor --probe emits per-provider rows" "$prb_out" '"name":"probe_openai"'
+  for sec in sk-redact-CFG1 sk-redact-KEY2 sk-redact-ENV3; do
+    lacks "doctor --probe redacts $sec" "$prb_out" "$sec"
+  done
+
+  # 4. Endpoint userinfo password never reaches the report or JSON surfaces
+  #    (check messages and the effective-config row print cfg.endpoint).
+  capture ept "${scrub[@]}" OPENAI_API_KEY=sk-redact-ENV3 \
+    TAU_ENDPOINT="https://user:pw-leak-999@127.0.0.1:1/" HOME="$r_home" \
+    "$BIN" doctor --report --offline --provider openai
+  lacks "doctor --report redacts endpoint password" "$ept_out" 'pw-leak-999'
+  capture ept2 "${scrub[@]}" OPENAI_API_KEY=sk-redact-ENV3 \
+    TAU_ENDPOINT="https://user:pw-leak-999@127.0.0.1:1/" HOME="$r_home" \
+    "$BIN" doctor --offline --provider openai
+  lacks "doctor JSON redacts endpoint password" "$ept2_out" 'pw-leak-999'
+
+  # 5. err envelope: a value echoed into the message is masked when it is a
+  #    registered credential — here the bad --provider value doubles as the
+  #    TAU_API_KEY, so the envelope must mask its own echo.
+  capture e1 "${scrub[@]}" TAU_API_KEY=sk-env-secret-XYZ HOME="$r_home" \
+    "$BIN" --provider sk-env-secret-XYZ --no-stream "hi"
+  ok "err envelope exits 80" "$e1_rc" 80
+  lacks "err envelope masks echoed key material" "$e1_err" 'sk-env-secret-XYZ'
+  contains "err envelope shows mask marker" "$e1_err" '***REDACTED***'
 }
 
 # Group: --bench regression guard

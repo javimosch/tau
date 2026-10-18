@@ -149,8 +149,13 @@ fn appendSecret(a: std.mem.Allocator, out: *std.ArrayList([]const u8), s: []cons
 /// Collect every credential the run could leak — not just the winning key.
 /// The resolved key plus the flag/config/env losers are all listed so a value
 /// echoed into tool output, a response body, or the `tau doctor --report`
-/// config dump can't slip through. The list is `a`-allocated and
-/// duped/deduped; callers may keep it for redactAlloc or register it globally.
+/// config dump can't slip through. The endpoint's URL-userinfo password is
+/// listed too: check messages and headers print cfg.endpoint verbatim, so
+/// `https://user:pass@host` must not leak `pass`. Every secret's JSON-escaped
+/// spelling is also registered — a key echoed inside a JSON string arrives
+/// escaped (`sk\"abc`) and would slip past literal masking otherwise. The
+/// list is `a`-allocated and duped/deduped; callers may keep it for
+/// redactAlloc or register it globally.
 pub fn collectSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: cfgmod.Config) []const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     if (cfgmod.resolveApiKey(cfg, env)) |k| appendSecret(a, &out, k);
@@ -167,12 +172,66 @@ pub fn collectSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: 
         }
         if (p.builtin_key) |bk| appendSecret(a, &out, bk);
     }
+    if (endpointPassword(cfg.endpoint)) |pw| appendSecret(a, &out, pw);
+    // Escaped spellings: re-index each iteration since appendSecret may
+    // reallocate out.items. Raw_count bounds the loop to the originals.
+    const raw_count = out.items.len;
+    var i: usize = 0;
+    while (i < raw_count) : (i += 1) {
+        const esc = @import("json.zig").escapeAlloc(a, out.items[i]) catch continue;
+        appendSecret(a, &out, esc);
+    }
     return out.items;
 }
 
-/// Register the collected secrets to mask in the file copy.
-fn registerSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: cfgmod.Config) void {
+/// Password component of a URL userinfo (`scheme://user:pass@host`), or null
+/// when the endpoint carries none. Only the password is registered — masking
+/// it leaves `scheme://user:***REDACTED***@host`, which keeps the endpoint
+/// identifiable in diagnostics.
+fn endpointPassword(endpoint: []const u8) ?[]const u8 {
+    const scheme = std.mem.indexOf(u8, endpoint, "://") orelse return null;
+    const rest = endpoint[scheme + 3 ..];
+    const authority = rest[0 .. std.mem.indexOfScalar(u8, rest, '/') orelse rest.len];
+    const at = std.mem.lastIndexOfScalar(u8, authority, '@') orelse return null;
+    const colon = std.mem.indexOfScalar(u8, authority[0..at], ':') orelse return null;
+    const pw = authority[colon + 1 .. at];
+    return if (pw.len == 0) null else pw;
+}
+
+/// Register the collected secrets so process-wide masking (the --debug log
+/// file copy, error envelopes, and doctor serialization) masks them. Deduped
+/// per value — safe to call more than once.
+pub fn registerSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: cfgmod.Config) void {
     g_secrets.appendSlice(a, collectSecrets(a, env, cfg)) catch {};
+}
+
+/// The process-wide mask list — for callers merging it with their own
+/// collected secrets (e.g. `tau doctor --report`).
+pub fn registeredSecrets() []const []const u8 {
+    return g_secrets.items;
+}
+
+/// Redact `s` with every secret registered for this process — empty before
+/// registerSecrets/open runs, in which case only the generic Bearer,
+/// `"api_key":`, and `NAME=` credential patterns are masked. Error envelopes
+/// and doctor output route through this so a credential interpolated into a
+/// message can't leak. Caller owns the result.
+pub fn redactRegistered(a: std.mem.Allocator, s: []const u8) ![]u8 {
+    return redactAlloc(a, s, g_secrets.items);
+}
+
+/// Test-only hooks for sibling modules pinning the process-wide masking
+/// invariant. Items are page-allocated (the tracking allocator would report
+/// the intentionally-unfreed globals as leaks); clear in a defer so no
+/// ordering dependency leaks between tests.
+pub fn addSecretsForTest(secrets: []const []const u8) void {
+    for (secrets) |s| appendSecret(std.heap.page_allocator, &g_secrets, s);
+}
+
+pub fn clearSecretsForTest() void {
+    // Drop the whole list: capacity allocated by a caller's arena must not be
+    // reused after that arena is gone.
+    g_secrets = .empty;
 }
 
 /// Provenance header at the top of every log: what version/config produced
@@ -501,4 +560,170 @@ test "fileName produces a filesystem-safe UTC stamp" {
     try testing.expect(std.mem.startsWith(u8, name, "debug-2026-09-30T00-00-00Z-"));
     try testing.expect(std.mem.endsWith(u8, name, ".log"));
     try testing.expect(std.mem.indexOfScalar(u8, name, ':') == null);
+}
+
+// ---------------------------------------------------------------------------
+// Property/invariant tests — deterministic PRNG sweeps over the masking
+// contract. The invariant under test: bytes that name a credential never
+// survive redactAlloc, in any of the shapes a real log/diagnostic can take.
+// ---------------------------------------------------------------------------
+
+const prop_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._";
+const prop_json_fields = [_][]const u8{ "api_key", "token", "secret", "password", "x-api-key", "authorization", "access_token" };
+const prop_env_names = [_][]const u8{ "OPENAI_API_KEY", "GITHUB_TOKEN", "APP_SECRET", "DB_PASSWORD", "key", "auth", "credential" };
+const prop_filler = [_][]const u8{
+    "[DEBUG] tool args: {\"path\":\"/tmp/x\"}",
+    " response ok status=200 ",
+    "{\"content\":\"hello\"}",
+    "run tau doctor --report ",
+    "mode=json stream=true ",
+};
+
+fn propSecret(r: std.Random, a: std.mem.Allocator, with_escape_chars: bool) ![]u8 {
+    const s = try a.alloc(u8, r.intRangeAtMost(usize, 6, 40));
+    for (s) |*ch| {
+        if (with_escape_chars and r.uintLessThan(usize, 25) == 0) {
+            ch.* = "\"\\\n\t"[r.uintLessThan(usize, 4)];
+        } else {
+            ch.* = prop_alphabet[r.uintLessThan(usize, prop_alphabet.len)];
+        }
+    }
+    return s;
+}
+
+/// True when `s` nests inside another registered secret (or the mask text):
+/// masking the inner literal first would leave a surviving tail of the outer
+/// one, which is a different (untested) property — keep secrets disjoint.
+fn propOverlaps(s: []const u8, existing: []const []const u8) bool {
+    if (std.mem.indexOf(u8, mask, s) != null) return true;
+    for (existing) |x| {
+        if (std.mem.indexOf(u8, x, s) != null or std.mem.indexOf(u8, s, x) != null) return true;
+    }
+    return false;
+}
+
+test "property: generated secrets never survive redactAlloc" {
+    var prng = std.Random.DefaultPrng.init(0x232_d1ce);
+    const r = prng.random();
+    var iter: usize = 0;
+    while (iter < 400) : (iter += 1) {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const n = r.intRangeAtMost(usize, 1, 3);
+        var secrets: std.ArrayList([]const u8) = .empty;
+        var guard: usize = 0;
+        while (secrets.items.len < n and guard < 40) : (guard += 1) {
+            const s = try propSecret(r, a, iter % 3 == 0);
+            if (!propOverlaps(s, secrets.items)) try secrets.append(a, s);
+        }
+        // Mirror collectSecrets: the JSON-escaped spelling is registered too.
+        const raw_n = secrets.items.len;
+        var si: usize = 0;
+        while (si < raw_n) : (si += 1) {
+            const esc = @import("json.zig").escapeAlloc(a, secrets.items[si]) catch continue;
+            var dup = false;
+            for (secrets.items) |x| {
+                if (std.mem.eql(u8, x, esc)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) try secrets.append(a, esc);
+        }
+
+        // Compose a document of random fragments: filler text or a secret
+        // planted in one of the real leak shapes (bare token, Bearer header,
+        // JSON credential field, NAME= env assignment, nested/escaped echo).
+        var doc: std.ArrayList(u8) = .empty;
+        var planted = false;
+        const frags = r.intRangeAtMost(usize, 1, 8);
+        var fi: usize = 0;
+        while (fi < frags) : (fi += 1) {
+            if (r.uintLessThan(usize, 10) < 4) {
+                try doc.appendSlice(a, prop_filler[r.uintLessThan(usize, prop_filler.len)]);
+                continue;
+            }
+            const s = secrets.items[r.uintLessThan(usize, raw_n)];
+            const esc = @import("json.zig").escapeAlloc(a, s) catch s;
+            planted = true;
+            switch (r.uintLessThan(usize, 7)) {
+                0 => try doc.appendSlice(a, try std.fmt.allocPrint(a, " {s} ", .{s})),
+                1 => try doc.appendSlice(a, try std.fmt.allocPrint(a, " Authorization: Bearer {s} ", .{s})),
+                2 => try doc.appendSlice(a, try std.fmt.allocPrint(a, "bearer\t{s}", .{s})),
+                3 => try doc.appendSlice(a, try std.fmt.allocPrint(a, "\"{s}\":\"{s}\"", .{ prop_json_fields[r.uintLessThan(usize, prop_json_fields.len)], esc })),
+                4 => try doc.appendSlice(a, try std.fmt.allocPrint(a, "{s}={s} ", .{ prop_env_names[r.uintLessThan(usize, prop_env_names.len)], s })),
+                5 => try doc.appendSlice(a, try std.fmt.allocPrint(a, "{{\"echo\":\"{s}\",\"nested\":{{\"token\":\"{s}\"}}}}", .{ s, esc })),
+                else => try doc.appendSlice(a, try std.fmt.allocPrint(a, "Bearer {s} {s}", .{ s, s })),
+            }
+        }
+
+        const out = try redactAlloc(a, doc.items, secrets.items);
+        for (secrets.items) |s| {
+            if (std.mem.indexOf(u8, out, s) != null) {
+                std.debug.print("secret survived redaction: '{s}' in '{s}'\n", .{ s, out });
+                return error.TestUnexpectedResult;
+            }
+        }
+        if (planted) try testing.expect(std.mem.indexOf(u8, out, mask) != null);
+        // Redaction is idempotent — re-masking a redacted doc changes nothing.
+        const twice = try redactAlloc(a, out, secrets.items);
+        try testing.expectEqualStrings(out, twice);
+    }
+}
+
+fn hasSecret(list: []const []const u8, s: []const u8) bool {
+    for (list) |x| {
+        if (std.mem.eql(u8, x, s)) return true;
+    }
+    return false;
+}
+
+test "collectSecrets: covers every source, endpoint password, escaped spellings, dedup" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    try env.put("TAU_API_KEY", "sk-tau-9999");
+    try env.put("OPENAI_API_KEY", "sk-env-8888");
+    var km = std.StringHashMap([]const u8).init(a);
+    try km.put("openai", "sk-keys-7777");
+    try km.put("other", "sk-quote\"66");
+    const cfg = cfgmod.Config{
+        .provider = "openai",
+        .api_key = "sk-flag-1111",
+        .config_api_key = "sk-cfg-2222",
+        .keys = km,
+        .endpoint = "https://svc:pw-leak-999@api.example.com/v1",
+    };
+    const secrets = collectSecrets(a, &env, cfg);
+    const want = [_][]const u8{
+        "sk-flag-1111", "sk-cfg-2222", "sk-keys-7777", "sk-quote\"66",
+        "sk-tau-9999",  "sk-env-8888", "pw-leak-999",
+    };
+    for (want) |w| {
+        if (!hasSecret(secrets, w)) {
+            std.debug.print("collectSecrets missed '{s}'\n", .{w});
+            return error.TestUnexpectedResult;
+        }
+    }
+    // The JSON-escaped spelling of a quote-bearing key is registered too.
+    const esc = try @import("json.zig").escapeAlloc(a, "sk-quote\"66");
+    try testing.expect(hasSecret(secrets, esc));
+    // Dedup: the flag key resolved once even though it names two sources.
+    var count: usize = 0;
+    for (secrets) |x| {
+        if (std.mem.eql(u8, x, "sk-flag-1111")) count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "endpointPassword: extracts the userinfo password, null when absent" {
+    try testing.expectEqualStrings("p%40ss", endpointPassword("https://u:p%40ss@h/v1").?);
+    try testing.expectEqualStrings("pw-9", endpointPassword("http://u:pw-9@h:8080/x?y=1").?);
+    try testing.expect(endpointPassword("https://h/v1") == null);
+    try testing.expect(endpointPassword("https://u@h/v1") == null);
+    try testing.expect(endpointPassword("https://u:@h/v1") == null);
+    try testing.expect(endpointPassword("not-a-url") == null);
 }

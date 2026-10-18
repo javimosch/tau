@@ -153,7 +153,11 @@ fn appendJsonStr(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u
 }
 
 fn printErr(arena: std.mem.Allocator, code: u8, err_type: []const u8, message: []const u8) void {
-    const me = jsonmod.escapeAlloc(arena, message) catch {
+    const mr = @import("debuglog.zig").redactRegistered(arena, message) catch {
+        term.err("{\"err\":{\"code\":110,\"type\":\"internal_error\"}}\n");
+        return;
+    };
+    const me = jsonmod.escapeAlloc(arena, mr) catch {
         term.err("{\"err\":{\"code\":110,\"type\":\"internal_error\"}}\n");
         return;
     };
