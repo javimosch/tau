@@ -206,7 +206,20 @@ pub const Config = struct {
     // --- Setup (src/setup.zig) ---
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —
     /// shared by `tau setup` and `tau doctor`. Null means detect from $SHELL.
+    /// `TAU_SETUP_SHELL` is the env fallback for `tau setup` when the flag is
+    /// absent.
     setup_shell: ?[]const u8 = null,
+    /// `tau setup --client <name>` — ACP editor client to configure
+    /// (zed|nvim|vscode|jetbrains|all). Null skips the clients step.
+    /// `TAU_SETUP_CLIENT` is the env fallback when the flag is absent.
+    setup_client: ?[]const u8 = null,
+    /// `tau setup --yes|-y` — unattended contract: explicitly approve every
+    /// write step (env `TAU_YES=1`). Setup never prompts either way; the flag
+    /// makes intent machine-checkable in the NDJSON verdict.
+    setup_yes: bool = false,
+    /// `tau setup --non-interactive` — unattended contract for scripts/CI
+    /// (env `TAU_NONINTERACTIVE=1`): guaranteed never to prompt or read stdin.
+    setup_non_interactive: bool = false,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` so the

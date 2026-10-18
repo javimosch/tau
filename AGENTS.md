@@ -280,10 +280,15 @@ tau init --provider openai               # Scaffold for a specific provider
 ```bash
 tau setup                      # init + install completions ($SHELL-detected) + doctor summary
 tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
+tau setup --client zed         # Write editor ACP config: zed|nvim|vscode|jetbrains|all
 tau setup --offline            # Skip network checks in the doctor step
+tau setup -y --non-interactive # Unattended contract (verdict records non_interactive/yes)
+# Env equivalents (flag > env > detect): TAU_YES, TAU_NONINTERACTIVE,
+# TAU_SETUP_SHELL, TAU_SETUP_CLIENT. CI is not auto-detected.
 # Emits one NDJSON object per step plus a final verdict:
 #   {"step":"init","status":"created|exists|failed",...}
 #   {"step":"completions","status":"installed|skipped|failed","shells":[...]}
+#   {"step":"clients","status":"installed|manual|skipped|failed","clients":[...]}
 #   {"step":"doctor","report":{...same shape as `tau doctor`...}}
 #   {"step":"setup","ok":bool,"version":..}
 # Idempotent: existing config is kept, rc edits carry a "# tau completions"
@@ -292,6 +297,12 @@ tau setup --offline            # Skip network checks in the doctor step
 # Completion scripts are embedded in the binary at build time (build.zig
 # generates a `completions` module from completions/), so `tau setup`
 # works without a source checkout.
+# --client writes a minimal settings file (e.g. ~/.config/zed/settings.json
+# agent_servers.tau) with the absolute path of the running tau binary; an
+# existing settings file is never rewritten — a paste-ready snippet lands in
+# ~/.config/tau/snippets/ instead ("manual"). nvim is always "manual" (Lua
+# config for avante.nvim/CodeCompanion). Without --client the step is
+# "skipped" and only reports detected editor config dirs.
 ```
 
 #### 18. Version & Build Metadata
@@ -335,7 +346,7 @@ tau version --verbose --mode text   # Same fields as key: value lines
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
 | `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
-| `src/setup.zig` | `tau setup` onboarding (init + completions + doctor) | Setup steps, install paths |
+| `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
 | `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |

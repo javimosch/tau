@@ -32,6 +32,29 @@ fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
+/// `tau setup --shell` / `TAU_SETUP_SHELL` accepted values.
+fn validSetupShell(s: []const u8) bool {
+    return eq(s, "bash") or eq(s, "zsh") or eq(s, "fish") or eq(s, "pwsh") or
+        eq(s, "powershell") or eq(s, "all");
+}
+
+/// `tau setup --client` / `TAU_SETUP_CLIENT` accepted values.
+fn validSetupClient(s: []const u8) bool {
+    return eq(s, "zed") or eq(s, "nvim") or eq(s, "vscode") or
+        eq(s, "jetbrains") or eq(s, "code") or eq(s, "all");
+}
+
+/// Interpret an env var as a boolean: "1", "true", "yes", "on"
+/// (case-insensitive) are true; unset, empty, "0", "false", "no", "off" —
+/// and anything else — are false, so `VAR=0` never surprises.
+fn envTruthy(v: ?[]const u8) bool {
+    const s = v orelse return false;
+    for ([_][]const u8{ "1", "true", "yes", "on" }) |t| {
+        if (std.ascii.eqlIgnoreCase(s, t)) return true;
+    }
+    return false;
+}
+
 /// Resolve `cfg.provider`/`endpoint`/`model` and `context_window` from CLI
 /// overrides and the provider table. Supports `--model provider/id` shorthand.
 /// Returns `null` on success, or the unknown provider name if the requested
@@ -274,10 +297,18 @@ pub fn parse(
     }
 
     // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
-    // [--api-key K] [--offline] [--deep]` — one-shot onboarding: scaffold the
-    // config (init), install shell completions, embed a doctor health report.
+    // [--api-key K] [--offline] [--deep] [--client <zed|nvim|vscode|jetbrains|all>]
+    // [--yes|-y] [--non-interactive]`
+    // — one-shot onboarding: scaffold the config (init), install shell
+    // completions, write/detect editor ACP client config, embed a doctor
+    // health report.
     // A command, not a prompt; an unknown provider rides into the doctor step
     // as a failed check (same convention as `tau doctor`).
+    // Unattended use (devcontainers, dotfiles scripts, CI): --yes and
+    // --non-interactive declare the contract explicitly — setup never prompts
+    // or reads stdin either way — and TAU_YES / TAU_NONINTERACTIVE /
+    // TAU_SETUP_SHELL / TAU_SETUP_CLIENT are env equivalents (flag > env >
+    // detect). CI is NOT auto-detected: scripts opt in, no surprise behavior.
     if (argv.len > 0 and eq(argv[0], "setup")) {
         var scfg: Config = base;
         var provider_opt: ?[]const u8 = null;
@@ -289,10 +320,16 @@ pub fn parse(
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
                 const s = argv[j];
-                if (!eq(s, "bash") and !eq(s, "zsh") and !eq(s, "fish") and !eq(s, "pwsh") and
-                    !eq(s, "powershell") and !eq(s, "all"))
+                if (!validSetupShell(s))
                     return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
                 scfg.setup_shell = s;
+            } else if (eq(a, "--client")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const c = argv[j];
+                if (!validSetupClient(c))
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|vscode|jetbrains|all)", .{c});
+                scfg.setup_client = c;
             } else if (eq(a, "--provider")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -309,8 +346,35 @@ pub fn parse(
                 scfg.doctor_offline = true;
             } else if (eq(a, "--deep")) {
                 scfg.doctor_deep = true;
+            } else if (eq(a, "--yes") or eq(a, "-y")) {
+                scfg.setup_yes = true;
+            } else if (eq(a, "--non-interactive")) {
+                scfg.setup_non_interactive = true;
             } else return errResult(arena, "unknown setup argument: {s}", .{a});
         }
+        // Env equivalents so dotfiles/devcontainers configure setup without
+        // argv. Flag wins over env; an env value is only validated when it
+        // would actually apply, and invalid values fail like a bad flag.
+        if (scfg.setup_shell == null) {
+            if (env.get("TAU_SETUP_SHELL")) |s| {
+                if (s.len > 0) {
+                    if (!validSetupShell(s))
+                        return errResult(arena, "invalid TAU_SETUP_SHELL: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                    scfg.setup_shell = s;
+                }
+            }
+        }
+        if (scfg.setup_client == null) {
+            if (env.get("TAU_SETUP_CLIENT")) |c| {
+                if (c.len > 0) {
+                    if (!validSetupClient(c))
+                        return errResult(arena, "invalid TAU_SETUP_CLIENT: {s} (want zed|nvim|vscode|jetbrains|all)", .{c});
+                    scfg.setup_client = c;
+                }
+            }
+        }
+        if (envTruthy(env.get("TAU_YES"))) scfg.setup_yes = true;
+        if (envTruthy(env.get("TAU_NONINTERACTIVE"))) scfg.setup_non_interactive = true;
         if (try resolveProviderAndModel(&scfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
             scfg.doctor_bad_provider = bad;
         }
@@ -662,14 +726,22 @@ fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytyp
 // `std.process.Environ.Map`. On the test host both are constructed directly:
 // `Args.vector` is just a `[]const [*:0]const u8`, so an array of string
 // literals (with a dummy argv[0], which `parse` skips) drives the parser. The
-// env map is left empty — env-key resolution happens later in main, not here.
+// env map is left empty by default — env-key resolution happens later in
+// main, except for the setup/env overrides tested via parseArgvEnv.
 
 const provider_mod = @import("llm/provider.zig");
 
 /// Run `parse` over an explicit argv (caller supplies argv[0]). All retained
 /// strings land in `arena`, freed together by the caller's arena.deinit().
 fn parseArgv(arena: std.mem.Allocator, argv: []const [*:0]const u8, base: Config) !Parsed {
+    return parseArgvEnv(arena, argv, &.{}, base);
+}
+
+/// Like parseArgv but seeds the environment with the given key=value pairs —
+/// for the setup env fallbacks (TAU_SETUP_*, TAU_YES, TAU_NONINTERACTIVE).
+fn parseArgvEnv(arena: std.mem.Allocator, argv: []const [*:0]const u8, pairs: []const [2][]const u8, base: Config) !Parsed {
     var env = std.process.Environ.Map.init(arena);
+    for (pairs) |kv| try env.put(kv[0], kv[1]);
     const args: std.process.Args = .{ .vector = argv };
     return parse(std.testing.io, arena, args, &env, base);
 }
@@ -1358,6 +1430,108 @@ test "parse: /goal prompt switches into goal mode and disables streaming" {
     try std.testing.expectEqualStrings("build the parser", p.config.goal.?);
     // `/goal --tokens N` budgets, and a .set goal forces non-streaming.
     try std.testing.expect(!p.config.stream);
+}
+
+// ── `tau setup` unattended flags + env fallbacks ──────────────────────────
+
+test "parse: setup --yes/-y/--non-interactive set the unattended flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expectEqual(Action.setup, bare.action);
+    try std.testing.expect(!bare.config.setup_yes);
+    try std.testing.expect(!bare.config.setup_non_interactive);
+
+    const y = try parseArgv(a, &.{ "tau", "setup", "--yes" }, .{});
+    try std.testing.expect(y.config.setup_yes);
+    const sy = try parseArgv(a, &.{ "tau", "setup", "-y" }, .{});
+    try std.testing.expect(sy.config.setup_yes);
+    const ni = try parseArgv(a, &.{ "tau", "setup", "--non-interactive" }, .{});
+    try std.testing.expect(ni.config.setup_non_interactive);
+    try std.testing.expect(!ni.config.setup_yes);
+}
+
+test "parse: setup TAU_YES/TAU_NONINTERACTIVE env enable unattended flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const y = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_YES", "1" },
+    }, .{});
+    try std.testing.expect(y.config.setup_yes);
+
+    const ni = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_NONINTERACTIVE", "true" },
+    }, .{});
+    try std.testing.expect(ni.config.setup_non_interactive);
+
+    // Falsy values never enable — "0"/"false"/empty are explicit nos.
+    for ([_][]const u8{ "0", "false", "", "nah" }) |v| {
+        const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+            .{ "TAU_YES", v },
+            .{ "TAU_NONINTERACTIVE", v },
+        }, .{});
+        try std.testing.expect(!p.config.setup_yes);
+        try std.testing.expect(!p.config.setup_non_interactive);
+    }
+}
+
+test "parse: setup TAU_SETUP_SHELL/TAU_SETUP_CLIENT fill unset flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "fish" },
+        .{ "TAU_SETUP_CLIENT", "zed" },
+    }, .{});
+    try std.testing.expectEqual(Action.setup, p.action);
+    try std.testing.expectEqualStrings("fish", p.config.setup_shell.?);
+    try std.testing.expectEqualStrings("zed", p.config.setup_client.?);
+
+    // Flag beats env.
+    const q = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "zsh", "--client", "nvim" }, &.{
+        .{ "TAU_SETUP_SHELL", "fish" },
+        .{ "TAU_SETUP_CLIENT", "zed" },
+    }, .{});
+    try std.testing.expectEqualStrings("zsh", q.config.setup_shell.?);
+    try std.testing.expectEqualStrings("nvim", q.config.setup_client.?);
+
+    // Empty env values are ignored entirely.
+    const e = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "" },
+        .{ "TAU_SETUP_CLIENT", "" },
+    }, .{});
+    try std.testing.expect(e.config.setup_shell == null);
+    try std.testing.expect(e.config.setup_client == null);
+}
+
+test "parse: setup invalid TAU_SETUP_* env values fail like a bad flag" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const s = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "tcsh" },
+    }, .{});
+    try std.testing.expectEqual(Action.err, s.action);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_SHELL: tcsh (want bash|zsh|fish|pwsh|all)", s.err_msg.?);
+
+    const c = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_CLIENT", "emacs" },
+    }, .{});
+    try std.testing.expectEqual(Action.err, c.action);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_CLIENT: emacs (want zed|nvim|vscode|jetbrains|all)", c.err_msg.?);
+
+    // An explicit flag shadows a bad env value — flag > env.
+    const okp = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "bash" }, &.{
+        .{ "TAU_SETUP_SHELL", "tcsh" },
+    }, .{});
+    try std.testing.expectEqual(Action.setup, okp.action);
+    try std.testing.expectEqualStrings("bash", okp.config.setup_shell.?);
 }
 /// Build "unknown provider 'X' — valid providers: a, b, c (run 'tau models')" error.
 fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {

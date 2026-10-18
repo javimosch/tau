@@ -24,9 +24,10 @@ $TauArgumentCompleter = {
     $guideFlags  = @('--human')
     $initFlags   = @('--force', '--stdout', '--provider')
     $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
-    $setupFlags  = @('--shell', '--offline', '--deep', '--provider', '--model', '--api-key')
+    $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive')
     $versionFlags = @('--verbose', '--mode')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
+    $clients     = @('zed', 'nvim', 'vscode', 'jetbrains', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
         '--print', '-p',
@@ -112,6 +113,7 @@ $TauArgumentCompleter = {
         '--force'             = 'overwrite an existing config file'
         '--stdout'            = 'print the starter config without writing it'
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
+        '--client'            = 'editor ACP client (zed|nvim|vscode|jetbrains|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
         '--probe'             = 'live-verify connectivity and credentials for every provider'
@@ -195,6 +197,7 @@ $TauArgumentCompleter = {
     switch ($prev) {
         '--provider'       { return & $emit $providers 'ParameterValue' }
         '--shell'          { return & $emit $shells 'ParameterValue' }
+        '--client'         { return & $emit $clients 'ParameterValue' }
         '--mode'           { return & $emit $modes 'ParameterValue' }
         '--role'           { return & $emit $roles 'ParameterValue' }
         { $_ -in '--tools', '-t', '--exclude-tools', '-xt' } {
