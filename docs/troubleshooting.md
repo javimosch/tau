@@ -274,6 +274,11 @@ Still stuck? Re-run with `--debug` — stderr prints a `{"debug_log":"<path>"}`
 line pointing at a redacted diagnostic log under `~/.config/tau/debug/`
 (`TAU_DEBUG_LOG` overrides the path), and `{"err":...}` envelopes carry the
 same path in a `debug_log` field. Credentials are masked
-(`***REDACTED***`), but review the file before sharing — it still contains
-tool I/O and endpoint details. Attach it to a bug report:
+(`***REDACTED***`) everywhere tau emits them — the debug log, `{"err"}` /
+`{"warn"}` envelopes, and every `tau doctor` surface (`--report`, `--json`,
+`--probe`) — covering the resolved key, all configured/env keys (including
+JSON-escaped spellings), Bearer tokens, `"api_key"`-style fields, `NAME=`
+env assignments, and URL-userinfo passwords in `TAU_ENDPOINT`. Review the
+file before sharing anyway — it still contains tool I/O and endpoint details.
+Attach it to a bug report:
 <https://github.com/javimosch/tau/issues>

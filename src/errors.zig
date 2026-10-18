@@ -102,15 +102,26 @@ pub const Opts = struct {
 /// Serialize the canonical envelope:
 /// {"err":{"code":N,"type":"T","message":"M","recoverable":B,"hint":"H","docs":"U"[,"debug_log":"P"]}}
 /// debug_log is spliced in only when --debug opened a diagnostic log.
-/// Caller owns the returned slice.
+/// Every caller-supplied string field passes through the process-wide secret
+/// mask first — a message that echoes a credential (a flag value, a provider
+/// name that is also a key, a URL userinfo password) can never leak it into
+/// the envelope. Caller owns the returned slice.
 pub fn format(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opts) ![]u8 {
-    const te = try json.escapeAlloc(a, opts.type_name orelse spec.type_name);
+    const tr = try debuglog.redactRegistered(a, opts.type_name orelse spec.type_name);
+    defer a.free(tr);
+    const mr = try debuglog.redactRegistered(a, message);
+    defer a.free(mr);
+    const hr = try debuglog.redactRegistered(a, opts.hint orelse spec.hint);
+    defer a.free(hr);
+    const dr = try debuglog.redactRegistered(a, opts.docs orelse spec.docs);
+    defer a.free(dr);
+    const te = try json.escapeAlloc(a, tr);
     defer a.free(te);
-    const me = try json.escapeAlloc(a, message);
+    const me = try json.escapeAlloc(a, mr);
     defer a.free(me);
-    const he = try json.escapeAlloc(a, opts.hint orelse spec.hint);
+    const he = try json.escapeAlloc(a, hr);
     defer a.free(he);
-    const de = try json.escapeAlloc(a, opts.docs orelse spec.docs);
+    const de = try json.escapeAlloc(a, dr);
     defer a.free(de);
     // When --debug opened a diagnostic log, link it so bug reports can attach it.
     const suf = debuglog.envelopeSuffix(a) orelse "";
@@ -229,6 +240,57 @@ test "no debug_log field when no diagnostic log is open" {
     const got = try format(gpa, invalid_argument, "x", .{});
     defer gpa.free(got);
     try testing.expect(std.mem.indexOf(u8, got, "debug_log") == null);
+}
+
+test "envelope masks registered secrets in every caller-supplied field" {
+    const gpa = testing.allocator;
+    debuglog.addSecretsForTest(&.{"sk-envelope-secret-42", "pw-leak-99"});
+    defer debuglog.clearSecretsForTest();
+    const got = try format(gpa, internal_error, "echoed sk-envelope-secret-42 back", .{
+        .type_name = "Xsk-envelope-secret-42",
+        .hint = "uses pw-leak-99",
+        .docs = "https://docs.example.com/sk-envelope-secret-42",
+    });
+    defer gpa.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "sk-envelope-secret-42") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "pw-leak-99") == null);
+    try testing.expect(std.mem.indexOf(u8, got, debuglog.mask) != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"docs\":\"https://docs.example.com/") != null);
+}
+
+test "envelope masks generic credential patterns even with no secrets registered" {
+    const gpa = testing.allocator;
+    debuglog.clearSecretsForTest();
+    defer debuglog.clearSecretsForTest();
+    const got = try format(gpa, internal_error,
+        "upstream said {\"api_key\":\"s3cr3t-val\"} and Authorization: Bearer tok-xyz-1",
+    .{});
+    defer gpa.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "s3cr3t-val") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "tok-xyz-1") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "Bearer " ++ debuglog.mask) != null);
+}
+
+test "property: generated secrets never survive the err envelope" {
+    var prng = std.Random.DefaultPrng.init(0x232_e44);
+    const r = prng.random();
+    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._";
+    var iter: usize = 0;
+    while (iter < 200) : (iter += 1) {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const s = try a.alloc(u8, r.intRangeAtMost(usize, 6, 32));
+        for (s) |*ch| ch.* = alphabet[r.uintLessThan(usize, alphabet.len)];
+        debuglog.addSecretsForTest(&.{s});
+        defer debuglog.clearSecretsForTest();
+        const msg = try std.fmt.allocPrint(a, "wrap {s} wrap", .{s});
+        const got = try format(a, internal_error, msg, .{});
+        if (std.mem.indexOf(u8, got, s) != null) {
+            std.debug.print("envelope leaked secret '{s}': {s}\n", .{ s, got });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "docs/troubleshooting.md documents the whole catalog" {

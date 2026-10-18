@@ -48,7 +48,9 @@ fn printErrorJsonHint(code: u8, error_type: []const u8, message: []const u8, rec
 }
 
 fn formatWarnJson(gpa: std.mem.Allocator, message: []const u8) ![]u8 {
-    const me = try json.escapeAlloc(gpa, message);
+    const mr = try debuglog.redactRegistered(gpa, message);
+    defer gpa.free(mr);
+    const me = try json.escapeAlloc(gpa, mr);
     defer gpa.free(me);
     return try std.fmt.allocPrint(gpa, "{{\"warn\":{{\"message\":\"{s}\"}}}}\n", .{me});
 }
@@ -497,6 +499,12 @@ pub fn main(init: std.process.Init) !void {
         printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "argument parsing failed", false);
         std.process.exit(@intFromEnum(ExitCode.internal_error));
     };
+
+    // Register every credential this process could leak (resolved key, all
+    // config/env losers, endpoint userinfo) so error envelopes and doctor
+    // output mask them — not just the --debug log. Deduped; debuglog.open
+    // re-registers under --debug.
+    debuglog.registerSecrets(arena, init.environ_map, parsed.config);
 
     switch (parsed.action) {
         .help => {

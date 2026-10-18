@@ -87,7 +87,10 @@ fn summarize(checks: []const Check) Summary {
     return s;
 }
 
-/// Serialize one check as a JSON object (all strings escaped).
+/// Serialize one check as a JSON object. Strings are escaped, and
+/// message/hint pass through the process-wide secret mask — a check that
+/// interpolates a credential (endpoint userinfo, an echoed key) can never
+/// leak it into the report or NDJSON stream.
 fn formatCheckJson(arena: std.mem.Allocator, c: Check) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "{\"name\":\"");
@@ -95,11 +98,11 @@ fn formatCheckJson(arena: std.mem.Allocator, c: Check) ![]u8 {
     try buf.appendSlice(arena, "\",\"status\":\"");
     try buf.appendSlice(arena, @tagName(c.status));
     try buf.appendSlice(arena, "\",\"message\":\"");
-    try json.escapeInto(arena, &buf, c.message);
+    try json.escapeInto(arena, &buf, try debuglog.redactRegistered(arena, c.message));
     try buf.append(arena, '"');
     if (c.hint) |h| {
         try buf.appendSlice(arena, ",\"hint\":\"");
-        try json.escapeInto(arena, &buf, h);
+        try json.escapeInto(arena, &buf, try debuglog.redactRegistered(arena, h));
         try buf.append(arena, '"');
     }
     try buf.append(arena, '}');
@@ -145,7 +148,7 @@ fn formatFixJson(arena: std.mem.Allocator, f: FixOutcome) ![]u8 {
     try buf.appendSlice(arena, "\",\"status\":\"");
     try buf.appendSlice(arena, @tagName(f.status));
     try buf.appendSlice(arena, "\",\"detail\":\"");
-    try json.escapeInto(arena, &buf, f.detail);
+    try json.escapeInto(arena, &buf, try debuglog.redactRegistered(arena, f.detail));
     try buf.appendSlice(arena, "\"}");
     return buf.toOwnedSlice(arena);
 }
@@ -198,8 +201,13 @@ fn formatVerdictJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]
 
 /// Append a value as a Markdown table cell: a `|` would split the row and a
 /// newline would break the table, so both are rewritten.
-fn appendMdCell(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
-    for (s) |ch| {
+/// Values are masked with the report's collected secrets before escaping:
+/// check messages, hints, fix details, and effective-config values (e.g. an
+/// endpoint carrying a userinfo password) can never leak credential bytes
+/// into the bundle.
+fn appendMdCell(arena: std.mem.Allocator, buf: *std.ArrayList(u8), secrets: []const []const u8, s: []const u8) !void {
+    const r = try debuglog.redactAlloc(arena, s, secrets);
+    for (r) |ch| {
         switch (ch) {
             '|' => try buf.appendSlice(arena, "\\|"),
             '\n', '\r' => try buf.append(arena, ' '),
@@ -208,11 +216,11 @@ fn appendMdCell(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8
     }
 }
 
-fn appendMdRow(arena: std.mem.Allocator, buf: *std.ArrayList(u8), k: []const u8, v: []const u8) !void {
+fn appendMdRow(arena: std.mem.Allocator, buf: *std.ArrayList(u8), secrets: []const []const u8, k: []const u8, v: []const u8) !void {
     try buf.appendSlice(arena, "| ");
-    try appendMdCell(arena, buf, k);
+    try appendMdCell(arena, buf, secrets, k);
     try buf.appendSlice(arena, " | `");
-    try appendMdCell(arena, buf, v);
+    try appendMdCell(arena, buf, secrets, v);
     try buf.appendSlice(arena, "` |\n");
 }
 
@@ -226,28 +234,39 @@ fn appendMdRow(arena: std.mem.Allocator, buf: *std.ArrayList(u8), k: []const u8,
 fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
     const s = summarize(checks);
     const b = version_mod.build;
+    // Mask list = credentials derivable from this cfg/env plus everything
+    // registered process-wide — the bundle must not leak either kind.
+    const secrets = blk: {
+        const local = debuglog.collectSecrets(arena, env, cfg);
+        const reg = debuglog.registeredSecrets();
+        if (reg.len == 0) break :blk local;
+        const both = try arena.alloc([]const u8, local.len + reg.len);
+        @memcpy(both[0..local.len], local);
+        @memcpy(both[local.len..], reg);
+        break :blk both;
+    };
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "# tau doctor report\n\n**Verdict:** ");
     try buf.appendSlice(arena, if (s.fail == 0) "ok" else "**FAILING**");
     try buf.appendSlice(arena, try std.fmt.allocPrint(arena, " — {d} ok, {d} warn, {d} fail, {d} skip\n\n", .{ s.ok, s.warn, s.fail, s.skip }));
 
     try buf.appendSlice(arena, "## Build\n\n| field | value |\n| --- | --- |\n");
-    try appendMdRow(arena, &buf, "version", version);
-    try appendMdRow(arena, &buf, "commit", b.commit);
-    try appendMdRow(arena, &buf, "target", b.target);
-    try appendMdRow(arena, &buf, "build_date", b.date);
-    try appendMdRow(arena, &buf, "zig", b.zig);
+    try appendMdRow(arena, &buf, secrets, "version", version);
+    try appendMdRow(arena, &buf, secrets, "commit", b.commit);
+    try appendMdRow(arena, &buf, secrets, "target", b.target);
+    try appendMdRow(arena, &buf, secrets, "build_date", b.date);
+    try appendMdRow(arena, &buf, secrets, "zig", b.zig);
 
     try buf.appendSlice(arena, "\n## Checks\n\n| check | status | message | hint |\n| --- | --- | --- | --- |\n");
     for (checks) |c| {
         try buf.appendSlice(arena, "| `");
-        try appendMdCell(arena, &buf, c.name);
+        try appendMdCell(arena, &buf, secrets, c.name);
         try buf.appendSlice(arena, "` | ");
         try buf.appendSlice(arena, if (c.status == .fail) "**fail**" else @tagName(c.status));
         try buf.appendSlice(arena, " | ");
-        try appendMdCell(arena, &buf, c.message);
+        try appendMdCell(arena, &buf, secrets, c.message);
         try buf.appendSlice(arena, " | ");
-        if (c.hint) |h| try appendMdCell(arena, &buf, h) else try buf.appendSlice(arena, "—");
+        if (c.hint) |h| try appendMdCell(arena, &buf, secrets, h) else try buf.appendSlice(arena, "—");
         try buf.appendSlice(arena, " |\n");
     }
 
@@ -255,34 +274,33 @@ fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Ch
         try buf.appendSlice(arena, "\n## Fixes\n\n| fix | check | status | detail |\n| --- | --- | --- | --- |\n");
         for (fx) |f| {
             try buf.appendSlice(arena, "| `");
-            try appendMdCell(arena, &buf, f.id);
+            try appendMdCell(arena, &buf, secrets, f.id);
             try buf.appendSlice(arena, "` | `");
-            try appendMdCell(arena, &buf, f.check);
+            try appendMdCell(arena, &buf, secrets, f.check);
             try buf.appendSlice(arena, "` | ");
             try buf.appendSlice(arena, @tagName(f.status));
             try buf.appendSlice(arena, " | ");
-            try appendMdCell(arena, &buf, f.detail);
+            try appendMdCell(arena, &buf, secrets, f.detail);
             try buf.appendSlice(arena, " |\n");
         }
     }
 
     try buf.appendSlice(arena, "\n## Effective configuration\n\n| field | value |\n| --- | --- |\n");
-    try appendMdRow(arena, &buf, "provider", cfg.provider);
-    try appendMdRow(arena, &buf, "model", cfg.model);
-    try appendMdRow(arena, &buf, "endpoint", cfg.endpoint);
-    try appendMdRow(arena, &buf, "context_window", try std.fmt.allocPrint(arena, "{d}", .{cfg.context_window}));
+    try appendMdRow(arena, &buf, secrets, "provider", cfg.provider);
+    try appendMdRow(arena, &buf, secrets, "model", cfg.model);
+    try appendMdRow(arena, &buf, secrets, "endpoint", cfg.endpoint);
+    try appendMdRow(arena, &buf, secrets, "context_window", try std.fmt.allocPrint(arena, "{d}", .{cfg.context_window}));
     const key_source = if (cfgmod.resolveApiKeyInfo(cfg, env)) |rk|
         keySourceLabel(arena, cfg.provider, rk)
     else
         "none resolved";
-    try appendMdRow(arena, &buf, "api_key_source", key_source);
+    try appendMdRow(arena, &buf, secrets, "api_key_source", key_source);
 
     try buf.appendSlice(arena, "\n## Config file\n\n");
     const cfg_path = configfile.path(arena, env);
     if (cfg_path == null) {
         try buf.appendSlice(arena, "_No config file (HOME is not set) — defaults in use._\n");
     } else if (std.Io.Dir.cwd().readFileAlloc(io, cfg_path.?, arena, .unlimited)) |bytes| {
-        const secrets = debuglog.collectSecrets(arena, env, cfg);
         const redacted = try debuglog.redactAlloc(arena, bytes, secrets);
         try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "`{s}`:\n\n```jsonc\n", .{cfg_path.?}));
         try buf.appendSlice(arena, redacted);
@@ -1501,7 +1519,7 @@ test "appendMdCell: escapes pipes and flattens newlines" {
     defer arena.deinit();
     const a = arena.allocator();
     var buf: std.ArrayList(u8) = .empty;
-    try appendMdCell(a, &buf, "a|b\nc\rd");
+    try appendMdCell(a, &buf, &.{}, "a|b\nc\rd");
     try testing.expectEqualStrings("a\\|b c d", buf.items);
 }
 
@@ -1902,4 +1920,109 @@ test "collectChecks: provider_probes placeholder without --probe, per-provider r
     }
     try testing.expectEqual(cfgmod.providers.len, probe_rows);
     try testing.expectEqual(cfgmod.providers.len, auth_rows);
+}
+
+// ---------------------------------------------------------------------------
+// Redaction invariants — credentials that reach a serializer must not survive
+// into doctor's JSON report, NDJSON stream, or Markdown bundle.
+// ---------------------------------------------------------------------------
+
+const redact_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._";
+
+/// Random secret with a `k-` prefix so it can never coincide with static
+/// report text ("openai", "env:X", field names) — any hit is a real leak.
+fn randKey(r: std.Random, a: std.mem.Allocator) ![]u8 {
+    const s = try a.alloc(u8, r.intRangeAtMost(usize, 10, 36));
+    s[0] = 'k';
+    s[1] = '-';
+    for (s[2..]) |*ch| ch.* = redact_alphabet[r.uintLessThan(usize, redact_alphabet.len)];
+    return s;
+}
+
+fn expectNoLeak(out: []const u8, secret: []const u8) !void {
+    if (std.mem.indexOf(u8, out, secret) != null) {
+        std.debug.print("doctor output leaked '{s}': {s}\n", .{ secret, out });
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "property: resolved keys never appear in serialized doctor output" {
+    var prng = std.Random.DefaultPrng.init(0x232_d0c7);
+    const r = prng.random();
+    const sources = [_]cfgmod.ApiKeySource{ .flag, .config_keys, .env_provider, .env_tau, .config_global, .builtin };
+    var iter: usize = 0;
+    while (iter < 150) : (iter += 1) {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var env = std.process.Environ.Map.init(a);
+
+        const key = try randKey(r, a);
+        const rk = cfgmod.ResolvedKey{
+            .key = key,
+            .source = sources[r.uintLessThan(usize, sources.len)],
+            .env_name = "X_PROP_KEY",
+        };
+        const cfg = Config{ .provider = "openai" };
+        debuglog.addSecretsForTest(&.{key});
+        defer debuglog.clearSecretsForTest();
+
+        // Well-formed checks (source label only) plus a hostile one that
+        // embeds the key outright — both must serialize clean.
+        const checks = [_]Check{
+            checkApiKey(a, cfg, rk),
+            .{ .name = "probe_x_auth", .status = .fail, .message = try std.fmt.allocPrint(a, "endpoint unreachable: https://u:{s}@h/", .{key}), .hint = try std.fmt.allocPrint(a, "verify token {s}", .{key}) },
+        };
+        for (checks) |c| {
+            try expectNoLeak(try formatCheckJson(a, c), key);
+            try expectNoLeak(try formatCheckEvent(a, c), key);
+        }
+        try expectNoLeak(try formatReportJson(a, &checks, null), key);
+        try expectNoLeak(try formatVerdictJson(a, &checks, null), key);
+        const fix = FixOutcome{ .id = "f", .check = "c", .status = .applied, .detail = try std.fmt.allocPrint(a, "saw {s}", .{key}) };
+        try expectNoLeak(try formatFixJson(a, fix), key);
+        try expectNoLeak(try formatFixEvent(a, fix), key);
+        const md = try formatReportMarkdown(testing.io, a, &checks, null, cfg, &env);
+        try expectNoLeak(md, key);
+        // The source label itself must never become a key channel.
+        try expectNoLeak(keySourceLabel(a, "openai", rk), key);
+    }
+}
+
+test "formatReportMarkdown invariant: seeded credentials never appear in the bundle" {
+    var prng = std.Random.DefaultPrng.init(0x232_b0d);
+    const r = prng.random();
+    var iter: usize = 0;
+    while (iter < 40) : (iter += 1) {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var home = try TestHome.init(a);
+        defer home.deinit();
+
+        const k_file = try randKey(r, a);
+        const k_map = try randKey(r, a);
+        const k_env = try randKey(r, a);
+        const k_pw = try randKey(r, a);
+        try home.writeConfig(a, try std.fmt.allocPrint(a,
+            "{{ \"provider\": \"openai\", \"api_key\": \"{s}\", \"keys\": {{ \"openai\": \"{s}\" }} }}",
+            .{ k_file, k_map }));
+        var km = std.StringHashMap([]const u8).init(a);
+        try km.put("openai", k_map);
+        try home.env.put("TAU_API_KEY", k_env);
+        const cfg = Config{
+            .provider = "openai",
+            .config_api_key = k_file,
+            .keys = km,
+            .endpoint = try std.fmt.allocPrint(a, "https://user:{s}@127.0.0.1:1/", .{k_pw}),
+        };
+        // Real check shapes that interpolate cfg.endpoint verbatim.
+        const checks = [_]Check{
+            checkProvider(a, cfg),
+            .{ .name = "endpoint_reachable", .status = .fail, .message = try std.fmt.allocPrint(a, "endpoint unreachable: {s}", .{cfg.endpoint}) },
+        };
+        const md = try formatReportMarkdown(testing.io, a, &checks, null, cfg, &home.env);
+        for ([_][]const u8{ k_file, k_map, k_env, k_pw }) |sec| try expectNoLeak(md, sec);
+        try testing.expect(std.mem.indexOf(u8, md, debuglog.mask) != null);
+    }
 }
