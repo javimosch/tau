@@ -84,6 +84,8 @@ and finishes with the `tau doctor` health report:
 ```bash
 ./zig-out/bin/tau setup                    # detect everything, write nothing extra
 ./zig-out/bin/tau setup --client zed       # also configure Zed's agent_servers
+./zig-out/bin/tau setup --non-interactive --shell bash --client zed \
+    --offline                              # unattended: devcontainers, dotfiles, CI
 ```
 
 tau needs an API key for its configured provider. Export the matching environment variable:

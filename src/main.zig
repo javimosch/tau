@@ -130,10 +130,17 @@ const help_text =
     \\                              completions + editor ACP config + doctor
     \\                              health summary (NDJSON)
     \\      --shell <name>          Completions shell: bash|zsh|fish|pwsh|all
-    \\                              (default: detect from $SHELL)
+    \\                              (default: detect from $SHELL; env
+    \\                              TAU_SETUP_SHELL)
     \\      --client <name>         Editor ACP client: zed|nvim|vscode|
-    \\                              jetbrains|all (default: detect only)
+    \\                              jetbrains|all (default: detect only; env
+    \\                              TAU_SETUP_CLIENT)
     \\      --offline/--deep        Passed through to the doctor step
+    \\  -y, --yes                   Unattended: approve all write steps
+    \\                              (env TAU_YES=1)
+    \\      --non-interactive       Unattended contract for scripts/CI: never
+    \\                              prompts, never reads stdin (env
+    \\                              TAU_NONINTERACTIVE=1)
     \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
@@ -305,7 +312,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
-    .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON)." },
+    .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
     .{ .a = "tau doctor [--offline|--deep]", .b = "diagnose the setup chain (config, provider, key, connectivity) — JSON report." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
