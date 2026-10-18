@@ -25,7 +25,7 @@ $TauArgumentCompleter = {
     $initFlags   = @('--force', '--stdout', '--provider')
     $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--offline', '--deep', '--provider', '--model', '--api-key')
-    $versionFlags = @('--verbose', '--mode')
+    $versionFlags = @('--verbose', '--check', '--mode')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
@@ -117,6 +117,7 @@ $TauArgumentCompleter = {
         '--probe'             = 'live-verify connectivity and credentials for every provider'
         '--selftest'          = 'credential-free end-to-end session against a loopback stub'
         '--verbose'           = 'include build metadata in version output'
+        '--check'             = 'non-blocking update check against the latest release'
     }
 
     # Emit $candidates filtered by the word being completed.

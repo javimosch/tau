@@ -135,10 +135,13 @@ pub fn parse(
         return .{ .action = .models, .config = base };
     }
 
-    // `tau version [--verbose] [--mode text|json]` — command form of
+    // `tau version [--verbose] [--check] [--mode text|json]` — command form of
     // -v/--version. Bare output is `tau 0.4.0` either way; --verbose adds
     // build metadata (commit, target triple, build date, zig version) as a
-    // JSON object, or key: value lines under --mode text.
+    // JSON object, or key: value lines under --mode text. --check adds a
+    // non-blocking, opt-out (TAU_NO_UPDATE_CHECK) update check against the
+    // latest GitHub release; it always exits 0 and reports checked:false
+    // rather than failing when the lookup cannot run.
     if (argv.len > 0 and eq(argv[0], "version")) {
         var vcfg: Config = base;
         var j: usize = 1;
@@ -146,6 +149,8 @@ pub fn parse(
             const a = argv[j];
             if (eq(a, "--verbose")) {
                 vcfg.version_verbose = true;
+            } else if (eq(a, "--check")) {
+                vcfg.version_check = true;
             } else if (eq(a, "--mode")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -1252,6 +1257,22 @@ test "parse: version --verbose/--mode select build-metadata output" {
     try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
 
     const q = try parseArgv(a, &.{ "tau", "version", "--verbose", "--mode", "text" }, .{});
+    try std.testing.expect(q.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, q.config.mode);
+}
+
+test "parse: version --check selects the update check and composes with --verbose/--mode" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version", "--check" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(p.config.version_check);
+    try std.testing.expect(!p.config.version_verbose);
+
+    const q = try parseArgv(a, &.{ "tau", "version", "--check", "--verbose", "--mode", "text" }, .{});
+    try std.testing.expect(q.config.version_check);
     try std.testing.expect(q.config.version_verbose);
     try std.testing.expectEqual(cfgmod.OutputMode.text, q.config.mode);
 }

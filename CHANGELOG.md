@@ -60,6 +60,13 @@ are backward compatible.
   end-to-end. Loopback-only, so it runs under `--offline` — `tau doctor
   --offline --selftest` is a fully hermetic install check. Emits an NDJSON
   check event under `--json`; skips only when curl is unavailable
+- `tau version --check` — non-blocking update check against the latest GitHub
+  release: prints `checked`/`latest`/`update_available` (+ `update_url` when
+  newer) and always exits 0, reporting `checked:false` with a `reason` when
+  the lookup cannot run. `tau doctor` gained a matching `update_available`
+  check that warns when a newer release exists. Opt out everywhere via
+  `TAU_NO_UPDATE_CHECK=1`; `TAU_UPDATE_URL` overrides the lookup URL (for
+  proxies/mirrors and `file://` stubs in tests); `doctor --offline` skips it
 - `tau init` — write a commented starter `~/.config/tau/config.json` seeded
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs

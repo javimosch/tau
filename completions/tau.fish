@@ -193,6 +193,7 @@ complete -c tau -n $setup -f -l api-key -x -d 'diagnose an override API key'
 
 set -l version '__tau_using_subcommand version'
 complete -c tau -n $version -f -l verbose -d 'include build metadata (commit, target, build date, zig version)'
+complete -c tau -n $version -f -l check -d 'non-blocking update check against the latest release'
 complete -c tau -n $version -f -l mode -x -a 'text json' -d 'output mode'
 
 # `tau models` takes no further arguments.

@@ -201,6 +201,9 @@ const help_text =
     \\      --verbose                 Include build metadata: git commit, target
     \\                              triple, build date, zig version (JSON;
     \\                              --mode text prints key: value lines)
+    \\      --check                   Non-blocking check for a newer release
+    \\                              (always exits 0; opt out via
+    \\                              TAU_NO_UPDATE_CHECK)
     \\
     \\Models:
     \\  tau models                    List available providers and models
@@ -224,9 +227,17 @@ fn printHelp() void {
     writeOut(help_text);
 }
 
-fn printVersion(cfg: Config) void {
+fn printVersion(io: std.Io, gpa: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) void {
     const a = std.heap.page_allocator;
     const b = @import("version.zig").build;
+    if (cfg.version_check) {
+        // `tau version --check` — advisory update check; always exits 0 and
+        // reports checked:false + reason rather than failing when the lookup
+        // cannot run (offline, no curl, opted out via TAU_NO_UPDATE_CHECK).
+        const res = @import("update.zig").check(io, gpa, a, env);
+        printVersionChecked(a, cfg, res);
+        return;
+    }
     const v = blk: {
         if (!cfg.version_verbose) break :blk std.fmt.allocPrint(a, "{s} {s}\n", .{ name, version }) catch return;
         if (cfg.mode == .text) break :blk std.fmt.allocPrint(a,
@@ -238,6 +249,69 @@ fn printVersion(cfg: Config) void {
     };
     defer a.free(v);
     writeOut(v);
+}
+
+/// `version --check` output. Text mode appends `latest:`/`update_available:`
+/// lines (or `update_check: <reason>`) to the usual version header; JSON mode
+/// merges the check fields into the version object. Never exits non-zero.
+fn printVersionChecked(a: std.mem.Allocator, cfg: Config, res: @import("update.zig").Result) void {
+    const b = @import("version.zig").build;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(a);
+    if (cfg.mode == .text) {
+        if (cfg.version_verbose) {
+            buf.appendSlice(a, std.fmt.allocPrint(a,
+                "name: {s}\nversion: {s}\ncommit: {s}\ntarget: {s}\nbuild_date: {s}\nzig: {s}\n",
+                .{ name, version, b.commit, b.target, b.date, b.zig }) catch return) catch return;
+        } else {
+            buf.appendSlice(a, std.fmt.allocPrint(a, "{s} {s}\n", .{ name, version }) catch return) catch return;
+        }
+        if (res.latest) |l| {
+            buf.appendSlice(a, std.fmt.allocPrint(a, "latest: {s}\nupdate_available: {s}\n",
+                .{ l, if (res.update_available) "true" else "false" }) catch return) catch return;
+            if (res.update_available) {
+                const u = @import("update.zig").releaseUrl(a, res.tag orelse l) catch return;
+                buf.appendSlice(a, std.fmt.allocPrint(a, "update_url: {s}\n", .{u}) catch return) catch return;
+            }
+        } else {
+            buf.appendSlice(a, std.fmt.allocPrint(a, "update_check: {s}\n", .{res.reason orelse "unavailable"}) catch return) catch return;
+        }
+    } else {
+        buf.appendSlice(a, "{\"name\":\"") catch return;
+        buf.appendSlice(a, name) catch return;
+        buf.appendSlice(a, "\",\"version\":\"") catch return;
+        buf.appendSlice(a, version) catch return;
+        if (cfg.version_verbose) {
+            buf.appendSlice(a, std.fmt.allocPrint(a,
+                "\",\"commit\":\"{s}\",\"target\":\"{s}\",\"build_date\":\"{s}\",\"zig\":\"{s}",
+                .{ b.commit, b.target, b.date, b.zig }) catch return) catch return;
+        }
+        buf.appendSlice(a, "\",\"checked\":") catch return;
+        buf.appendSlice(a, if (res.checked) "true" else "false") catch return;
+        buf.appendSlice(a, ",\"latest\":") catch return;
+        if (res.latest) |l| {
+            appendJsonStr(a, &buf, l);
+        } else {
+            buf.appendSlice(a, "null") catch return;
+        }
+        if (res.tag) |t| {
+            buf.appendSlice(a, ",\"tag\":") catch return;
+            appendJsonStr(a, &buf, t);
+        }
+        buf.appendSlice(a, ",\"update_available\":") catch return;
+        buf.appendSlice(a, if (res.update_available) "true" else "false") catch return;
+        if (res.update_available) {
+            const u = @import("update.zig").releaseUrl(a, res.tag orelse version) catch return;
+            buf.appendSlice(a, ",\"update_url\":") catch return;
+            appendJsonStr(a, &buf, u);
+        }
+        if (res.reason) |r| {
+            buf.appendSlice(a, ",\"reason\":") catch return;
+            appendJsonStr(a, &buf, r);
+        }
+        buf.appendSlice(a, "}\n") catch return;
+    }
+    writeOut(buf.items);
 }
 
 // Single source of truth for all CLI flags. printHelpJson and the test both
@@ -346,6 +420,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + doctor health summary (NDJSON)." },
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
+    .{ .a = "tau version [--verbose] [--check]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
@@ -507,7 +582,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         },
         .version => {
-            printVersion(parsed.config);
+            printVersion(io, gpa, parsed.config, init.environ_map);
             return;
         },
         .help_json => {
@@ -739,6 +814,7 @@ test {
     _ = @import("init.zig");
     _ = @import("setup.zig");
     _ = @import("version.zig");
+    _ = @import("update.zig");
 }
 
 test "flag_specs appear in help_text" {

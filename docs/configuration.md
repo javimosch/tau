@@ -195,6 +195,8 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 | `TAU_API_KEY` | Fallback API key, used after provider-specific env vars. |
 | `TAU_ENDPOINT` | Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers. |
 | `TAU_DEBUG_LOG` | Overrides the `--debug` diagnostic log destination (default `~/.config/tau/debug/<timestamp>.log`). |
+| `TAU_NO_UPDATE_CHECK` | Any non-empty, non-`0` value disables the update check everywhere — `tau version --check` and the `tau doctor` `update_available` warning. |
+| `TAU_UPDATE_URL` | Overrides the release lookup URL used by the update check (default: the GitHub latest-release API). Useful for mirrors/proxies and `file://` stubs in tests. |
 | `XIAOMI_API_KEY`, `PIZIG_API_KEY` | API keys for the `xiaomi` provider (tried in that order). |
 | `OPENAI_API_KEY` | API key for the `openai` provider. |
 | `DEEPSEEK_API_KEY` | API key for the `deepseek` provider. |
