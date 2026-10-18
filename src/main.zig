@@ -4,6 +4,8 @@ const cfgmod = @import("config.zig");
 const argsmod = @import("args.zig");
 const json = @import("json.zig");
 const agent = @import("agent.zig");
+const debuglog = @import("debuglog.zig");
+const errs = @import("errors.zig");
 const Config = cfgmod.Config;
 
 pub const name = "tau";
@@ -28,18 +30,21 @@ fn writeErr(s: []const u8) void {
     term.err(s);
 }
 
+const doc_url = @import("version.zig").troubleshooting_doc_url;
+const providers_doc_url = @import("version.zig").providers_doc_url;
+
 fn formatErrorJson(gpa: std.mem.Allocator, code: u8, error_type: []const u8, message: []const u8, recoverable: bool) ![]u8 {
-    const te = try json.escapeAlloc(gpa, error_type);
-    defer gpa.free(te);
-    const me = try json.escapeAlloc(gpa, message);
-    defer gpa.free(me);
-    return try std.fmt.allocPrint(gpa, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{}}}}}\n", .{ code, te, me, recoverable });
+    return errs.format(gpa, errs.specFor(code), message, .{ .type_name = error_type, .recoverable = recoverable });
 }
 
 fn printErrorJson(code: u8, error_type: []const u8, message: []const u8, recoverable: bool) void {
-    const j = formatErrorJson(std.heap.page_allocator, code, error_type, message, recoverable) catch return;
-    defer std.heap.page_allocator.free(j);
-    writeErr(j);
+    printErrorJsonHint(code, error_type, message, recoverable, null);
+}
+
+/// printErrorJson with a dynamic remediation hint (e.g. authHint names the
+/// provider's env var); null falls back to the catalog hint for `code`.
+fn printErrorJsonHint(code: u8, error_type: []const u8, message: []const u8, recoverable: bool, hint: ?[]const u8) void {
+    errs.printErr(std.heap.page_allocator, errs.specFor(code), message, .{ .type_name = error_type, .recoverable = recoverable, .hint = hint });
 }
 
 fn formatWarnJson(gpa: std.mem.Allocator, message: []const u8) ![]u8 {
@@ -95,7 +100,10 @@ const help_text =
     \\  -xt, --exclude-tools <csv>   Denylist of tool names
     \\  -nt, --no-tools              Disable all tools
     \\      --thinking               Enable thinking chunks (show model reasoning)
-    \\      --debug                  Show perf stats and tool calls (input+output)
+    \\      --debug                  Show perf stats and tool calls (input+output) on
+    \\                          stderr, and write a redacted diagnostic log to
+    \\                          ~/.config/tau/debug/ for bug reports
+    \\                          (override the path with TAU_DEBUG_LOG)
     \\      --dry-run                Report the tools that would be called; execute none
     \\      --temperature <f>        Sampling temperature (default: 0.7)
     \\      --max-tokens <n>         Max output tokens
@@ -119,6 +127,28 @@ const help_text =
     \\      --help-json              Machine-readable help as JSON
     \\  -h, --help                   Show this help
     \\  -v, --version                Show version
+    \\
+    \\Setup:
+    \\  tau init                    Write a commented starter config to
+    \\                              ~/.config/tau/config.json (detects env API keys)
+    \\      --force                 Overwrite an existing config file
+    \\      --provider <name>       Scaffold for a specific provider
+    \\      --stdout                Print the starter config without writing it
+    \\  tau setup                   One-shot onboarding: init + install shell
+    \\                              completions + editor ACP config + doctor
+    \\                              health summary (NDJSON)
+    \\      --shell <name>          Completions shell: bash|zsh|fish|pwsh|all
+    \\                              (default: detect from $SHELL; env
+    \\                              TAU_SETUP_SHELL)
+    \\      --client <name>         Editor ACP client: zed|nvim|vscode|
+    \\                              jetbrains|all (default: detect only; env
+    \\                              TAU_SETUP_CLIENT)
+    \\      --offline/--deep        Passed through to the doctor step
+    \\  -y, --yes                   Unattended: approve all write steps
+    \\                              (env TAU_YES=1)
+    \\      --non-interactive       Unattended contract for scripts/CI: never
+    \\                              prompts, never reads stdin (env
+    \\                              TAU_NONINTERACTIVE=1)
     \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
@@ -151,7 +181,36 @@ const help_text =
     \\  tau skills search <query>     Search skills by keyword
     \\  tau skills load <name>        Load a skill into system context
     \\
+    \\Diagnostics:
+    \\  tau doctor                    Validate setup (config file, provider, API key, connectivity)
+    \\      --offline                 Skip network checks
+    \\      --deep                    Also run an authenticated probe (spends ~1 token)
+    \\      --probe                   Live-verify connectivity + credentials for every
+    \\                              provider (per-provider pass/fail rows; spends
+    \\                              ~1 token per keyed provider)
+    \\      --selftest                Credential-free end-to-end check: spawn tau
+    \\                              against a loopback stub provider and verify the
+    \\                              canned reply comes back (no real keys/network)
+    \\      --provider/--model/--api-key   Diagnose an override instead of the configured default
+    \\      --fix                     Propose remediations for fixable checks (missing
+    \\                              config, loose permissions, missing completions);
+    \\                              prompts per fix on a TTY
+    \\      --yes                     Apply --fix remediations without prompting
+    \\      --json                    Stream NDJSON check/fix events + a done:true
+    \\                              verdict instead of the single-object report
+    \\      --report                  Print a Markdown diagnostics bundle (build
+    \\                              metadata, checks, sanitized config file) for
+    \\                              pasting into a bug report; mutually exclusive
+    \\                              with --json
+    \\      --shell <name>            Completions shell: bash|zsh|fish|pwsh|all
+    \\                              (default: detect from $SHELL)
     \\
+    \\
+    \\Version:
+    \\  tau version                   Print the version (same as -v/--version)
+    \\      --verbose                 Include build metadata: git commit, target
+    \\                              triple, build date, zig version (JSON;
+    \\                              --mode text prints key: value lines)
     \\
     \\Models:
     \\  tau models                    List available providers and models
@@ -159,7 +218,8 @@ const help_text =
     \\Guide (embedded operator manual — read once, drive with no external docs):
     \\  tau guide                     Print the full guide as JSON (agent-readable)
     \\  tau guide --human             ...as markdown
-    \\\Examples:
+    \\
+    \\Examples:
     \\  tau "List the files in src/"
     \\  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
     \\  tau --session work1 "Remember: the build uses zig 0.16"
@@ -174,9 +234,19 @@ fn printHelp() void {
     writeOut(help_text);
 }
 
-fn printVersion() void {
-    const v = std.fmt.allocPrint(std.heap.page_allocator, "{s} {s}\n", .{ name, version }) catch return;
-    defer std.heap.page_allocator.free(v);
+fn printVersion(cfg: Config) void {
+    const a = std.heap.page_allocator;
+    const b = @import("version.zig").build;
+    const v = blk: {
+        if (!cfg.version_verbose) break :blk std.fmt.allocPrint(a, "{s} {s}\n", .{ name, version }) catch return;
+        if (cfg.mode == .text) break :blk std.fmt.allocPrint(a,
+            "name: {s}\nversion: {s}\ncommit: {s}\ntarget: {s}\nbuild_date: {s}\nzig: {s}\n",
+            .{ name, version, b.commit, b.target, b.date, b.zig }) catch return;
+        break :blk std.fmt.allocPrint(a,
+            "{{\"name\":\"{s}\",\"version\":\"{s}\",\"commit\":\"{s}\",\"target\":\"{s}\",\"build_date\":\"{s}\",\"zig\":\"{s}\"}}\n",
+            .{ name, version, b.commit, b.target, b.date, b.zig }) catch return;
+    };
+    defer a.free(v);
     writeOut(v);
 }
 
@@ -263,7 +333,7 @@ fn printHelpJson() void {
 // Single source of truth: the consts below render to JSON (default) or markdown (--human).
 const GuideItem = struct { a: []const u8, b: []const u8 };
 const guide_one_liner = "tau — a non-interactive, agent-first AI CLI (Zig): single-shot chat with tool-calling, sessions, goal mode, fleet orchestration, and an ACP server. JSON output by default; semantic exit codes.";
-const guide_model = "You (an agent) invoke tau once per task; it runs a single agentic turn (LLM + tools) and exits — no REPL, never blocks on stdin. Output is JSON by default (--mode text for prose; errors are always JSON {err:{code,type,message}}). Provider/model/key resolve from ~/.config/tau/config.json, provider env vars, or TAU_API_KEY; endpoints are OpenAI-compatible /chat/completions (override with TAU_ENDPOINT).";
+const guide_model = "You (an agent) invoke tau once per task; it runs a single agentic turn (LLM + tools) and exits — no REPL, never blocks on stdin. Output is JSON by default (--mode text for prose; errors are always JSON {err:{code,type,message,hint,docs}}). Provider/model/key resolve from ~/.config/tau/config.json, provider env vars, or TAU_API_KEY; endpoints are OpenAI-compatible /chat/completions (override with TAU_ENDPOINT).";
 const guide_loop = "parse args -> resolve provider/model/endpoint/key -> build messages -> LLM turn -> if the model calls tools, run them (allowlisted via --tools) and loop -> stop when the model stops calling tools or hits --max-iterations -> emit result + semantic exit code. --session <name> persists conversation+goal across calls; /goal <directive> runs autonomously until the <GOAL_MET> sentinel.";
 const guide_concepts = [_]GuideItem{
     .{ .a = "non-interactive", .b = "one prompt in, one result out; built for scripts and agents, not a REPL." },
@@ -283,6 +353,9 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau --session <name> \"/goal <directive>\"", .b = "autonomous goal mode." },
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
+    .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
+    .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
+    .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
@@ -295,17 +368,21 @@ const guide_examples = [_]GuideItem{
     .{ .a = "TAU_ENDPOINT=https://openrouter.ai/api/v1/chat/completions TAU_API_KEY=sk-or-... tau --model deepseek/deepseek-v4-flash \"hi\"", .b = "point at any OpenAI-compatible endpoint (OpenRouter)." },
 };
 const guide_gotchas = [_][]const u8{
-    "JSON is the default; use --mode text for prose. Errors are JSON {err:{code,type,message}} even in text mode.",
+    "JSON is the default; use --mode text for prose. Errors are JSON {err:{code,type,message,hint,docs}} even in text mode.",
     "Provider endpoint is resolved at parse time — config.json's provider does NOT set the endpoint; TAU_ENDPOINT overrides it.",
     "API-key precedence: config api_key > keys[provider] > provider env > global api_key > TAU_API_KEY. A stale config api_key silently outranks TAU_API_KEY.",
+    "config.json accepts // and /* */ comments (JSONC) — `tau init` scaffolds a commented starter.",
     "tau acp serve reads no model env var; the model comes from config.json or --model.",
     "Requires curl on PATH for LLM HTTP; no other runtime deps.",
     "The tool loop ends when the model stops calling tools or hits --max-iterations (default backstop).",
+    "--debug mirrors its stderr output into a redacted log under ~/.config/tau/debug/ (TAU_DEBUG_LOG overrides) — error envelopes link it via debug_log.",
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
     "tau --help (human help)",
     "README.md (ships with the source)",
+    "docs/troubleshooting.md — " ++ doc_url ++ " (error-message → fix FAQ)",
+    "docs/providers.md — " ++ providers_doc_url ++ " (per-provider credential setup + auth troubleshooting)",
     "https://cli-specs.intrane.fr/ (guide spec)",
 };
 
@@ -429,7 +506,13 @@ pub fn main(init: std.process.Init) !void {
     // Warn if the config file exists but has invalid JSON (load degrades silently).
     if (base_cfg.config_warning) |w| printWarnJson(w);
 
-    const parsed = argsmod.parse(io, arena, init.minimal.args, init.environ_map, base_cfg) catch {
+    // Materialize the platform argv vector (WTF-16 on Windows, UTF-8 bytes on
+    // POSIX) into a plain UTF-8 slice so the parser stays platform-agnostic.
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, arena);
+    while (args_it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
+
+    const parsed = argsmod.parse(io, arena, argv_list.items, init.environ_map, base_cfg) catch {
         printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "argument parsing failed", false);
         std.process.exit(@intFromEnum(ExitCode.internal_error));
     };
@@ -440,7 +523,7 @@ pub fn main(init: std.process.Init) !void {
             return;
         },
         .version => {
-            printVersion();
+            printVersion(parsed.config);
             return;
         },
         .help_json => {
@@ -450,6 +533,30 @@ pub fn main(init: std.process.Init) !void {
         .guide => {
             printGuide(parsed.config.guide_human);
             return;
+        },
+        .doctor => {
+            const doctor = @import("doctor.zig");
+            const code = doctor.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "doctor failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
+        .init => {
+            const initmod = @import("init.zig");
+            const code = initmod.run(io, arena, init.environ_map, parsed.config.init_force, parsed.config.init_stdout, parsed.config.init_provider) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "init failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
+        .setup => {
+            const setup = @import("setup.zig");
+            const code = setup.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "setup failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
         },
         .err => {
             const msg = parsed.err_msg orelse "invalid arguments";
@@ -546,7 +653,7 @@ pub fn main(init: std.process.Init) !void {
                     const hint = authHint(arena, fleet_cfg.provider);
                     const msg = std.fmt.allocPrint(arena,
                         "no API key for provider '{s}' — {s}", .{ fleet_cfg.provider, hint }) catch "missing API key";
-                    printErrorJson(@intFromEnum(ExitCode.auth_failed), "AuthFailed", msg, false);
+                    printErrorJsonHint(@intFromEnum(ExitCode.auth_failed), "AuthFailed", msg, false, hint);
                     std.process.exit(@intFromEnum(ExitCode.auth_failed));
                 }
             }
@@ -600,30 +707,54 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // --debug: open the redacted diagnostic log before the run so every error
+    // path below can link to it and [DEBUG] lines land in the file.
+    if (cfg.debug) {
+        if (debuglog.open(io, arena, init.environ_map, cfg)) |lp| {
+            if (json.escapeAlloc(arena, lp) catch null) |pe| {
+                if (std.fmt.allocPrint(arena, "{{\"debug_log\":\"{s}\"}}\n", .{pe}) catch null) |line| {
+                    term.err(line);
+                }
+            }
+        } else {
+            printWarnJson("--debug: could not create diagnostic log (set TAU_DEBUG_LOG to a writable path, or check ~/.config/tau)");
+        }
+    }
+
     // Run the agent (replaces temporary runOnce)
+    const run_started = std.Io.Timestamp.now(io, .real);
     const result = agent.run(io, gpa, arena, cfg, init.environ_map) catch |err| {
         const code: ExitCode = switch (err) {
             error.Timeout => .connection_timeout,
             error.AuthFailed => .auth_failed,
             else => .internal_error,
         };
+        if (cfg.debug) debuglog.emitPerf(io, run_started, 0, @intFromEnum(code));
+        var hint: ?[]const u8 = null;
         const detail = if (err == error.AuthFailed) blk: {
-            const hint = authHint(arena, cfg.provider);
+            hint = authHint(arena, cfg.provider);
             break :blk std.fmt.allocPrint(arena,
-                "no API key for provider '{s}' — {s}", .{ cfg.provider, hint }) catch "missing API key";
+                "no API key for provider '{s}' — {s}", .{ cfg.provider, hint.? }) catch "missing API key";
         } else "request failed";
-        printErrorJson(@intFromEnum(code), @errorName(err), detail, false);
+        printErrorJsonHint(@intFromEnum(code), @errorName(err), detail, false, hint);
         std.process.exit(@intFromEnum(code));
     };
+    if (cfg.debug) debuglog.emitPerf(io, run_started, result.tokens_out, result.exit_code);
     std.process.exit(result.exit_code);
 }
 
 test {
     std.testing.refAllDecls(@This());
     _ = json;
+    _ = debuglog;
+    _ = errs;
     _ = @import("goal.zig");
     _ = @import("context.zig");
     _ = @import("session.zig");
+    _ = @import("doctor.zig");
+    _ = @import("init.zig");
+    _ = @import("setup.zig");
+    _ = @import("version.zig");
 }
 
 test "flag_specs appear in help_text" {
@@ -686,4 +817,75 @@ test "formatSkillLoadJson escapes quotes, backslashes, and control characters" {
     defer gpa.free(got);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"skill\":\"skill\\\"name\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, got, "\"content\":\"Use \\\"quotes\\\" and \\\\ backslash\\nline2\"") != null);
+}
+
+// Golden tests for the {"err":...} envelope (task #134): the envelope shape
+// and the docs link are a user-visible contract — changes must be deliberate.
+test "formatErrorJson emits the golden envelope including hint and docs link" {
+    const gpa = std.testing.allocator;
+    const got = try formatErrorJson(gpa, 80, "invalid_argument", "bad flag --nope", false);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings(
+        "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"bad flag --nope\",\"recoverable\":false,\"hint\":\"run `tau --help` (or `tau --help-json`) for the valid flags and values\",\"docs\":\"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md\"}}\n",
+        got,
+    );
+}
+
+test "every catalog error code is advertised in --help-json exit_codes" {
+    const gpa = std.testing.allocator;
+    const got = try formatHelpJson(gpa);
+    defer gpa.free(got);
+    for (errs.specs) |s| {
+        // Exit code 1 (not_found) is intentionally absent from the advertised
+        // map — the integration contract documents it as the unlisted generic.
+        if (s.code == 1) continue;
+        var buf: [16]u8 = undefined;
+        const entry = std.fmt.bufPrint(&buf, "\"{d}\":\"", .{s.code}) catch unreachable;
+        if (std.mem.indexOf(u8, got, entry) == null) {
+            std.debug.print("--help-json exit_codes missing code {d} ({s})\n", .{ s.code, s.type_name });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "every literal err emitter in src carries a hint and docs link" {
+    // Hand-rolled {"err":...} literals live outside errors.format in these
+    // files; scan each emission site so a new one can't forget the hint/docs
+    // fields (the catalog's snapshot tests live in errors.zig).
+    const sources = [_][]const u8{
+        @embedFile("main.zig"),
+        @embedFile("agent.zig"),
+        @embedFile("acp.zig"),
+        @embedFile("fleet.zig"),
+        @embedFile("helpers.zig"),
+        @embedFile("errors.zig"),
+    };
+    for (sources) |src| {
+        var pos: usize = 0;
+        while (std.mem.indexOfPos(u8, src, pos, "err\\\":{")) |i| {
+            const window = src[i..@min(src.len, i + 700)];
+            try std.testing.expect(std.mem.indexOf(u8, window, "hint\\\":") != null);
+            try std.testing.expect(std.mem.indexOf(u8, window, "docs\\\":") != null);
+            pos = i + 1;
+        }
+    }
+}
+
+test "troubleshooting doc exists and indexes every exit code" {
+    const gpa = std.testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "docs/troubleshooting.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    for ([_][]const u8{ "| `80`", "| `82`", "| `105`", "| `106`", "| `110`", "| `111`" }) |row| {
+        const found = std.mem.indexOf(u8, doc, row) != null;
+        if (!found) std.debug.print("troubleshooting.md missing exit-code row '{s}'\n", .{row});
+        try std.testing.expect(found);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, doc, @import("version.zig").troubleshooting_doc_url) != null);
+}
+
+test "README links to the troubleshooting doc" {
+    const gpa = std.testing.allocator;
+    const readme = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "README.md", gpa, .unlimited);
+    defer gpa.free(readme);
+    try std.testing.expect(std.mem.indexOf(u8, readme, "docs/troubleshooting.md") != null);
 }

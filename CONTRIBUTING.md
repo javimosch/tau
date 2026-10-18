@@ -53,7 +53,12 @@ All tests live under `src/` and are auto-discovered via `src/main.zig`. A passin
 
 ### Smoke tests
 
-Smoke tests exercise the compiled binary end-to-end:
+Smoke tests exercise the compiled binary end-to-end. The `ci` workflow
+(`.github/workflows/ci.yml`) runs the unit tests plus both offline smoke
+suites on a native runner for every released platform (Linux x86_64/aarch64,
+macOS x86_64/aarch64, Windows x86_64) on each PR and push to `master` — keep
+new checks portable, or gate them on the documented platform contract (e.g.
+the `acp` daemon returns exit 111 on Windows).
 
 ```bash
 # Offline CLI tests only (fast, no API key required)
@@ -106,7 +111,7 @@ src/
     provider.zig    # provider routing and HTTP serialization
 build.zig           # Zig build script
 scripts/            # smoke.sh, benchmark-resources.sh
-completions/        # bash (tau.bash) and zsh (_tau) completion scripts
+completions/        # bash (tau.bash), zsh (_tau), fish (tau.fish), PowerShell (tau.ps1)
 examples/           # annotated real-world workflow scripts
 docs/               # changelog, roadmap, architecture notes
 ```

@@ -39,7 +39,67 @@ tau --session myproject "/goal status"
 
 Zero to your first response in five steps. Every command below is copy-pasteable.
 
-### 1. Prerequisites
+### 1. Get tau
+
+**Prebuilt binary (recommended — no Zig toolchain needed):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+```
+
+The installer detects your OS/arch (Linux and macOS, x86_64 and aarch64),
+downloads the matching `tau-<os>-<arch>.tar.gz` from the latest GitHub release,
+verifies it against `SHA256SUMS.txt`, and installs to `~/.local/bin`. Options:
+`--version X.Y.Z` to pin a release, `--dir DIR` to change the install location,
+`--dry-run` to see the plan. Checksum verification is mandatory and fail-fast:
+the install aborts if the `SHA256SUMS.txt` manifest is unreachable, the asset
+isn't listed in it, no `sha256sum`/`shasum` is available, or the digest
+mismatches — so a tampered or corrupted binary can never be installed
+(`TAU_SKIP_CHECKSUM=1` opts out, e.g. for air-gapped mirrors). All assets are
+built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on
+version tags — and before publish, each archive is smoke-tested on its
+matching OS/arch runner by installing it through `install.sh`/`install.ps1`
+and running `tau --version`/`--help`.
+
+**Windows (PowerShell — installs `tau-windows-x86_64.zip` to
+`%LOCALAPPDATA%\Programs\tau`):**
+
+```powershell
+irm https://raw.githubusercontent.com/javimosch/tau/master/install.ps1 | iex
+```
+
+`install.ps1` mirrors the `install.sh` contract: `-Version X.Y.Z`,
+`-Dir DIR`, `-DryRun`, plus `TAU_VERSION`/`TAU_INSTALL_DIR`/`TAU_BASE_URL`/
+`TAU_SKIP_CHECKSUM` overrides, and the same fail-closed `SHA256SUMS.txt`
+verification via `Get-FileHash`. Scoop and winget manifests are generated and
+validated on every release by the `scoop`/`winget` jobs in
+[`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+**Homebrew (macOS and Linux — `brew upgrade` tracks new releases):**
+
+```bash
+brew install javimosch/tap/tau
+```
+
+The [`javimosch/homebrew-tap`](https://github.com/javimosch/homebrew-tap)
+formula is regenerated with the correct per-platform checksums and pushed by
+the release workflow on every stable version tag, so `brew update && brew
+upgrade tau` always lands on the latest release.
+
+**In GitHub Actions (one `uses:` line):**
+
+```yaml
+- uses: javimosch/tau@master        # or pin a release tag, e.g. @v0.5.0
+  with:
+    version: "0.4.0"                # optional — defaults to the latest release
+```
+
+The repo-root [`action.yml`](action.yml) is a composite action wrapping
+`install.sh`: it puts `tau` on `PATH` for later steps and exposes
+`tau-path`/`version` outputs. The same smoke suite verifies the action
+end-to-end via `uses: ./` before every release.
+
+**From source:**
 
 - **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against
 - **`curl`** on your `PATH` — tau shells out to it for HTTP
@@ -51,6 +111,8 @@ curl --version | head -1
 ```
 
 ### 2. Clone and build
+
+(Skip this step if you installed a prebuilt binary above.)
 
 ```bash
 git clone https://github.com/javimosch/tau.git
@@ -66,6 +128,28 @@ export PATH="$PWD/zig-out/bin:$PATH"
 
 ### 3. Configure an API key
 
+Optional — scaffold a commented starter config first (detects which provider
+API keys are already exported, picks a matching provider, never copies secret
+values into the file):
+
+```bash
+./zig-out/bin/tau init          # writes ~/.config/tau/config.json
+./zig-out/bin/tau init --stdout # preview without writing
+```
+
+Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
+installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+to override), can write ACP client config for your editor
+(`--client zed|nvim|vscode|jetbrains|all` — see [docs/acp.md](docs/acp.md)),
+and finishes with the `tau doctor` health report:
+
+```bash
+./zig-out/bin/tau setup                    # detect everything, write nothing extra
+./zig-out/bin/tau setup --client zed       # also configure Zed's agent_servers
+./zig-out/bin/tau setup --non-interactive --shell bash --client zed \
+    --offline                              # unattended: devcontainers, dotfiles, CI
+```
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
@@ -77,7 +161,7 @@ export OPENAI_API_KEY="sk-..."       # use with --model openai/gpt-4o-mini
 export DEEPSEEK_API_KEY="..."        # use with --model deepseek/deepseek-chat
 ```
 
-Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table and [docs/configuration.md](docs/configuration.md) for the full reference.
+Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table, [docs/providers.md](docs/providers.md) for per-provider credential setup, and [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ### 4. First run
 
@@ -130,6 +214,8 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
+- **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling; `--fix` remediates common issues (missing config, loose permissions, missing completions) behind per-fix confirmation, and `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network
+- **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -424,7 +510,8 @@ Streaming output:
 
 ### Config File
 
-Optional config at `~/.config/tau/config.json`:
+Optional config at `~/.config/tau/config.json`. `tau init` writes a commented
+starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 
 ```json
 {
@@ -471,16 +558,26 @@ zig build test
 ./scripts/smoke.sh --net
 ```
 
-Requires Zig 0.16.0 and `curl` on PATH.
+Requires Zig 0.16.0 and `curl` on PATH. To install a prebuilt binary instead,
+run `./install.sh` (or `install.ps1` on Windows) — no Zig needed; see
+[Getting Started](#-getting-started).
+
+### Shell Completions
+
+Tab-completion scripts for Bash (`tau.bash`), Zsh (`_tau`), Fish (`tau.fish`),
+and PowerShell (`tau.ps1`) live in [`completions/`](completions/README.md) with
+per-shell install instructions.
 
 ---
 
 ## 🔧 Troubleshooting
 
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it.
+
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | Empty response with no args | Expected behavior (shows help) | Use `tau --help` or provide a prompt |
-| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var |
+| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var — [docs/providers.md](docs/providers.md) |
 | Timeout (exit 105) | Request too slow | Increase `--timeout-ms` (default: 120000) |
 | Tool not found | Tool name mismatch | Check tool name in tool_calls |
 
