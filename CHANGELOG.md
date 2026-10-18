@@ -134,6 +134,9 @@ are backward compatible.
   validates + uploads the three-file manifest for microsoft/winget-pkgs
   submission (auto-submits via `wingetcreate` when `WINGET_PKGS_TOKEN` is
   configured) (#182)
+- `ci` workflow — unit tests + offline smoke groups run on a native
+  Linux/macOS/Windows runner matrix for every released platform on each PR,
+  push to `master`, and `v*` tag (#193)
 
 ### Fixed
 

@@ -380,6 +380,12 @@ zig build test               # Full unit test suite
 ./zig-out/bin/tau --help-json          # Verify JSON schema
 ```
 
+The `ci` GitHub Actions workflow runs `zig build test` + `scripts/smoke.sh` +
+`scripts/smoke-features.sh --offline` on native runners for every released
+platform (ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest,
+windows-latest) on PRs, pushes to master, and v* tags — so platform
+regressions are caught before a release is cut.
+
 #### Zig 0.16 Gotchas
 
 1. **`orelse try` requires a block** — wrap in `blk: { ... break :blk ... }`

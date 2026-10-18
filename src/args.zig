@@ -103,22 +103,18 @@ fn resolveProviderAndModel(
     return null;
 }
 
-/// Parse argv into an Action + Config. All retained strings are allocated in
+/// Parse argv into an Action + Config. `argv` is the full argument vector
+/// (argv[0] included, skipped here). All retained strings are allocated in
 /// `arena` (freed automatically at process exit, so no leak bookkeeping). `io`
 /// is used to read `@file` arguments.
 pub fn parse(
     io: std.Io,
     arena: std.mem.Allocator,
-    args: std.process.Args,
+    argv_full: []const []const u8,
     env: *std.process.Environ.Map,
     base: Config,
 ) !Parsed {
-    var it = try std.process.Args.Iterator.initAllocator(args, arena);
-    _ = it.next(); // skip argv[0]
-
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
-    const argv = argv_list.items;
+    const argv = if (argv_full.len > 0) argv_full[1..] else argv_full; // skip argv[0]
 
     // Fleet-subcommand scratch state (declared up here so the fleet subcommand
     // block above can write into them before the generic flag loop runs).
@@ -722,28 +718,26 @@ fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytyp
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 //
-// `parse` consumes a `std.process.Args` (the platform argv vector) and a
-// `std.process.Environ.Map`. On the test host both are constructed directly:
-// `Args.vector` is just a `[]const [*:0]const u8`, so an array of string
-// literals (with a dummy argv[0], which `parse` skips) drives the parser. The
-// env map is left empty by default — env-key resolution happens later in
-// main, except for the setup/env overrides tested via parseArgvEnv.
+// `parse` consumes a plain argv slice (argv[0] included) and a
+// `std.process.Environ.Map`, so tests drive it with arrays of string literals
+// (a dummy argv[0], which `parse` skips) on every platform. The env map is
+// left empty by default — env-key resolution happens later in main, except
+// for the setup/env overrides tested via parseArgvEnv.
 
 const provider_mod = @import("llm/provider.zig");
 
 /// Run `parse` over an explicit argv (caller supplies argv[0]). All retained
 /// strings land in `arena`, freed together by the caller's arena.deinit().
-fn parseArgv(arena: std.mem.Allocator, argv: []const [*:0]const u8, base: Config) !Parsed {
+fn parseArgv(arena: std.mem.Allocator, argv: []const []const u8, base: Config) !Parsed {
     return parseArgvEnv(arena, argv, &.{}, base);
 }
 
 /// Like parseArgv but seeds the environment with the given key=value pairs —
 /// for the setup env fallbacks (TAU_SETUP_*, TAU_YES, TAU_NONINTERACTIVE).
-fn parseArgvEnv(arena: std.mem.Allocator, argv: []const [*:0]const u8, pairs: []const [2][]const u8, base: Config) !Parsed {
+fn parseArgvEnv(arena: std.mem.Allocator, argv: []const []const u8, pairs: []const [2][]const u8, base: Config) !Parsed {
     var env = std.process.Environ.Map.init(arena);
     for (pairs) |kv| try env.put(kv[0], kv[1]);
-    const args: std.process.Args = .{ .vector = argv };
-    return parse(std.testing.io, arena, args, &env, base);
+    return parse(std.testing.io, arena, argv, &env, base);
 }
 
 test "parse: bare positional becomes a run prompt" {
