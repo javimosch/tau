@@ -43,6 +43,12 @@ are backward compatible.
   without the flag it reports detected editors), and embeds the `doctor`
   health report; emits one NDJSON object per step plus a final verdict and
   exits non-zero when any step fails; idempotent on re-run
+- `tau setup --yes`/`-y` and `--non-interactive` — explicit unattended
+  contract for devcontainers, dotfiles, and CI (setup never prompts or reads
+  stdin either way; the verdict records `"non_interactive":true`/`"yes":true`
+  so scripts can assert it). Env equivalents honored at parse time (flag >
+  env > detect): `TAU_YES`, `TAU_NONINTERACTIVE`, `TAU_SETUP_SHELL`,
+  `TAU_SETUP_CLIENT`
 - Shell completions for fish and PowerShell (`completions/tau.fish`,
   `completions/tau.ps1`); all four scripts now complete `init`, `setup`,
   `doctor`, and `guide`

@@ -279,6 +279,9 @@ tau setup                      # init + install completions ($SHELL-detected) + 
 tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
 tau setup --client zed         # Write editor ACP config: zed|nvim|vscode|jetbrains|all
 tau setup --offline            # Skip network checks in the doctor step
+tau setup -y --non-interactive # Unattended contract (verdict records non_interactive/yes)
+# Env equivalents (flag > env > detect): TAU_YES, TAU_NONINTERACTIVE,
+# TAU_SETUP_SHELL, TAU_SETUP_CLIENT. CI is not auto-detected.
 # Emits one NDJSON object per step plus a final verdict:
 #   {"step":"init","status":"created|exists|failed",...}
 #   {"step":"completions","status":"installed|skipped|failed","shells":[...]}

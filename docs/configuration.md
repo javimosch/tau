@@ -31,6 +31,15 @@ same way (keeping an existing file instead of failing), installs shell
 completions for the detected shell, then prints the `tau doctor` health
 report — one NDJSON object per step, exit 0 only when everything is healthy.
 
+For unattended onboarding (devcontainers, dotfiles scripts, CI), pass
+`--yes` (`-y`) and/or `--non-interactive`, or set `TAU_YES=1` /
+`TAU_NONINTERACTIVE=1`. Setup never prompts and never reads stdin either
+way — the flags are an explicit contract, recorded as
+`"non_interactive":true`/`"yes":true` in the final verdict so scripts can
+assert it. `TAU_SETUP_SHELL` and `TAU_SETUP_CLIENT` supply `--shell` /
+`--client` when the flags are absent (flag > env > `$SHELL` detection); `CI`
+is deliberately not auto-detected — opt in explicitly.
+
 The file is **JSONC**: `//` line comments and `/* */` block comments are
 stripped before parsing, so a commented config (like the one `tau init`
 writes) loads cleanly.
@@ -189,6 +198,10 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 | `OPENAI_API_KEY` | API key for the `openai` provider. |
 | `DEEPSEEK_API_KEY` | API key for the `deepseek` provider. |
 | `OPENCODE_API_KEY` | API key for the `opencode-go` provider. |
+| `TAU_YES` | `1`/`true`/`yes`/`on` enables `tau setup --yes` (approve all write steps). Any other value, including `0`, is off. |
+| `TAU_NONINTERACTIVE` | Same truthiness rules; enables `tau setup --non-interactive` (unattended contract for scripts/CI). |
+| `TAU_SETUP_SHELL` | `tau setup` shell override when `--shell` is absent (`bash|zsh|fish|pwsh|all`); invalid values fail with exit 80. |
+| `TAU_SETUP_CLIENT` | `tau setup` editor client when `--client` is absent (`zed|nvim|vscode|jetbrains|all`); invalid values fail with exit 80. |
 | `HOME` | Root of all tau state: `~/.config/tau/` and `~/.agents/skills/`. If unset, config file, sessions, fleets, skills, and the ACP daemon are all disabled. |
 
 ### Read by the a2a-spawn launcher (not tau)

@@ -5,6 +5,13 @@
 // when every step is ok/skipped, 1 otherwise. Idempotent: an existing config
 // is kept, already-installed completions and configured clients are
 // detected, and doctor is read-only. Key material is never printed.
+//
+// Unattended contract (`--yes`/`--non-interactive`, or TAU_YES /
+// TAU_NONINTERACTIVE env): setup never prompts and never reads stdin — the
+// flags don't relax a gate, they declare intent so scripts can assert on the
+// verdict's "non_interactive"/"yes" fields. --shell/--client env equivalents
+// (TAU_SETUP_SHELL, TAU_SETUP_CLIENT) are resolved at parse time (flag >
+// env > detect). CI is deliberately not auto-detected.
 
 const std = @import("std");
 const term = @import("term.zig");
@@ -732,11 +739,20 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
 
 // --- Driver ---------------------------------------------------------------
 
+/// True when setup was explicitly declared unattended — `--yes`,
+/// `--non-interactive`, or their env equivalents. Approving every write
+/// (--yes) implies no human is present, so it counts too.
+pub fn unattended(cfg: Config) bool {
+    return cfg.setup_yes or cfg.setup_non_interactive;
+}
+
 /// Run init + completions + clients + doctor, emitting one NDJSON object per step and a
 /// final `{"step":"setup","ok":...}` verdict. Exit 0 when all steps pass (a
 /// detection skip on completions or clients, and manual client outcomes,
 /// still pass); 1 on any failure — including a doctor report with failed
-/// checks, since onboarding is not healthy yet.
+/// checks, since onboarding is not healthy yet. In unattended mode the
+/// verdict carries "non_interactive":true (and "yes":true when --yes was
+/// given) so scripts can confirm the contract was requested.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     var ok = try stepInit(io, arena, cfg, env);
     if (!try stepCompletions(io, arena, cfg, env)) ok = false;
@@ -754,6 +770,8 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     try buf.appendSlice(arena, if (ok) "true" else "false");
     try buf.appendSlice(arena, ",\"version\":");
     try js(arena, &buf, version);
+    if (unattended(cfg)) try buf.appendSlice(arena, ",\"non_interactive\":true");
+    if (cfg.setup_yes) try buf.appendSlice(arena, ",\"yes\":true");
     try buf.appendSlice(arena, "}");
     emit(&buf);
     return if (ok) 0 else 1;
@@ -768,6 +786,13 @@ fn envWith(arena: std.mem.Allocator, pairs: []const [2][]const u8) !std.process.
     var env = std.process.Environ.Map.init(arena);
     for (pairs) |kv| try env.put(kv[0], kv[1]);
     return env;
+}
+
+test "unattended is true for --yes or --non-interactive" {
+    try testing.expect(!unattended(.{}));
+    try testing.expect(unattended(.{ .setup_yes = true }));
+    try testing.expect(unattended(.{ .setup_non_interactive = true }));
+    try testing.expect(unattended(.{ .setup_yes = true, .setup_non_interactive = true }));
 }
 
 test "parseShellName accepts supported shells, powershell alias, .exe suffix" {

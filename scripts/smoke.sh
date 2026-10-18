@@ -928,6 +928,75 @@ test_group_setup() {
   contains "no --client detects the zed config dir" "$s13_out" '"detected":["zed"'
   [ ! -f "$mock_home11/.config/zed/settings.json" ]; ok "detection wrote no settings file" "$?" 0
 
+  # ── Unattended mode (--yes / --non-interactive / TAU_* env) ──────────────
+
+  # --yes --non-interactive on a fresh HOME, stdin closed: all steps still
+  # run, exit 0, and the verdict records the contract.
+  local mock_home12; mock_home12="$(mktemp -d)"; register_temp_dir "$mock_home12"
+  local ni_out ni_rc
+  ni_out="$(env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home12" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --yes --non-interactive </dev/null 2>&1)"
+  ni_rc=$?
+  ok "setup --yes --non-interactive (stdin closed) exits 0" "$ni_rc" 0
+  contains "verdict records non_interactive" "$ni_out" '"non_interactive":true'
+  contains "verdict records yes" "$ni_out" '"yes":true'
+  contains "init still ran unattended" "$ni_out" '"step":"init","status":"created"'
+
+  # -y is the short alias for --yes.
+  local mock_home13; mock_home13="$(mktemp -d)"; register_temp_dir "$mock_home13"
+  capture s14 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home13" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline -y
+  ok "setup -y exits 0" "$s14_rc" 0
+  contains "-y verdict records non_interactive" "$s14_out" '"non_interactive":true'
+  contains "-y verdict records yes" "$s14_out" '"yes":true'
+
+  # TAU_YES / TAU_NONINTERACTIVE env vars enable the same contract — the
+  # dotfiles/devcontainer path where argv comes from a fixed script.
+  local mock_home14; mock_home14="$(mktemp -d)"; register_temp_dir "$mock_home14"
+  capture s15 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home14" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_YES=1 "$BIN" setup --offline
+  ok "setup with TAU_YES=1 exits 0" "$s15_rc" 0
+  contains "TAU_YES verdict records non_interactive" "$s15_out" '"non_interactive":true'
+  contains "TAU_YES verdict records yes" "$s15_out" '"yes":true'
+
+  local mock_home15; mock_home15="$(mktemp -d)"; register_temp_dir "$mock_home15"
+  capture s16 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home15" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_NONINTERACTIVE=1 "$BIN" setup --offline
+  ok "setup with TAU_NONINTERACTIVE=1 exits 0" "$s16_rc" 0
+  contains "TAU_NONINTERACTIVE verdict records non_interactive" "$s16_out" '"non_interactive":true'
+  printf '%s' "$s16_out" | grep -q '"yes":true'; ok "TAU_NONINTERACTIVE does not set yes" "$?" 1
+
+  # Falsy env values (0/false/empty) do not enable unattended mode.
+  local mock_home16; mock_home16="$(mktemp -d)"; register_temp_dir "$mock_home16"
+  capture s17 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home16" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_YES=0 TAU_NONINTERACTIVE=false "$BIN" setup --offline
+  ok "setup with TAU_YES=0 TAU_NONINTERACTIVE=false exits 0" "$s17_rc" 0
+  printf '%s' "$s17_out" | grep -q 'non_interactive'; ok "falsy env vars leave verdict plain" "$?" 1
+
+  # TAU_SETUP_SHELL / TAU_SETUP_CLIENT supply --shell/--client without argv.
+  local mock_home17; mock_home17="$(mktemp -d)"; register_temp_dir "$mock_home17"
+  capture s18 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home17" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_SETUP_SHELL=fish TAU_SETUP_CLIENT=zed "$BIN" setup --offline --non-interactive
+  ok "setup with TAU_SETUP_* env exits 0" "$s18_rc" 0
+  contains "TAU_SETUP_SHELL installs fish" "$s18_out" '"shell":"fish"'
+  contains "TAU_SETUP_CLIENT configures zed" "$s18_out" '"client":"zed"'
+  [ -f "$mock_home17/.config/fish/completions/tau.fish" ]; ok "env-driven fish completion installed" "$?" 0
+  [ -f "$mock_home17/.config/zed/settings.json" ]; ok "env-driven zed settings written" "$?" 0
+
+  # Flag beats env: --shell zsh wins over TAU_SETUP_SHELL=fish.
+  local mock_home18; mock_home18="$(mktemp -d)"; register_temp_dir "$mock_home18"
+  capture s19 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home18" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_SETUP_SHELL=fish "$BIN" setup --offline --shell zsh
+  ok "setup --shell beats TAU_SETUP_SHELL exits 0" "$s19_rc" 0
+  contains "flag won: zsh installed" "$s19_out" '"shell":"zsh"'
+  printf '%s' "$s19_out" | grep -q '"shell":"fish"'; ok "env value not applied" "$?" 1
+
+  # Invalid env values fail like a bad flag (exit 80).
+  TAU_SETUP_SHELL=tcsh "$BIN" setup --offline >/dev/null 2>&1
+  ok "TAU_SETUP_SHELL=tcsh -> exit 80" "$?" 80
+  TAU_SETUP_CLIENT=emacs "$BIN" setup --offline >/dev/null 2>&1
+  ok "TAU_SETUP_CLIENT=emacs -> exit 80" "$?" 80
+
   # Bad arguments.
   "$BIN" setup --bogus >/dev/null 2>&1; ok "setup --bogus -> exit 80" "$?" 80
   "$BIN" setup --shell tcsh >/dev/null 2>&1; ok "setup --shell tcsh -> exit 80" "$?" 80

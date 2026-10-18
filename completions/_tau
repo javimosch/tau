@@ -143,6 +143,8 @@ _tau() {
                         '--client=[editor ACP client]:client:(zed nvim vscode jetbrains all)' \
                         '--offline[skip network checks in the doctor step]' \
                         '--deep[run an authenticated probe in the doctor step]' \
+                        '(-y --yes)'{-y,--yes}'[unattended: approve all write steps]' \
+                        '--non-interactive[unattended contract for scripts/CI]' \
                         '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \
                         '--api-key=[diagnose an override API key]:key:'
