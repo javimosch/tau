@@ -89,6 +89,8 @@ ALL_TEST_GROUPS=(
   "golden-help:test_group_golden_help"
   "update:test_group_update"
   "upgrade:test_group_upgrade"
+  "errors-doc:test_group_errors_doc"
+  "explain:test_group_explain"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -2852,6 +2854,111 @@ test_group_golden_help() {
   _completion_flag_golden zsh  completions/_tau
   _completion_flag_golden fish completions/tau.fish
   _completion_flag_golden ps1  completions/tau.ps1
+}
+
+# Group: generated docs/errors.md drift check
+# docs/errors.md is rendered from the Spec catalog in src/errors.zig by
+# scripts/gen-errors-doc.py; --check regenerates in memory and fails on drift.
+test_group_errors_doc() {
+  note "generated docs/errors.md drift check"
+
+  local doc="$ROOT/docs/errors.md"
+  local gen="$ROOT/scripts/gen-errors-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "errors-doc: docs/errors.md exists" 0 0
+    contains "errors-doc: doc declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "errors-doc: docs/errors.md exists" 1 0
+    contains "errors-doc: doc declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "errors-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "errors-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "errors-doc: --check passes (no drift)" 0 0
+  else
+    ok "errors-doc: --check passes (no drift)" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/errors.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "errors-doc: --check detects a stale doc" 0 1
+    else
+      ok "errors-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/errors.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/errors.md.bak" "$doc"
+  else
+    skip_test "errors-doc: --check detects a stale doc" "docs/errors.md missing"
+  fi
+}
+
+# Group: tau explain — offline error-catalog lookup
+# `tau explain` renders the Spec registry in src/errors.zig (the same source
+# gen-errors-doc.py renders docs/errors.md from) with no network or API key.
+test_group_explain() {
+  note "tau explain (offline error catalog)"
+
+  # Single entry by exit code — JSON by default.
+  capture r1 "$BIN" explain 106
+  ok "explain: known code exits 0" "$r1_rc" 0
+  contains "explain: entry carries code" "$r1_out" '"code":106'
+  contains "explain: entry carries type" "$r1_out" '"type":"AuthFailed"'
+  contains "explain: entry carries cause" "$r1_out" '"cause":"the provider rejected the API key'
+  contains "explain: entry carries hint" "$r1_out" '"hint":"provide an API key'
+  contains "explain: entry carries docs link" "$r1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md"'
+
+  # Same entry reachable by wire `type` tag (case-insensitive).
+  capture r2 "$BIN" explain authfailed
+  ok "explain: type-tag lookup exits 0" "$r2_rc" 0
+  contains "explain: type tag resolves to code" "$r2_out" '"code":106'
+
+  # Bare `explain` lists the whole catalog.
+  capture r3 "$BIN" explain
+  ok "explain: catalog list exits 0" "$r3_rc" 0
+  contains "explain: list uses errors envelope" "$r3_out" '"errors":['
+  for c in 1 80 82 105 106 110 111; do
+    contains "explain: catalog lists code $c" "$r3_out" "\"code\":$c"
+  done
+
+  # --human renders prose drawn from the same Spec fields.
+  capture r4 "$BIN" explain --human 105
+  ok "explain: --human exits 0" "$r4_rc" 0
+  contains "explain: --human prints exit+type" "$r4_out" "exit 105  Timeout"
+  contains "explain: --human prints cause" "$r4_out" "cause: an HTTP request to the provider endpoint exceeded --timeout-ms"
+  contains "explain: --human prints fix" "$r4_out" "fix:   raise --timeout-ms"
+
+  # Codes outside the catalog still resolve to the generic internal_error
+  # spec (code preserved) — mirrors the envelope rule in docs/errors.md.
+  capture r5 "$BIN" explain 42
+  ok "explain: uncataloged code exits 0" "$r5_rc" 0
+  contains "explain: fallback preserves code" "$r5_out" '"code":42'
+  contains "explain: fallback inherits type" "$r5_out" '"type":"internal_error"'
+
+  # Unknown queries fail closed: not_found envelope on stderr, exit 1.
+  capture r6 "$BIN" explain bogus
+  ok "explain: unknown name exits 1" "$r6_rc" 1
+  contains "explain: unknown name emits not_found" "$r6_err" '"type":"not_found"'
+  contains "explain: message points at the catalog" "$r6_err" 'run `tau explain` to list the catalog'
+
+  # Exit 0 is success — never an error.
+  capture r7 "$BIN" explain 0
+  ok "explain: code 0 exits 1" "$r7_rc" 1
+  contains "explain: code 0 emits not_found" "$r7_err" '"type":"not_found"'
+
+  # Bad flags route through the standard invalid_argument envelope.
+  capture r8 "$BIN" explain --nope
+  ok "explain: bad flag exits 80" "$r8_rc" 80
+  contains "explain: bad flag envelope on stderr" "$r8_err" '"type":"invalid_argument"'
 }
 
 # Group: --bench regression guard

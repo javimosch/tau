@@ -225,6 +225,7 @@ tau gives agents what they need:
 - **Self-update** — `tau upgrade` reuses that check, confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan
 - **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI
 - **Bug reports** — `tau bug` builds a pre-filled GitHub issue URL carrying the redacted `doctor --report` diagnostics bundle (`--open` launches the system browser, `--out` also writes the bundle to a file, `--no-report` omits diagnostics)
+- **Offline error catalog** — `tau explain <code|type>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md))
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
@@ -599,7 +600,7 @@ per-shell install instructions.
 
 ## 🔧 Troubleshooting
 
-Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it.
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**, or readable offline via `tau explain <code|type>` (e.g. `tau explain 106`; `--human` for prose, no argument to list all).
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|

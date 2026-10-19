@@ -74,6 +74,7 @@ _tau() {
                 'guide:print the embedded operator manual'
                 'version:print version (--verbose adds build metadata)'
                 'upgrade:self-update in place via the verified install.sh'
+                'explain:offline error-catalog lookup (cause + remediation)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -266,6 +267,22 @@ _tau() {
                         '(-y --yes)'{-y,--yes}'[upgrade without prompting]' \
                         '--dir=[install destination]:dir:_files -/' \
                         '--dry-run[print the resolved plan; install nothing]'
+                    ;;
+
+                explain)
+                    # Exit codes mirror the stable catalog in src/errors.zig.
+                    local -a err_codes=(
+                        '1:not_found'
+                        '80:invalid_argument'
+                        '82:missing_required_field'
+                        '105:Timeout'
+                        '106:AuthFailed'
+                        '110:internal_error'
+                        '111:unimplemented'
+                    )
+                    _arguments \
+                        '1: :_describe "error code or type" err_codes' \
+                        '--human[render the entry as prose instead of JSON]'
                     ;;
             esac
             ;;

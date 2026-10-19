@@ -18,7 +18,7 @@ PowerShell.
 
 | Context | Completions |
 |---|---|
-| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `init`, `config`, `setup`, `doctor`, `guide`, `version`) |
+| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `init`, `config`, `setup`, `doctor`, `bug`, `guide`, `version`, `upgrade`, `explain`) |
 | `--provider` | `xiaomi openai deepseek opencode-go` |
 | `--mode` | `text json` |
 | `--role` | `author critic coordinator none` |
@@ -34,7 +34,9 @@ PowerShell.
 | `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive` |
 | `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau guide` | `--human` |
-| `tau version` | `--verbose`, `--mode` |
+| `tau version` | `--verbose`, `--check`, `--mode` |
+| `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run` |
+| `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + `--human` |
 
 ---
 

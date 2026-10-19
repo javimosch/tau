@@ -14,7 +14,7 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'config', 'doctor', 'setup', 'bug', 'version', 'upgrade')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'config', 'doctor', 'setup', 'bug', 'version', 'upgrade', 'explain')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
@@ -31,6 +31,8 @@ $TauArgumentCompleter = {
                      '--offline', '--deep', '--shell', '--provider', '--model', '--api-key')
     $versionFlags = @('--verbose', '--check', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run')
+    # Exit codes mirror the stable catalog in src/errors.zig.
+    $explainArgs = @('1', '80', '82', '105', '106', '110', '111', '--human')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'vscode', 'jetbrains', 'all')
     $globalFlags = @(
@@ -67,6 +69,7 @@ $TauArgumentCompleter = {
         'bug'                 = 'file a pre-filled GitHub issue with doctor diagnostics'
         'version'             = 'print version (--verbose adds build metadata)'
         'upgrade'             = 'self-update in place via the verified install.sh'
+        'explain'             = 'offline error-catalog lookup (cause + remediation)'
         'run'                 = 'decompose a goal and dispatch workers'
         'status'              = 'check status of a fleet by id'
         'list'                = 'list all known fleets / skills'
@@ -250,6 +253,7 @@ $TauArgumentCompleter = {
         'bug'    { return & $emit $bugFlags 'ParameterName' }
         'version' { return & $emit $versionFlags 'ParameterName' }
         'upgrade' { return & $emit $upgradeFlags 'ParameterName' }
+        'explain' { return & $emit $explainArgs 'ParameterValue' }
         'models' { return }
         'fleet'  {
             $fleetSub = ''

@@ -250,6 +250,11 @@ const help_text =
     \\Models:
     \\  tau models                    List available providers and models
     \\
+    \\Error catalog (offline — no API key needed):
+    \\  tau explain                   List the stable error catalog as JSON
+    \\  tau explain <code|type>       Print an error's cause + remediation hint
+    \\      --human                   ...as prose (e.g. `tau explain --human 106`)
+    \\
     \\Guide (embedded operator manual — read once, drive with no external docs):
     \\  tau guide                     Print the full guide as JSON (agent-readable)
     \\  tau guide --human             ...as markdown
@@ -473,6 +478,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau config unset <key> [path]", .b = "remove a key from the config file." },
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
+    .{ .a = "tau explain [<code|type>]", .b = "offline error-catalog lookup — cause + remediation (JSON; --human for prose)." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
 };
@@ -497,6 +503,7 @@ const guide_gotchas = [_][]const u8{
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
+    "tau explain <code|type> (offline error catalog — cause + remediation hint)",
     "tau --help (human help)",
     "README.md (ships with the source)",
     "docs/troubleshooting.md — " ++ doc_url ++ " (error-message → fix FAQ)",
@@ -902,6 +909,45 @@ pub fn main(init: std.process.Init) !void {
                 term.out(entry);
             }
             term.out("]}\n");
+            return;
+        },
+        .explain => {
+            // Offline error-catalog lookup — same Spec registry that
+            // generates docs/errors.md. Needs no provider or API key.
+            if (parsed.config.explain_arg) |q| {
+                const spec = errs.findSpec(q) orelse {
+                    const msg = std.fmt.allocPrint(arena, "unknown error code or type: {s} — run `tau explain` to list the catalog", .{q}) catch "unknown error code or type";
+                    printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
+                    std.process.exit(@intFromEnum(ExitCode.generic_failure));
+                };
+                const line = if (parsed.config.explain_human)
+                    errs.formatEntryHuman(arena, spec)
+                else
+                    errs.formatEntryJson(arena, spec);
+                writeOut(line catch {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "failed to serialize error catalog entry", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                });
+                // formatEntryHuman already ends in \n; the JSON entry doesn't.
+                if (!parsed.config.explain_human) writeOut("\n");
+                return;
+            }
+            // No query: dump the whole catalog.
+            if (parsed.config.explain_human) {
+                for (errs.specs, 0..) |s, i| {
+                    if (i > 0) writeOut("\n");
+                    const entry = errs.formatEntryHuman(arena, s) catch continue;
+                    writeOut(entry);
+                }
+                return;
+            }
+            writeOut("{\"errors\":[");
+            for (errs.specs, 0..) |s, i| {
+                if (i > 0) writeOut(",");
+                const entry = errs.formatEntryJson(arena, s) catch continue;
+                writeOut(entry);
+            }
+            writeOut("]}\n");
             return;
         },
         .skills => {

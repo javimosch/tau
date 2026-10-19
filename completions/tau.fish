@@ -18,7 +18,7 @@ function __tau_no_subcommand
     set -e tokens[1]
     for t in $tokens
         switch $t
-            case acp fleet skills models guide init config doctor setup bug version upgrade
+            case acp fleet skills models guide init config doctor setup bug version upgrade explain
                 return 1
         end
     end
@@ -91,6 +91,7 @@ complete -c tau -n $top -f -a setup -d 'one-shot onboarding (init + completions 
 complete -c tau -n $top -f -a bug -d 'file a pre-filled GitHub issue with doctor diagnostics'
 complete -c tau -n $top -f -a version -d 'print version (--verbose adds build metadata)'
 complete -c tau -n $top -f -a upgrade -d 'self-update in place via the verified install.sh'
+complete -c tau -n $top -f -a explain -d 'offline error-catalog lookup (cause + remediation)'
 
 complete -c tau -n $top -s h -l help -d 'show help text'
 complete -c tau -n $top -s v -l version -d 'show version'
@@ -231,5 +232,10 @@ set -l upgrade '__tau_using_subcommand upgrade'
 complete -c tau -n $upgrade -f -s y -l yes -d 'upgrade without prompting'
 complete -c tau -n $upgrade -f -l dir -x -d 'install destination (default: the running binary dir)'
 complete -c tau -n $upgrade -f -l dry-run -d 'print the resolved plan; install nothing'
+
+set -l explain '__tau_using_subcommand explain'
+# Exit codes mirror the stable catalog in src/errors.zig.
+complete -c tau -n $explain -f -a '1 80 82 105 106 110 111' -d 'error code or type'
+complete -c tau -n $explain -f -l human -d 'render the entry as prose instead of JSON'
 
 # `tau models` takes no further arguments.

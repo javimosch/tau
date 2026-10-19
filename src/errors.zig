@@ -3,10 +3,12 @@
 //! shares.
 //!
 //! The codes (which double as process exit codes) and `type` strings are a
-//! stable contract documented in docs/troubleshooting.md — scripts and
-//! agents branch on them. Never renumber a code or rename a `type_name`;
-//! add a new entry instead. Keep hints actionable: one line naming the flag,
-//! env var, or command that fixes it.
+//! stable contract documented in docs/troubleshooting.md and mirrored by the
+//! generated docs/errors.md — scripts and agents branch on them. Never
+//! renumber a code or rename a `type_name`; add a new entry instead. Keep
+//! hints actionable: one line naming the flag, env var, or command that fixes
+//! it. After changing this file run `python3 scripts/gen-errors-doc.py` —
+//! `zig build test` and the errors-doc smoke group fail on drift.
 
 const std = @import("std");
 const json = @import("json.zig");
@@ -17,14 +19,17 @@ const doc_url = @import("version.zig").troubleshooting_doc_url;
 const providers_doc_url = @import("version.zig").providers_doc_url;
 
 /// One entry in the stable error catalog (docs/troubleshooting.md mirrors
-/// it). `code` doubles as the process exit code; `type_name` is the wire tag
+/// it; docs/errors.md is generated from it by scripts/gen-errors-doc.py).
+/// `code` doubles as the process exit code; `type_name` is the wire tag
 /// in err.type — it keeps legacy spellings like "AuthFailed"/"Timeout" since
-/// the string itself is the contract. `docs` is the envelope's guide link —
-/// it defaults to the troubleshooting page; auth failures point at the
-/// per-provider credential guide instead.
+/// the string itself is the contract. `cause` is doc-only: one line naming
+/// when this error is raised, rendered into the generated catalog. `docs` is
+/// the envelope's guide link — it defaults to the troubleshooting page; auth
+/// failures point at the per-provider credential guide instead.
 pub const Spec = struct {
     code: u8,
     type_name: []const u8,
+    cause: []const u8,
     hint: []const u8,
     recoverable: bool = false,
     docs: []const u8 = doc_url,
@@ -33,42 +38,50 @@ pub const Spec = struct {
 pub const not_found = Spec{
     .code = 1,
     .type_name = "not_found",
+    .cause = "a named resource is missing — the message identifies the file, skill, or session",
     .hint = "the message names what was not found — check the name/path and retry",
 };
 pub const invalid_argument = Spec{
     .code = 80,
     .type_name = "invalid_argument",
+    .cause = "an unknown flag, bad flag value, invalid subcommand, or malformed argument was passed",
     .hint = "run `tau --help` (or `tau --help-json`) for the valid flags and values",
 };
 pub const missing_required_field = Spec{
     .code = 82,
     .type_name = "missing_required_field",
+    .cause = "a required input is missing (e.g. `tau fleet run` without --goal, `tau skills load` without a name)",
     .hint = "the message names the missing input — supply it and retry",
 };
 pub const timeout = Spec{
     .code = 105,
     .type_name = "Timeout",
+    .cause = "an HTTP request to the provider endpoint exceeded --timeout-ms",
     .hint = "raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)",
 };
 pub const auth_failed = Spec{
     .code = 106,
     .type_name = "AuthFailed",
+    .cause = "the provider rejected the API key, or no key was found anywhere in the resolution chain",
     .hint = "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY",
     .docs = providers_doc_url,
 };
 pub const internal_error = Spec{
     .code = 110,
     .type_name = "internal_error",
+    .cause = "an HTTP failure, JSON parse error, tool crash, or the --max-iterations cap was hit",
     .hint = "re-run with --debug to write a diagnostic log, then file a bug report",
 };
 pub const unimplemented = Spec{
     .code = 111,
     .type_name = "unimplemented",
+    .cause = "the operation is not supported on this platform (e.g. `tau acp` daemon commands are POSIX-only)",
     .hint = "not supported on this platform — the message names the workaround",
 };
 
 /// The stable catalog, ordered by code. Snapshot-tested byte-for-byte and
-/// cross-checked against docs/troubleshooting.md and --help-json.
+/// cross-checked against docs/troubleshooting.md, the generated
+/// docs/errors.md, and --help-json.
 pub const specs = [_]Spec{
     not_found,           invalid_argument, missing_required_field, timeout,
     auth_failed,         internal_error,   unimplemented,
@@ -84,6 +97,7 @@ pub fn specFor(code: u8) Spec {
     return .{
         .code = code,
         .type_name = internal_error.type_name,
+        .cause = "an exit code outside the stable catalog was raised",
         .hint = internal_error.hint,
     };
 }
@@ -138,6 +152,48 @@ pub fn printOut(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opt
     };
     defer a.free(j);
     term.out(j);
+}
+
+/// Resolve a `tau explain` query to a catalog entry. Decimal input is an
+/// exit-code lookup: codes outside the catalog still resolve to the generic
+/// internal_error spec (mirroring the "uncataloged codes inherit
+/// internal_error" rule in docs/errors.md), while 0 is success and never an
+/// error. Anything else is matched case-insensitively against `type_name`
+/// (`tau explain AuthFailed` ≡ `tau explain 106`). Returns null when nothing
+/// matches.
+pub fn findSpec(query: []const u8) ?Spec {
+    const q = std.mem.trim(u8, query, " \t");
+    if (q.len == 0) return null;
+    if (std.fmt.parseInt(u8, q, 10)) |code| {
+        if (code == 0) return null;
+        return specFor(code);
+    } else |_| {}
+    for (specs) |s| {
+        if (std.ascii.eqlIgnoreCase(q, s.type_name)) return s;
+    }
+    return null;
+}
+
+/// Serialize one catalog entry for `tau explain` (no trailing newline — the
+/// caller owns framing, like skills.zig's formatEntryJson):
+/// {"code":N,"type":"T","recoverable":B,"cause":"C","hint":"H","docs":"U"}
+/// Caller owns the returned slice.
+pub fn formatEntryJson(a: std.mem.Allocator, spec: Spec) ![]u8 {
+    const te = try json.escapeAlloc(a, spec.type_name);
+    defer a.free(te);
+    const ce = try json.escapeAlloc(a, spec.cause);
+    defer a.free(ce);
+    const he = try json.escapeAlloc(a, spec.hint);
+    defer a.free(he);
+    const de = try json.escapeAlloc(a, spec.docs);
+    defer a.free(de);
+    return std.fmt.allocPrint(a, "{{\"code\":{d},\"type\":\"{s}\",\"recoverable\":{},\"cause\":\"{s}\",\"hint\":\"{s}\",\"docs\":\"{s}\"}}", .{ spec.code, te, spec.recoverable, ce, he, de });
+}
+
+/// Human-readable `tau explain --human` rendering — drawn from the same Spec
+/// so the prose and JSON forms can never drift apart.
+pub fn formatEntryHuman(a: std.mem.Allocator, spec: Spec) ![]u8 {
+    return std.fmt.allocPrint(a, "exit {d}  {s} (recoverable: {})\n  cause: {s}\n  fix:   {s}\n  docs:  {s}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.cause, spec.hint, spec.docs });
 }
 
 /// OOM path: spec fields and doc_url are comptime-trusted literals (no
@@ -250,4 +306,68 @@ test "docs/troubleshooting.md documents the whole catalog" {
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "docs/errors.md generated catalog mirrors the registry" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "docs/errors.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    // The file must declare itself generated so nobody hand-edits it.
+    try testing.expect(std.mem.indexOf(u8, doc, "GENERATED FILE") != null);
+    try testing.expect(std.mem.indexOf(u8, doc, "scripts/gen-errors-doc.py") != null);
+    for (specs) |s| {
+        // Catalog rows and causes are doc-only contract: every entry must
+        // carry a non-empty cause for the generated table.
+        try testing.expect(s.cause.len > 0);
+        var buf: [160]u8 = undefined;
+        const row = std.fmt.bufPrint(&buf, "| `{d}` | `{s}` |", .{ s.code, s.type_name }) catch unreachable;
+        if (std.mem.indexOf(u8, doc, row) == null) {
+            std.debug.print("errors.md catalog missing row '{s}'\n", .{row});
+            return error.TestUnexpectedResult;
+        }
+        if (std.mem.indexOf(u8, doc, s.hint) == null) {
+            std.debug.print("errors.md missing hint for code {d}\n", .{s.code});
+            return error.TestUnexpectedResult;
+        }
+        if (std.mem.indexOf(u8, doc, s.cause) == null) {
+            std.debug.print("errors.md missing cause for code {d}\n", .{s.code});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "findSpec resolves codes, type tags, and uncataloged codes" {
+    try testing.expectEqual(@as(u8, 106), findSpec("106").?.code);
+    try testing.expectEqualStrings("AuthFailed", findSpec("AuthFailed").?.type_name);
+    try testing.expectEqual(@as(u8, 106), findSpec("authfailed").?.code);
+    try testing.expectEqual(@as(u8, 80), findSpec(" 80 ").?.code);
+    // Uncataloged code inherits the generic internal_error spec, keeping code.
+    const u = findSpec("42").?;
+    try testing.expectEqual(@as(u8, 42), u.code);
+    try testing.expectEqualStrings(internal_error.type_name, u.type_name);
+    // 0 is success — never an error; unknown tags and junk return null.
+    try testing.expect(findSpec("0") == null);
+    try testing.expect(findSpec("bogus") == null);
+    try testing.expect(findSpec("") == null);
+    try testing.expect(findSpec("999") == null);
+}
+
+test "formatEntryJson emits the explain entry shape" {
+    const gpa = testing.allocator;
+    const got = try formatEntryJson(gpa, auth_failed);
+    defer gpa.free(got);
+    try testing.expectEqualStrings(
+        "{\"code\":106,\"type\":\"AuthFailed\",\"recoverable\":false,\"cause\":\"the provider rejected the API key, or no key was found anywhere in the resolution chain\",\"hint\":\"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY\",\"docs\":\"" ++ providers_doc_url ++ "\"}",
+        got,
+    );
+}
+
+test "formatEntryHuman renders cause, hint, and docs from the spec" {
+    const gpa = testing.allocator;
+    const got = try formatEntryHuman(gpa, timeout);
+    defer gpa.free(got);
+    try testing.expectEqualStrings(
+        "exit 105  Timeout (recoverable: false)\n  cause: an HTTP request to the provider endpoint exceeded --timeout-ms\n  fix:   raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)\n  docs:  " ++ doc_url ++ "\n",
+        got,
+    );
 }

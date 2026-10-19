@@ -303,6 +303,14 @@ tau config edit ./ci.json              # Explicit path
 # stay on disk. Editor non-zero exit → editor_failed envelope, exit 1.
 ```
 
+#### 20. Offline Error Catalog
+```bash
+tau explain                       # List the stable error catalog (JSON)
+tau explain 106                   # One entry by exit code: cause + hint + docs
+tau explain AuthFailed            # Same, by wire `type` tag
+tau explain --human 80            # Prose instead of JSON
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
@@ -618,6 +626,9 @@ Set appropriate context windows for compaction threshold:
 - [ ] Context window is appropriate for model
 
 ## Troubleshooting
+
+`tau explain <code|type>` prints the offline catalog entry (cause + remediation
+hint) for any stable error — see docs/errors.md for the generated catalog.
 
 ### Auth Failed (exit code 106)
 - Check API key is correct

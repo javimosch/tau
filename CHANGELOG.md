@@ -183,6 +183,11 @@ are backward compatible.
   `scripts/e2e-first-run.sh` / `scripts/e2e-first-run.ps1`. The release
   workflow's install-smoke jobs assert the shipped artifact self-verifies
   the same way (#233)
+- `tau explain [<code|type>] [--human]` — offline error-catalog lookup:
+  prints a stable entry's cause, remediation hint, and docs link as JSON
+  (`--human` for prose), or lists the whole catalog with no argument.
+  Sourced from the same `src/errors.zig` registry that generates
+  docs/errors.md (#226)
 
 ### Fixed
 

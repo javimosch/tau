@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models|init|config|guide|doctor|setup|bug|version|upgrade)
+            acp|fleet|skills|models|init|config|guide|doctor|setup|bug|version|upgrade|explain)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -156,9 +156,14 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "--yes -y --dir --dry-run" -- "$cur"))
             ;;
 
+        explain)
+            # Exit codes mirror the stable catalog in src/errors.zig.
+            COMPREPLY=($(compgen -W "1 80 82 105 106 110 111 --human" -- "$cur"))
+            ;;
+
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet init config guide doctor setup bug version upgrade
+            local top_level="acp models skills fleet init config guide doctor setup bug version upgrade explain
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream
