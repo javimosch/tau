@@ -14,7 +14,7 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup', 'version')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup', 'version', 'config')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
@@ -26,6 +26,8 @@ $TauArgumentCompleter = {
     $doctorFlags = @('--offline', '--deep', '--probe', '--fix', '--yes', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--offline', '--deep', '--provider', '--model', '--api-key')
     $versionFlags = @('--verbose', '--mode')
+    $configSubs  = @('show', 'validate', 'set', 'get', 'unset', 'edit')
+    $configFlags = @('--mode', '--raw', '--provider', '--model', '--api-key')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
@@ -57,6 +59,13 @@ $TauArgumentCompleter = {
         'doctor'              = 'validate setup (config, provider, key, connectivity)'
         'setup'               = 'one-shot onboarding (init + completions + doctor)'
         'version'             = 'print version (--verbose adds build metadata)'
+        'config'              = 'inspect, validate, or edit the config (show|validate|set|get|unset|edit)'
+        'show'                = 'print the resolved effective config (keys redacted)'
+        'validate'            = 'check a config file (CI/pre-commit)'
+        'set'                 = 'set a config key to a value'
+        'get'                 = 'print a config key value (secrets redacted)'
+        'unset'               = 'remove a config key'
+        'edit'                = 'open the config in $EDITOR (validates on save)'
         'run'                 = 'decompose a goal and dispatch workers'
         'status'              = 'check status of a fleet by id'
         'list'                = 'list all known fleets / skills'
@@ -224,6 +233,19 @@ $TauArgumentCompleter = {
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
         'setup'  { return & $emit $setupFlags 'ParameterName' }
         'version' { return & $emit $versionFlags 'ParameterName' }
+        'config' {
+            $configSub = ''
+            $seenConfig = $false
+            foreach ($w in $context) {
+                if (-not $seenConfig) {
+                    if ($w -eq 'config') { $seenConfig = $true }
+                    continue
+                }
+                if ($configSubs -contains $w) { $configSub = $w; break }
+            }
+            if ($configSub -eq '') { return & $emit ($configSubs + $configFlags) 'ParameterName' }
+            return & $emit $configFlags 'ParameterName'
+        }
         'models' { return }
         'fleet'  {
             $fleetSub = ''

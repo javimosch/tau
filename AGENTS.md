@@ -251,6 +251,47 @@ tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
 # → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
 ```
 
+#### 16. Effective Config (`tau config show`)
+```bash
+tau config show                          # Resolved config (file+env+flags), keys redacted
+tau config show --provider openai        # Preview flag overrides without running
+# → {"config_file":{...},"provider":"openai","api_key":{"set":true,"value":"***wxyz","source":"env OPENAI_API_KEY"},...}
+# api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
+```
+
+#### 17. Config Validation (`tau config validate`)
+```bash
+tau config validate                      # Validate ~/.config/tau/config.json
+tau config validate ci/prod.json         # Validate an explicit file
+tau config validate --mode text          # Human-readable error lines
+# → {"path":"…","ok":false,"errors":[{"key":"provider","message":"…"}]}  (stdout)
+# Exit 0 = valid, 1 = problems found, 80 = CLI misuse. Fully offline; key
+# values are never echoed. For CI/pre-commit gates.
+```
+
+#### 18. Config Editing (`tau config set|get|unset`)
+```bash
+tau config set provider openai           # Schema-checked write (creates file, 0600)
+tau config set keys.openai sk-...        # Per-provider key via keys.<provider>
+tau config get provider                  # Read a FILE value (JSON mode default)
+tau config get api_key --mode text       # → "***last4" (secrets redacted; --raw prints raw)
+tau config unset keys.openai             # Remove a key
+tau config set mode text ./ci.json       # Optional trailing path
+# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename).
+# Exit 0 ok; 1 = key/file not found or invalid file; 80 = bad key/value/args.
+```
+
+#### 19. Interactive Config Editing (`tau config edit`)
+```bash
+tau config edit                        # Open ~/.config/tau/config.json in $EDITOR
+TAU_EDITOR="code --wait" tau config edit  # Editor: TAU_EDITOR > VISUAL > EDITOR > vi/notepad
+tau config edit ./ci.json              # Explicit path
+# Missing file → seeded with the commented `tau init` scaffold first.
+# On editor exit the file is validated (same checks/report as `config
+# validate`, incl. did-you-mean on misspelled keys); bad saves exit 1 but
+# stay on disk. Editor non-zero exit → editor_failed envelope, exit 1.
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
@@ -264,7 +305,7 @@ TAU_BIN="$HOME/ai/tau-custom/zig-out/bin/tau" a2a-spawn --cli tau --id custom --
 
 Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations 40 --timeout-ms 300000`.
 
-#### 16. Config Scaffolding
+#### 20. Config Scaffolding
 ```bash
 tau init                                 # Write commented starter ~/.config/tau/config.json
 tau init --stdout                        # Preview the scaffold without writing
@@ -275,7 +316,7 @@ tau init --provider openai               # Scaffold for a specific provider
 # `//` and `/* */` comments are stripped on load.
 ```
 
-#### 17. One-Shot Onboarding
+#### 21. One-Shot Onboarding
 ```bash
 tau setup                      # init + install completions ($SHELL-detected) + doctor summary
 tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
@@ -293,7 +334,7 @@ tau setup --offline            # Skip network checks in the doctor step
 # works without a source checkout.
 ```
 
-#### 18. Version & Build Metadata
+#### 22. Version & Build Metadata
 ```bash
 tau version                    # Same as -v/--version: "tau 0.4.0"
 tau version --verbose          # Build metadata as JSON
@@ -335,6 +376,8 @@ tau version --verbose --mode text   # Same fields as key: value lines
 | `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
 | `src/setup.zig` | `tau setup` onboarding (init + completions + doctor) | Setup steps, install paths |
+| `src/configvalidate.zig` | `tau config validate` offline file checks | Config validation rules |
+| `src/configedit.zig` | `tau config set|get|unset` JSONC splice editor | Config editing changes |
 | `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |

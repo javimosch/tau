@@ -61,7 +61,21 @@ are backward compatible.
   exits non-zero when any step fails; idempotent on re-run
 - Shell completions for fish and PowerShell (`completions/tau.fish`,
   `completions/tau.ps1`); all four scripts now complete `init`, `setup`,
-  `doctor`, and `guide`
+  `doctor`, `guide`, and `config`
+- `tau config show` — print the resolved effective config (config file + env +
+  CLI flags merged) as JSON with API keys redacted and their source reported
+  (#140)
+- `tau config validate [path]` — offline config-file validation for CI and
+  pre-commit hooks; JSON report on stdout, exit 1 listing every problem
+  (unknown keys, type mismatches, bad provider/mode, range violations) (#177)
+- `tau config set|get|unset` — schema-validated, comment-preserving edits to
+  the config file (git-config model) for CI and agent-driven setup; `set`
+  creates the file atomically (`0600`), keys are `<field>` or `keys.<provider>`,
+  secrets are redacted in output unless `get --raw` (#202)
+- `tau config edit [path]` — open the config in `$EDITOR` (`TAU_EDITOR` >
+  `VISUAL` > `EDITOR` > `vi`/`notepad`), validated on save with the same
+  checks as `config validate`; a missing file is seeded with the `tau init`
+  scaffold and misspelled keys get `did you mean "…"?` hints (#212)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and

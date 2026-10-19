@@ -18,7 +18,7 @@ function __tau_no_subcommand
     set -e tokens[1]
     for t in $tokens
         switch $t
-            case acp fleet skills models guide init doctor setup version
+            case acp fleet skills models guide init doctor setup version config
                 return 1
         end
     end
@@ -48,6 +48,25 @@ function __tau_fleet_needs_mode
         end
     end
     test $seen_fleet -eq 1
+end
+
+# True when `tau config` is on the line but no
+# show|validate|set|get|unset|edit subcommand yet.
+function __tau_config_needs_sub
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    set -l seen_config 0
+    for t in $tokens
+        if test $seen_config -eq 0
+            test "$t" = config; and set seen_config 1
+            continue
+        end
+        switch $t
+            case show validate set get unset edit
+                return 1
+        end
+    end
+    test $seen_config -eq 1
 end
 
 # Complete @file arguments: strip the '@', use the builtin file completer,
@@ -87,6 +106,7 @@ complete -c tau -n $top -f -a guide -d 'print the embedded operator manual'
 complete -c tau -n $top -f -a init -d 'write a commented starter config'
 complete -c tau -n $top -f -a doctor -d 'validate setup (config, provider, key, connectivity)'
 complete -c tau -n $top -f -a setup -d 'one-shot onboarding (init + completions + doctor)'
+complete -c tau -n $top -f -a config -d 'inspect, validate, or edit the config (show|validate|set|get|unset|edit)'
 complete -c tau -n $top -f -a version -d 'print version (--verbose adds build metadata)'
 
 complete -c tau -n $top -s h -l help -d 'show help text'
@@ -193,5 +213,21 @@ complete -c tau -n $setup -f -l api-key -x -d 'diagnose an override API key'
 set -l version '__tau_using_subcommand version'
 complete -c tau -n $version -f -l verbose -d 'include build metadata (commit, target, build date, zig version)'
 complete -c tau -n $version -f -l mode -x -a 'text json' -d 'output mode'
+
+# ── tau config ──────────────────────────────────────────────────────────────
+set -l config '__tau_using_subcommand config'
+
+complete -c tau -n "$config; and __tau_config_needs_sub" -f -a show -d 'print the resolved effective config (keys redacted)'
+complete -c tau -n "$config; and __tau_config_needs_sub" -f -a validate -d 'check a config file (CI/pre-commit)'
+complete -c tau -n "$config; and __tau_config_needs_sub" -f -a set -d 'set a config key to a value'
+complete -c tau -n "$config; and __tau_config_needs_sub" -f -a get -d 'print a config key value (secrets redacted)'
+complete -c tau -n "$config; and __tau_config_needs_sub" -f -a unset -d 'remove a config key'
+complete -c tau -n "$config; and __tau_config_needs_sub" -f -a edit -d 'open the config in $EDITOR (validates on save)'
+
+complete -c tau -n $config -f -l mode -x -a 'text json' -d 'output/report format'
+complete -c tau -n $config -f -l raw -d 'print secret values unredacted (config get)'
+complete -c tau -n $config -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'LLM provider override (config show)'
+complete -c tau -n $config -f -l model -x -d 'model override (config show)'
+complete -c tau -n $config -f -l api-key -x -d 'API key override (config show)'
 
 # `tau models` takes no further arguments.
