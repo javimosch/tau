@@ -239,6 +239,7 @@ _tau() {
                 version)
                     _arguments \
                         '--verbose[include build metadata (commit, target, build date, zig version)]' \
+                        '--check[non-blocking update check against the latest release]' \
                         '--mode=[output mode]:mode:(text json)'
                     ;;
             esac

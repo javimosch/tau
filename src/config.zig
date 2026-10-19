@@ -144,6 +144,10 @@ pub const Config = struct {
     /// `tau version --verbose` — include build metadata (git commit, target
     /// triple, build date, zig version) for support triage.
     version_verbose: bool = false,
+    /// `tau version --check` — non-blocking check against the latest release;
+    /// prints update_available plus the release URL when newer. Opt out
+    /// everywhere (including the `tau doctor` warning) via TAU_NO_UPDATE_CHECK.
+    version_check: bool = false,
 
     // --- Skills autodiscovery ---
     /// `tau skills <list|search|load>` subcommand selector. Null means no skills subcommand.

@@ -86,6 +86,7 @@ ALL_TEST_GROUPS=(
   "golden-errors:test_group_golden_errors"
   "golden-onboarding:test_group_golden_onboarding"
   "golden-help:test_group_golden_help"
+  "update:test_group_update"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -261,6 +262,84 @@ test_group_version() {
     ok "debug log has build header" 1 0
     ok "debug log build has target" 1 0
   fi
+}
+
+# tau version --check + the doctor update_available warning — a non-blocking,
+# opt-out (TAU_NO_UPDATE_CHECK) check against the latest release. Fully
+# offline: TAU_UPDATE_URL points curl at file:// stubs.
+test_group_update() {
+  local out stub_home
+  stub_home="$SMOKE_TEMP/uhome"
+  mkdir -p "$stub_home"
+  local scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY HOME="$stub_home")
+
+  printf '{"tag_name":"v99.9.9","name":"newer"}' > "$SMOKE_TEMP/rel-newer.json"
+  printf '{"tag_name":"v0.4.0"}' > "$SMOKE_TEMP/rel-same.json"
+  printf 'not json' > "$SMOKE_TEMP/rel-bad.json"
+
+  # 1. Explicit --check honors the opt-out: checked:false, reason names the var.
+  capture vc_off env TAU_NO_UPDATE_CHECK=1 "$BIN" version --check
+  ok "version --check opt-out exit 0" "$vc_off_rc" 0
+  contains "opt-out reports checked:false" "$vc_off_out" '"checked":false'
+  contains "opt-out reason names the var" "$vc_off_out" 'TAU_NO_UPDATE_CHECK'
+
+  # 2. Newer release available -> update_available:true + release page URL.
+  capture vc_new env TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-newer.json" "$BIN" version --check
+  ok "version --check newer exit 0" "$vc_new_rc" 0
+  contains "newer checked:true" "$vc_new_out" '"checked":true'
+  contains "newer latest normalized" "$vc_new_out" '"latest":"99.9.9"'
+  contains "newer update_available:true" "$vc_new_out" '"update_available":true'
+  contains "newer update_url points at tag" "$vc_new_out" '"update_url":"https://github.com/javimosch/tau/releases/tag/v99.9.9"'
+
+  # 3. Same version -> up to date, no update_url.
+  capture vc_same env TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-same.json" "$BIN" version --check
+  ok "version --check same exit 0" "$vc_same_rc" 0
+  contains "same update_available:false" "$vc_same_out" '"update_available":false'
+  if printf '%s' "$vc_same_out" | grep -qF 'update_url'; then
+    ok "same omits update_url" 1 0
+  else
+    ok "same omits update_url" 0 0
+  fi
+
+  # 4. Failure paths are non-blocking: bad payload and missing stub both exit 0
+  #    with checked:false.
+  capture vc_bad env TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-bad.json" "$BIN" version --check
+  ok "bad payload exit 0" "$vc_bad_rc" 0
+  contains "bad payload checked:false" "$vc_bad_out" '"checked":false'
+  contains "bad payload reason" "$vc_bad_out" 'tag_name'
+  capture vc_missing env TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-missing.json" "$BIN" version --check
+  ok "missing stub exit 0" "$vc_missing_rc" 0
+  contains "missing stub checked:false" "$vc_missing_out" '"checked":false'
+  contains "missing stub reason" "$vc_missing_out" 'release lookup failed'
+
+  # 5. --mode text renders key: value lines; --verbose composes with --check.
+  capture vc_txt env TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-newer.json" "$BIN" version --check --mode text
+  ok "text mode exit 0" "$vc_txt_rc" 0
+  contains "text latest line" "$vc_txt_out" 'latest: 99.9.9'
+  contains "text update_available line" "$vc_txt_out" 'update_available: true'
+  contains "text update_url line" "$vc_txt_out" 'update_url: https://github.com/javimosch/tau/releases/tag/v99.9.9'
+  capture vc_txt_off env TAU_NO_UPDATE_CHECK=1 "$BIN" version --check --mode text
+  contains "text opt-out line" "$vc_txt_off_out" 'update_check: disabled (TAU_NO_UPDATE_CHECK)'
+  capture vc_vrb env TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-same.json" "$BIN" version --check --verbose
+  contains "verbose+check has commit" "$vc_vrb_out" '"commit":"'
+  contains "verbose+check has checked" "$vc_vrb_out" '"checked":true'
+
+  # 6. Doctor's update_available row: warn on newer, ok on same, skip on
+  #    --offline / TAU_NO_UPDATE_CHECK. It never fails the run by itself.
+  capture doc_new "${scrub[@]}" TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-newer.json" "$BIN" doctor --offline --provider openai --api-key k
+  # --offline skips the check — even with a stub URL set.
+  contains "doctor --offline skips update check" "$doc_new_out" '"name":"update_available","status":"skip"'
+  capture doc_upd "${scrub[@]}" TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-newer.json" "$BIN" doctor --provider openai --api-key k
+  contains "doctor warns on newer release" "$doc_upd_out" '"name":"update_available","status":"warn"'
+  contains "doctor warn names versions" "$doc_upd_out" 'new release available: 99.9.9 (running 0.4.0)'
+  capture doc_ok "${scrub[@]}" TAU_UPDATE_URL="file://$SMOKE_TEMP/rel-same.json" "$BIN" doctor --provider openai --api-key k
+  contains "doctor ok when current" "$doc_ok_out" '"name":"update_available","status":"ok"'
+  capture doc_dis "${scrub[@]}" TAU_NO_UPDATE_CHECK=1 "$BIN" doctor --provider openai --api-key k
+  contains "doctor skips when opted out" "$doc_dis_out" '"name":"update_available","status":"skip"'
+  contains "doctor opt-out message" "$doc_dis_out" 'skipped (TAU_NO_UPDATE_CHECK)'
+
+  # 7. Help advertises the flag.
+  "$BIN" --help 2>&1 | grep -q -- '--check' && ok "--help mentions --check" 0 0 || ok "--help mentions --check" 1 0
 }
 
 # guide — the embedded operator manual (cli-guide-spec). JSON default, --human markdown, no runtime fetch.

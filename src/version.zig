@@ -14,6 +14,15 @@ pub const troubleshooting_doc_url = "https://github.com/javimosch/tau/blob/maste
 /// link here instead of the generic troubleshooting page.
 pub const providers_doc_url = "https://github.com/javimosch/tau/blob/master/docs/providers.md";
 
+/// GitHub "latest release" API endpoint queried by the update check
+/// (`tau version --check`, `tau doctor` update_available). TAU_UPDATE_URL
+/// overrides it.
+pub const latest_release_url = "https://api.github.com/repos/javimosch/tau/releases/latest";
+
+/// Human-facing releases page; the update check appends `/tag/<tag>` for the
+/// "upgrade here" link.
+pub const releases_page_url = "https://github.com/javimosch/tau/releases";
+
 /// Build metadata baked in by build.zig + comptime `builtin` queries. Surfaced
 /// by `tau version --verbose`, the `tau doctor` report/verdict "build" field,
 /// and the --debug log header — the triage trio that lets a bug report say

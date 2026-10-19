@@ -357,6 +357,11 @@ tau version --verbose --mode text   # Same fields as key: value lines
 # uncommitted changes); build_date honors SOURCE_DATE_EPOCH so release builds
 # stay byte-reproducible. The same "build" object rides on `tau doctor`
 # (report and --json verdict) and as a `# build:` line in --debug log headers.
+tau version --check                # Non-blocking update check vs latest release
+# → {"name":"tau","version":"0.4.0","checked":true,"latest":"0.4.0","update_available":false}
+# Always exits 0 — checked:false + reason when the lookup can't run (offline,
+# no curl). Opt out everywhere (incl. the doctor update_available warning) via
+# TAU_NO_UPDATE_CHECK=1; TAU_UPDATE_URL overrides the lookup URL.
 ```
 
 ### Storage Paths
