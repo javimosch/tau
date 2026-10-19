@@ -217,7 +217,7 @@ fn appendMdRow(arena: std.mem.Allocator, buf: *std.ArrayList(u8), k: []const u8,
 /// secrets from every source plus the generic Bearer/`"api_key":`/NAME=
 /// patterns). Paths stay visible, same convention as the debug log; the
 /// footer reminds the user to review before attaching.
-fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
+pub fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
     const s = summarize(checks);
     const b = version_mod.build;
     var buf: std.ArrayList(u8) = .empty;

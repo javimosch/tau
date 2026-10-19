@@ -14,7 +14,7 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup', 'version')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup', 'bug', 'version')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
@@ -25,6 +25,8 @@ $TauArgumentCompleter = {
     $initFlags   = @('--force', '--stdout', '--provider')
     $doctorFlags = @('--offline', '--deep', '--fix', '--yes', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--offline', '--deep', '--provider', '--model', '--api-key')
+    $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report',
+                     '--offline', '--deep', '--shell', '--provider', '--model', '--api-key')
     $versionFlags = @('--verbose', '--mode')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $globalFlags = @(
@@ -45,7 +47,8 @@ $TauArgumentCompleter = {
                     '--session', '--temperature', '--max-tokens', '--timeout-ms',
                     '--context-window', '--compact-threshold', '--compact-keep-recent',
                     '--goal-max-iterations', '--max-iterations', '--acp-socket',
-                    '--goal', '--id', '--coordinator-model', '--worker-model', '--items')
+                    '--goal', '--id', '--coordinator-model', '--worker-model', '--items',
+                    '--title', '--body', '--labels')
 
     $tooltips = @{
         'acp'                 = 'manage the ACP server (start|stop|status|serve)'
@@ -56,6 +59,7 @@ $TauArgumentCompleter = {
         'init'                = 'write a commented starter config'
         'doctor'              = 'validate setup (config, provider, key, connectivity)'
         'setup'               = 'one-shot onboarding (init + completions + doctor)'
+        'bug'                 = 'file a pre-filled GitHub issue with doctor diagnostics'
         'version'             = 'print version (--verbose adds build metadata)'
         'run'                 = 'decompose a goal and dispatch workers'
         'status'              = 'check status of a fleet by id'
@@ -114,6 +118,12 @@ $TauArgumentCompleter = {
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
+        '--title'             = 'issue title'
+        '--body'              = 'description placed above the diagnostics bundle'
+        '--labels'            = 'issue labels (comma-separated)'
+        '--open'              = 'open the issue URL in the system browser'
+        '--out'               = 'write the diagnostics bundle to a file'
+        '--no-report'         = 'omit the diagnostics bundle'
         '--verbose'           = 'include build metadata in version output'
     }
 
@@ -199,6 +209,7 @@ $TauArgumentCompleter = {
             return & $emit $tools 'ParameterValue'
         }
         '--load-agents-md' { return & $completeFile $wordToComplete }
+        '--out'            { return & $completeFile $wordToComplete }
         '--schema' {
             if ($currentWord.StartsWith('@')) { return & $atFiles $wordToComplete }
             return
@@ -222,6 +233,7 @@ $TauArgumentCompleter = {
         'init'   { return & $emit $initFlags 'ParameterName' }
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
         'setup'  { return & $emit $setupFlags 'ParameterName' }
+        'bug'    { return & $emit $bugFlags 'ParameterName' }
         'version' { return & $emit $versionFlags 'ParameterName' }
         'models' { return }
         'fleet'  {

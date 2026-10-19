@@ -16,6 +16,12 @@ are backward compatible.
 
 ### Added
 
+- `tau bug` — pre-filled GitHub issue URL carrying the redacted
+  `doctor --report` diagnostics bundle (`--title`/`--body`/`--labels`,
+  `--open` launches the system browser via `$BROWSER` or the platform
+  opener, `--out` writes the bundle to a file, `--no-report` omits
+  diagnostics; over-long bundles fall back to a short link body while the
+  JSON `body`/`report` fields keep everything) (#241)
 - `TAU_ENDPOINT` env var — point tau at any OpenAI-compatible server (#64)
 - Per-provider API keys in the config file via the `keys` object (#31)
 - Shell completions for bash and zsh (`completions/`) (#46)
