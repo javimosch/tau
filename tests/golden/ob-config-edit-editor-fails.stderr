@@ -1,0 +1,1 @@
+{"err":{"code":1,"type":"editor_failed","message":"editor \"false\" exited with status 1","recoverable":false,"hint":"the message names what was not found — check the name/path and retry","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}

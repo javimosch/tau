@@ -1,0 +1,170 @@
+tau - agent-first AI CLI (non-interactive Zig implementation of pi)
+
+Usage:
+  tau [options] [@files...] [prompt...]
+
+Options:
+  -p, --print                  Non-interactive: process prompt and exit (default)
+      --provider <name>        Provider: xiaomi (default), openai, deepseek, opencode-go
+      --model <pattern>        Model id, or provider/id (e.g. openai/gpt-4o-mini)
+      --api-key <key>          API key (else provider env var, else builtin)
+      --system-prompt <text>   Set the system prompt
+      --append-system-prompt <text>  Append to the system prompt (repeatable)
+      --mode <text|json>       Output mode (default: json)
+      --no-stream              Disable streaming (streaming is default)
+      --stream                 Enable streaming (overrides a no-stream config default)
+  -t, --tools <csv>            Allowlist of tool names
+  -xt, --exclude-tools <csv>   Denylist of tool names
+  -nt, --no-tools              Disable all tools
+      --thinking               Enable thinking chunks (show model reasoning)
+      --debug                  Show perf stats and tool calls (input+output) on
+                          stderr, and write a redacted diagnostic log to
+                          ~/.config/tau/debug/ for bug reports
+                          (override the path with TAU_DEBUG_LOG)
+      --dry-run                Report the tools that would be called; execute none
+      --temperature <f>        Sampling temperature (default: 0.7)
+      --max-tokens <n>         Max output tokens
+      --timeout-ms <n>         Request timeout in ms (default: 120000)
+      --session <name>         Persist conversation + goal to ~/.config/tau/sessions/<name>.json
+      --context-window <n>     Model context window in tokens (default: per-provider)
+      --compact-threshold <f>  Auto-compact above this fraction of the window (default: 0.5)
+      --compact-keep-recent <n>  Tokens of recent history kept verbatim (default: 20000)
+      --no-compact             Disable automatic context compaction
+      --role <author|critic|coordinator|none>
+                          Set the agent role (default: none)
+      --schema <json|@file>    JSON Schema for structured output. Model must
+                          produce valid JSON matching this schema.
+                          Inline: --schema '{\"type\":\"object\",...}'
+                          File:   --schema @path/to/schema.json
+      --max-iterations <n>     Tool-loop runaway backstop (default: 100; forces a final answer)
+      --scan-agents            Scan CWD for AGENTS.md files and list them
+      --load-agents-md <path>  Load an AGENTS.md file into system context
+      --auto-agents-md         Auto-load cwd/AGENTS.md on startup
+      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
+      --help-json              Machine-readable help as JSON
+  -h, --help                   Show this help
+  -v, --version                Show version
+
+Setup:
+  tau init                    Write a commented starter config to
+                              ~/.config/tau/config.json (detects env API keys)
+      --force                 Overwrite an existing config file
+      --provider <name>       Scaffold for a specific provider
+      --stdout                Print the starter config without writing it
+  tau setup                   One-shot onboarding: init + install shell
+                              completions + editor ACP config + doctor
+                              health summary (NDJSON)
+      --shell <name>          Completions shell: bash|zsh|fish|pwsh|all
+                              (default: detect from $SHELL; env
+                              TAU_SETUP_SHELL)
+      --client <name>         Editor ACP client: zed|nvim|vscode|
+                              jetbrains|all (default: detect only; env
+                              TAU_SETUP_CLIENT)
+      --offline/--deep        Passed through to the doctor step
+  -y, --yes                   Unattended: approve all write steps
+                              (env TAU_YES=1)
+      --non-interactive       Unattended contract for scripts/CI: never
+                              prompts, never reads stdin (env
+                              TAU_NONINTERACTIVE=1)
+
+Goal mode (in the prompt):
+  /goal <objective>            Work autonomously until the objective is audited-complete
+  /goal [--tokens N] <obj>     ...with a soft output-token budget (e.g. 250K)
+  /goal status|pause|resume|clear|complete   Manage the session's goal (needs --session)
+
+ACP (Agent Client Protocol) server:
+  tau acp serve [--acp-socket P] Run the JSON-RPC agent server (stdio, or a Unix socket)
+  tau acp start                 Start the ACP server as a background daemon
+  tau acp stop                  Stop the background ACP daemon
+  tau acp status                Report ACP daemon status (JSON)
+
+Author<->Critic loop:
+  --role <author|critic|coordinator|none>  Set the agent role (default: none)
+
+Fleet orchestration:
+  tau fleet run --goal <text>   Decompose goal into work items and dispatch workers
+      --coordinator-model <model> Override coordinator LLM model
+      --worker-model <model>      Override worker LLM model
+      --sequential                Run workers sequentially (default: parallel)
+      --items <json>              Pre-supplied items JSON (skip coordinator)
+      --schema <json|@file>        JSON Schema for the coordinator response
+  tau fleet status <id>         Show fleet manifest (spec + per-item status)
+  tau fleet list                List active fleet ids
+  tau fleet logs <id>           Show per-worker session hint
+  tau fleet cancel <id>         Cancel a running fleet
+
+Skills (autodiscover ~/.agents/skills/):
+  tau skills list               List all discoverable skills
+  tau skills search <query>     Search skills by keyword
+  tau skills load <name>        Load a skill into system context
+
+Diagnostics:
+  tau doctor                    Validate setup (config file, provider, API key, connectivity)
+      --offline                 Skip network checks
+      --deep                    Also run an authenticated probe (spends ~1 token)
+      --probe                   Live-verify connectivity + credentials for every
+                              provider (per-provider pass/fail rows; spends
+                              ~1 token per keyed provider)
+      --selftest                Credential-free end-to-end check: spawn tau
+                              against a loopback stub provider and verify the
+                              canned reply comes back (no real keys/network)
+      --provider/--model/--api-key   Diagnose an override instead of the configured default
+      --fix                     Propose remediations for fixable checks (missing
+                              config, loose permissions, missing completions);
+                              prompts per fix on a TTY
+      --yes                     Apply --fix remediations without prompting
+      --json                    Stream NDJSON check/fix events + a done:true
+                              verdict instead of the single-object report
+      --report                  Print a Markdown diagnostics bundle (build
+                              metadata, checks, sanitized config file) for
+                              pasting into a bug report; mutually exclusive
+                              with --json
+      --shell <name>            Completions shell: bash|zsh|fish|pwsh|all
+                              (default: detect from $SHELL)
+
+Config:
+  tau config show [flags]       Print the resolved effective config as JSON
+                              (config file + env + CLI flags merged; API keys redacted)
+  tau config validate [path]    Validate a config file — JSON report on stdout,
+                              exit 1 with every problem listed (CI/pre-commit)
+  tau config set <key> <v> [path]  Schema-checked edit to the config FILE
+                                 (keys are <field> or keys.<provider>; creates the file)
+  tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
+  tau config unset <key> [path] Remove a key from the config file
+  tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
+                              VISUAL > EDITOR > vi/notepad); validates on save
+
+
+Version:
+  tau version                   Print the version (same as -v/--version)
+      --verbose                 Include build metadata: git commit, target
+                              triple, build date, zig version (JSON;
+                              --mode text prints key: value lines)
+      --check                   Non-blocking check for a newer release
+                              (always exits 0; opt out via
+                              TAU_NO_UPDATE_CHECK)
+  tau upgrade                 Self-update in place: check the latest
+                              release, confirm, then run the release's
+                              own verified install.sh (SHA256-checked,
+                              fail-closed). POSIX-only.
+      --yes, -y               Upgrade without prompting (env TAU_YES=1);
+                              a TTY gets a [y/N] prompt instead
+      --dir <path>            Install destination (default: the running
+                              binary's directory; env TAU_INSTALL_DIR)
+      --dry-run               Print the resolved plan; install nothing
+
+Models:
+  tau models                    List available providers and models
+
+Guide (embedded operator manual — read once, drive with no external docs):
+  tau guide                     Print the full guide as JSON (agent-readable)
+  tau guide --human             ...as markdown
+
+Examples:
+  tau "List the files in src/"
+  tau --model openai/gpt-4o-mini "Explain this error" @log.txt
+  tau --session work1 "Remember: the build uses zig 0.16"
+  tau --session work1 "/goal add a --version flag and verify it builds"
+  tau --session work1 "/goal status"
+  tau --role author --tools bash,write "add version flag"
+  tau fleet run --goal "add OAuth and write tests"
