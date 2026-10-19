@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"cannot read file @/nonexistent-tau-golden-file","recoverable":false}}

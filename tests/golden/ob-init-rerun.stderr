@@ -1,0 +1,1 @@
+{"err":{"code":1,"type":"already_exists","message":"config already exists: <HOME>/.config/tau/config.json -- pass --force to overwrite"}}
