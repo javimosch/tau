@@ -406,7 +406,27 @@ fn maskPatterns(a: std.mem.Allocator, s: []const u8) ![]u8 {
             }
         }
 
-        // 3) NAME=value env-style assignments with credential-looking names.
+        // 3) URL userinfo password: scheme://user:pw@host — mask the password
+        // component only so the endpoint stays identifiable in diagnostics.
+        if (std.mem.startsWith(u8, s[i..], "://")) {
+            const astart = i + 3;
+            var aend = astart;
+            while (aend < s.len and s[aend] != '/' and !isValueEnd(s[aend])) aend += 1;
+            const authority = s[astart..aend];
+            if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| {
+                if (std.mem.indexOfScalar(u8, authority[0..at], ':')) |colon| {
+                    if (at > colon + 1) {
+                        try out.appendSlice(a, s[i .. astart + colon + 1]);
+                        try out.appendSlice(a, mask);
+                        try out.append(a, '@');
+                        i = astart + at + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // 4) NAME=value env-style assignments with credential-looking names.
         if (isWordChar(s[i]) and (i == 0 or !isWordChar(s[i - 1]))) {
             var j = i;
             while (j < s.len and isWordChar(s[j])) j += 1;
@@ -474,6 +494,26 @@ test "redactAlloc masks api_key-style JSON string fields" {
     try testing.expectEqualStrings(
         \\{"config":{"api_key":"***REDACTED***","model":"mimo"}}
     , out);
+}
+
+test "redactAlloc masks URL userinfo passwords without registration" {
+    const out = try redactOne(
+        "endpoint: https://user:p4ssw0rd-x@api.example.com/v1/chat ok",
+        &.{},
+    );
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(
+        "endpoint: https://user:" ++ mask ++ "@api.example.com/v1/chat ok",
+        out,
+    );
+    // JSON-embedded endpoints mask the same way.
+    const out2 = try redactOne("{\"endpoint\":\"https://u:pw-99@h:8443/\"}", &.{});
+    defer testing.allocator.free(out2);
+    try testing.expectEqualStrings("{\"endpoint\":\"https://u:" ++ mask ++ "@h:8443/\"}", out2);
+    // No userinfo (or userinfo without a password) is left alone.
+    const out3 = try redactOne("https://api.example.com/ and https://user@h/", &.{});
+    defer testing.allocator.free(out3);
+    try testing.expectEqualStrings("https://api.example.com/ and https://user@h/", out3);
 }
 
 test "redactAlloc masks whitespace-tolerant and case-insensitive JSON fields" {

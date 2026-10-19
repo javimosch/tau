@@ -583,7 +583,11 @@ fn formatEffectiveConfig(alloc: std.mem.Allocator, cfg: Config, env: *std.proces
         defer A.free(s);
         try b.appendSlice(A, s);
     }
-    return b.toOwnedSlice(A);
+    // Defense-in-depth on top of the field-level redactApiKey masks: strip
+    // every registered credential literal (resolved/env/config keys, endpoint
+    // userinfo passwords) plus generic credential patterns — `config show`
+    // must never be a credential leak channel.
+    return debuglog.redactRegistered(A, try b.toOwnedSlice(A));
 }
 
 fn printEffectiveConfig(arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) void {
@@ -856,7 +860,7 @@ pub fn main(init: std.process.Init) !void {
                         printErrorJson(@intFromEnum(ExitCode.internal_error), "OutOfMemory", "config validation failed", false);
                         std.process.exit(@intFromEnum(ExitCode.internal_error));
                     };
-                term.out(out);
+                term.out(debuglog.redactRegistered(arena, out) catch out);
                 // Exit 1 (generic_failure) on validation errors — the pinned
                 // contract needs no new code; CI/pre-commit just check non-zero.
                 std.process.exit(if (report.ok()) 0 else @intFromEnum(ExitCode.generic_failure));
@@ -876,13 +880,13 @@ pub fn main(init: std.process.Init) !void {
                 };
                 switch (outcome) {
                     .ok => |s| {
-                        term.out(s);
+                        term.out(debuglog.redactRegistered(arena, s) catch s);
                         return;
                     },
                     // Validation report on stdout (same channel/shape as
                     // `config validate`), exit 1 — the saved file needs fixes.
                     .invalid => |s| {
-                        term.out(s);
+                        term.out(debuglog.redactRegistered(arena, s) catch s);
                         std.process.exit(@intFromEnum(ExitCode.generic_failure));
                     },
                     .fail => |f| {
@@ -1289,4 +1293,67 @@ test "formatEffectiveConfig emits null for non-finite floats (valid JSON)" {
     const out = try formatEffectiveConfig(a, cfg, &env);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"temperature\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "nan") == null);
+}
+
+// ── Redaction invariant: `tau config show` ──────────────────────────────────
+// Config inspection is a credential surface: the resolved key, per-provider
+// keys, and endpoint userinfo passwords must never reach stdout — field-level
+// ***last4 masks plus a process-wide secret sweep (debuglog.redactRegistered)
+// enforce it. `k-`-prefixed random secrets can't collide with static output
+// text, so any substring hit is a real leak.
+
+const show_secret_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._";
+
+fn randShowSecret(r: std.Random, a: std.mem.Allocator) ![]u8 {
+    const s = try a.alloc(u8, r.intRangeAtMost(usize, 10, 36));
+    s[0] = 'k';
+    s[1] = '-';
+    for (s[2..]) |*ch| ch.* = show_secret_alphabet[r.uintLessThan(usize, show_secret_alphabet.len)];
+    return s;
+}
+
+test "property: credentials never survive `tau config show` output" {
+    var prng = std.Random.DefaultPrng.init(0x237_c5ec);
+    const r = prng.random();
+    var iter: usize = 0;
+    while (iter < 120) : (iter += 1) {
+        var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer ar.deinit();
+        const a = ar.allocator();
+        var env = std.process.Environ.Map.init(a);
+
+        const k_flag = try randShowSecret(r, a); // --api-key winner
+        const k_cfg = try randShowSecret(r, a); // config api_key loser
+        const k_map = try randShowSecret(r, a); // keys[openai]
+        const k_map2 = try randShowSecret(r, a); // keys[deepseek]
+        const k_env = try randShowSecret(r, a); // env loser
+        const k_pw = try randShowSecret(r, a); // endpoint userinfo password
+
+        var km = std.StringHashMap([]const u8).init(a);
+        try km.put("openai", k_map);
+        try km.put("deepseek", k_map2);
+        try env.put("DEEPSEEK_API_KEY", k_env);
+        const cfg = Config{
+            .provider = "openai",
+            .api_key = k_flag,
+            .config_api_key = k_cfg,
+            .keys = km,
+            .endpoint = try std.fmt.allocPrint(a, "https://user:{s}@api.example.com/v1", .{k_pw}),
+        };
+        // Register every secret EXCEPT k_pw — the endpoint password must be
+        // caught by the generic userinfo pattern alone (file-embedded
+        // endpoints aren't in the process registry either).
+        debuglog.addSecretsForTest(&.{ k_flag, k_cfg, k_map, k_map2, k_env });
+        defer debuglog.clearSecretsForTest();
+
+        const out = try formatEffectiveConfig(a, cfg, &env);
+        for ([_][]const u8{ k_flag, k_cfg, k_map, k_map2, k_env, k_pw }) |sec| {
+            if (std.mem.indexOf(u8, out, sec) != null) {
+                std.debug.print("config show leaked '{s}': {s}\n", .{ sec, out });
+                return error.TestUnexpectedResult;
+            }
+        }
+        // The endpoint stays identifiable — only the password component goes.
+        try std.testing.expect(std.mem.indexOf(u8, out, "api.example.com") != null);
+    }
 }

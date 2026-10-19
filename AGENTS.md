@@ -257,6 +257,8 @@ tau config show                          # Resolved config (file+env+flags), key
 tau config show --provider openai        # Preview flag overrides without running
 # → {"config_file":{...},"provider":"openai","api_key":{"set":true,"value":"***wxyz","source":"env OPENAI_API_KEY"},...}
 # api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
+# Output is also swept for registered secrets + generic credential patterns
+# (incl. URL userinfo passwords) — config inspection can never leak a key.
 ```
 
 #### 17. Config Validation (`tau config validate`)

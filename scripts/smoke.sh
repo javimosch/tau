@@ -1069,6 +1069,26 @@ test_group_config_show() {
   # TAU_ENDPOINT override is attributed.
   out=$(HOME="$empty_home" TAU_ENDPOINT="http://localhost:1/v1/chat/completions" "$BIN" config show)
   contains "config show attributes TAU_ENDPOINT" "$out" '"endpoint_source":"env:TAU_ENDPOINT"'
+
+  # Redaction invariant (task #237): credential values never reach stdout or
+  # stderr — secret fields are ***last4-masked and the payload is additionally
+  # swept for registered secrets + URL userinfo passwords.
+  local red_home; red_home="$(mktemp -d)"; register_temp_dir "$red_home"
+  mkdir -p "$red_home/.config/tau"
+  printf '%s\n' '{' \
+    '  "provider": "openai",' \
+    '  "api_key": "k-filekey-aa11bb22",' \
+    '  "keys": { "openai": "k-mapkey-cc44dd55", "deepseek": "k-mapkey2-ee66" }' \
+    '}' > "$red_home/.config/tau/config.json"
+  capture cs env -u TAU_API_KEY -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    HOME="$red_home" TAU_ENDPOINT="https://user:k-endpoint-pw77@api.example.com/v1" "$BIN" config show
+  ok "config show redaction fixture -> exit 0" "$cs_rc" 0
+  lacks "config show never leaks config api_key" "$cs_out$cs_err" 'k-filekey-aa11bb22'
+  lacks "config show never leaks keys.openai" "$cs_out$cs_err" 'k-mapkey-cc44dd55'
+  lacks "config show never leaks keys.deepseek" "$cs_out$cs_err" 'k-mapkey2-ee66'
+  lacks "config show never leaks endpoint password" "$cs_out$cs_err" 'k-endpoint-pw77'
+  contains "config show keeps endpoint host" "$cs_out" 'api.example.com'
+  contains "config show masks resolved key" "$cs_out" '"value":"***'
 }
 
 # Group: `tau config validate` — offline config-file validation for
@@ -1250,6 +1270,36 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?
   ok "set on broken JSON -> exit 1" "$rc" 1
   contains "broken JSON reported" "$out" 'invalid JSON'
+
+  # Redaction invariant (task #237): `config get` masks every credential the
+  # file holds — secret paths get ***last4 and the payload is swept for
+  # registered secrets + URL userinfo passwords; `get --raw` is the one
+  # documented escape.
+  printf '%s\n' '{' \
+    '  "provider": "openai",' \
+    '  "api_key": "k-filekey-ff11gg22",' \
+    '  "endpoint": "https://u:k-endpoint-pw88@api.example.com/",' \
+    '  "keys": { "openai": "k-mapkey-hh33", "deepseek": "k-mapkey2-ii44" }' \
+    '}' > "$cfg"
+  capture cgj env HOME="$mock_home" "$BIN" config get api_key
+  lacks "get api_key never leaks the file key (json)" "$cgj_out$cgj_err" 'k-filekey-ff11gg22'
+  contains "get api_key is redacted" "$cgj_out" '"redacted":true'
+  capture cgt env HOME="$mock_home" "$BIN" config get api_key --mode text
+  lacks "get api_key never leaks the file key (text)" "$cgt_out$cgt_err" 'k-filekey-ff11gg22'
+  capture cgk env HOME="$mock_home" "$BIN" config get keys
+  lacks "get keys never leaks keys.openai" "$cgk_out$cgk_err" 'k-mapkey-hh33'
+  lacks "get keys never leaks keys.deepseek" "$cgk_out$cgk_err" 'k-mapkey2-ii44'
+  capture cge env HOME="$mock_home" "$BIN" config get endpoint
+  lacks "get endpoint never leaks userinfo password" "$cge_out$cge_err" 'k-endpoint-pw88'
+  contains "get endpoint keeps host" "$cge_out" 'api.example.com'
+  # Explicit-path reads inspect a file whose secrets aren't in the resolved
+  # config — only the field masks + generic patterns protect those.
+  capture cgx env HOME="$mock_home" "$BIN" config get endpoint "$cfg"
+  lacks "get endpoint (explicit path) never leaks userinfo password" "$cgx_out$cgx_err" 'k-endpoint-pw88'
+  capture cgr env HOME="$mock_home" "$BIN" config get api_key --raw --mode text
+  contains "get --raw prints the real file value" "$cgr_out" 'k-filekey-ff11gg22'
+  capture cgs env HOME="$mock_home" "$BIN" config set api_key k-newsecret-jj55
+  lacks "set never echoes the new secret" "$cgs_out$cgs_err" 'k-newsecret-jj55'
 }
 
 # Group: `tau config edit` — interactive $EDITOR edit, schema-checked on save.

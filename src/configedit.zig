@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
+const debuglog = @import("debuglog.zig");
 const jsonmod = @import("json.zig");
 
 pub const Sub = enum { set, get, unset };
@@ -631,6 +632,10 @@ pub fn run(
         .fail => |f| return .{ .fail = f },
     };
     const redact = isSecretPath(kp) and !raw;
+    // Defense-in-depth on top of the field masks: `get --raw` is the one
+    // documented raw path; every other result additionally loses registered
+    // credential literals and generic patterns (URL userinfo passwords, etc.).
+    const mask_out = !(sub == .get and raw);
 
     const doc = try readDoc(io, arena, path);
 
@@ -648,7 +653,10 @@ pub fn run(
             const val = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, slice) catch slice, .{}) catch {
                 return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "value of \"{s}\" in {s} is not valid JSON", .{ key, path }) } };
             };
-            return .{ .ok = try renderGet(arena, path, key, val, redact, mode) };
+            return .{ .ok = if (mask_out)
+                try debuglog.redactRegistered(arena, try renderGet(arena, path, key, val, redact, mode))
+            else
+                try renderGet(arena, path, key, val, redact, mode) };
         },
         .set => {
             const token = switch (try coerceValue(arena, kp, value_opt.?)) {
@@ -680,7 +688,7 @@ pub fn run(
                 std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
             }
             try writeAtomic(io, arena, path, new_bytes);
-            return .{ .ok = try renderSet(arena, path, key, token, redact, created, mode) };
+            return .{ .ok = try debuglog.redactRegistered(arena, try renderSet(arena, path, key, token, redact, created, mode)) };
         },
         .unset => {
             const parsed = switch (doc) {
@@ -698,7 +706,7 @@ pub fn run(
                 return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}", .{ key, path }) } };
             };
             try writeAtomic(io, arena, path, new_bytes);
-            return .{ .ok = try renderUnset(arena, path, key, mode) };
+            return .{ .ok = try debuglog.redactRegistered(arena, try renderUnset(arena, path, key, mode)) };
         },
     }
 }
@@ -1299,5 +1307,92 @@ test "runEditor: no path and no HOME is an argument error" {
     switch (outcome) {
         .fail => |f| try testing.expectEqual(@as(u8, 80), f.code),
         else => @panic("expected invalid_argument"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Redaction invariant — `tau config get|set|unset` results must never carry
+// credential literals: secret key paths are ***last4-masked, and the whole
+// payload additionally loses process-registered secrets and generic patterns
+// (URL userinfo passwords, etc.). `get --raw` is the one documented escape.
+// ---------------------------------------------------------------------------
+
+const edit_secret_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._";
+
+/// Random secret with a `k-` prefix — can never coincide with static output
+/// text (key names, "openai", "***"), so any hit is a real leak.
+fn randEditSecret(r: std.Random, a: std.mem.Allocator) ![]u8 {
+    const s = try a.alloc(u8, r.intRangeAtMost(usize, 10, 36));
+    s[0] = 'k';
+    s[1] = '-';
+    for (s[2..]) |*ch| ch.* = edit_secret_alphabet[r.uintLessThan(usize, edit_secret_alphabet.len)];
+    return s;
+}
+
+fn expectAbsent(out: []const u8, secret: []const u8) !void {
+    if (std.mem.indexOf(u8, out, secret) != null) {
+        std.debug.print("config output leaked '{s}': {s}\n", .{ secret, out });
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "property: credentials never survive `tau config get` output" {
+    var prng = std.Random.DefaultPrng.init(0x237_e617);
+    const r = prng.random();
+    var iter: usize = 0;
+    while (iter < 60) : (iter += 1) {
+        var ar = testArena();
+        defer ar.deinit();
+        const arena = ar.allocator();
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/config.json", .{tmp.sub_path[0..]});
+        var env = std.process.Environ.Map.init(arena);
+
+        const k_file = try randEditSecret(r, arena);
+        const k_key1 = try randEditSecret(r, arena);
+        const k_key2 = try randEditSecret(r, arena);
+        const k_pw = try randEditSecret(r, arena);
+        const k_env = try randEditSecret(r, arena);
+        const src = try std.fmt.allocPrint(arena,
+            "{{ \"provider\": \"openai\", \"api_key\": \"{s}\", \"endpoint\": \"https://u:{s}@api.example.com/\", \"keys\": {{ \"openai\": \"{s}\", \"deepseek\": \"{s}\" }} }}",
+            .{ k_file, k_pw, k_key1, k_key2 });
+        try writeAtomic(testing.io, arena, path, src);
+        try env.put("OPENAI_API_KEY", k_env);
+
+        // Registered secrets: file values aren't in the resolved config for an
+        // explicit path, so only the env key is registered — the rest must be
+        // caught by field masks and generic patterns.
+        debuglog.addSecretsForTest(&.{k_env});
+        defer debuglog.clearSecretsForTest();
+
+        const modes = [_]cfgmod.OutputMode{ .json, .text };
+        for (modes) |m| {
+            for ([_][]const u8{ "api_key", "keys", "keys.openai", "endpoint" }) |key| {
+                const out = switch (try run(testing.io, arena, .get, key, null, path, &env, false, m)) {
+                    .ok => |s| s,
+                    .fail => |f| @panic(f.message),
+                };
+                for ([_][]const u8{ k_file, k_key1, k_key2, k_pw, k_env }) |sec| try expectAbsent(out, sec);
+            }
+        }
+        // `get --raw` is the documented escape hatch: the secret path value is
+        // printed verbatim.
+        const raw_out = switch (try run(testing.io, arena, .get, "api_key", null, path, &env, true, .text)) {
+            .ok => |s| s,
+            .fail => |f| @panic(f.message),
+        };
+        try testing.expect(std.mem.indexOf(u8, raw_out, k_file) != null);
+
+        // `set` echoes the stored value — the new secret must be masked too.
+        const k_new = try randEditSecret(r, arena);
+        const set_out = switch (try run(testing.io, arena, .set, "api_key", k_new, path, &env, false, .json)) {
+            .ok => |s| s,
+            .fail => |f| @panic(f.message),
+        };
+        try expectAbsent(set_out, k_new);
+        // ...and it landed in the file unmasked (set writes real values).
+        const back = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, arena, .unlimited);
+        try testing.expect(std.mem.indexOf(u8, back, k_new) != null);
     }
 }

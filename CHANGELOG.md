@@ -80,6 +80,14 @@ are backward compatible.
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and
   `{"err":...}` envelopes carry a `debug_log` link when a log is active (#167)
+- Credential masking hardened: every `{"err"}` envelope, `tau doctor`
+  report/`--json`/`--report`, and `tau config show`/`get`/`set`/`unset`/
+  `validate`/`edit` output is swept for registered secrets and generic
+  credential patterns — now including URL userinfo passwords
+  (`scheme://user:pw@host` → `scheme://user:***REDACTED***@host`), so
+  `config get endpoint` and `config show` can no longer leak an endpoint
+  password. `config get --raw` remains the one documented raw path.
+  Property tests sweep random credentials through every serializer (#232, #237)
 - Stable error catalog (`src/errors.zig`): every `{"err":...}` envelope now
   carries `code`, `type`, `message`, `recoverable`, a remediation `hint`, and
   the `docs` link — emitted from one shared formatter across main/agent/acp/
