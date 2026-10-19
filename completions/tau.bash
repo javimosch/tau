@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models)
+            acp|fleet|skills|models|init|config|guide|doctor|setup|bug|version|upgrade|explain)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -48,10 +48,13 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "author critic coordinator none" -- "$cur"))
             return ;;
         --tools|-t|--exclude-tools|-xt)
-            COMPREPLY=($(compgen -W "bash ls read write edit grep find" -- "$cur"))
+            COMPREPLY=($(compgen -W "bash ls read write edit grep find calculator" -- "$cur"))
             return ;;
         --load-agents-md)
             declare -f _filedir &>/dev/null && _filedir
+            return ;;
+        --dir)
+            declare -f _filedir &>/dev/null && _filedir -d
             return ;;
         --schema)
             if [[ "$cur" == @* ]]; then
@@ -101,7 +104,11 @@ _tau_complete() {
                 fi
             done
             if [[ -z "$fleet_sub" ]]; then
-                COMPREPLY=($(compgen -W "run status list logs cancel" -- "$cur"))
+                # Flags are valid before the sub-subcommand too, so offer both.
+                COMPREPLY=($(compgen -W "run status list logs cancel \
+                    --goal --id --api-key --provider --model \
+                    --coordinator-model --worker-model --sequential --parallel \
+                    --items --schema" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "--goal --id --api-key --provider --model \
                     --coordinator-model --worker-model --sequential --parallel \
@@ -113,13 +120,50 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "list search load" -- "$cur"))
             ;;
 
+        config)
+            COMPREPLY=($(compgen -W "show validate set get unset edit --mode --raw" -- "$cur"))
+            ;;
+
+        init)
+            COMPREPLY=($(compgen -W "--force --stdout --provider" -- "$cur"))
+            ;;
+
+        doctor)
+            COMPREPLY=($(compgen -W "--offline --deep --probe --selftest --fix --yes -y --json --report --shell --provider --model --api-key" -- "$cur"))
+            ;;
+
+        bug)
+            COMPREPLY=($(compgen -W "--title --body --labels --open --out --no-report --offline --deep --shell --provider --model --api-key" -- "$cur"))
+            ;;
+
+        setup)
+            COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive" -- "$cur"))
+            ;;
+
+        guide)
+            COMPREPLY=($(compgen -W "--human" -- "$cur"))
+            ;;
+
         models)
             # No additional completions for `models`.
             ;;
 
+        version)
+            COMPREPLY=($(compgen -W "--verbose --check --mode" -- "$cur"))
+            ;;
+
+        upgrade)
+            COMPREPLY=($(compgen -W "--yes -y --dir --dry-run" -- "$cur"))
+            ;;
+
+        explain)
+            # Exit codes mirror the stable catalog in src/errors.zig.
+            COMPREPLY=($(compgen -W "1 80 82 105 106 110 111 --human" -- "$cur"))
+            ;;
+
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet
+            local top_level="acp models skills fleet init config guide doctor setup bug version upgrade explain
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream

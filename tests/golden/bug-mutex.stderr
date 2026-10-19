@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"--out and --no-report are mutually exclusive","recoverable":false,"hint":"run `tau --help` (or `tau --help-json`) for the valid flags and values","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}
