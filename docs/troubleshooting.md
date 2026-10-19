@@ -264,6 +264,7 @@ any of them.
 | `tau --thinking "<prompt>"` | Show model reasoning chunks |
 | `tau models` | List providers + default models (JSON) |
 | `tau doctor --report` | Redacted Markdown diagnostics bundle (build metadata, checks, sanitized config) — paste straight into a bug report |
+| `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |
 | `tau acp status` | Is the ACP daemon running? |
@@ -276,3 +277,8 @@ same path in a `debug_log` field. Credentials are masked
 (`***REDACTED***`), but review the file before sharing — it still contains
 tool I/O and endpoint details. Attach it to a bug report:
 <https://github.com/javimosch/tau/issues>
+
+Or let tau do it: `tau bug --open` builds a pre-filled issue URL carrying the
+redacted `tau doctor --report` bundle and opens it in your browser (`--title`
+and `--body` fill in the title and description, `--out <path>` also writes
+the bundle to a file for manual attaching).

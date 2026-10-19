@@ -64,6 +64,7 @@ ALL_TEST_GROUPS=(
   "acp:test_group_acp"
   "config-file:test_group_config_file"
   "doctor:test_group_doctor"
+  "bug:test_group_bug"
   "init:test_group_init"
   "setup:test_group_setup"
   "goal:test_group_goal_offline"
@@ -882,6 +883,148 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   # 20. --report + --json is an invalid-argument error (mutually exclusive).
   "$BIN" doctor --report --json >/dev/null 2>&1; ok "doctor --report --json -> exit 80" "$?" 80
   "$BIN" --help 2>&1 | grep -q -- "--report" && ok "--help mentions --report" 0 0 || ok "--help mentions --report" 1 0
+}
+
+# Group: tau bug — pre-filled GitHub issue carrying the redacted doctor bundle
+test_group_bug() {
+  local mock_home mock_config
+
+  note "tau bug (pre-filled GitHub issue + redacted diagnostics bundle)"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+  mock_config="$mock_home/.config/tau"
+  mkdir -p "$mock_config"
+
+  # 1. Bare run (keyless, offline): exit 0 — the diagnostics verdict lives in
+  #    the bundle, not the exit status — with the issues/new URL + report.
+  capture bug_basic env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline
+  ok "tau bug exits 0" "$bug_basic_rc" 0
+  if printf '%s' "$bug_basic_out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
+    ok "bug output is valid JSON" 0 0
+  else
+    ok "bug output is valid JSON" 1 0
+  fi
+  contains "url points at issues/new" "$bug_basic_out" '"url":"https://github.com/javimosch/tau/issues/new?title='
+  contains "default title encoded" "$bug_basic_out" 'title=Bug%20report'
+  contains "default labels field" "$bug_basic_out" '"labels":"bug"'
+  contains "labels param in URL" "$bug_basic_out" '&labels=bug'
+  contains "report field carries the bundle" "$bug_basic_out" '"report":"# tau doctor report'
+  contains "body carries the bundle" "$bug_basic_out" '"body":"# tau doctor report'
+  contains "verdict inside the bundle" "$bug_basic_out" 'Verdict'
+  contains "not truncated" "$bug_basic_out" '"url_truncated":false'
+  contains "not opened" "$bug_basic_out" '"opened":false'
+  contains "no out file" "$bug_basic_out" '"out":null'
+  contains "done:true" "$bug_basic_out" '"done":true'
+
+  # 2. --title/--body/--labels: encoded into the URL; description precedes the
+  #    bundle in the emitted body.
+  capture bug_custom env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline --title "crash on --deep" --body "it broke" --labels "bug,triage"
+  ok "custom bug exits 0" "$bug_custom_rc" 0
+  contains "custom title in JSON" "$bug_custom_out" '"title":"crash on --deep"'
+  contains "title URL-encoded" "$bug_custom_out" 'title=crash%20on%20--deep'
+  contains "labels csv URL-encoded" "$bug_custom_out" '&labels=bug%2Ctriage'
+  contains "body starts with description" "$bug_custom_out" '"body":"it broke\n\n---'
+  contains "bundle follows the description" "$bug_custom_out" 'tau doctor report'
+
+  # 3. --no-report: report:null and the URL body carries the omission note.
+  capture bug_norep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline --no-report
+  ok "bug --no-report exits 0" "$bug_norep_rc" 0
+  contains "report is null" "$bug_norep_out" '"report":null'
+  contains "placeholder description in URL" "$bug_norep_out" '_Describe%20the%20bug%20here'
+  contains "omission note in body" "$bug_norep_out" '_No diagnostics attached'
+  if printf '%s' "$bug_norep_out" | grep -qF 'tau doctor report'; then
+    ok "no bundle leaked under --no-report" 1 0
+  else
+    ok "no bundle leaked under --no-report" 0 0
+  fi
+
+  # 4. --out writes the redacted bundle to a file and reports the path.
+  capture bug_out env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline --out "$mock_home/report.md"
+  ok "bug --out exits 0" "$bug_out_rc" 0
+  contains "out path in JSON" "$bug_out_out" '"out":"'
+  if [ -f "$mock_home/report.md" ] && grep -qF '# tau doctor report' "$mock_home/report.md"; then
+    ok "--out wrote the bundle file" 0 0
+  else
+    ok "--out wrote the bundle file" 1 0
+  fi
+
+  # 5. Argument validation: mutex + unknown flag + missing value.
+  "$BIN" bug --out x.md --no-report >/dev/null 2>&1; ok "bug --out --no-report -> exit 80" "$?" 80
+  "$BIN" bug --bogus >/dev/null 2>&1; ok "bug --bogus -> exit 80" "$?" 80
+  "$BIN" bug --title >/dev/null 2>&1; ok "bug --title missing value -> exit 80" "$?" 80
+  capture bug_mutex "$BIN" bug --out x.md --no-report
+  contains "mutex error message" "$bug_mutex_err" 'mutually exclusive'
+  capture bug_badarg "$BIN" bug --bogus
+  contains "unknown-arg error names the flag" "$bug_badarg_err" 'unknown bug argument'
+  "$BIN" --help 2>&1 | grep -q "tau bug" && ok "--help mentions tau bug" 0 0 || ok "--help mentions tau bug" 1 0
+
+  # 6. --open launches the issue URL via $BROWSER; a missing opener degrades to
+  #    opened:false without failing the command.
+  local stub_dir
+  stub_dir="$(mktemp -d)"
+  register_temp_dir "$stub_dir"
+  printf '#!/bin/sh\nprintf "%%s" "$1" > "%s/opened-url"\n' "$stub_dir" > "$stub_dir/browser"
+  chmod +x "$stub_dir/browser"
+  capture bug_open env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    BROWSER="$stub_dir/browser" HOME="$mock_home" "$BIN" bug --offline --open
+  ok "bug --open exits 0" "$bug_open_rc" 0
+  contains "opened:true with a working opener" "$bug_open_out" '"opened":true'
+  if [ -f "$stub_dir/opened-url" ] && grep -qF 'issues/new' "$stub_dir/opened-url"; then
+    ok "opener received the issues/new URL" 0 0
+  else
+    ok "opener received the issues/new URL" 1 0
+  fi
+  capture bug_noopen env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    BROWSER=/nonexistent-browser-cmd HOME="$mock_home" "$BIN" bug --offline --open
+  ok "missing opener still exits 0" "$bug_noopen_rc" 0
+  contains "opened:false when the opener fails" "$bug_noopen_out" '"opened":false'
+
+  # 7. Redaction: a key literal in the config file is masked inside the bundle
+  #    exactly like `doctor --report`.
+  printf '{ "provider": "openai", "keys": { "openai": "sk-bug-secret-789" } }' > "$mock_config/config.json"
+  capture bug_redact env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-env-secret HOME="$mock_home" "$BIN" bug --offline --provider openai
+  ok "bug with keyed config exits 0" "$bug_redact_rc" 0
+  if printf '%s' "$bug_redact_out" | grep -qF 'sk-bug-secret-789'; then
+    ok "config key literal never in output" 1 0
+  else
+    ok "config key literal never in output" 0 0
+  fi
+  if printf '%s' "$bug_redact_out" | grep -qF 'sk-env-secret'; then
+    ok "env key literal never in output" 1 0
+  else
+    ok "env key literal never in output" 0 0
+  fi
+  contains "key literal is masked" "$bug_redact_out" '***REDACTED***'
+
+  # 8. Over-long bundle: a large config file pushes the URL past the cap, so
+  #    the link falls back to a short body (url_truncated:true) while the JSON
+  #    body/report fields keep the full bundle.
+  { printf '// padding to inflate the embedded config dump\n// '; head -c 9000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$mock_config/config.json"
+  capture bug_trunc env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline
+  ok "oversized bundle still exits 0" "$bug_trunc_rc" 0
+  contains "url_truncated:true" "$bug_trunc_out" '"url_truncated":true'
+  contains "URL falls back to the short body" "$bug_trunc_out" 'Diagnostics%20bundle%20omitted'
+  contains "JSON body keeps the full bundle" "$bug_trunc_out" '"body":"# tau doctor report'
+  if printf '%s' "$bug_trunc_out" | grep -qF 'tau%20doctor%20report'; then
+    ok "encoded bundle dropped from the URL" 1 0
+  else
+    ok "encoded bundle dropped from the URL" 0 0
+  fi
+  rm -f "$mock_config/config.json"
+
+  # 9. Unknown --provider rides into the bundle as a failed check (exit 0, not
+  #    the parse-error 80) — same convention as `tau doctor`.
+  capture bug_badprov env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline --provider nope
+  ok "unknown provider still exits 0" "$bug_badprov_rc" 0
+  contains "bad provider inside the bundle" "$bug_badprov_out" "unknown provider 'nope'"
 }
 
 # Group: tau init — commented starter config scaffold

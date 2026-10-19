@@ -199,6 +199,23 @@ pub const Config = struct {
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —
     /// shared by `tau setup` and `tau doctor`. Null means detect from $SHELL.
     setup_shell: ?[]const u8 = null,
+
+    // --- Bug report (src/bug.zig) ---
+    /// `tau bug --title <t>` — pre-filled issue title (default "Bug report").
+    bug_title: ?[]const u8 = null,
+    /// `tau bug --body <text>` — description placed above the diagnostics
+    /// bundle in the issue body.
+    bug_body: ?[]const u8 = null,
+    /// `tau bug --labels <csv>` — pre-filled issue labels (default "bug";
+    /// pass an empty string for none).
+    bug_labels: ?[]const u8 = null,
+    /// `tau bug --open` — launch the issue URL in the system browser
+    /// ($BROWSER, else open/xdg-open/rundll32).
+    bug_open: bool = false,
+    /// `tau bug --out <path>` — also write the diagnostics bundle to a file.
+    bug_out: ?[]const u8 = null,
+    /// `tau bug --no-report` — omit the diagnostics bundle from the issue.
+    bug_no_report: bool = false,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` so the
