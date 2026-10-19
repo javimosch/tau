@@ -63,6 +63,9 @@ ALL_TEST_GROUPS=(
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
   "config-file:test_group_config_file"
+  "doctor:test_group_doctor"
+  "init:test_group_init"
+  "setup:test_group_setup"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -71,6 +74,11 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "completions:test_group_completions"
+  "debug:test_group_debug"
+  "version:test_group_version"
+  "release:test_group_release"
+  "first-run:test_group_first_run"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -200,6 +208,54 @@ test_group_help() {
   fi
 }
 
+# version subcommand + build metadata surfaced across version --verbose,
+# tau doctor (report + NDJSON verdict), and the --debug log header.
+test_group_version() {
+  local out rc
+  local scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u TAU_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY)
+
+  out=$("$BIN" version); ok "version exit" "$?" 0
+  contains "version prints name + semver" "$out" "tau 0.4.0"
+
+  out=$("$BIN" -v); ok "-v exit" "$?" 0
+  contains "-v output unchanged" "$out" "tau 0.4.0"
+
+  # --verbose: JSON object with all four build metadata keys.
+  out=$("$BIN" version --verbose); ok "version --verbose exit" "$?" 0
+  printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); need=["name","version","commit","target","build_date","zig"]; sys.exit(0 if all(d.get(k) for k in need) and d["name"]=="tau" else 1)' 2>/dev/null
+  ok "version --verbose carries all metadata keys" "$?" 0
+
+  # --mode text: same metadata as key: value lines.
+  out=$("$BIN" version --verbose --mode text); ok "version --verbose --mode text exit" "$?" 0
+  contains "text mode has commit line" "$out" "commit: "
+  contains "text mode has target line" "$out" "target: "
+  contains "text mode has zig line" "$out" "zig: "
+
+  "$BIN" version --bogus >/dev/null 2>&1; ok "version rejects unknown arg (exit 80)" "$?" 80
+
+  # doctor --json: the terminal done:true verdict carries the build object.
+  local vout
+  vout=$("${scrub[@]}" HOME="$SMOKE_TEMP/vhome" "$BIN" doctor --json --offline 2>/dev/null | tail -1)
+  contains "doctor --json verdict carries build" "$vout" '"build":{"commit":"'
+  contains "doctor verdict build has zig" "$vout" '"zig":"'
+
+  # doctor single-object report carries it too (tau setup embeds this shape).
+  local rout
+  rout=$("${scrub[@]}" HOME="$SMOKE_TEMP/vhome" "$BIN" doctor --offline 2>/dev/null)
+  contains "doctor report carries build" "$rout" '"build":{"commit":"'
+
+  # --debug log header carries the one-line build stamp.
+  local dlog="$SMOKE_TEMP/version-debug.log"
+  "${scrub[@]}" HOME="$SMOKE_TEMP/vhome" TAU_DEBUG_LOG="$dlog" "$BIN" --debug --no-stream "hi" >/dev/null 2>&1
+  if [ -f "$dlog" ]; then
+    contains "debug log has build header" "$(cat "$dlog")" "# build: commit="
+    contains "debug log build has target" "$(cat "$dlog")" "target="
+  else
+    ok "debug log has build header" 1 0
+    ok "debug log build has target" 1 0
+  fi
+}
+
 # guide — the embedded operator manual (cli-guide-spec). JSON default, --human markdown, no runtime fetch.
 test_group_guide() {
   local out
@@ -273,8 +329,10 @@ test_group_fleet() {
   "$BIN" fleet >/dev/null 2>&1;                   ok "fleet (no sub) -> invalid_argument" "$?" 80
   # Unknown subcommand -> invalid_argument
   "$BIN" fleet bogus >/dev/null 2>&1;             ok "fleet bogus -> invalid_argument" "$?" 80
-  # run without --goal -> missing_required_field
-  "$BIN" fleet run >/dev/null 2>&1;               ok "fleet run without --goal -> missing_required_field" "$?" 82
+  # run without --goal -> missing_required_field (--api-key fake keeps this
+  # deterministic: key resolution runs before the --goal check, so a keyless
+  # environment would exit 106 instead of reaching it)
+  "$BIN" fleet run --api-key fake >/dev/null 2>&1; ok "fleet run without --goal -> missing_required_field" "$?" 82
   # status without id -> invalid_argument
   "$BIN" fleet status >/dev/null 2>&1;            ok "fleet status no id -> invalid_argument" "$?" 80
   # cancel without id -> invalid_argument
@@ -401,26 +459,34 @@ test_group_acp() {
 
   "$BIN" acp bogus >/dev/null 2>&1; ok "acp bogus -> invalid_argument" "$?" 80
 
-  # acp status accepted by parser (exit 0 if not running)
+  # acp status accepted by parser (exit 0 if not running). The daemon
+  # (start/stop/status) is POSIX-only: on Windows it exits 111 with an err
+  # envelope instead — both contracts are pinned here.
   capture acp_status "$BIN" acp status 2>&1
-  if [ "$acp_status_rc" = "0" ] && printf '%s' "$acp_status_out" | grep -q '"acp"'; then
-    ok "acp status -> exit 0 with acp JSON" 0 0
+  if printf '%s' "$acp_status_out" | grep -q '"code":111'; then
+    ok "acp status -> exit 111 err envelope (daemon unsupported on this platform)" "$acp_status_rc" 111
+    skip_test "acp status reports running:false" "daemon unsupported on this platform"
+    skip_test "acp stop" "daemon unsupported on this platform"
   else
-    ok "acp status: exit $acp_status_rc" 1 0
-  fi
-  # Verify status reports running:false when not running
-  if printf '%s' "$acp_status_out" | grep -q '"running":false'; then
-    ok "acp status reports running:false" 0 0
-  else
-    ok "acp status missing running:false" 1 0
-  fi
+    if [ "$acp_status_rc" = "0" ] && printf '%s' "$acp_status_out" | grep -q '"acp"'; then
+      ok "acp status -> exit 0 with acp JSON" 0 0
+    else
+      ok "acp status: exit $acp_status_rc" 1 0
+    fi
+    # Verify status reports running:false when not running
+    if printf '%s' "$acp_status_out" | grep -q '"running":false'; then
+      ok "acp status reports running:false" 0 0
+    else
+      ok "acp status missing running:false" 1 0
+    fi
 
-  # acp stop accepted by parser (exit 0 if not running)
-  capture acp_stop "$BIN" acp stop 2>&1
-  if [ "$acp_stop_rc" = "0" ] && printf '%s' "$acp_stop_out" | grep -q '"acp"'; then
-    ok "acp stop -> exit 0 with acp JSON" 0 0
-  else
-    ok "acp stop: exit $acp_stop_rc" 1 0
+    # acp stop accepted by parser (exit 0 if not running)
+    capture acp_stop "$BIN" acp stop 2>&1
+    if [ "$acp_stop_rc" = "0" ] && printf '%s' "$acp_stop_out" | grep -q '"acp"'; then
+      ok "acp stop -> exit 0 with acp JSON" 0 0
+    else
+      ok "acp stop: exit $acp_stop_rc" 1 0
+    fi
   fi
 
   # acp serve --max-iterations: bad value rejected at parse time
@@ -474,22 +540,849 @@ test_group_config_file() {
   fi
 }
 
+# Group: tau doctor — offline-first setup diagnostics (issue #127)
+# All assertions run with --offline (or keyless --deep) so no real network or
+# API key is needed; ambient keys/config are scrubbed via env -u + mock HOME.
+test_group_doctor() {
+  local rc mock_home mock_config
+
+  note "tau doctor (offline diagnostics)"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+  mock_config="$mock_home/.config/tau"
+  mkdir -p "$mock_config"
+
+  # 1. Keyless env + no config file: api_key fails, exit 1, network checks skip.
+  capture doc_keyless env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  ok "doctor --offline keyless exit 1" "$doc_keyless_rc" 1
+  if printf '%s' "$doc_keyless_out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
+    ok "doctor report is valid JSON" 0 0
+  else
+    ok "doctor report is valid JSON" 1 0
+  fi
+  contains "keyless report is not ok" "$doc_keyless_out" '"ok":false'
+  contains "api_key check fails" "$doc_keyless_out" '"name":"api_key","status":"fail"'
+  contains "api_key hint names provider env vars" "$doc_keyless_out" 'XIAOMI_API_KEY'
+  contains "missing config file is ok" "$doc_keyless_out" '"name":"config_file","status":"ok"'
+  contains "provider_resolution ok" "$doc_keyless_out" '"name":"provider_resolution","status":"ok"'
+  contains "endpoint_reachable skipped offline" "$doc_keyless_out" '"name":"endpoint_reachable","status":"skip"'
+  contains "auth_probe skipped offline" "$doc_keyless_out" '"name":"auth_probe","status":"skip"'
+  contains "curl check present" "$doc_keyless_out" '"name":"curl"'
+  contains "report has summary" "$doc_keyless_out" '"summary":{'
+
+  # 2. Key via env + --provider override: local checks pass -> exit 0.
+  capture doc_openai env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-doctor-secret HOME="$mock_home" "$BIN" doctor --offline --provider openai
+  ok "doctor --offline --provider openai with key exit 0" "$doc_openai_rc" 0
+  contains "report ok:true" "$doc_openai_out" '"ok":true'
+  contains "provider override reported" "$doc_openai_out" 'provider=openai'
+  contains "key source attributed to env" "$doc_openai_out" 'env:OPENAI_API_KEY'
+  if printf '%s' "$doc_openai_out" | grep -qF 'sk-doctor-secret'; then
+    ok "key material never printed" 1 0
+  else
+    ok "key material never printed" 0 0
+  fi
+
+  # 3. --model provider/id shorthand resolves the provider.
+  capture doc_shorthand env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --model deepseek/deepseek-reasoner
+  contains "--model provider/id shorthand resolves" "$doc_shorthand_out" 'provider=deepseek'
+  contains "shorthand model reported" "$doc_shorthand_out" 'model=deepseek-reasoner'
+
+  # 4. Malformed config.json: config_file fails with the path; the remaining
+  #    checks still run (no early abort).
+  printf 'this is not valid json' > "$mock_config/config.json"
+  capture doc_badcfg env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  ok "malformed config exit 1" "$doc_badcfg_rc" 1
+  contains "config_file fails" "$doc_badcfg_out" '"name":"config_file","status":"fail"'
+  contains "config_file message names path" "$doc_badcfg_out" '.config/tau/config.json'
+  contains "api_key check still ran" "$doc_badcfg_out" '"name":"api_key"'
+  contains "endpoint check still ran" "$doc_badcfg_out" '"name":"endpoint_reachable"'
+
+  # 5. Config file naming an unknown provider: config_file warns and
+  #    provider_resolution fails (exit 1, not the parse-error 80).
+  printf '{"provider":"nope"}' > "$mock_config/config.json"
+  capture doc_badprov env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  ok "unknown config provider exit 1" "$doc_badprov_rc" 1
+  contains "config_file warns on unknown provider" "$doc_badprov_out" '"name":"config_file","status":"warn"'
+  contains "provider_resolution fails" "$doc_badprov_out" '"name":"provider_resolution","status":"fail"'
+  contains "provider_resolution names the bad provider" "$doc_badprov_out" "unknown provider 'nope'"
+
+  # 6. Unknown --provider flag: also a report-level fail, not exit 80.
+  rm -f "$mock_config/config.json"
+  capture doc_flagprov env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --provider nope
+  ok "unknown --provider exit 1" "$doc_flagprov_rc" 1
+  contains "flag provider_resolution fails" "$doc_flagprov_out" '"name":"provider_resolution","status":"fail"'
+
+  # 7. --deep with no key: auth_probe still skips (nothing to probe).
+  capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --deep
+  contains "--deep keyless auth_probe skips" "$doc_deep_out" '"name":"auth_probe","status":"skip"'
+
+  # 8. Argument validation.
+  "$BIN" doctor --bogus >/dev/null 2>&1; ok "doctor --bogus -> exit 80" "$?" 80
+  "$BIN" doctor --provider >/dev/null 2>&1; ok "doctor --provider missing value -> exit 80" "$?" 80
+  capture doc_pos "$BIN" doctor extra
+  ok "doctor positional arg -> exit 80" "$doc_pos_rc" 80
+  contains "positional error names the arg" "$doc_pos_err" 'unknown doctor argument'
+  "$BIN" --help 2>&1 | grep -q "tau doctor" && ok "--help mentions tau doctor" 0 0 || ok "--help mentions tau doctor" 1 0
+
+  # 9. curl missing from PATH: curl check fails with an install hint and the
+  #    two network checks cascade-skip (env -i + empty PATH dir). --deep (not
+  #    --offline) so both skips report the curl gate, not the offline gate.
+  local empty_bin
+  empty_bin="$(mktemp -d)"
+  register_temp_dir "$empty_bin"
+  capture doc_nocurl env -i PATH="$empty_bin" HOME="$mock_home" "$BIN" doctor --deep
+  ok "no curl on PATH -> exit 1" "$doc_nocurl_rc" 1
+  contains "curl check fails" "$doc_nocurl_out" '"name":"curl","status":"fail"'
+  contains "curl failure message" "$doc_nocurl_out" 'curl not found on PATH'
+  contains "curl hint is actionable" "$doc_nocurl_out" 'install curl'
+  contains "endpoint skipped without curl" "$doc_nocurl_out" '"name":"endpoint_reachable","status":"skip","message":"skipped (curl unavailable)"'
+  contains "auth_probe skipped without curl" "$doc_nocurl_out" '"name":"auth_probe","status":"skip","message":"skipped (curl unavailable)"'
+
+  # 10. Warn does not fail the run: config file names an unknown provider but a
+  #     valid --provider flag + key resolve everything else -> exit 0.
+  printf '{"provider":"nope"}' > "$mock_config/config.json"
+  capture doc_warn env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-warn HOME="$mock_home" "$BIN" doctor --offline --provider openai
+  ok "warn-only report exits 0" "$doc_warn_rc" 0
+  contains "config_file warns on unknown provider" "$doc_warn_out" '"name":"config_file","status":"warn"'
+  contains "flag provider wins over config" "$doc_warn_out" 'provider=openai'
+  contains "warn does not flip ok" "$doc_warn_out" '"ok":true'
+  rm -f "$mock_config/config.json"
+
+  # 11. doctor --fix (non-interactive, no --yes): fixable outcomes are listed
+  #     in "fixes" but skipped — nothing is written without confirmation.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  capture doc_fix_skip env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix
+  contains "--fix report carries a fixes array" "$doc_fix_skip_out" '"fixes":['
+  contains "scaffold fix skipped without confirmation" "$doc_fix_skip_out" '"id":"scaffold_config","check":"config_file","status":"skipped"'
+  contains "completions fix skipped without confirmation" "$doc_fix_skip_out" '"id":"install_completions","check":"shell_completions","status":"skipped"'
+  contains "skipped fix points at --yes" "$doc_fix_skip_out" 'pass --yes'
+  if [ ! -f "$mock_config/config.json" ] && [ ! -e "$mock_home/.local/share/bash-completion/completions/tau" ]; then
+    ok "unconfirmed --fix wrote nothing" 0 0
+  else
+    ok "unconfirmed --fix wrote nothing" 1 0
+  fi
+
+  # 12. doctor --fix --yes: scaffold + completions apply, permissions tighten,
+  #     and the emitted report reflects the post-fix state. TAU_API_KEY makes
+  #     api_key resolvable so the whole post-fix report is ok -> exit 0.
+  capture doc_fix_yes env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
+  ok "--fix --yes all-fixable run exits 0" "$doc_fix_yes_rc" 0
+  contains "scaffold fix applied" "$doc_fix_yes_out" '"id":"scaffold_config","check":"config_file","status":"applied"'
+  contains "completions fix applied" "$doc_fix_yes_out" '"id":"install_completions","check":"shell_completions","status":"applied"'
+  contains "post-fix config_file is ok" "$doc_fix_yes_out" '"name":"config_file","status":"ok","message":"config file parsed'
+  contains "post-fix completions are ok" "$doc_fix_yes_out" '"name":"shell_completions","status":"ok"'
+  if [ -f "$mock_config/config.json" ]; then
+    ok "scaffolded config.json exists" 0 0
+  else
+    ok "scaffolded config.json exists" 1 0
+  fi
+  grep -q '"provider"' "$mock_config/config.json" && ok "scaffolded config has a provider" 0 0 || ok "scaffolded config has a provider" 1 0
+  if [ -f "$mock_home/.local/share/bash-completion/completions/tau" ]; then
+    ok "bash completion script installed" 0 0
+  else
+    ok "bash completion script installed" 1 0
+  fi
+  if [ "$(stat -c %a "$mock_config" 2>/dev/null)" = "700" ] && [ "$(stat -c %a "$mock_config/config.json" 2>/dev/null)" = "600" ]; then
+    ok "scaffolded config lands with 0700/0600" 0 0
+  else
+    ok "scaffolded config lands with 0700/0600" 1 0
+  fi
+
+  # 13. --fix --yes on an invalid config: moved to .bak, fresh scaffold written.
+  printf 'this is not valid json' > "$mock_config/config.json"
+  chmod 644 "$mock_config/config.json"
+  capture doc_fix_restore env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
+  ok "restore run exits 0" "$doc_fix_restore_rc" 0
+  contains "restore fix applied" "$doc_fix_restore_out" '"id":"restore_config","check":"config_file","status":"applied"'
+  if [ -f "$mock_config/config.json.bak" ] && grep -q 'not valid json' "$mock_config/config.json.bak"; then
+    ok "invalid config preserved at .bak" 0 0
+  else
+    ok "invalid config preserved at .bak" 1 0
+  fi
+  grep -q '"provider"' "$mock_config/config.json" && ok "restored config is a fresh scaffold" 0 0 || ok "restored config is a fresh scaffold" 1 0
+  rm -f "$mock_config/config.json" "$mock_config/config.json.bak"
+
+  # 14. -y/--yes implies --fix; bad --shell value is an arg error.
+  capture doc_fix_short env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline -y
+  contains "-y implies --fix" "$doc_fix_short_out" '"fixes":['
+  "$BIN" doctor --shell tcsh >/dev/null 2>&1; ok "doctor --shell tcsh -> exit 80" "$?" 80
+  "$BIN" doctor --fix --shell >/dev/null 2>&1; ok "doctor --shell missing value -> exit 80" "$?" 80
+
+  # 15. Live probe paths against a local stub HTTP server: endpoint_reachable
+  #     treats ANY HTTP response as reachable, and --deep maps the auth probe's
+  #     HTTP status to ok/fail/warn. Requires python3 + curl.
+  if command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    local stub_dir stub_port stub_pid doc_stub doc_deep
+    stub_dir="$(mktemp -d)"
+    register_temp_dir "$stub_dir"
+    echo 401 > "$stub_dir/code"
+    cat > "$stub_dir/stub.py" <<'PYEOF'
+import http.server, socketserver, sys
+code_file, port = sys.argv[1], int(sys.argv[2])
+class H(http.server.BaseHTTPRequestHandler):
+    def _respond(self):
+        try:
+            code = int(open(code_file).read().strip())
+        except Exception:
+            code = 500
+        body = b'{}'
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_GET = _respond
+    do_POST = _respond
+    def log_message(self, *args):
+        pass
+socketserver.TCPServer(('127.0.0.1', port), H).serve_forever()
+PYEOF
+    stub_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+    python3 "$stub_dir/stub.py" "$stub_dir/code" "$stub_port" &
+    stub_pid=$!
+    # Wait until the stub accepts TCP connections (HTTP status doesn't matter).
+    local _i
+    for _i in $(seq 1 50); do
+      python3 -c "import socket; s=socket.create_connection(('127.0.0.1',$stub_port),1); s.close()" 2>/dev/null && break
+      sleep 0.1
+    done
+
+    # a) 401 still counts as reachable; TAU_ENDPOINT drives the probe target.
+    capture doc_stub env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai
+    ok "stub endpoint run exits 0" "$doc_stub_rc" 0
+    contains "TAU_ENDPOINT override honored" "$doc_stub_out" "endpoint=http://127.0.0.1:$stub_port"
+    contains "401 still counts as reachable" "$doc_stub_out" '"name":"endpoint_reachable","status":"ok"'
+    contains "reachable reports HTTP status" "$doc_stub_out" 'endpoint reachable (HTTP 401)'
+    contains "auth_probe skips without --deep" "$doc_stub_out" '"name":"auth_probe","status":"skip"'
+
+    # b) --deep + 401 -> auth_probe fails with an actionable hint; exit 1.
+    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --deep
+    ok "deep probe 401 -> exit 1" "$doc_deep_rc" 1
+    contains "auth_probe fails on 401" "$doc_deep_out" '"name":"auth_probe","status":"fail"'
+    contains "auth rejection is actionable" "$doc_deep_out" 'API key rejected (HTTP 401)'
+    contains "auth hint names the fix" "$doc_deep_out" 'verify the key'
+    contains "report not ok" "$doc_deep_out" '"ok":false'
+    if printf '%s' "$doc_deep_out" | grep -qF 'sk-stub'; then
+      ok "auth probe never prints key material" 1 0
+    else
+      ok "auth probe never prints key material" 0 0
+    fi
+
+    # c) --deep + 200 -> auth_probe ok; exit 0.
+    echo 200 > "$stub_dir/code"
+    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --deep
+    ok "deep probe 200 -> exit 0" "$doc_deep_rc" 0
+    contains "auth_probe ok on 200" "$doc_deep_out" '"name":"auth_probe","status":"ok"'
+    contains "auth success reports HTTP" "$doc_deep_out" 'authenticated probe succeeded (HTTP 200)'
+
+    # d) --deep + 429 -> warn, not fail; exit 0.
+    echo 429 > "$stub_dir/code"
+    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --deep
+    ok "deep probe 429 warn -> exit 0" "$doc_deep_rc" 0
+    contains "auth_probe warns on 429" "$doc_deep_out" '"name":"auth_probe","status":"warn"'
+    contains "429 message explains undetermined" "$doc_deep_out" 'rate limited'
+    contains "warn keeps report ok" "$doc_deep_out" '"ok":true'
+
+    kill "$stub_pid" 2>/dev/null
+    wait "$stub_pid" 2>/dev/null
+  else
+    skip_test "doctor live-probe checks" "python3 or curl not available"
+  fi
+
+  # 16. --json streams NDJSON: {"check":{...},"done":false} per check plus a
+  #     terminal {"ok":...,"summary":{...},"done":true} verdict as the last
+  #     line. Exit code is unchanged (keyless -> 1).
+  rm -f "$mock_config/config.json"
+  capture doc_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --json
+  ok "doctor --json keyless exit 1" "$doc_json_rc" 1
+  if printf '%s\n' "$doc_json_out" | python3 -c '
+import sys, json
+lines = [l for l in sys.stdin.read().splitlines() if l.strip()]
+events = [json.loads(l) for l in lines]
+assert len(events) >= 2, "expected check events plus a verdict line"
+assert all(e.get("done") is False for e in events[:-1]), "a non-terminal event ended the stream"
+assert events[-1].get("done") is True, "last line is not the done:true verdict"
+assert "ok" in events[-1] and "summary" in events[-1], "verdict missing ok/summary"
+names = [e["check"]["name"] for e in events[:-1]]
+for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_reachable", "auth_probe"):
+    assert want in names, "missing check event: %s" % want
+' 2>/dev/null; then
+    ok "doctor --json emits well-formed NDJSON events" 0 0
+  else
+    ok "doctor --json emits well-formed NDJSON events" 1 0
+  fi
+  contains "check events carry the report check shape" "$doc_json_out" '"check":{"name":"api_key","status":"fail"'
+  contains "verdict reports ok:false" "$doc_json_out" '"ok":false'
+  contains "verdict line carries done:true" "$doc_json_out" '"done":true'
+
+  # 17. --json --fix --yes: fix events stream between the first-pass check
+  #     events and the verdict; re-diagnosed checks re-emit post-fix state.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  capture doc_json_fix env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --json --fix --yes
+  ok "doctor --json --fix --yes exits 0" "$doc_json_fix_rc" 0
+  contains "fix events carry done:false payload" "$doc_json_fix_out" '"fix":{"id":"scaffold_config","check":"config_file","status":"applied"'
+  contains "post-fix check re-emitted ok" "$doc_json_fix_out" '"check":{"name":"config_file","status":"ok","message":"config file parsed'
+  contains "verdict carries the fixes array" "$doc_json_fix_out" '"fixes":['
+  if printf '%s\n' "$doc_json_fix_out" | tail -n 1 | grep -q '"done":true'; then
+    ok "verdict is the last NDJSON line" 0 0
+  else
+    ok "verdict is the last NDJSON line" 1 0
+  fi
+
+  # 18. --report renders a redacted Markdown bundle: verdict, build metadata,
+  #     the checks table, effective settings, and the config file verbatim
+  #     (credentials masked). Exit code is unchanged (keyless -> 1).
+  rm -f "$mock_config/config.json"
+  capture doc_report env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --report
+  ok "doctor --report keyless exit 1" "$doc_report_rc" 1
+  contains "report has a markdown title" "$doc_report_out" '# tau doctor report'
+  contains "report states the verdict" "$doc_report_out" '**Verdict:** **FAILING**'
+  contains "report has a build table" "$doc_report_out" '| commit | `'
+  contains "build table carries zig version" "$doc_report_out" '| zig | `'
+  contains "report has a checks table" "$doc_report_out" '| check | status | message | hint |'
+  contains "checks table lists api_key fail" "$doc_report_out" '| `api_key` | **fail** |'
+  contains "endpoint skip row present" "$doc_report_out" '| `endpoint_reachable` | skip |'
+  contains "report has effective config" "$doc_report_out" '## Effective configuration'
+  contains "key source reports none resolved" "$doc_report_out" '| api_key_source | `none resolved` |'
+  contains "missing config noted" "$doc_report_out" '_No config file at `'
+  if printf '%s' "$doc_report_out" | grep -q '"ok"'; then
+    ok "report is not the JSON shape" 1 0
+  else
+    ok "report is not the JSON shape" 0 0
+  fi
+
+  # 19. --report embeds the config file with credentials masked: the literal
+  #     key under keys.openai never appears in the bundle.
+  printf '{ "provider": "openai", "keys": { "openai": "sk-report-secret-456" } }' > "$mock_config/config.json"
+  capture doc_report_cfg env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --report --provider openai
+  ok "report with config + env-less key exits 0" "$doc_report_cfg_rc" 0
+  contains "config dump is embedded" "$doc_report_cfg_out" '```jsonc'
+  contains "key source attributed to config keys" "$doc_report_cfg_out" '| api_key_source | `keys[openai]` |'
+  if printf '%s' "$doc_report_cfg_out" | grep -qF 'sk-report-secret-456'; then
+    ok "report never prints key material" 1 0
+  else
+    ok "report never prints key material" 0 0
+  fi
+  contains "key literal is masked" "$doc_report_cfg_out" '***REDACTED***'
+  rm -f "$mock_config/config.json"
+
+  # 20. --report + --json is an invalid-argument error (mutually exclusive).
+  "$BIN" doctor --report --json >/dev/null 2>&1; ok "doctor --report --json -> exit 80" "$?" 80
+  "$BIN" --help 2>&1 | grep -q -- "--report" && ok "--help mentions --report" 0 0 || ok "--help mentions --report" 1 0
+
+  # 21. --probe live-verifies every provider: without it a single
+  #     provider_probes row advertises the sweep; with it each registry
+  #     provider gets a connectivity row (probe_<name>) and a credential row
+  #     (probe_<name>_auth). Offline keeps everything skipped; the stub
+  #     server exercises real pass/fail for the configured provider.
+  rm -f "$mock_config/config.json"
+  capture doc_noprobe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline
+  contains "default run advertises --probe" "$doc_noprobe_out" '"name":"provider_probes","status":"skip"'
+  contains "placeholder hint mentions --probe" "$doc_noprobe_out" 'pass --probe'
+  if printf '%s' "$doc_noprobe_out" | grep -qF '"name":"probe_openai"'; then
+    ok "no per-provider rows without --probe" 1 0
+  else
+    ok "no per-provider rows without --probe" 0 0
+  fi
+
+  capture doc_probe_off env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --probe
+  ok "doctor --offline --probe keyless exit 1" "$doc_probe_off_rc" 1
+  contains "probe connectivity row skipped offline" "$doc_probe_off_out" '"name":"probe_openai","status":"skip"'
+  contains "probe auth row skipped offline" "$doc_probe_off_out" '"name":"probe_openai_auth","status":"skip"'
+  contains "probe sweep covers xiaomi" "$doc_probe_off_out" '"name":"probe_xiaomi","status":"skip"'
+  contains "probe sweep covers deepseek" "$doc_probe_off_out" '"name":"probe_deepseek_auth","status":"skip"'
+  contains "probe sweep covers opencode-go" "$doc_probe_off_out" '"name":"probe_opencode-go","status":"skip"'
+  if printf '%s' "$doc_probe_off_out" | grep -qF '"name":"provider_probes"'; then
+    ok "no placeholder row once --probe runs" 1 0
+  else
+    ok "no placeholder row once --probe runs" 0 0
+  fi
+
+  # --probe streams its per-provider rows as NDJSON check events under --json.
+  capture doc_probe_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --probe --json
+  contains "--probe rows stream as check events" "$doc_probe_json_out" '"check":{"name":"probe_openai","status":"skip"'
+  contains "--probe auth rows stream too" "$doc_probe_json_out" '"check":{"name":"probe_deepseek_auth","status":"skip"'
+  contains "--json verdict still terminates" "$doc_probe_json_out" '"done":true'
+
+  # Live sweep against the stub: the configured provider (openai) probes the
+  # stub via TAU_ENDPOINT; a 401 rejects its credential (exit 1), a 200
+  # verifies it. Other providers' rows are not asserted — their endpoints are
+  # real and connectivity depends on the runner's network.
+  if command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    local pstub_dir pstub_port pstub_pid doc_probe
+    pstub_dir="$(mktemp -d)"
+    register_temp_dir "$pstub_dir"
+    echo 401 > "$pstub_dir/code"
+    cat > "$pstub_dir/stub.py" <<'PYEOF'
+import http.server, socketserver, sys
+code_file, port = sys.argv[1], int(sys.argv[2])
+class H(http.server.BaseHTTPRequestHandler):
+    def _respond(self):
+        try:
+            code = int(open(code_file).read().strip())
+        except Exception:
+            code = 500
+        body = b'{}'
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_GET = _respond
+    do_POST = _respond
+    def log_message(self, *args):
+        pass
+socketserver.TCPServer(('127.0.0.1', port), H).serve_forever()
+PYEOF
+    pstub_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+    python3 "$pstub_dir/stub.py" "$pstub_dir/code" "$pstub_port" &
+    pstub_pid=$!
+    local _i
+    for _i in $(seq 1 50); do
+      python3 -c "import socket; s=socket.create_connection(('127.0.0.1',$pstub_port),1); s.close()" 2>/dev/null && break
+      sleep 0.1
+    done
+
+    capture doc_probe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-probe-stub TAU_ENDPOINT="http://127.0.0.1:$pstub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --probe
+    ok "probe sweep with a rejected key exits 1" "$doc_probe_rc" 1
+    contains "stub endpoint counts as reachable" "$doc_probe_out" '"name":"probe_openai","status":"ok"'
+    contains "reachable reports HTTP status" "$doc_probe_out" 'endpoint reachable (HTTP 401)'
+    contains "probe auth fails on 401" "$doc_probe_out" '"name":"probe_openai_auth","status":"fail"'
+    contains "rejection names the redacted source" "$doc_probe_out" 'credentials rejected (HTTP 401, source: env:OPENAI_API_KEY)'
+    # Unkeyed providers always skip their credential row — the message varies
+    # with connectivity ("endpoint unreachable" vs "no credentials resolved").
+    contains "unkeyed provider auth skips" "$doc_probe_out" '"name":"probe_deepseek_auth","status":"skip"'
+    if printf '%s' "$doc_probe_out" | grep -qF 'sk-probe-stub'; then
+      ok "probe sweep never prints key material" 1 0
+    else
+      ok "probe sweep never prints key material" 0 0
+    fi
+
+    echo 200 > "$pstub_dir/code"
+    capture doc_probe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-probe-stub TAU_ENDPOINT="http://127.0.0.1:$pstub_port/v1/chat/completions" \
+      HOME="$mock_home" "$BIN" doctor --provider openai --probe
+    contains "probe auth verifies on 200" "$doc_probe_out" '"name":"probe_openai_auth","status":"ok"'
+    contains "verification reports source" "$doc_probe_out" 'credentials verified (HTTP 200, source: env:OPENAI_API_KEY)'
+
+    kill "$pstub_pid" 2>/dev/null
+    wait "$pstub_pid" 2>/dev/null
+  else
+    skip_test "doctor --probe live sweep" "python3 or curl not available"
+  fi
+
+  "$BIN" --help 2>&1 | grep -q -- "--probe" && ok "--help mentions --probe" 0 0 || ok "--help mentions --probe" 1 0
+
+  # 22. --selftest: credential-free end-to-end run — the check spawns the tau
+  #     binary itself with a scrubbed env (throwaway HOME, stub TAU_API_KEY,
+  #     TAU_ENDPOINT -> 127.0.0.1) and requires the canned reply back. It is
+  #     loopback-only by construction, so it runs under --offline. Without
+  #     the flag the row advertises it instead of running.
+  contains "default run advertises --selftest" "$doc_noprobe_out" '"name":"selftest","status":"skip"'
+  contains "selftest placeholder hint names the flag" "$doc_noprobe_out" 'pass --selftest'
+
+  if command -v curl >/dev/null 2>&1; then
+    capture doc_selftest env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest
+    contains "selftest runs end-to-end under --offline" "$doc_selftest_out" '"name":"selftest","status":"ok"'
+    contains "selftest reports the stub session" "$doc_selftest_out" 'loopback stub provider succeeded'
+
+    # Credential-free guarantee: ambient keys + a dead ambient TAU_ENDPOINT
+    # must not leak into the child — a passing row proves the scrub.
+    capture doc_selftest_iso env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      OPENAI_API_KEY=sk-should-not-leak TAU_ENDPOINT="http://127.0.0.1:1/dead" \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest
+    contains "selftest ignores ambient endpoint and keys" "$doc_selftest_iso_out" '"name":"selftest","status":"ok"'
+    if printf '%s' "$doc_selftest_iso_out" | grep -qF 'sk-should-not-leak'; then
+      ok "selftest never prints ambient key material" 1 0
+    else
+      ok "selftest never prints ambient key material" 0 0
+    fi
+
+    # --json streams the selftest row as a check event like any other check.
+    capture doc_selftest_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest --json
+    contains "selftest streams as a check event" "$doc_selftest_json_out" '"check":{"name":"selftest","status":"ok"'
+    contains "selftest json verdict terminates" "$doc_selftest_json_out" '"done":true'
+  else
+    capture doc_selftest_nocurl env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      HOME="$mock_home" "$BIN" doctor --offline --selftest
+    contains "selftest skips without curl" "$doc_selftest_nocurl_out" '"name":"selftest","status":"skip"'
+    contains "selftest skip names curl" "$doc_selftest_nocurl_out" 'curl unavailable'
+  fi
+
+  "$BIN" --help 2>&1 | grep -q -- "--selftest" && ok "--help mentions --selftest" 0 0 || ok "--help mentions --selftest" 1 0
+}
+
+# Group: tau init — commented starter config scaffold
+test_group_init() {
+  local mock_home warn
+
+  note "tau init scaffolds a commented config seeded from detected env keys"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+
+  # Fresh HOME -> creates ~/.config/tau/config.json, reports created:true.
+  capture init_write env HOME="$mock_home" "$BIN" init
+  ok "init on fresh HOME exits 0" "$init_write_rc" 0
+  if printf '%s' "$init_write_out" | grep -q '"created":true'; then
+    ok "init reports created:true" 0 0
+  else
+    ok "init reports created:true" 1 0
+  fi
+  if [ -f "$mock_home/.config/tau/config.json" ]; then
+    ok "init wrote ~/.config/tau/config.json" 0 0
+  else
+    ok "init wrote ~/.config/tau/config.json" 1 0
+  fi
+  if grep -q '^// ' "$mock_home/.config/tau/config.json" 2>/dev/null && grep -q '"provider"' "$mock_home/.config/tau/config.json"; then
+    ok "config has comments + provider key" 0 0
+  else
+    ok "config has comments + provider key" 1 0
+  fi
+
+  # Generated (commented) config must load without the invalid-JSON warning.
+  warn=$(HOME="$mock_home" "$BIN" --version 2>&1 1>/dev/null)
+  if printf '%s' "$warn" | grep -q 'invalid JSON'; then
+    ok "generated JSONC config loads without warning" 1 0
+  else
+    ok "generated JSONC config loads without warning" 0 0
+  fi
+
+  # Existing config -> refused without --force (exit 1, JSON err envelope).
+  capture init_again env HOME="$mock_home" "$BIN" init
+  ok "init on existing config exits 1" "$init_again_rc" 1
+  if printf '%s' "$init_again_err" | grep -q '"already_exists"'; then
+    ok "init existing -> already_exists envelope" 0 0
+  else
+    ok "init existing -> already_exists envelope" 1 0
+  fi
+
+  # --force overwrites and reports it.
+  capture init_force env HOME="$mock_home" "$BIN" init --force
+  ok "init --force exits 0" "$init_force_rc" 0
+  if printf '%s' "$init_force_out" | grep -q '"overwritten":true'; then
+    ok "init --force reports overwritten:true" 0 0
+  else
+    ok "init --force reports overwritten:true" 1 0
+  fi
+
+  # --stdout prints the scaffold without writing; detected env key selects the
+  # provider and is named in a comment, but the secret value never appears.
+  rm -f "$mock_home/.config/tau/config.json"
+  capture init_stdout env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY \
+    -u OPENCODE_API_KEY -u TAU_API_KEY HOME="$mock_home" OPENAI_API_KEY=smoke-secret "$BIN" init --stdout
+  ok "init --stdout exits 0" "$init_stdout_rc" 0
+  if printf '%s' "$init_stdout_out" | grep -q '"provider": "openai"'; then
+    ok "init --stdout picks detected provider (openai)" 0 0
+  else
+    ok "init --stdout picks detected provider (openai)" 1 0
+  fi
+  if printf '%s' "$init_stdout_out" | grep -q 'smoke-secret'; then
+    ok "init --stdout never leaks the key value" 1 0
+  else
+    ok "init --stdout never leaks the key value" 0 0
+  fi
+  if [ -f "$mock_home/.config/tau/config.json" ]; then
+    ok "init --stdout does not write a file" 1 0
+  else
+    ok "init --stdout does not write a file" 0 0
+  fi
+
+  # --provider overrides detection.
+  capture init_prov env HOME="$mock_home" "$BIN" init --provider deepseek --stdout
+  if printf '%s' "$init_prov_out" | grep -q '"provider": "deepseek"'; then
+    ok "init --provider selects the given provider" 0 0
+  else
+    ok "init --provider selects the given provider" 1 0
+  fi
+
+  # Bad arguments.
+  "$BIN" init --bogus >/dev/null 2>&1; ok "init --bogus -> exit 80" "$?" 80
+  "$BIN" init --provider acme >/dev/null 2>&1; ok "init --provider acme -> exit 80" "$?" 80
+}
+
+# Group: tau setup — one-shot onboarding (init + completions + doctor)
+# All runs use --offline so no real network/API key is needed; ambient keys
+# and config are scrubbed via env -u + mock HOME.
+test_group_setup() {
+  local mock_home line1 line2 line3 line4 line5
+
+  note "tau setup scaffolds config, installs completions, embeds doctor"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+
+  # Fresh HOME + detected zsh + a provider env key -> all steps ok, exit 0.
+  capture s1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home" SHELL=/bin/zsh XIAOMI_API_KEY=smoke-key "$BIN" setup --offline
+  ok "setup on fresh HOME exits 0" "$s1_rc" 0
+  line1=$(printf '%s' "$s1_out" | sed -n '1p')
+  line2=$(printf '%s' "$s1_out" | sed -n '2p')
+  line3=$(printf '%s' "$s1_out" | sed -n '3p')
+  line4=$(printf '%s' "$s1_out" | sed -n '4p')
+  line5=$(printf '%s' "$s1_out" | sed -n '5p')
+  contains "line 1 is the init step, status created" "$line1" '"step":"init","status":"created"'
+  contains "init reports the config path" "$line1" '"config_path":'
+  contains "line 2 is the completions step" "$line2" '"step":"completions","status":"installed"'
+  contains "completions detected zsh" "$line2" '"shell":"zsh"'
+  contains "zsh rc was appended" "$line2" '"rc_status":"appended"'
+  contains "line 3 is the clients step, skipped without --client" "$line3" '"step":"clients","status":"skipped"'
+  contains "clients step reports detection + hint" "$line3" '"detected":'
+  contains "line 4 embeds the doctor report" "$line4" '"step":"doctor","report":{"ok":true'
+  contains "line 5 is the setup verdict" "$line5" '"step":"setup","ok":true'
+  contains "verdict carries the version" "$line5" '"version":'
+
+  # Files actually landed.
+  [ -f "$mock_home/.config/tau/config.json" ]; ok "config.json was written" "$?" 0
+  [ -f "$mock_home/.zsh/completions/_tau" ]; ok "zsh completion installed" "$?" 0
+  [ -f "$mock_home/.zshrc" ]; ok ".zshrc created" "$?" 0
+  # The installed file is the embedded script — byte-identical to the repo copy.
+  cmp -s "$mock_home/.zsh/completions/_tau" "$ROOT/completions/_tau"; ok "installed _tau matches shipped script" "$?" 0
+  grep -q '# tau completions' "$mock_home/.zshrc" 2>/dev/null; ok ".zshrc carries the tau marker" "$?" 0
+  grep -q 'fpath=(~/.zsh/completions \$fpath)' "$mock_home/.zshrc" 2>/dev/null; ok ".zshrc registers the fpath" "$?" 0
+
+  # Re-run is idempotent: init -> exists, rc -> present, marker not duplicated.
+  capture s2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home" SHELL=/bin/zsh XIAOMI_API_KEY=smoke-key "$BIN" setup --offline
+  ok "setup re-run exits 0" "$s2_rc" 0
+  contains "re-run reports config exists" "$s2_out" '"step":"init","status":"exists"'
+  contains "re-run reports already_installed" "$s2_out" '"status":"already_installed"'
+  contains "re-run reports rc present" "$s2_out" '"rc_status":"present"'
+  [ "$(grep -c '# tau completions' "$mock_home/.zshrc")" = "1" ]; ok "rc marker not duplicated" "$?" 0
+
+  # --shell overrides detection; fish needs no rc edit.
+  local mock_home2; mock_home2="$(mktemp -d)"; register_temp_dir "$mock_home2"
+  capture s3 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell fish
+  ok "setup --shell fish exits 0" "$s3_rc" 0
+  contains "--shell fish installs fish" "$s3_out" '"shell":"fish"'
+  [ -f "$mock_home2/.config/fish/completions/tau.fish" ]; ok "fish completion installed" "$?" 0
+  cmp -s "$mock_home2/.config/fish/completions/tau.fish" "$ROOT/completions/tau.fish"; ok "installed tau.fish matches shipped script" "$?" 0
+
+  # --shell all installs every supported shell (pwsh gets a profile line).
+  local mock_home3; mock_home3="$(mktemp -d)"; register_temp_dir "$mock_home3"
+  capture s4 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home3" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all
+  ok "setup --shell all exits 0" "$s4_rc" 0
+  contains "--shell all covers bash" "$s4_out" '"shell":"bash"'
+  contains "--shell all covers zsh" "$s4_out" '"shell":"zsh"'
+  contains "--shell all covers fish" "$s4_out" '"shell":"fish"'
+  contains "--shell all covers pwsh" "$s4_out" '"shell":"pwsh"'
+  [ -f "$mock_home3/.local/share/bash-completion/completions/tau" ]; ok "bash completion installed" "$?" 0
+  cmp -s "$mock_home3/.config/tau/completions/tau.ps1" "$ROOT/completions/tau.ps1"; ok "installed tau.ps1 matches shipped script" "$?" 0
+  grep -q '# tau completions' "$mock_home3/.config/powershell/Microsoft.PowerShell_profile.ps1" 2>/dev/null
+  ok "pwsh profile carries the tau marker" "$?" 0
+
+  # No SHELL -> completions skipped (still a pass), setup verdict stays ok.
+  local mock_home4; mock_home4="$(mktemp -d)"; register_temp_dir "$mock_home4"
+  capture s5 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u SHELL \
+    HOME="$mock_home4" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline
+  ok "setup without SHELL exits 0" "$s5_rc" 0
+  contains "undetected shell is skipped with a hint" "$s5_out" '"step":"completions","status":"skipped"'
+
+  # Doctor failure (no API key anywhere) -> ok:false, exit 1.
+  local mock_home5; mock_home5="$(mktemp -d)"; register_temp_dir "$mock_home5"
+  capture s6 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u XIAOMI_API_KEY \
+    HOME="$mock_home5" SHELL=/bin/bash "$BIN" setup --offline
+  ok "setup with no API key exits 1" "$s6_rc" 1
+  contains "doctor report marks api_key fail" "$s6_out" '"name":"api_key","status":"fail"'
+  contains "final verdict is ok:false" "$s6_out" '"step":"setup","ok":false'
+
+  # Unknown --provider rides into the doctor step as a failed check (like
+  # `tau doctor`), not an arg error.
+  local mock_home6; mock_home6="$(mktemp -d)"; register_temp_dir "$mock_home6"
+  capture s7 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home6" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --provider acme
+  contains "unknown provider fails provider_resolution" "$s7_out" '"name":"provider_resolution","status":"fail"'
+
+  # --client zed writes a fresh settings.json with the tau agent_servers entry.
+  local mock_home7; mock_home7="$(mktemp -d)"; register_temp_dir "$mock_home7"
+  capture s8 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home7" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed
+  ok "setup --client zed exits 0" "$s8_rc" 0
+  contains "clients step reports installed" "$s8_out" '"step":"clients","status":"installed"'
+  contains "zed entry reports installed" "$s8_out" '"client":"zed"'
+  [ -f "$mock_home7/.config/zed/settings.json" ]; ok "zed settings.json written" "$?" 0
+  grep -q '"agent_servers"' "$mock_home7/.config/zed/settings.json"; ok "zed settings has agent_servers" "$?" 0
+  grep -q '"type": "custom"' "$mock_home7/.config/zed/settings.json"; ok "zed entry has type custom" "$?" 0
+  grep -q '"acp", "serve"' "$mock_home7/.config/zed/settings.json"; ok "zed args are acp serve" "$?" 0
+
+  # Re-run detects the existing tau entry -> already_installed, still exit 0.
+  capture s9 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home7" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed
+  ok "setup --client zed re-run exits 0" "$s9_rc" 0
+  contains "zed re-run reports already_installed" "$s9_out" '"status":"already_installed"'
+
+  # An existing settings file without tau is left untouched -> manual + snippet.
+  local mock_home8; mock_home8="$(mktemp -d)"; register_temp_dir "$mock_home8"
+  mkdir -p "$mock_home8/.config/zed"
+  printf '{\n  // keep me\n  "vim_mode": true\n}\n' > "$mock_home8/.config/zed/settings.json"
+  capture s10 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home8" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed
+  ok "setup --client zed on existing file exits 0" "$s10_rc" 0
+  contains "existing file without tau -> manual" "$s10_out" '"status":"manual"'
+  contains "manual entry names the snippet" "$s10_out" '"snippet_path":'
+  [ -f "$mock_home8/.config/tau/snippets/zed.jsonc" ]; ok "zed snippet file written" "$?" 0
+  grep -q '// keep me' "$mock_home8/.config/zed/settings.json"; ok "existing settings untouched" "$?" 0
+
+  # --client nvim never writes into ~/.config/nvim — a lua snippet is emitted.
+  local mock_home9; mock_home9="$(mktemp -d)"; register_temp_dir "$mock_home9"
+  capture s11 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home9" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client nvim
+  ok "setup --client nvim exits 0" "$s11_rc" 0
+  contains "nvim step reports manual" "$s11_out" '"step":"clients","status":"manual"'
+  [ -f "$mock_home9/.config/tau/snippets/nvim.lua" ]; ok "nvim lua snippet written" "$?" 0
+  grep -q 'acp_providers' "$mock_home9/.config/tau/snippets/nvim.lua"; ok "nvim snippet has avante block" "$?" 0
+
+  # --client all covers every client.
+  local mock_home10; mock_home10="$(mktemp -d)"; register_temp_dir "$mock_home10"
+  capture s12 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home10" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client all
+  ok "setup --client all exits 0" "$s12_rc" 0
+  contains "--client all covers zed" "$s12_out" '"client":"zed"'
+  contains "--client all covers nvim" "$s12_out" '"client":"nvim"'
+  contains "--client all covers vscode" "$s12_out" '"client":"vscode"'
+  contains "--client all covers jetbrains" "$s12_out" '"client":"jetbrains"'
+  [ -f "$mock_home10/.config/Code/User/settings.json" ]; ok "vscode settings written" "$?" 0
+  grep -q '"acp.agents"' "$mock_home10/.config/Code/User/settings.json"; ok "vscode uses acp.agents key" "$?" 0
+  [ -f "$mock_home10/.jetbrains/acp.json" ]; ok "jetbrains acp.json written" "$?" 0
+
+  # Without --client the step detects installed editors but writes nothing.
+  local mock_home11; mock_home11="$(mktemp -d)"; register_temp_dir "$mock_home11"
+  mkdir -p "$mock_home11/.config/zed"
+  capture s13 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home11" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline
+  contains "no --client detects the zed config dir" "$s13_out" '"detected":["zed"'
+  [ ! -f "$mock_home11/.config/zed/settings.json" ]; ok "detection wrote no settings file" "$?" 0
+
+  # ── Unattended mode (--yes / --non-interactive / TAU_* env) ──────────────
+
+  # --yes --non-interactive on a fresh HOME, stdin closed: all steps still
+  # run, exit 0, and the verdict records the contract.
+  local mock_home12; mock_home12="$(mktemp -d)"; register_temp_dir "$mock_home12"
+  local ni_out ni_rc
+  ni_out="$(env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home12" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --yes --non-interactive </dev/null 2>&1)"
+  ni_rc=$?
+  ok "setup --yes --non-interactive (stdin closed) exits 0" "$ni_rc" 0
+  contains "verdict records non_interactive" "$ni_out" '"non_interactive":true'
+  contains "verdict records yes" "$ni_out" '"yes":true'
+  contains "init still ran unattended" "$ni_out" '"step":"init","status":"created"'
+
+  # -y is the short alias for --yes.
+  local mock_home13; mock_home13="$(mktemp -d)"; register_temp_dir "$mock_home13"
+  capture s14 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home13" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline -y
+  ok "setup -y exits 0" "$s14_rc" 0
+  contains "-y verdict records non_interactive" "$s14_out" '"non_interactive":true'
+  contains "-y verdict records yes" "$s14_out" '"yes":true'
+
+  # TAU_YES / TAU_NONINTERACTIVE env vars enable the same contract — the
+  # dotfiles/devcontainer path where argv comes from a fixed script.
+  local mock_home14; mock_home14="$(mktemp -d)"; register_temp_dir "$mock_home14"
+  capture s15 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home14" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_YES=1 "$BIN" setup --offline
+  ok "setup with TAU_YES=1 exits 0" "$s15_rc" 0
+  contains "TAU_YES verdict records non_interactive" "$s15_out" '"non_interactive":true'
+  contains "TAU_YES verdict records yes" "$s15_out" '"yes":true'
+
+  local mock_home15; mock_home15="$(mktemp -d)"; register_temp_dir "$mock_home15"
+  capture s16 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home15" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_NONINTERACTIVE=1 "$BIN" setup --offline
+  ok "setup with TAU_NONINTERACTIVE=1 exits 0" "$s16_rc" 0
+  contains "TAU_NONINTERACTIVE verdict records non_interactive" "$s16_out" '"non_interactive":true'
+  printf '%s' "$s16_out" | grep -q '"yes":true'; ok "TAU_NONINTERACTIVE does not set yes" "$?" 1
+
+  # Falsy env values (0/false/empty) do not enable unattended mode.
+  local mock_home16; mock_home16="$(mktemp -d)"; register_temp_dir "$mock_home16"
+  capture s17 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home16" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_YES=0 TAU_NONINTERACTIVE=false "$BIN" setup --offline
+  ok "setup with TAU_YES=0 TAU_NONINTERACTIVE=false exits 0" "$s17_rc" 0
+  printf '%s' "$s17_out" | grep -q 'non_interactive'; ok "falsy env vars leave verdict plain" "$?" 1
+
+  # TAU_SETUP_SHELL / TAU_SETUP_CLIENT supply --shell/--client without argv.
+  local mock_home17; mock_home17="$(mktemp -d)"; register_temp_dir "$mock_home17"
+  capture s18 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home17" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_SETUP_SHELL=fish TAU_SETUP_CLIENT=zed "$BIN" setup --offline --non-interactive
+  ok "setup with TAU_SETUP_* env exits 0" "$s18_rc" 0
+  contains "TAU_SETUP_SHELL installs fish" "$s18_out" '"shell":"fish"'
+  contains "TAU_SETUP_CLIENT configures zed" "$s18_out" '"client":"zed"'
+  [ -f "$mock_home17/.config/fish/completions/tau.fish" ]; ok "env-driven fish completion installed" "$?" 0
+  [ -f "$mock_home17/.config/zed/settings.json" ]; ok "env-driven zed settings written" "$?" 0
+
+  # Flag beats env: --shell zsh wins over TAU_SETUP_SHELL=fish.
+  local mock_home18; mock_home18="$(mktemp -d)"; register_temp_dir "$mock_home18"
+  capture s19 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home18" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_SETUP_SHELL=fish "$BIN" setup --offline --shell zsh
+  ok "setup --shell beats TAU_SETUP_SHELL exits 0" "$s19_rc" 0
+  contains "flag won: zsh installed" "$s19_out" '"shell":"zsh"'
+  printf '%s' "$s19_out" | grep -q '"shell":"fish"'; ok "env value not applied" "$?" 1
+
+  # Invalid env values fail like a bad flag (exit 80).
+  TAU_SETUP_SHELL=tcsh "$BIN" setup --offline >/dev/null 2>&1
+  ok "TAU_SETUP_SHELL=tcsh -> exit 80" "$?" 80
+  TAU_SETUP_CLIENT=emacs "$BIN" setup --offline >/dev/null 2>&1
+  ok "TAU_SETUP_CLIENT=emacs -> exit 80" "$?" 80
+
+  # Bad arguments.
+  "$BIN" setup --bogus >/dev/null 2>&1; ok "setup --bogus -> exit 80" "$?" 80
+  "$BIN" setup --shell tcsh >/dev/null 2>&1; ok "setup --shell tcsh -> exit 80" "$?" 80
+  "$BIN" setup --shell >/dev/null 2>&1; ok "setup --shell (missing value) -> exit 80" "$?" 80
+  "$BIN" setup --client emacs >/dev/null 2>&1; ok "setup --client emacs -> exit 80" "$?" 80
+  "$BIN" setup --client >/dev/null 2>&1; ok "setup --client (missing value) -> exit 80" "$?" 80
+}
+
 # Group: Issue #17 goal mode subcommands offline
 test_group_goal_offline() {
   local out rc GSESS_OFF sub sname
 
   note "goal mode subcommands (offline)"
 
+  # --api-key fake on every call: key resolution runs before goal/session
+  # validation, so a keyless environment would exit 106 before reaching the
+  # paths under test.
   # /goal subcommands require --session
-  "$BIN" "/goal status" >/dev/null 2>&1;   ok "/goal status without --session -> exit 80" "$?" 80
-  "$BIN" "/goal pause" >/dev/null 2>&1;    ok "/goal pause without --session -> exit 80" "$?" 80
-  "$BIN" "/goal resume" >/dev/null 2>&1;   ok "/goal resume without --session -> exit 80" "$?" 80
-  "$BIN" "/goal clear" >/dev/null 2>&1;    ok "/goal clear without --session -> exit 80" "$?" 80
-  "$BIN" "/goal complete" >/dev/null 2>&1; ok "/goal complete without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal status" >/dev/null 2>&1;   ok "/goal status without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal pause" >/dev/null 2>&1;    ok "/goal pause without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal resume" >/dev/null 2>&1;   ok "/goal resume without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal clear" >/dev/null 2>&1;    ok "/goal clear without --session -> exit 80" "$?" 80
+  "$BIN" --api-key fake "/goal complete" >/dev/null 2>&1; ok "/goal complete without --session -> exit 80" "$?" 80
 
   # /goal status with --session, no prior goal -> {"goal":null}
   GSESS_OFF="smoke-goal-offline-$$"
-  capture goal_status "$BIN" --session "$GSESS_OFF" --no-tools --no-stream "/goal status" 2>&1
+  capture goal_status "$BIN" --api-key fake --session "$GSESS_OFF" --no-tools --no-stream "/goal status" 2>&1
   ok "/goal status (no goal) exit" "$goal_status_rc" 0
   if printf '%s' "$goal_status_out" | grep -q '"goal":null'; then
     ok "/goal status (no goal) -> {\"goal\":null}" 0 0
@@ -501,7 +1394,7 @@ test_group_goal_offline() {
   # /goal pause|resume|clear|complete with --session, no prior goal -> {"goal":null}
   for sub in pause resume clear complete; do
     sname="smoke-goal-off-${sub}-$$"
-    capture goal_sub "$BIN" --session "$sname" --no-tools --no-stream "/goal $sub" 2>&1
+    capture goal_sub "$BIN" --api-key fake --session "$sname" --no-tools --no-stream "/goal $sub" 2>&1
     ok "/goal $sub (no goal) exit" "$goal_sub_rc" 0
     if printf '%s' "$goal_sub_out" | grep -q '"goal":null'; then
       ok "/goal $sub (no goal) -> {\"goal\":null}" 0 0
@@ -551,14 +1444,31 @@ test_group_dry_run() {
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope: $err_env_err"
   fi
 
+  # Standardized envelope (task #171): every code carries recoverable, a
+  # remediation hint, and the docs link — on both channels.
+  if printf '%s' "$err_env_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("recoverable") == False; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 80 has recoverable + hint + docs" 0 0
+  else
+    ok "envelope 80 missing recoverable/hint/docs" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 80: $err_env_err"
+  fi
+
   # Error envelope for missing required field (exit 82)
-  # fleet run without --goal writes to stdout via fleetRequires (term.out, not term.err)
-  capture err_82 "$BIN" fleet run 2>&1 >/dev/null
+  # fleet run without --goal writes to stdout via fleetRequires (term.out, not
+  # term.err). --api-key fake: key resolution precedes the --goal check, so a
+  # keyless environment would exit 106 before reaching it.
+  capture err_82 "$BIN" fleet run --api-key fake 2>&1 >/dev/null
   if printf '%s' "$err_82_out" | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("err",{}).get("code") == 82' 2>/dev/null; then
     ok "error envelope code 82 exists" 0 0
   else
     ok "error envelope code 82 format invalid" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 82: $err_82_out"
+  fi
+  if printf '%s' "$err_82_out" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("type") == "missing_required_field"; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 82 has type missing_required_field + hint + docs" 0 0
+  else
+    ok "envelope 82 missing type/hint/docs" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 82: $err_82_out"
   fi
 
   # Error envelope for internal error (exit 110) triggered by fake API key
@@ -568,6 +1478,32 @@ test_group_dry_run() {
   else
     ok "error envelope code 110 format invalid" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "error envelope 110: $err_110_err"
+  fi
+  if printf '%s' "$err_110_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("hint"); assert "troubleshooting.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 110 has hint + docs" 0 0
+  else
+    ok "envelope 110 missing hint/docs" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 110: $err_110_err"
+  fi
+
+  # Error envelope for auth failure (exit 106): docs links the per-provider
+  # credential guide, not the generic troubleshooting page. Keyless env +
+  # fresh HOME so no config.json or env var can satisfy the auth check —
+  # fleet's auth check fires before the --goal validation.
+  local kh="$SMOKE_TEMP/keyless-home"
+  mkdir -p "$kh"
+  capture err_106 env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY HOME="$kh" "$BIN" fleet run 2>&1 >/dev/null
+  if printf '%s' "$err_106_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("code") == 106; assert e.get("type") == "AuthFailed"' 2>/dev/null; then
+    ok "envelope 106 has type AuthFailed" 0 0
+  else
+    ok "envelope 106 format invalid" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 106: $err_106_err"
+  fi
+  if printf '%s' "$err_106_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert "docs/providers.md" in e.get("docs","")' 2>/dev/null; then
+    ok "envelope 106 docs links providers.md" 0 0
+  else
+    ok "envelope 106 docs missing providers.md link" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 106: $err_106_err"
   fi
 }
 
@@ -745,6 +1681,136 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: --debug redacted diagnostic log (task #167)
+# --debug mirrors its [DEBUG] stderr lines into ~/.config/tau/debug/<ts>.log
+# (TAU_DEBUG_LOG overrides). The file copy masks registered keys, Bearer
+# tokens, api_key-style JSON fields and *_KEY= env assignments; stderr keeps
+# the raw output. A stubbed curl on PATH exercises the provider emitters
+# offline.
+test_group_debug() {
+  local dbg_home="$SMOKE_TEMP/debug-home"
+  local stubdir="$SMOKE_TEMP/curl-stub"
+  mkdir -p "$dbg_home" "$stubdir"
+  local scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u TAU_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY "HOME=$dbg_home")
+
+  note "--debug diagnostic log file"
+
+  # Keyless run: the log opens before the agent loop, so even the silent
+  # exit-106 path leaves a file and a {"debug_log":...} pointer on stderr.
+  capture r "${scrub[@]}" "$BIN" --debug --no-stream "hi"
+  ok "debug: keyless run exits 106" "$r_rc" 106
+  contains "debug: stderr announces debug_log path" "$r_err" '"debug_log":"'
+  contains "debug: perf line on stderr" "$r_err" "[DEBUG] perf:"
+  local created
+  created="$(ls "$dbg_home/.config/tau/debug"/debug-*.log 2>/dev/null | head -1)"
+  if [ -n "$created" ] && [ -f "$created" ]; then
+    ok "debug: default log file created under ~/.config/tau/debug" 0 0
+    local body; body="$(cat "$created")"
+    contains "debug: log carries provenance header" "$body" "tau diagnostic log"
+    contains "debug: header names provider" "$body" "# provider: xiaomi"
+    contains "debug: header flags key_resolved no" "$body" "key_resolved: no"
+  else
+    ok "debug: default log file created under ~/.config/tau/debug" 1 0
+    ok "debug: log carries provenance header" 1 0
+    ok "debug: header names provider" 1 0
+    ok "debug: header flags key_resolved no" 1 0
+  fi
+
+  # TAU_DEBUG_LOG override is honored verbatim.
+  local custom="$SMOKE_TEMP/custom-debug.log"
+  capture r2 "${scrub[@]}" TAU_DEBUG_LOG="$custom" "$BIN" --debug --no-stream "hi"
+  if [ -f "$custom" ]; then
+    ok "debug: TAU_DEBUG_LOG override creates file" 0 0
+  else
+    ok "debug: TAU_DEBUG_LOG override creates file" 1 0
+  fi
+  contains "debug: override path announced on stderr" "$r2_err" "$custom"
+
+  # Unwritable destination degrades to a warn envelope; the run continues.
+  # (/dev/null is a file, so paths under it are unresolvable; a /proc path
+  # would exercise a Zig 0.16 Io spin in createDirPath instead.)
+  capture r3 "${scrub[@]}" TAU_DEBUG_LOG="/dev/null/nope/tau.log" "$BIN" --debug --no-stream "hi"
+  contains "debug: unwritable path emits warn envelope" "$r3_err" '"warn"'
+  ok "debug: unwritable log keeps normal exit path" "$r3_rc" 106
+
+  # Redaction e2e (non-streaming): a stub curl echoes the Authorization header
+  # into the response body; the log must mask both the literal key and the
+  # api_key JSON field — stderr keeps the raw line.
+  cat > "$stubdir/curl" <<'STUB'
+#!/usr/bin/env bash
+auth=""
+for a in "$@"; do
+  case "$a" in Authorization:*) auth="$a";; esac
+done
+printf '{"content":"stub saw %s","api_key":"nested-KEYVAL-9","usage":{"total_tokens":7}}' "$auth"
+STUB
+  chmod +x "$stubdir/curl"
+  local rlog="$SMOKE_TEMP/redact.log"
+  capture r4 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$rlog" PATH="$stubdir:$PATH" "$BIN" --debug --no-stream "hi"
+  ok "debug: stubbed run exits 0" "$r4_rc" 0
+  contains "debug: stderr keeps raw debug line" "$r4_err" "[DEBUG] Raw API response"
+  if [ -f "$rlog" ]; then
+    local lbody; lbody="$(cat "$rlog")"
+    case "$lbody" in
+      *SMOKESECRET-777*) ok "debug: resolved key masked in log" 1 0 ;;
+      *)                 ok "debug: resolved key masked in log" 0 0 ;;
+    esac
+    case "$lbody" in
+      *nested-KEYVAL-9*) ok "debug: api_key JSON field masked in log" 1 0 ;;
+      *)                 ok "debug: api_key JSON field masked in log" 0 0 ;;
+    esac
+    contains "debug: log uses REDACTED marker" "$lbody" "***REDACTED***"
+    contains "debug: log has raw API line" "$lbody" "[DEBUG] Raw API response"
+  else
+    ok "debug: resolved key masked in log" 1 0
+    ok "debug: api_key JSON field masked in log" 1 0
+    ok "debug: log uses REDACTED marker" 1 0
+    ok "debug: log has raw API line" 1 0
+  fi
+
+  # Redaction e2e (streaming): SSE lines are debug-logged too; the key inside
+  # a streamed chunk must still be masked in the file.
+  cat > "$stubdir/curl" <<'STUB'
+#!/usr/bin/env bash
+auth=""
+for a in "$@"; do
+  case "$a" in Authorization:*) auth="$a";; esac
+done
+printf 'data: {"choices":[{"delta":{"content":"saw %s"}}],"usage":{"total_tokens":3}}\n\ndata: [DONE]\n\n' "$auth"
+STUB
+  chmod +x "$stubdir/curl"
+  local slog="$SMOKE_TEMP/redact-stream.log"
+  capture r5 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$slog" PATH="$stubdir:$PATH" "$BIN" --debug "hi"
+  ok "debug: stubbed streaming run exits 0" "$r5_rc" 0
+  if [ -f "$slog" ]; then
+    local sbody; sbody="$(cat "$slog")"
+    contains "debug: SSE lines land in log" "$sbody" "[DEBUG] SSE line:"
+    case "$sbody" in
+      *SMOKESECRET-777*) ok "debug: key masked in streamed log" 1 0 ;;
+      *)                 ok "debug: key masked in streamed log" 0 0 ;;
+    esac
+  else
+    ok "debug: SSE lines land in log" 1 0
+    ok "debug: key masked in streamed log" 1 0
+  fi
+
+  # Error-envelope link: auth failure produces an {"err"} envelope carrying
+  # the log path (the literal /goal emitter does the same).
+  cat > "$stubdir/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '{"error":{"message":"invalid_key: bad token"}}'
+STUB
+  chmod +x "$stubdir/curl"
+  local elog="$SMOKE_TEMP/err-link.log"
+  capture r6 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$elog" PATH="$stubdir:$PATH" "$BIN" --debug --no-stream "hi"
+  ok "debug: auth failure exits 106" "$r6_rc" 106
+  contains "debug: err envelope links debug_log" "$r6_err" '"debug_log":"'"$elog"'"'
+
+  capture r7 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$elog" "$BIN" --debug "/goal status"
+  ok "debug: /goal status without session exits 80" "$r7_rc" 80
+  contains "debug: literal envelope links debug_log" "$r7_err" '"debug_log":"'
 }
 
 # Group: --bench regression guard
@@ -1146,6 +2212,578 @@ test_group_network_role_critic() {
   else
     ok "--role critic response missing <APPROVED>/<BLOCKED>" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "critic output: $out"
+  fi
+}
+
+# Group: shell completions coverage (offline drift guard)
+# Every flag advertised by --help-json and every subcommand/enum value must
+# appear in each shipped completion file (bash, zsh, fish, PowerShell).
+test_group_completions() {
+  local out flags f missing fl word
+  local files="completions/tau.bash completions/_tau completions/tau.fish completions/tau.ps1"
+
+  out=$("$BIN" --help-json)
+  flags=$(printf '%s' "$out" | python3 -c 'import sys,json; print("\n".join(f["name"].lstrip("-") for f in json.load(sys.stdin)["flags"]))' 2>/dev/null)
+  if [ -n "$flags" ]; then
+    ok "--help-json flag list extracted" 0 0
+  else
+    ok "--help-json flag list extracted" 1 0
+    return
+  fi
+
+  for f in $files; do
+    if [ ! -f "$ROOT/$f" ]; then
+      ok "$f exists" 1 0
+      continue
+    fi
+    ok "$f exists" 0 0
+
+    missing=""
+    for fl in $flags; do
+      grep -Fq -- "$fl" "$ROOT/$f" || missing="$missing $fl"
+    done
+    if [ -z "$missing" ]; then
+      ok "$f covers every --help-json flag" 0 0
+    else
+      ok "$f missing flags:$missing" 1 0
+    fi
+
+    missing=""
+    for word in acp fleet skills models guide \
+                xiaomi openai deepseek opencode-go text json \
+                author critic coordinator none \
+                bash ls read write edit grep find calculator; do
+      grep -Fqw -- "$word" "$ROOT/$f" || missing="$missing $word"
+    done
+    if [ -z "$missing" ]; then
+      ok "$f covers subcommands and enum values" 0 0
+    else
+      ok "$f missing words:$missing" 1 0
+    fi
+  done
+}
+
+# Group: release surface — install.sh installer + release workflow drift guards.
+# Fully offline: uses --dry-run and TAU_OS/TAU_ARCH overrides, never downloads.
+test_group_release() {
+  local out rc
+  local inst="$ROOT/install.sh"
+  local wf="$ROOT/.github/workflows/release.yml"
+
+  note "release: install.sh + workflow surface"
+
+  # ── install.sh basics ──
+  [ -f "$inst" ];  ok "install.sh exists" "$?" 0
+  [ -x "$inst" ];  ok "install.sh is executable" "$?" 0
+  sh -n "$inst" 2>/dev/null;   ok "install.sh passes sh -n syntax check" "$?" 0
+  bash -n "$inst" 2>/dev/null; ok "install.sh passes bash -n syntax check" "$?" 0
+
+  out=$("$inst" --help 2>&1); rc=$?
+  ok "install.sh --help exit" "$rc" 0
+  contains "install.sh --help shows usage" "$out" "--version"
+
+  # ── platform → asset name mapping (dry-run, no network) ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1); rc=$?
+  ok "dry-run linux/x86_64 exit" "$rc" 0
+  contains "dry-run linux/x86_64 asset" "$out" "tau-linux-x86_64.tar.gz"
+  contains "dry-run default hits latest" "$out" "releases/latest/download/"
+
+  out=$(TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/arm64 → macos-aarch64" "$out" "tau-macos-aarch64.tar.gz"
+
+  out=$(TAU_OS=darwin TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "dry-run darwin/x86_64 → macos-x86_64" "$out" "tau-macos-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=aarch64 "$inst" --dry-run 2>&1)
+  contains "dry-run linux/aarch64 asset" "$out" "tau-linux-aarch64.tar.gz"
+
+  # ── version pinning ──
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version 1.2.3 2>&1)
+  contains "dry-run --version pins tag URL" "$out" "releases/download/v1.2.3/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version v1.2.3 2>&1)
+  contains "dry-run --version strips leading v" "$out" "releases/download/v1.2.3/"
+
+  # ── TAU_BASE_URL override (the release workflow's smoke job relies on it) ──
+  out=$(TAU_BASE_URL=http://127.0.0.1:18923 TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run 2>&1)
+  contains "TAU_BASE_URL overrides download base" "$out" "http://127.0.0.1:18923/latest/download/tau-linux-x86_64.tar.gz"
+
+  out=$(TAU_BASE_URL=file:///tmp/staged TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run --version 2.0.0 2>&1)
+  contains "TAU_BASE_URL composes with --version" "$out" "file:///tmp/staged/download/v2.0.0/tau-macos-aarch64.tar.gz"
+
+  # ── error paths ──
+  TAU_OS=plan9 TAU_ARCH=x "$inst" --dry-run >/dev/null 2>&1
+  ok "dry-run rejects unsupported OS" "$?" 1
+
+  "$inst" --bogus-flag >/dev/null 2>&1
+  ok "install.sh rejects unknown flag" "$?" 1
+
+  TAU_OS=linux TAU_ARCH=x86_64 "$inst" --dry-run --version notaversion >/dev/null 2>&1
+  ok "install.sh rejects malformed --version" "$?" 1
+
+  # ── install.ps1 basics (Windows installer; needs pwsh to exercise) ──
+  local ps1="$ROOT/install.ps1"
+  [ -f "$ps1" ]; ok "install.ps1 exists" "$?" 0
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -LiteralPath '$ps1' -Raw)) | Out-Null" 2>/dev/null
+    ok "install.ps1 parses under pwsh" "$?" 0
+
+    out=$(pwsh -NoProfile -File "$ps1" --help 2>&1); rc=$?
+    ok "install.ps1 --help exit" "$rc" 0
+    contains "install.ps1 --help shows usage" "$out" "-Version"
+
+    out=$(pwsh -NoProfile -File "$ps1" --dry-run 2>&1)
+    contains "install.ps1 dry-run targets the windows zip" "$out" "tau-windows-x86_64.zip"
+    contains "install.ps1 dry-run default hits latest" "$out" "releases/latest/download/"
+
+    out=$(pwsh -NoProfile -File "$ps1" --dry-run --version 1.2.3 2>&1)
+    contains "install.ps1 dry-run --version pins tag URL" "$out" "releases/download/v1.2.3/tau-windows-x86_64.zip"
+
+    out=$(pwsh -NoProfile -File "$ps1" --dry-run --version=v1.2.3 2>&1)
+    contains "install.ps1 dry-run --version= strips leading v" "$out" "releases/download/v1.2.3/"
+
+    out=$(TAU_BASE_URL=file:///tmp/staged pwsh -NoProfile -File "$ps1" -DryRun -Version 2.0.0 2>&1)
+    contains "install.ps1 TAU_BASE_URL composes with -Version" "$out" "file:///tmp/staged/download/v2.0.0/tau-windows-x86_64.zip"
+
+    pwsh -NoProfile -File "$ps1" --bogus-flag >/dev/null 2>&1
+    ok "install.ps1 rejects unknown flag" "$?" 1
+
+    pwsh -NoProfile -File "$ps1" --dry-run --version notaversion >/dev/null 2>&1
+    ok "install.ps1 rejects malformed --version" "$?" 1
+
+    TAU_ARCH=arm64 pwsh -NoProfile -File "$ps1" --dry-run >/dev/null 2>&1
+    ok "install.ps1 rejects non-x64 arch" "$?" 1
+  else
+    note "release: skipping install.ps1 checks (pwsh unavailable)"
+  fi
+
+  # ── workflow drift guards ──
+  [ -f "$wf" ]; ok "release workflow exists" "$?" 0
+  if [ -f "$wf" ]; then
+    contains "workflow triggers on v* tags" "$(cat "$wf")" 'tags:'
+    contains "workflow builds linux-x86_64" "$(cat "$wf")" "linux-x86_64"
+    contains "workflow builds linux-aarch64" "$(cat "$wf")" "linux-aarch64"
+    contains "workflow builds macos-x86_64" "$(cat "$wf")" "macos-x86_64"
+    contains "workflow builds macos-aarch64" "$(cat "$wf")" "macos-aarch64"
+    contains "workflow pins zig 0.16.0" "$(cat "$wf")" "0.16.0"
+    contains "workflow guards tag vs version.zig" "$(cat "$wf")" "version.zig"
+    contains "workflow publishes checksums" "$(cat "$wf")" "SHA256SUMS"
+
+    # ── smoke job drift guards ──
+    contains "workflow has a smoke job" "$(cat "$wf")" "  smoke:"
+    contains "smoke job needs build" "$(cat "$wf")" "needs: build"
+    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-windows, smoke-action]"
+    contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
+    contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
+    contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
+    contains "smoke covers macos-aarch64" "$(cat "$wf")" "artifact: macos-aarch64"
+    contains "smoke installs via install.sh" "$(cat "$wf")" "install.sh --dir"
+    contains "smoke redirects install base URL" "$(cat "$wf")" "TAU_BASE_URL"
+    contains "smoke verifies --version" "$(cat "$wf")" "tau --version"
+    contains "smoke verifies --help" "$(cat "$wf")" "tau --help"
+
+    # ── windows target + smoke-windows job drift guards (task #182) ──
+    contains "workflow builds windows-x86_64" "$(cat "$wf")" "x86_64-windows-gnu"
+    contains "workflow packages tau.exe as zip" "$(cat "$wf")" "zig-out/bin/tau.exe"
+    contains "workflow checksums cover zips" "$(cat "$wf")" "sha256sum *.tar.gz *.zip"
+    contains "release job publishes zips" "$(cat "$wf")" "dist/*.zip"
+    contains "release notes mention install.ps1" "$(cat "$wf")" "install.ps1 | iex"
+    contains "workflow has a smoke-windows job" "$(cat "$wf")" "  smoke-windows:"
+    contains "smoke-windows runs on windows-latest" "$(cat "$wf")" "runs-on: windows-latest"
+    contains "smoke-windows installs via install.ps1" "$(cat "$wf")" "install.ps1 -Dir"
+    contains "smoke-windows stages via file://" "$(cat "$wf")" "file:///"
+
+    # ── winget job drift guards (task #182) ──
+    contains "workflow has a winget job" "$(cat "$wf")" "  winget:"
+    contains "winget job runs after release" "$(cat "$wf")" "needs: release"
+    contains "winget job runs the manifest generator" "$(cat "$wf")" "generate-winget-manifest.sh"
+    contains "winget job uploads the manifest artifact" "$(cat "$wf")" "winget-manifest-"
+    contains "winget job gates submission on a token" "$(cat "$wf")" "WINGET_PKGS_TOKEN"
+    contains "winget job targets winget-pkgs" "$(cat "$wf")" "wingetcreate submit"
+
+    # ── scoop job drift guards (task #182) ──
+    contains "workflow has a scoop job" "$(cat "$wf")" "  scoop:"
+    contains "scoop job runs the manifest generator" "$(cat "$wf")" "generate-scoop-manifest.sh"
+    contains "scoop job gates publish on a token" "$(cat "$wf")" "SCOOP_BUCKET_TOKEN"
+    contains "scoop job publishes to the bucket repo" "$(cat "$wf")" "javimosch/scoop-bucket"
+    contains "scoop job writes bucket/tau.json" "$(cat "$wf")" "bucket/tau.json"
+
+    # ── smoke-action job drift guards (exercises action.yml via uses: ./) ──
+    contains "workflow has a smoke-action job" "$(cat "$wf")" "  smoke-action:"
+    contains "smoke-action needs build" "$(cat "$wf")" "needs: build"
+    contains "smoke-action uses the local action" "$(cat "$wf")" "uses: ./"
+    contains "smoke-action passes base-url" "$(cat "$wf")" "base-url: http://127.0.0.1:"
+    contains "smoke-action checks outputs" "$(cat "$wf")" "steps.setup.outputs.tau-path"
+
+    # ── checksum chain drift guards (task #161) ──
+    contains "build emits per-asset checksums" "$(cat "$wf")" ".tar.gz.sha256"
+    contains "smoke verifies artifact checksum" "$(cat "$wf")" "Verify artifact checksum"
+    contains "smoke checks tarball against .sha256" "$(cat "$wf")" 'sha256sum -c "tau-'
+    contains "release self-verifies SHA256SUMS.txt" "$(cat "$wf")" "sha256sum -c SHA256SUMS.txt"
+
+    # ── homebrew tap job drift guards (task #175) ──
+    contains "workflow has a homebrew job" "$(cat "$wf")" "  homebrew:"
+    contains "homebrew job runs after release" "$(cat "$wf")" "needs: release"
+    contains "homebrew job gates on tags" "$(cat "$wf")" "github.ref_type == 'tag'"
+    contains "homebrew job runs the formula generator" "$(cat "$wf")" "generate-homebrew-formula.sh"
+    contains "homebrew job pushes to the tap repo" "$(cat "$wf")" "javimosch/homebrew-tap"
+    contains "homebrew job writes Formula/tau.rb" "$(cat "$wf")" "Formula/tau.rb"
+    contains "homebrew job uses the tap token secret" "$(cat "$wf")" "HOMEBREW_TAP_TOKEN"
+    contains "homebrew job skips pre-release tags" "$(cat "$wf")" 'is a pre-release'
+    contains "release notes mention brew install" "$(cat "$wf")" "brew install javimosch/tap/tau"
+  fi
+
+  # ── Homebrew formula generator ──
+  local gen="$ROOT/scripts/generate-homebrew-formula.sh"
+  [ -f "$gen" ];  ok "formula generator exists" "$?" 0
+  [ -x "$gen" ];  ok "formula generator is executable" "$?" 0
+  sh -n "$gen" 2>/dev/null;   ok "formula generator passes sh -n syntax check" "$?" 0
+  bash -n "$gen" 2>/dev/null; ok "formula generator passes bash -n syntax check" "$?" 0
+
+  out=$("$gen" --help 2>&1); rc=$?
+  ok "formula generator --help exit" "$rc" 0
+  contains "formula generator --help shows usage" "$out" "--version"
+
+  local fdir
+  fdir="$(mktemp -d)"
+  printf '%064d  %s\n' 11 tau-macos-aarch64.tar.gz  > "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 22 tau-macos-x86_64.tar.gz  >> "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 33 tau-linux-x86_64.tar.gz  >> "$fdir/SHA256SUMS.txt"
+  printf '%064d  %s\n' 44 tau-linux-aarch64.tar.gz >> "$fdir/SHA256SUMS.txt"
+
+  out=$("$gen" --version 1.2.3 --sums "$fdir/SHA256SUMS.txt" 2>&1); rc=$?
+  ok "formula generator renders" "$rc" 0
+  contains "formula class is Tau" "$out" "class Tau < Formula"
+  contains "formula carries the version" "$out" 'version "1.2.3"'
+  contains "formula is MIT licensed" "$out" 'license "MIT"'
+  contains "formula has macos arm block" "$out" "on_arm do"
+  contains "formula has macos intel block" "$out" "on_intel do"
+  contains "formula has linux block" "$out" "on_linux do"
+  contains "formula macos-arm url" "$out" "releases/download/v1.2.3/tau-macos-aarch64.tar.gz"
+  contains "formula macos-intel url" "$out" "releases/download/v1.2.3/tau-macos-x86_64.tar.gz"
+  contains "formula linux-x86_64 url" "$out" "releases/download/v1.2.3/tau-linux-x86_64.tar.gz"
+  contains "formula linux-aarch64 url" "$out" "releases/download/v1.2.3/tau-linux-aarch64.tar.gz"
+  contains "formula macos-arm sha" "$out" 'sha256 "0000000000000000000000000000000000000000000000000000000000000011"'
+  contains "formula linux-aarch64 sha" "$out" 'sha256 "0000000000000000000000000000000000000000000000000000000000000044"'
+  contains "formula installs the tau binary" "$out" 'bin.install "tau"'
+  contains "formula test runs --version" "$out" 'tau --version'
+
+  out=$("$gen" --version v2.0.0 --sums "$fdir/SHA256SUMS.txt" 2>&1)
+  contains "leading v is stripped from version" "$out" 'version "2.0.0"'
+
+  # fail-closed paths: no blank checksums, no malformed versions
+  "$gen" --version 1.0.0 --sums "$fdir/missing.txt" >/dev/null 2>&1
+  ok "generator rejects missing manifest" "$?" 1
+  printf 'deadbeef  tau-macos-aarch64.tar.gz\n' > "$fdir/partial.txt"
+  "$gen" --version 1.0.0 --sums "$fdir/partial.txt" >/dev/null 2>&1
+  ok "generator rejects manifest missing assets" "$?" 1
+  "$gen" --version notaversion --sums "$fdir/SHA256SUMS.txt" >/dev/null 2>&1
+  ok "generator rejects malformed version" "$?" 1
+  "$gen" --bogus >/dev/null 2>&1
+  ok "generator rejects unknown flag" "$?" 1
+  rm -rf "$fdir"
+
+  # ── winget manifest generator ──
+  local wgen="$ROOT/scripts/generate-winget-manifest.sh"
+  [ -f "$wgen" ];  ok "winget generator exists" "$?" 0
+  [ -x "$wgen" ];  ok "winget generator is executable" "$?" 0
+  sh -n "$wgen" 2>/dev/null;   ok "winget generator passes sh -n syntax check" "$?" 0
+  bash -n "$wgen" 2>/dev/null; ok "winget generator passes bash -n syntax check" "$?" 0
+
+  out=$("$wgen" --help 2>&1); rc=$?
+  ok "winget generator --help exit" "$rc" 0
+  contains "winget generator --help shows usage" "$out" "--output-dir"
+
+  local wdir
+  wdir="$(mktemp -d)"
+  printf '%064d  %s\n' 55 tau-windows-x86_64.zip > "$wdir/SHA256SUMS.txt"
+
+  "$wgen" --version 1.2.3 --sums "$wdir/SHA256SUMS.txt" --output-dir "$wdir/out" >/dev/null 2>&1; rc=$?
+  ok "winget generator renders" "$rc" 0
+  [ -f "$wdir/out/javimosch.tau.yaml" ];              ok "winget version manifest written" "$?" 0
+  [ -f "$wdir/out/javimosch.tau.installer.yaml" ];    ok "winget installer manifest written" "$?" 0
+  [ -f "$wdir/out/javimosch.tau.locale.en-US.yaml" ]; ok "winget locale manifest written" "$?" 0
+  contains "winget version file carries version" "$(cat "$wdir/out/javimosch.tau.yaml")" "PackageVersion: 1.2.3"
+  contains "winget installer is a zip" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" "InstallerType: zip"
+  contains "winget installer nests a portable exe" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" "RelativeFilePath: tau.exe"
+  contains "winget installer url" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" "releases/download/v1.2.3/tau-windows-x86_64.zip"
+  contains "winget installer sha" "$(cat "$wdir/out/javimosch.tau.installer.yaml")" 'InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000055'
+  contains "winget locale file identifies package" "$(cat "$wdir/out/javimosch.tau.locale.en-US.yaml")" "PackageIdentifier: javimosch.tau"
+  if python3 -c 'import yaml' 2>/dev/null; then
+    python3 -c 'import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' "$wdir/out/"*.yaml 2>/dev/null
+    ok "winget manifests parse as YAML" "$?" 0
+  else
+    note "release: skipping winget YAML parse (PyYAML unavailable)"
+  fi
+
+  "$wgen" --version 1.0.0 --sums "$wdir/missing.txt" --output-dir "$wdir/o2" >/dev/null 2>&1
+  ok "winget generator rejects missing manifest" "$?" 1
+  printf 'deadbeef  tau-macos-aarch64.tar.gz\n' > "$wdir/partial.txt"
+  "$wgen" --version 1.0.0 --sums "$wdir/partial.txt" --output-dir "$wdir/o3" >/dev/null 2>&1
+  ok "winget generator rejects manifest missing the zip" "$?" 1
+  "$wgen" --version notaversion --sums "$wdir/SHA256SUMS.txt" --output-dir "$wdir/o4" >/dev/null 2>&1
+  ok "winget generator rejects malformed version" "$?" 1
+  "$wgen" --bogus >/dev/null 2>&1
+  ok "winget generator rejects unknown flag" "$?" 1
+  rm -rf "$wdir"
+
+  # ── Scoop manifest generator ──
+  local sgen="$ROOT/scripts/generate-scoop-manifest.sh"
+  [ -f "$sgen" ];  ok "scoop generator exists" "$?" 0
+  [ -x "$sgen" ];  ok "scoop generator is executable" "$?" 0
+  sh -n "$sgen" 2>/dev/null;   ok "scoop generator passes sh -n syntax check" "$?" 0
+  bash -n "$sgen" 2>/dev/null; ok "scoop generator passes bash -n syntax check" "$?" 0
+
+  out=$("$sgen" --help 2>&1); rc=$?
+  ok "scoop generator --help exit" "$rc" 0
+  contains "scoop generator --help shows usage" "$out" "--sums"
+
+  local sdir
+  sdir="$(mktemp -d)"
+  printf '%064d  %s\n' 77 tau-windows-x86_64.zip > "$sdir/SHA256SUMS.txt"
+
+  out=$("$sgen" --version 1.2.3 --sums "$sdir/SHA256SUMS.txt" 2>&1); rc=$?
+  ok "scoop generator renders" "$rc" 0
+  contains "scoop manifest carries the version" "$out" '"version": "1.2.3"'
+  contains "scoop manifest zip url" "$out" "releases/download/v1.2.3/tau-windows-x86_64.zip"
+  contains "scoop manifest sha256 hash" "$out" 'sha256:0000000000000000000000000000000000000000000000000000000000000077'
+  contains "scoop manifest declares tau.exe bin" "$out" '"bin": "tau.exe"'
+  contains "scoop manifest has autoupdate" "$out" '"autoupdate"'
+  contains "scoop manifest has checkver" "$out" '"checkver"'
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$out" | python3 -m json.tool >/dev/null 2>&1
+    ok "scoop manifest is valid JSON" "$?" 0
+  fi
+
+  out=$("$sgen" --version v2.0.0 --sums "$sdir/SHA256SUMS.txt" 2>&1)
+  contains "scoop generator strips leading v" "$out" '"version": "2.0.0"'
+
+  "$sgen" --version 1.0.0 --sums "$sdir/missing.txt" >/dev/null 2>&1
+  ok "scoop generator rejects missing manifest" "$?" 1
+  printf 'deadbeef  tau-macos-aarch64.tar.gz\n' > "$sdir/partial.txt"
+  "$sgen" --version 1.0.0 --sums "$sdir/partial.txt" >/dev/null 2>&1
+  ok "scoop generator rejects manifest missing the zip" "$?" 1
+  "$sgen" --version notaversion --sums "$sdir/SHA256SUMS.txt" >/dev/null 2>&1
+  ok "scoop generator rejects malformed version" "$?" 1
+  "$sgen" --bogus >/dev/null 2>&1
+  ok "scoop generator rejects unknown flag" "$?" 1
+  rm -rf "$sdir"
+
+  # ── setup-tau composite action (repo-root action.yml) ──
+  local act="$ROOT/action.yml"
+  [ -f "$act" ]; ok "action.yml exists at repo root" "$?" 0
+  if [ -f "$act" ]; then
+    contains "action.yml is a composite action" "$(cat "$act")" "using: composite"
+    contains "action.yml invokes repo install.sh" "$(cat "$act")" 'GITHUB_ACTION_PATH/install.sh'
+    contains "action.yml exposes version input" "$(cat "$act")" "version:"
+    contains "action.yml exposes install-dir input" "$(cat "$act")" "install-dir:"
+    contains "action.yml exposes base-url input" "$(cat "$act")" "base-url:"
+    contains "action.yml maps version input to TAU_VERSION" "$(cat "$act")" "TAU_VERSION"
+    contains "action.yml maps install-dir input to TAU_INSTALL_DIR" "$(cat "$act")" "TAU_INSTALL_DIR"
+    contains "action.yml maps base-url input to TAU_BASE_URL" "$(cat "$act")" "TAU_BASE_URL"
+    contains "action.yml puts install dir on PATH" "$(cat "$act")" "GITHUB_PATH"
+    contains "action.yml emits step outputs" "$(cat "$act")" "GITHUB_OUTPUT"
+    contains "action.yml surfaces tau-path output" "$(cat "$act")" "tau-path"
+    contains "action.yml surfaces version output" "$(cat "$act")" "steps.install.outputs.version"
+    contains "action.yml uses bash for the run step" "$(cat "$act")" "shell: bash"
+
+    if python3 -c 'import yaml' 2>/dev/null; then
+      python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$act" 2>/dev/null
+      ok "action.yml parses as YAML" "$?" 0
+    else
+      note "release: skipping action.yml YAML parse (PyYAML unavailable)"
+    fi
+  fi
+
+  # ── asset-name contract between workflow and installer ──
+  contains "installer emits workflow-style asset names" "$(cat "$inst")" 'tau-$PLATFORM.tar.gz'
+
+  # ── fail-closed checksum contract (task #161) ──
+  contains "installer documents TAU_SKIP_CHECKSUM" "$(cat "$inst")" "TAU_SKIP_CHECKSUM"
+  contains "installer fail-closes on missing manifest" "$(cat "$inst")" "refusing to install an unverified binary"
+  contains "installer reports asset absent from manifest" "$(cat "$inst")" "not listed in \$SUMS"
+
+  # ── offline end-to-end install via file:// (needs a built binary) ──
+  # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
+  # install through install.sh against TAU_BASE_URL=file://…, run the binary.
+  if [ -x "$ROOT/zig-out/bin/tau" ]; then
+    local asset_os asset_arch
+    case "$(uname -s)" in
+      Linux)  asset_os=linux ;;
+      Darwin) asset_os=macos ;;
+      *)      asset_os="" ;;
+    esac
+    asset_arch="$(uname -m)"
+    case "$asset_arch" in
+      amd64) asset_arch=x86_64 ;;
+      arm64) asset_arch=aarch64 ;;
+      x86_64|aarch64) ;;
+      *) asset_arch="" ;;
+    esac
+
+    if [ -n "$asset_os" ] && [ -n "$asset_arch" ]; then
+      local e2e asset
+      e2e="$(mktemp -d)"
+      asset="tau-$asset_os-$asset_arch.tar.gz"
+      mkdir -p "$e2e/srv/latest/download"
+      tar -czf "$e2e/srv/latest/download/$asset" -C "$ROOT/zig-out/bin" tau
+      (cd "$e2e/srv/latest/download" && \
+        { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
+
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin" 2>&1); rc=$?
+      ok "e2e file:// install exit" "$rc" 0
+      contains "e2e install reports dest" "$out" "installed tau -> $e2e/bin/tau"
+      [ -x "$e2e/bin/tau" ]; ok "e2e installed binary is executable" "$?" 0
+
+      out=$("$e2e/bin/tau" --version 2>&1); rc=$?
+      ok "e2e installed tau --version exit" "$rc" 0
+      contains "e2e tau --version shape" "$out" "tau "
+      out=$("$e2e/bin/tau" --help 2>&1); rc=$?
+      ok "e2e installed tau --help exit" "$rc" 0
+      contains "e2e tau --help shows usage" "$out" "Usage:"
+
+      # corrupted checksum must abort the install
+      printf '%064d  %s\n' 0 "$asset" > "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin2" 2>&1); rc=$?
+      ok "e2e rejects checksum mismatch" "$rc" 1
+      contains "e2e checksum failure message" "$out" "checksum verification failed"
+
+      # asset absent from the manifest must abort (fail closed)
+      printf '%064d  %s\n' 0 "tau-other-thing.tar.gz" > "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin3" 2>&1); rc=$?
+      ok "e2e rejects asset missing from manifest" "$rc" 1
+      contains "e2e manifest-miss message" "$out" "not listed in SHA256SUMS.txt"
+
+      # no manifest at all must abort (an attacker could strip it to hide tampering)
+      rm -f "$e2e/srv/latest/download/SHA256SUMS.txt"
+      out=$(TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin4" 2>&1); rc=$?
+      ok "e2e rejects missing checksum manifest" "$rc" 1
+      contains "e2e missing-manifest message" "$out" "unverified binary"
+
+      # documented opt-out: bypass installs anyway, with a loud warning
+      out=$(TAU_SKIP_CHECKSUM=1 TAU_BASE_URL="file://$e2e/srv" "$inst" --dir "$e2e/bin5" 2>&1); rc=$?
+      ok "e2e TAU_SKIP_CHECKSUM bypass exit" "$rc" 0
+      contains "e2e skip-checksum warns" "$out" "TAU_SKIP_CHECKSUM=1"
+      [ -x "$e2e/bin5/tau" ]; ok "e2e skip-checksum installed binary" "$?" 0
+
+      rm -rf "$e2e"
+    else
+      note "release: skipping e2e install (unsupported host platform)"
+    fi
+  else
+    note "release: skipping e2e install (no zig-out/bin/tau build present)"
+  fi
+
+  # ── offline end-to-end install.ps1 via file:// (needs pwsh + python3) ──
+  # Stages a stand-in tau.exe zip + SHA256SUMS.txt, installs through
+  # install.ps1 against TAU_BASE_URL=file://…, and exercises the same
+  # fail-closed checksum contract as the install.sh e2e above. A real Windows
+  # binary run is covered by the release workflow's windows-latest leg.
+  if command -v pwsh >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    local we2e
+    we2e="$(mktemp -d)"
+    mkdir -p "$we2e/srv/latest/download" "$we2e/stage"
+    printf 'not a real exe\n' > "$we2e/stage/tau.exe"
+    (cd "$we2e/stage" && python3 -m zipfile -c "$we2e/srv/latest/download/tau-windows-x86_64.zip" tau.exe)
+    (cd "$we2e/srv/latest/download" && \
+      { sha256sum tau-windows-x86_64.zip 2>/dev/null || shasum -a 256 tau-windows-x86_64.zip; } > SHA256SUMS.txt)
+
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin" 2>&1); rc=$?
+    ok "e2e ps1 file:// install exit" "$rc" 0
+    contains "e2e ps1 checksum verified" "$out" "checksum verified against SHA256SUMS.txt"
+    [ -f "$we2e/bin/tau.exe" ]; ok "e2e ps1 installed tau.exe" "$?" 0
+
+    # corrupted checksum must abort the install
+    printf '%064d  %s\n' 0 tau-windows-x86_64.zip > "$we2e/srv/latest/download/SHA256SUMS.txt"
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin2" 2>&1); rc=$?
+    ok "e2e ps1 rejects checksum mismatch" "$rc" 1
+    contains "e2e ps1 checksum failure message" "$out" "checksum verification failed"
+
+    # asset absent from the manifest must abort (fail closed)
+    printf '%064d  %s\n' 0 tau-other-thing.zip > "$we2e/srv/latest/download/SHA256SUMS.txt"
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin3" 2>&1); rc=$?
+    ok "e2e ps1 rejects asset missing from manifest" "$rc" 1
+    contains "e2e ps1 manifest-miss message" "$out" "not listed in SHA256SUMS.txt"
+
+    # no manifest at all must abort
+    rm -f "$we2e/srv/latest/download/SHA256SUMS.txt"
+    out=$(TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin4" 2>&1); rc=$?
+    ok "e2e ps1 rejects missing checksum manifest" "$rc" 1
+    contains "e2e ps1 missing-manifest message" "$out" "unverified binary"
+
+    # documented opt-out: bypass installs anyway, with a loud warning
+    out=$(TAU_SKIP_CHECKSUM=1 TAU_BASE_URL="file://$we2e/srv" pwsh -NoProfile -File "$ps1" -Dir "$we2e/bin5" 2>&1); rc=$?
+    ok "e2e ps1 TAU_SKIP_CHECKSUM bypass exit" "$rc" 0
+    contains "e2e ps1 skip-checksum warns" "$out" "TAU_SKIP_CHECKSUM=1"
+    [ -f "$we2e/bin5/tau.exe" ]; ok "e2e ps1 skip-checksum installed tau.exe" "$?" 0
+
+    rm -rf "$we2e"
+  else
+    note "release: skipping install.ps1 e2e (pwsh or python3 unavailable)"
+  fi
+}
+
+# Group: first-run e2e — clean-environment install → setup → selftest contract.
+# Pins scripts/e2e-first-run.{sh,ps1} and the ci.yml first-run job wiring, then
+# runs the POSIX driver end-to-end against $BIN in a scratch HOME (offline:
+# the selftest stub is loopback-only, --offline skips live endpoint checks).
+test_group_first_run() {
+  local out rc fh
+  local shdrv="$ROOT/scripts/e2e-first-run.sh"
+  local psdrv="$ROOT/scripts/e2e-first-run.ps1"
+  local ci="$ROOT/.github/workflows/ci.yml"
+  local rwf="$ROOT/.github/workflows/release.yml"
+
+  note "first-run: e2e drivers + CI wiring"
+
+  # ── POSIX driver surface ──
+  [ -f "$shdrv" ];  ok "e2e-first-run.sh exists" "$?" 0
+  [ -x "$shdrv" ];  ok "e2e-first-run.sh is executable" "$?" 0
+  bash -n "$shdrv" 2>/dev/null; ok "e2e-first-run.sh passes bash -n" "$?" 0
+  contains "e2e driver runs unattended setup" "$(cat "$shdrv")" "setup --yes --offline"
+  contains "e2e driver runs selftest" "$(cat "$shdrv")" "doctor --offline --selftest"
+  contains "e2e driver scrubs provider keys" "$(cat "$shdrv")" "XIAOMI_API_KEY"
+  contains "e2e driver uses a scratch HOME" "$(cat "$shdrv")" 'HOME="$FH"'
+  contains "e2e driver asserts the selftest check row" "$(cat "$shdrv")" '"name":"selftest","status":"ok"'
+
+  # ── PowerShell driver surface ──
+  [ -f "$psdrv" ]; ok "e2e-first-run.ps1 exists" "$?" 0
+  contains "ps1 driver runs unattended setup" "$(cat "$psdrv")" "setup --yes --offline"
+  contains "ps1 driver runs selftest" "$(cat "$psdrv")" "doctor --offline --selftest"
+  contains "ps1 driver asserts the selftest check row" "$(cat "$psdrv")" '"name":"selftest","status":"ok"'
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -LiteralPath '$psdrv' -Raw)) | Out-Null" 2>/dev/null
+    ok "e2e-first-run.ps1 parses under pwsh" "$?" 0
+  else
+    note "first-run: skipping ps1 parse check (pwsh unavailable)"
+  fi
+
+  # ── ci.yml wiring (drift guards for the first-run job) ──
+  [ -f "$ci" ]; ok "ci.yml exists" "$?" 0
+  contains "ci has a first-run job" "$(cat "$ci")" "first-run:"
+  contains "ci POSIX leg stages latest/download" "$(cat "$ci")" "srv/latest/download"
+  contains "ci POSIX leg installs via install.sh" "$(cat "$ci")" "sh ./install.sh --dir"
+  contains "ci POSIX leg uses file:// TAU_BASE_URL" "$(cat "$ci")" 'TAU_BASE_URL="file://'
+  contains "ci POSIX leg runs the e2e driver" "$(cat "$ci")" "e2e-first-run.sh"
+  contains "ci windows leg installs via install.ps1" "$(cat "$ci")" "./install.ps1 -Dir"
+  contains "ci windows leg stages via file://" "$(cat "$ci")" "file:///"
+  contains "ci windows leg runs the ps1 driver" "$(cat "$ci")" "e2e-first-run.ps1"
+
+  # ── release workflow self-verifies shipped artifacts too ──
+  [ -f "$rwf" ]; ok "release.yml exists" "$?" 0
+  contains "release smoke asserts the selftest check row" "$(cat "$rwf")" '"name":"selftest","status":"ok"'
+
+  # ── end-to-end: run the POSIX driver against $BIN ──
+  if [ -x "$BIN" ]; then
+    fh="$(mktemp -d)"
+    out=$("$shdrv" "$BIN" "$fh/home" 2>&1); rc=$?
+    ok "e2e-first-run.sh exit" "$rc" 0
+    contains "e2e-first-run reports PASS" "$out" "e2e-first-run: PASS"
+    contains "e2e scaffolded config via setup --yes" "$out" "setup --yes --offline ok"
+    contains "e2e keyless selftest reported ok" "$out" "credential-free doctor --selftest reports ok"
+    rm -rf "$fh"
+  else
+    skip_test "e2e-first-run end-to-end" "no built tau binary at $BIN"
   fi
 }
 

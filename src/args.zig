@@ -3,7 +3,7 @@ const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -30,6 +30,29 @@ fn splitCsv(arena: std.mem.Allocator, s: []const u8) ![]const []const u8 {
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
+}
+
+/// `tau setup --shell` / `TAU_SETUP_SHELL` accepted values.
+fn validSetupShell(s: []const u8) bool {
+    return eq(s, "bash") or eq(s, "zsh") or eq(s, "fish") or eq(s, "pwsh") or
+        eq(s, "powershell") or eq(s, "all");
+}
+
+/// `tau setup --client` / `TAU_SETUP_CLIENT` accepted values.
+fn validSetupClient(s: []const u8) bool {
+    return eq(s, "zed") or eq(s, "nvim") or eq(s, "vscode") or
+        eq(s, "jetbrains") or eq(s, "code") or eq(s, "all");
+}
+
+/// Interpret an env var as a boolean: "1", "true", "yes", "on"
+/// (case-insensitive) are true; unset, empty, "0", "false", "no", "off" —
+/// and anything else — are false, so `VAR=0` never surprises.
+fn envTruthy(v: ?[]const u8) bool {
+    const s = v orelse return false;
+    for ([_][]const u8{ "1", "true", "yes", "on" }) |t| {
+        if (std.ascii.eqlIgnoreCase(s, t)) return true;
+    }
+    return false;
 }
 
 /// Resolve `cfg.provider`/`endpoint`/`model` and `context_window` from CLI
@@ -80,22 +103,18 @@ fn resolveProviderAndModel(
     return null;
 }
 
-/// Parse argv into an Action + Config. All retained strings are allocated in
+/// Parse argv into an Action + Config. `argv` is the full argument vector
+/// (argv[0] included, skipped here). All retained strings are allocated in
 /// `arena` (freed automatically at process exit, so no leak bookkeeping). `io`
 /// is used to read `@file` arguments.
 pub fn parse(
     io: std.Io,
     arena: std.mem.Allocator,
-    args: std.process.Args,
+    argv_full: []const []const u8,
     env: *std.process.Environ.Map,
     base: Config,
 ) !Parsed {
-    var it = try std.process.Args.Iterator.initAllocator(args, arena);
-    _ = it.next(); // skip argv[0]
-
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
-    const argv = argv_list.items;
+    const argv = if (argv_full.len > 0) argv_full[1..] else argv_full; // skip argv[0]
 
     // Fleet-subcommand scratch state (declared up here so the fleet subcommand
     // block above can write into them before the generic flag loop runs).
@@ -135,6 +154,100 @@ pub fn parse(
         return .{ .action = .models, .config = base };
     }
 
+    // `tau version [--verbose] [--mode text|json]` — command form of
+    // -v/--version. Bare output is `tau 0.4.0` either way; --verbose adds
+    // build metadata (commit, target triple, build date, zig version) as a
+    // JSON object, or key: value lines under --mode text.
+    if (argv.len > 0 and eq(argv[0], "version")) {
+        var vcfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--verbose")) {
+                vcfg.version_verbose = true;
+            } else if (eq(a, "--mode")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const v = argv[j];
+                if (eq(v, "text")) {
+                    vcfg.mode = .text;
+                } else if (eq(v, "json")) {
+                    vcfg.mode = .json;
+                } else {
+                    return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
+                }
+            } else return errResult(arena, "unknown version argument: {s}", .{a});
+        }
+        return .{ .action = .version, .config = vcfg };
+    }
+
+    // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
+    // [--probe] [--selftest] [--fix] [--yes] [--shell sh] [--json] [--report]`
+    // — setup diagnostics; a command, not a prompt. An unknown provider is
+    // carried into the report as a failed check instead of exiting 80. --fix
+    // proposes remediations, --yes applies them without prompting
+    // (non-interactive use). --probe live-verifies connectivity and
+    // credentials for every provider in the registry (per-provider pass/fail
+    // rows). --selftest runs a credential-free end-to-end session against a
+    // loopback stub provider (self-spawned child; no real keys or network).
+    // --json streams NDJSON check/fix events instead of the single-object
+    // report; --report renders a redacted Markdown bundle for bug reports
+    // (--json and --report are mutually exclusive).
+    if (argv.len > 0 and eq(argv[0], "doctor")) {
+        var dcfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                dcfg.api_key = argv[j];
+            } else if (eq(a, "--offline")) {
+                dcfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                dcfg.doctor_deep = true;
+            } else if (eq(a, "--probe")) {
+                dcfg.doctor_probe = true;
+            } else if (eq(a, "--selftest")) {
+                dcfg.doctor_selftest = true;
+            } else if (eq(a, "--fix")) {
+                dcfg.doctor_fix = true;
+            } else if (eq(a, "--yes") or eq(a, "-y")) {
+                // --yes implies --fix (nothing else to approve).
+                dcfg.doctor_fix = true;
+                dcfg.doctor_yes = true;
+            } else if (eq(a, "--json")) {
+                dcfg.doctor_json = true;
+            } else if (eq(a, "--report")) {
+                dcfg.doctor_report = true;
+            } else if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!eq(s, "bash") and !eq(s, "zsh") and !eq(s, "fish") and !eq(s, "pwsh") and
+                    !eq(s, "powershell") and !eq(s, "all"))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                dcfg.setup_shell = s;
+            } else return errResult(arena, "unknown doctor argument: {s}", .{a});
+        }
+        if (dcfg.doctor_report and dcfg.doctor_json)
+            return errResult(arena, "--report and --json are mutually exclusive", .{});
+        if (try resolveProviderAndModel(&dcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            dcfg.doctor_bad_provider = bad;
+        }
+        return .{ .action = .doctor, .config = dcfg };
+    }
+
     // `tau guide [--human]` — embedded operator manual (cli-guide-spec, https://cli-specs.intrane.fr/).
     // JSON to stdout by default; `--human` renders the same content as markdown. Command, not a prompt.
     if (argv.len > 0 and eq(argv[0], "guide")) {
@@ -156,6 +269,115 @@ pub fn parse(
             return errResult(arena, "invalid skills subcommand (want list|search|load): {s}", .{argv[1]});
         }
         return .{ .action = .skills, .config = scfg };
+    }
+
+    // `tau init [--force] [--stdout] [--provider <name>]` — write a commented
+    // starter ~/.config/tau/config.json seeded from detected provider env keys.
+    if (argv.len > 0 and eq(argv[0], "init")) {
+        var icfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--force")) {
+                icfg.init_force = true;
+            } else if (eq(a, "--stdout")) {
+                icfg.init_stdout = true;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                if (cfgmod.findProvider(argv[j]) == null) return unknownProviderErr(arena, argv[j]);
+                icfg.init_provider = argv[j];
+            } else return errResult(arena, "unknown init argument: {s}", .{a});
+        }
+        return .{ .action = .init, .config = icfg };
+    }
+
+    // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
+    // [--api-key K] [--offline] [--deep] [--client <zed|nvim|vscode|jetbrains|all>]
+    // [--yes|-y] [--non-interactive]`
+    // — one-shot onboarding: scaffold the config (init), install shell
+    // completions, write/detect editor ACP client config, embed a doctor
+    // health report.
+    // A command, not a prompt; an unknown provider rides into the doctor step
+    // as a failed check (same convention as `tau doctor`).
+    // Unattended use (devcontainers, dotfiles scripts, CI): --yes and
+    // --non-interactive declare the contract explicitly — setup never prompts
+    // or reads stdin either way — and TAU_YES / TAU_NONINTERACTIVE /
+    // TAU_SETUP_SHELL / TAU_SETUP_CLIENT are env equivalents (flag > env >
+    // detect). CI is NOT auto-detected: scripts opt in, no surprise behavior.
+    if (argv.len > 0 and eq(argv[0], "setup")) {
+        var scfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!validSetupShell(s))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                scfg.setup_shell = s;
+            } else if (eq(a, "--client")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const c = argv[j];
+                if (!validSetupClient(c))
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|vscode|jetbrains|all)", .{c});
+                scfg.setup_client = c;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                scfg.api_key = argv[j];
+            } else if (eq(a, "--offline")) {
+                scfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                scfg.doctor_deep = true;
+            } else if (eq(a, "--yes") or eq(a, "-y")) {
+                scfg.setup_yes = true;
+            } else if (eq(a, "--non-interactive")) {
+                scfg.setup_non_interactive = true;
+            } else return errResult(arena, "unknown setup argument: {s}", .{a});
+        }
+        // Env equivalents so dotfiles/devcontainers configure setup without
+        // argv. Flag wins over env; an env value is only validated when it
+        // would actually apply, and invalid values fail like a bad flag.
+        if (scfg.setup_shell == null) {
+            if (env.get("TAU_SETUP_SHELL")) |s| {
+                if (s.len > 0) {
+                    if (!validSetupShell(s))
+                        return errResult(arena, "invalid TAU_SETUP_SHELL: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                    scfg.setup_shell = s;
+                }
+            }
+        }
+        if (scfg.setup_client == null) {
+            if (env.get("TAU_SETUP_CLIENT")) |c| {
+                if (c.len > 0) {
+                    if (!validSetupClient(c))
+                        return errResult(arena, "invalid TAU_SETUP_CLIENT: {s} (want zed|nvim|vscode|jetbrains|all)", .{c});
+                    scfg.setup_client = c;
+                }
+            }
+        }
+        if (envTruthy(env.get("TAU_YES"))) scfg.setup_yes = true;
+        if (envTruthy(env.get("TAU_NONINTERACTIVE"))) scfg.setup_non_interactive = true;
+        if (try resolveProviderAndModel(&scfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            scfg.doctor_bad_provider = bad;
+        }
+        // Seed the scaffold when --provider names a known provider;
+        // pickProvider ignores unknown names (doctor reports that failure).
+        scfg.init_provider = provider_opt;
+        return .{ .action = .setup, .config = scfg };
     }
 
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
@@ -496,20 +718,26 @@ fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytyp
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 //
-// `parse` consumes a `std.process.Args` (the platform argv vector) and a
-// `std.process.Environ.Map`. On the test host both are constructed directly:
-// `Args.vector` is just a `[]const [*:0]const u8`, so an array of string
-// literals (with a dummy argv[0], which `parse` skips) drives the parser. The
-// env map is left empty — env-key resolution happens later in main, not here.
+// `parse` consumes a plain argv slice (argv[0] included) and a
+// `std.process.Environ.Map`, so tests drive it with arrays of string literals
+// (a dummy argv[0], which `parse` skips) on every platform. The env map is
+// left empty by default — env-key resolution happens later in main, except
+// for the setup/env overrides tested via parseArgvEnv.
 
 const provider_mod = @import("llm/provider.zig");
 
 /// Run `parse` over an explicit argv (caller supplies argv[0]). All retained
 /// strings land in `arena`, freed together by the caller's arena.deinit().
-fn parseArgv(arena: std.mem.Allocator, argv: []const [*:0]const u8, base: Config) !Parsed {
+fn parseArgv(arena: std.mem.Allocator, argv: []const []const u8, base: Config) !Parsed {
+    return parseArgvEnv(arena, argv, &.{}, base);
+}
+
+/// Like parseArgv but seeds the environment with the given key=value pairs —
+/// for the setup env fallbacks (TAU_SETUP_*, TAU_YES, TAU_NONINTERACTIVE).
+fn parseArgvEnv(arena: std.mem.Allocator, argv: []const []const u8, pairs: []const [2][]const u8, base: Config) !Parsed {
     var env = std.process.Environ.Map.init(arena);
-    const args: std.process.Args = .{ .vector = argv };
-    return parse(std.testing.io, arena, args, &env, base);
+    for (pairs) |kv| try env.put(kv[0], kv[1]);
+    return parse(std.testing.io, arena, argv, &env, base);
 }
 
 test "parse: bare positional becomes a run prompt" {
@@ -888,6 +1116,36 @@ test "parse: skills subcommand validation" {
     try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): frob", bad.err_msg.?);
 }
 
+test "parse: init subcommand and validation" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "init" }, .{});
+    try std.testing.expectEqual(Action.init, bare.action);
+    try std.testing.expect(!bare.config.init_force);
+    try std.testing.expect(!bare.config.init_stdout);
+    try std.testing.expectEqual(@as(?[]const u8, null), bare.config.init_provider);
+
+    const full = try parseArgv(a, &.{ "tau", "init", "--force", "--stdout", "--provider", "openai" }, .{});
+    try std.testing.expectEqual(Action.init, full.action);
+    try std.testing.expect(full.config.init_force);
+    try std.testing.expect(full.config.init_stdout);
+    try std.testing.expectEqualStrings("openai", full.config.init_provider.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "init", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown init argument: --bogus", bad.err_msg.?);
+
+    const badp = try parseArgv(a, &.{ "tau", "init", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.err, badp.action);
+    try std.testing.expect(std.mem.indexOf(u8, badp.err_msg.?, "unknown provider 'acme'") != null);
+
+    const missingv = try parseArgv(a, &.{ "tau", "init", "--provider" }, .{});
+    try std.testing.expectEqual(Action.err, missingv.action);
+    try std.testing.expectEqualStrings("missing value for --provider", missingv.err_msg.?);
+}
+
 test "parse: fleet run resolves provider and captures goal" {
     var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer ar.deinit();
@@ -900,6 +1158,186 @@ test "parse: fleet run resolves provider and captures goal" {
     try std.testing.expect(!p.config.fleet_parallel);
     // Provider resolution happens inline for the fleet early-return path.
     try std.testing.expectEqualStrings(provider_mod.providers[0].endpoint, p.config.endpoint);
+}
+
+// ── `tau doctor` ────────────────────────────────────────────────────────────
+
+test "parse: doctor selects the doctor action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(!p.config.doctor_offline);
+    try std.testing.expect(!p.config.doctor_deep);
+    try std.testing.expect(!p.config.doctor_probe);
+    try std.testing.expect(!p.config.doctor_selftest);
+    try std.testing.expect(!p.config.doctor_json);
+    try std.testing.expect(!p.config.doctor_report);
+    try std.testing.expect(p.config.doctor_bad_provider == null);
+    // Default provider resolved like a normal run.
+    try std.testing.expectEqualStrings(provider_mod.providers[0].name, p.config.provider);
+}
+
+test "parse: doctor accepts --offline/--deep and provider/model/api-key overrides" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "openai", "--offline", "--deep" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_offline);
+    try std.testing.expect(p.config.doctor_deep);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(provider_mod.findProvider("openai").?.default_model, p.config.model);
+
+    // --model provider/id shorthand resolves provider + model.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--model", "deepseek/deepseek-reasoner", "--api-key", "sk-x" }, .{});
+    try std.testing.expectEqualStrings("deepseek", q.config.provider);
+    try std.testing.expectEqualStrings("deepseek-reasoner", q.config.model);
+    try std.testing.expectEqualStrings("sk-x", q.config.api_key.?);
+}
+
+test "parse: doctor rejects unknown arguments and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "doctor", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown doctor argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "doctor", "--provider" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --provider", missing_val.err_msg.?);
+}
+
+test "parse: doctor --report sets the flag; --report + --json is invalid" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--report" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_report);
+    try std.testing.expect(!p.config.doctor_json);
+
+    const both = try parseArgv(a, &.{ "tau", "doctor", "--report", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, both.action);
+    try std.testing.expectEqualStrings("--report and --json are mutually exclusive", both.err_msg.?);
+
+    const both_rev = try parseArgv(a, &.{ "tau", "doctor", "--json", "--report" }, .{});
+    try std.testing.expectEqual(Action.err, both_rev.action);
+}
+
+test "parse: doctor --probe sets the flag and composes with other doctor flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--probe" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_probe);
+
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--probe", "--json", "--provider", "openai" }, .{});
+    try std.testing.expect(q.config.doctor_probe);
+    try std.testing.expect(q.config.doctor_json);
+    try std.testing.expectEqualStrings("openai", q.config.provider);
+}
+
+test "parse: doctor --selftest sets the flag and composes with other doctor flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--selftest" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_selftest);
+    try std.testing.expect(!p.config.doctor_probe);
+
+    // --selftest composes with --json/--offline/--provider like any check flag.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--selftest", "--json", "--provider", "openai" }, .{});
+    try std.testing.expect(q.config.doctor_selftest);
+    try std.testing.expect(q.config.doctor_json);
+    try std.testing.expectEqualStrings("openai", q.config.provider);
+}
+
+test "parse: doctor --json selects NDJSON event output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--json" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_json);
+
+    // Off by default and composable with --fix/--yes.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--fix" }, .{});
+    try std.testing.expect(!q.config.doctor_json);
+    const r = try parseArgv(a, &.{ "tau", "doctor", "--json", "--fix", "--yes" }, .{});
+    try std.testing.expect(r.config.doctor_json);
+    try std.testing.expect(r.config.doctor_fix);
+    try std.testing.expect(r.config.doctor_yes);
+}
+
+test "parse: doctor carries an unknown provider as a failed check, not exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // From a flag override...
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expectEqualStrings("acme", p.config.doctor_bad_provider.?);
+
+    // ...and from a config-file provider with no flag override.
+    const q = try parseArgv(a, &.{ "tau", "doctor" }, .{ .provider = "acme" });
+    try std.testing.expectEqual(Action.doctor, q.action);
+    try std.testing.expectEqualStrings("acme", q.config.doctor_bad_provider.?);
+}
+
+test "parse: version subcommand selects the version action" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(!p.config.version_verbose);
+}
+
+test "parse: version --verbose/--mode select build-metadata output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version", "--verbose" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(p.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    const q = try parseArgv(a, &.{ "tau", "version", "--verbose", "--mode", "text" }, .{});
+    try std.testing.expect(q.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, q.config.mode);
+}
+
+test "parse: version rejects unknown arguments and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "version", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown version argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "version", "--mode" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --mode", missing_val.err_msg.?);
+
+    const bad_mode = try parseArgv(a, &.{ "tau", "version", "--mode", "yaml" }, .{});
+    try std.testing.expectEqual(Action.err, bad_mode.action);
+    try std.testing.expectEqualStrings("invalid --mode (want text|json): yaml", bad_mode.err_msg.?);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {
@@ -986,6 +1424,108 @@ test "parse: /goal prompt switches into goal mode and disables streaming" {
     try std.testing.expectEqualStrings("build the parser", p.config.goal.?);
     // `/goal --tokens N` budgets, and a .set goal forces non-streaming.
     try std.testing.expect(!p.config.stream);
+}
+
+// ── `tau setup` unattended flags + env fallbacks ──────────────────────────
+
+test "parse: setup --yes/-y/--non-interactive set the unattended flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expectEqual(Action.setup, bare.action);
+    try std.testing.expect(!bare.config.setup_yes);
+    try std.testing.expect(!bare.config.setup_non_interactive);
+
+    const y = try parseArgv(a, &.{ "tau", "setup", "--yes" }, .{});
+    try std.testing.expect(y.config.setup_yes);
+    const sy = try parseArgv(a, &.{ "tau", "setup", "-y" }, .{});
+    try std.testing.expect(sy.config.setup_yes);
+    const ni = try parseArgv(a, &.{ "tau", "setup", "--non-interactive" }, .{});
+    try std.testing.expect(ni.config.setup_non_interactive);
+    try std.testing.expect(!ni.config.setup_yes);
+}
+
+test "parse: setup TAU_YES/TAU_NONINTERACTIVE env enable unattended flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const y = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_YES", "1" },
+    }, .{});
+    try std.testing.expect(y.config.setup_yes);
+
+    const ni = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_NONINTERACTIVE", "true" },
+    }, .{});
+    try std.testing.expect(ni.config.setup_non_interactive);
+
+    // Falsy values never enable — "0"/"false"/empty are explicit nos.
+    for ([_][]const u8{ "0", "false", "", "nah" }) |v| {
+        const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+            .{ "TAU_YES", v },
+            .{ "TAU_NONINTERACTIVE", v },
+        }, .{});
+        try std.testing.expect(!p.config.setup_yes);
+        try std.testing.expect(!p.config.setup_non_interactive);
+    }
+}
+
+test "parse: setup TAU_SETUP_SHELL/TAU_SETUP_CLIENT fill unset flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "fish" },
+        .{ "TAU_SETUP_CLIENT", "zed" },
+    }, .{});
+    try std.testing.expectEqual(Action.setup, p.action);
+    try std.testing.expectEqualStrings("fish", p.config.setup_shell.?);
+    try std.testing.expectEqualStrings("zed", p.config.setup_client.?);
+
+    // Flag beats env.
+    const q = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "zsh", "--client", "nvim" }, &.{
+        .{ "TAU_SETUP_SHELL", "fish" },
+        .{ "TAU_SETUP_CLIENT", "zed" },
+    }, .{});
+    try std.testing.expectEqualStrings("zsh", q.config.setup_shell.?);
+    try std.testing.expectEqualStrings("nvim", q.config.setup_client.?);
+
+    // Empty env values are ignored entirely.
+    const e = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "" },
+        .{ "TAU_SETUP_CLIENT", "" },
+    }, .{});
+    try std.testing.expect(e.config.setup_shell == null);
+    try std.testing.expect(e.config.setup_client == null);
+}
+
+test "parse: setup invalid TAU_SETUP_* env values fail like a bad flag" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const s = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "tcsh" },
+    }, .{});
+    try std.testing.expectEqual(Action.err, s.action);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_SHELL: tcsh (want bash|zsh|fish|pwsh|all)", s.err_msg.?);
+
+    const c = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_CLIENT", "emacs" },
+    }, .{});
+    try std.testing.expectEqual(Action.err, c.action);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_CLIENT: emacs (want zed|nvim|vscode|jetbrains|all)", c.err_msg.?);
+
+    // An explicit flag shadows a bad env value — flag > env.
+    const okp = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "bash" }, &.{
+        .{ "TAU_SETUP_SHELL", "tcsh" },
+    }, .{});
+    try std.testing.expectEqual(Action.setup, okp.action);
+    try std.testing.expectEqualStrings("bash", okp.config.setup_shell.?);
 }
 /// Build "unknown provider 'X' — valid providers: a, b, c (run 'tau models')" error.
 fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {
