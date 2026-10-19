@@ -91,6 +91,7 @@ ALL_TEST_GROUPS=(
   "upgrade:test_group_upgrade"
   "errors-doc:test_group_errors_doc"
   "explain:test_group_explain"
+  "golden-maintenance:test_group_golden_maintenance"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -2509,6 +2510,8 @@ _golden_env() {
   fi
   env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY \
       -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
+      -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
+      -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u BROWSER \
       HOME="$_GOLDEN_HOME" "$@"
 }
 
@@ -2854,6 +2857,71 @@ test_group_golden_help() {
   _completion_flag_golden zsh  completions/_tau
   _completion_flag_golden fish completions/tau.fish
   _completion_flag_golden ps1  completions/tau.ps1
+}
+
+# Group: golden snapshots for the maintenance commands (Issue #244)
+# Byte-locks the deterministic stdout/stderr of `tau explain`,
+# `tau version --check`, `tau bug`, and `tau upgrade` across success,
+# offline, and failure paths. Release/installer stubs live under
+# $_GOLDEN_HOME so the file:// URLs the commands echo normalize to <HOME>.
+# `tau bug`'s bundle-carrying output is intentionally NOT byte-pinned: the
+# issue URL percent-encodes the diagnostics bundle (build metadata, curl
+# version), so its bytes change every build — its structure, redaction, and
+# failure contract are covered by the `bug` group.
+# Regenerate after an intentional contract change:
+#   GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-maintenance
+test_group_golden_maintenance() {
+  GOLDEN_DIR="$ROOT/tests/golden"
+  _GOLDEN_BIN="$(realpath "$BIN" 2>/dev/null || printf '%s' "$BIN")"
+  _golden_fresh_home
+
+  # ── tau explain — rendered from src/errors.zig, fully offline ──
+  golden_check ex-catalog          0 "$BIN" explain
+  golden_check ex-code             0 "$BIN" explain 106
+  golden_check ex-type-tag         0 "$BIN" explain authfailed
+  golden_check ex-human            0 "$BIN" explain --human 105
+  golden_check ex-uncataloged      0 "$BIN" explain 42
+  golden_check ex-unknown-name     1 "$BIN" explain bogus
+  golden_check ex-code-zero        1 "$BIN" explain 0
+  golden_check ex-bad-flag        80 "$BIN" explain --nope
+
+  # ── tau version --check — file:// release stubs, no network ──
+  local stubs="$_GOLDEN_HOME/rel"
+  mkdir -p "$stubs"
+  printf '{"tag_name":"v99.9.9","name":"newer"}' > "$stubs/newer.json"
+  printf '{"tag_name":"v0.4.0"}' > "$stubs/same.json"
+  printf 'not json' > "$stubs/bad.json"
+
+  golden_check   vc-opt-out        0 env TAU_NO_UPDATE_CHECK=1 "$BIN" version --check
+  golden_check   vc-newer          0 env TAU_UPDATE_URL="file://$stubs/newer.json" "$BIN" version --check
+  golden_check   vc-same           0 env TAU_UPDATE_URL="file://$stubs/same.json" "$BIN" version --check
+  golden_check   vc-text           0 env TAU_UPDATE_URL="file://$stubs/newer.json" "$BIN" version --check --mode text
+  golden_check   vc-bad-payload    0 env TAU_UPDATE_URL="file://$stubs/bad.json" "$BIN" version --check
+  golden_check_n vc-missing        0 env TAU_UPDATE_URL="file://$stubs/missing.json" "$BIN" version --check
+
+  # ── tau bug — arg validation + the deterministic --no-report surface ──
+  golden_check   bug-bad-flag          80 "$BIN" bug --bogus
+  golden_check   bug-mutex             80 "$BIN" bug --out x.md --no-report
+  golden_check   bug-missing-value     80 "$BIN" bug --title
+  golden_check   bug-no-report          0 "$BIN" bug --offline --no-report
+  golden_check   bug-no-report-custom   0 "$BIN" bug --offline --no-report \
+    --title "crash on --deep" --labels "bug,triage" --body "it broke"
+
+  # ── tau upgrade — offline stubs; install dest pinned under <HOME> ──
+  golden_check   ug-bad-flag        80 "$BIN" upgrade --bogus
+  golden_check   ug-positional      80 "$BIN" upgrade now
+  golden_check   ug-dir-no-value    80 "$BIN" upgrade --dir
+  golden_check   ug-opt-out          1 env TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --yes
+  golden_check   ug-up-to-date       0 env TAU_UPDATE_URL="file://$stubs/same.json" "$BIN" upgrade
+  golden_check_n ug-lookup-failed    1 env TAU_UPDATE_URL="file://$stubs/missing.json" "$BIN" upgrade --yes
+  golden_check_n ug-unconfirmed      1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" \
+    sh -c '"$0" upgrade < /dev/null' "$BIN"
+  golden_check_n ug-dry-run          0 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --dry-run
+  golden_check_n ug-installer-failed 1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_INSTALL_URL="file://$stubs/no-such-install.sh" \
+    TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
 }
 
 # Group: generated docs/errors.md drift check

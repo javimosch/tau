@@ -2,6 +2,7 @@
 --api-key
 --append-system-prompt
 --auto-agents-md
+--body
 --check
 --client
 --compact-keep-recent
@@ -23,16 +24,20 @@
 --id
 --items
 --json
+--labels
 --load-agents-md
 --max-iterations
 --max-tokens
 --mode
 --model
 --no-compact
+--no-report
 --no-stream
 --no-tools
 --non-interactive
 --offline
+--open
+--out
 --parallel
 --print
 --probe
@@ -52,6 +57,7 @@
 --temperature
 --thinking
 --timeout-ms
+--title
 --tools
 --verbose
 --version

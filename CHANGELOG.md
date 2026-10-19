@@ -237,7 +237,10 @@ are backward compatible.
 - Golden/snapshot smoke groups: `golden-errors` byte-locks error envelopes and
   exit codes (#208); `golden-onboarding` byte-locks the first-run surface —
   `tau init`, `tau setup` (incl. `--client`), and `tau config edit` —
-  including generated file contents, with volatile paths normalized (#223)
+  including generated file contents, with volatile paths normalized (#223);
+  `golden-maintenance` byte-locks `tau explain`, `tau version --check`,
+  `tau bug`, and `tau upgrade` across success, offline, and failure paths
+  (#244)
 - Smoke suite: `--role critic` network check (#88), `--api-key` parsing (#89)
 - Fixed SIGABRT in `scanAgentsMd` bad-path test (#55); restored truncated
   `extractToolCalls` test (#69)

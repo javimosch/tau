@@ -1,0 +1,1 @@
+{"code":42,"type":"internal_error","recoverable":false,"cause":"an exit code outside the stable catalog was raised","hint":"re-run with --debug to write a diagnostic log, then file a bug report","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}

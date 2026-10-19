@@ -122,6 +122,17 @@ Diagnostics:
       --shell <name>            Completions shell: bash|zsh|fish|pwsh|all
                               (default: detect from $SHELL)
 
+  tau bug                     Build a pre-filled GitHub issue carrying the
+                              redacted doctor --report diagnostics bundle
+      --title <text>          Issue title (default: "Bug report")
+      --body <text>           Description placed above the bundle
+      --labels <csv>          Issue labels (default: bug; "" = none)
+      --open                  Open the issue URL in the system browser
+                              ($BROWSER, else open/xdg-open/rundll32)
+      --out <path>            Also write the bundle to a file
+      --no-report             Omit the diagnostics bundle
+      --offline/--deep        Passed through to the diagnostic sweep
+
 Config:
   tau config show [flags]       Print the resolved effective config as JSON
                               (config file + env + CLI flags merged; API keys redacted)
@@ -133,7 +144,6 @@ Config:
   tau config unset <key> [path] Remove a key from the config file
   tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
                               VISUAL > EDITOR > vi/notepad); validates on save
-
 
 Version:
   tau version                   Print the version (same as -v/--version)
@@ -155,6 +165,11 @@ Version:
 
 Models:
   tau models                    List available providers and models
+
+Error catalog (offline — no API key needed):
+  tau explain                   List the stable error catalog as JSON
+  tau explain <code|type>       Print an error's cause + remediation hint
+      --human                   ...as prose (e.g. `tau explain --human 106`)
 
 Guide (embedded operator manual — read once, drive with no external docs):
   tau guide                     Print the full guide as JSON (agent-readable)
