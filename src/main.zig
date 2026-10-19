@@ -1342,3 +1342,198 @@ test "authHint names provider env vars and the --api-key fallback" {
     // Unknown provider / no env keys -> bare fallback.
     try std.testing.expectEqualStrings("use --api-key <key>", authHint(a, "nope"));
 }
+
+// ── Command/flag surface ↔ help/completions drift (task #236) ─────────────
+// The registered surface is extracted from args.zig's own source — every
+// `eq(argv[0], "…")` is a registered subcommand and every `eq(…, "-…")` is a
+// registered flag — plus flag_specs. The checks below pin that surface
+// against help_text and the four embedded completion scripts, so adding a
+// flag or subcommand without updating --help or the shipped completions
+// fails the suite, and a stale token left in a completion script fails the
+// reverse check.
+
+const completion_script_sources = [_]struct { name: []const u8, src: []const u8 }{
+    .{ .name = "bash", .src = @import("completions").bash },
+    .{ .name = "zsh", .src = @import("completions").zsh },
+    .{ .name = "fish", .src = @import("completions").fish },
+    .{ .name = "pwsh", .src = @import("completions").pwsh },
+};
+const args_source = @embedFile("args.zig");
+
+fn isTokenChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '-' or c == '_';
+}
+
+/// Substring check with token boundaries, so "-t" does not match inside
+/// "-nt" or "--timeout-ms".
+fn containsToken(hay: []const u8, needle: []const u8) bool {
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, hay, pos, needle)) |i| {
+        const before_ok = i == 0 or !isTokenChar(hay[i - 1]);
+        const after = i + needle.len;
+        const after_ok = after >= hay.len or !isTokenChar(hay[after]);
+        if (before_ok and after_ok) return true;
+        pos = i + 1;
+    }
+    return false;
+}
+
+/// Iterate `eq(argv[0], "<sub>")` literals — the registered subcommands.
+fn nextSubcommand(pos: *usize) ?[]const u8 {
+    const needle = "eq(argv[0], \"";
+    const i = std.mem.indexOfPos(u8, args_source, pos.*, needle) orelse return null;
+    const start = i + needle.len;
+    const end = std.mem.indexOfPos(u8, args_source, start, "\"") orelse return null;
+    pos.* = end + 1;
+    return args_source[start..end];
+}
+
+/// Iterate `eq(<expr>, "<literal>")` where the literal starts with '-' — the
+/// registered flags (global and subcommand-scoped alike).
+fn nextFlagLiteral(pos: *usize) ?[]const u8 {
+    while (std.mem.indexOfPos(u8, args_source, pos.*, "eq(")) |i| {
+        const close = std.mem.indexOfPos(u8, args_source, i + 3, ")") orelse return null;
+        const q1 = std.mem.indexOfPos(u8, args_source, i + 3, "\"") orelse return null;
+        pos.* = i + 3;
+        if (q1 > close) continue;
+        const q2 = std.mem.indexOfPos(u8, args_source, q1 + 1, "\"") orelse return null;
+        pos.* = q2 + 1;
+        const lit = args_source[q1 + 1 .. q2];
+        if (lit.len > 1 and lit[0] == '-') return lit;
+    }
+    return null;
+}
+
+fn collectRegisteredFlags(gpa: std.mem.Allocator) !std.StringHashMap(void) {
+    var reg = std.StringHashMap(void).init(gpa);
+    var pos: usize = 0;
+    while (nextFlagLiteral(&pos)) |f| try reg.put(f, {});
+    for (flag_specs) |f| {
+        try reg.put(f.long, {});
+        if (f.short) |s| try reg.put(s, {});
+    }
+    return reg;
+}
+
+/// How each script spells a flag: bash/zsh/pwsh write the literal; fish
+/// writes `-l <name>` for longs and `-s <c>`/`-o <cc>` for shorts.
+fn scriptOffersFlag(shell: []const u8, src: []const u8, flag: []const u8, buf: []u8) bool {
+    if (!std.mem.eql(u8, shell, "fish")) return containsToken(src, flag);
+    const spelled = if (flag.len > 2 and flag[1] == '-')
+        std.fmt.bufPrint(buf, "-l {s}", .{flag[2..]}) catch return false
+    else if (flag.len == 2)
+        std.fmt.bufPrint(buf, "-s {s}", .{flag[1..]}) catch return false
+    else
+        std.fmt.bufPrint(buf, "-o {s}", .{flag[1..]}) catch return false;
+    return containsToken(src, spelled);
+}
+
+test "every registered subcommand appears in help_text and every completion script" {
+    var pos: usize = 0;
+    while (nextSubcommand(&pos)) |sub| {
+        var buf: [64]u8 = undefined;
+        const usage = std.fmt.bufPrint(&buf, "tau {s}", .{sub}) catch unreachable;
+        if (std.mem.indexOf(u8, help_text, usage) == null)
+            std.debug.print("help_text has no 'tau {s}' usage entry\n", .{sub});
+        try std.testing.expect(std.mem.indexOf(u8, help_text, usage) != null);
+        for (completion_script_sources) |s| {
+            if (!containsToken(s.src, sub))
+                std.debug.print("subcommand '{s}' missing from {s} completions\n", .{ sub, s.name });
+            try std.testing.expect(containsToken(s.src, sub));
+        }
+    }
+}
+
+test "every registered flag is offered by every completion script" {
+    const gpa = std.testing.allocator;
+    var reg = try collectRegisteredFlags(gpa);
+    defer reg.deinit();
+    var it = reg.keyIterator();
+    while (it.next()) |f| {
+        var buf: [64]u8 = undefined;
+        for (completion_script_sources) |s| {
+            if (!scriptOffersFlag(s.name, s.src, f.*, &buf))
+                std.debug.print("flag '{s}' not completed by {s} script\n", .{ f.*, s.name });
+            try std.testing.expect(scriptOffersFlag(s.name, s.src, f.*, &buf));
+        }
+    }
+}
+
+test "every --flag token in the completion scripts is a registered flag" {
+    const gpa = std.testing.allocator;
+    var reg = try collectRegisteredFlags(gpa);
+    defer reg.deinit();
+    for (completion_script_sources) |s| {
+        if (std.mem.eql(u8, s.name, "fish")) {
+            // Only `complete -c tau` lines define tau flags; `set -l` lines
+            // are ordinary variables and must not be scanned.
+            var lines = std.mem.splitScalar(u8, s.src, '\n');
+            while (lines.next()) |line| {
+                if (std.mem.indexOf(u8, line, "complete -c tau") == null) continue;
+                var off: usize = 0;
+                while (std.mem.indexOfPos(u8, line, off, " -l ")) |i| {
+                    const st = i + 4;
+                    var en = st;
+                    while (en < line.len and (std.ascii.isAlphanumeric(line[en]) or line[en] == '-')) en += 1;
+                    const flag = try std.fmt.allocPrint(gpa, "--{s}", .{line[st..en]});
+                    defer gpa.free(flag);
+                    if (!reg.contains(flag))
+                        std.debug.print("{s} completions offer unregistered flag '{s}'\n", .{ s.name, flag });
+                    try std.testing.expect(reg.contains(flag));
+                    off = en;
+                }
+            }
+        } else {
+            var pos: usize = 0;
+            while (std.mem.indexOfPos(u8, s.src, pos, "--")) |i| {
+                if (i + 2 >= s.src.len or !std.ascii.isAlphabetic(s.src[i + 2])) {
+                    pos = i + 2;
+                    continue;
+                }
+                var en = i + 2;
+                while (en < s.src.len and (std.ascii.isAlphanumeric(s.src[en]) or s.src[en] == '-')) en += 1;
+                const flag = s.src[i..en];
+                if (!reg.contains(flag))
+                    std.debug.print("{s} completions offer unregistered flag '{s}'\n", .{ s.name, flag });
+                try std.testing.expect(reg.contains(flag));
+                pos = en;
+            }
+        }
+    }
+}
+
+test "every documented 'tau <sub> <action>' in help_text is completable" {
+    var lines = std.mem.splitScalar(u8, help_text, '\n');
+    while (lines.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "  tau ")) continue;
+        const rest = line["  tau ".len..];
+        var en: usize = 0;
+        while (en < rest.len and std.ascii.isAlphabetic(rest[en])) en += 1;
+        const sub = rest[0..en];
+        if (sub.len == 0) continue; // e.g. `tau "…"` example lines
+        // The first word must be a real registered subcommand.
+        var sub_ok = false;
+        var sp: usize = 0;
+        while (nextSubcommand(&sp)) |s| {
+            if (std.mem.eql(u8, s, sub)) sub_ok = true;
+        }
+        if (!sub_ok)
+            std.debug.print("help_text documents unregistered subcommand '{s}'\n", .{sub});
+        try std.testing.expect(sub_ok);
+        // A second alpha word separated by exactly one space is a
+        // sub-subcommand the scripts should offer; wider gaps are the
+        // description column.
+        if (en >= rest.len or rest[en] != ' ' or en + 1 >= rest.len or
+            rest[en + 1] == ' ' or !std.ascii.isAlphabetic(rest[en + 1])) continue;
+        en += 1;
+        const w2_start = en;
+        while (en < rest.len and std.ascii.isAlphabetic(rest[en])) en += 1;
+        const action = rest[w2_start..en];
+        if (action.len == 0) continue;
+        for (completion_script_sources) |s| {
+            if (!containsToken(s.src, action))
+                std.debug.print("'{s}' action '{s}' not completable by {s} script\n", .{ sub, action, s.name });
+            try std.testing.expect(containsToken(s.src, action));
+        }
+    }
+}

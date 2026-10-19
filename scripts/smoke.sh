@@ -85,6 +85,7 @@ ALL_TEST_GROUPS=(
   "first-run:test_group_first_run"
   "golden-errors:test_group_golden_errors"
   "golden-onboarding:test_group_golden_onboarding"
+  "golden-help:test_group_golden_help"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -2127,6 +2128,8 @@ STUB
   capture r7 "${scrub[@]}" TAU_API_KEY=SMOKESECRET-777 TAU_DEBUG_LOG="$elog" "$BIN" --debug "/goal status"
   ok "debug: /goal status without session exits 80" "$r7_rc" 80
   contains "debug: literal envelope links debug_log" "$r7_err" '"debug_log":"'
+}
+
 # Group: golden error-contract snapshots (Issue #208)
 # Byte-locks the agent-facing failure contract: every deterministic error path
 # is run fully offline (API keys scrubbed, isolated HOME) and its exit status
@@ -2304,6 +2307,10 @@ _golden_norm() {
     -e "s|$_GOLDEN_HOME|<HOME>|g" \
     -e "s|$_GOLDEN_BIN|<TAU>|g" \
     -e 's|curl available: curl [0-9][0-9.]*|curl available: curl <VER>|g' \
+    -e 's|"commit":"[^"]*"|"commit":"<COMMIT>"|g' \
+    -e 's|"target":"[^"]*"|"target":"<TARGET>"|g' \
+    -e 's|"build_date":"[^"]*"|"build_date":"<DATE>"|g' \
+    -e 's|"zig":"[^"]*"|"zig":"<ZIG>"|g' \
     "$1"
 }
 
@@ -2444,6 +2451,52 @@ test_group_golden_onboarding() {
   golden_file    ob-config-edit-editor-fails.config "$_GOLDEN_HOME/.config/tau/config.json"
 
   golden_check_n ob-config-edit-no-home 80 env -u HOME "$BIN" config edit
+}
+
+# Group: golden help/completions surface snapshots (Issue #236)
+# Byte-locks `tau --help` and `tau --help-json` (the version field is
+# normalized to <VER> so releases don't churn the snapshot), plus the set of
+# --flags each shipped completion script offers, extracted into a sorted
+# one-per-line listing. Structural coverage — every registered flag and
+# subcommand must appear in help_text and all four scripts — is pinned by
+# unit tests in src/main.zig. Regenerate after an intentional change:
+#   GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-help
+
+# _completion_flag_golden <shell> <path-under-root> — extract the completed
+# long-flag set from a shipped completion script and byte-lock the listing.
+_completion_flag_golden() {
+  local shell="$1" script="$ROOT/$2" out
+  out="$(mktemp)"
+  register_temp_file "$out"
+  if [ "$shell" = "fish" ]; then
+    # fish spells long flags `-l name`; only `complete -c tau` lines define
+    # tau flags (`set -l` lines are ordinary variables).
+    grep '^complete -c tau' "$script" | grep -oE -- '-l [a-zA-Z][a-zA-Z-]*' \
+      | awk '{print "--"$2}' | sort -u > "$out"
+  else
+    grep -oE -- '--[a-zA-Z][a-zA-Z-]*' "$script" | sort -u > "$out"
+  fi
+  _golden_stream "completions-$shell.flags" "$out"
+}
+
+test_group_golden_help() {
+  GOLDEN_DIR="$ROOT/tests/golden"
+  golden_check help        0 "$BIN" --help
+  golden_check help-short  0 "$BIN" -h
+
+  local of ef rc
+  of="$(mktemp)"; ef="$(mktemp)"
+  register_temp_file "$of"; register_temp_file "$ef"
+  _golden_env "$BIN" --help-json >"$of" 2>"$ef"; rc=$?
+  sed -i 's/"version":"[^"]*"/"version":"<VER>"/' "$of"
+  ok "golden help-json exit" "$rc" 0
+  _golden_stream help-json.stdout "$of"
+  _golden_stream help-json.stderr "$ef"
+
+  _completion_flag_golden bash completions/tau.bash
+  _completion_flag_golden zsh  completions/_tau
+  _completion_flag_golden fish completions/tau.fish
+  _completion_flag_golden ps1  completions/tau.ps1
 }
 
 # Group: --bench regression guard

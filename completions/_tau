@@ -34,7 +34,7 @@ _tau() {
         '--system-prompt=[set (replace) system prompt]:prompt:'
         '--append-system-prompt=[append to system prompt (repeatable)]:prompt:'
         '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
-        '--exclude-tools=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
+        '(-xt --exclude-tools)'{-xt,--exclude-tools}'=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
         '(-nt --no-tools)'{-nt,--no-tools}'[disable all built-in tools]'
         '--temperature=[sampling temperature (0.0–2.0)]:float:'
         '--max-tokens=[maximum output tokens]:n:'

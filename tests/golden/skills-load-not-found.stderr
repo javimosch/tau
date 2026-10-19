@@ -1,1 +1,1 @@
-{"err":{"code":1,"type":"not_found","message":"skill not found: nosuchskillname","recoverable":false}}
+{"err":{"code":1,"type":"not_found","message":"skill not found: nosuchskillname","recoverable":false,"hint":"the message names what was not found — check the name/path and retry","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}

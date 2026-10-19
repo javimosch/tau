@@ -1,1 +1,1 @@
-{"err":{"code":82,"message":"fleet run requires --goal <text>"}}
+{"err":{"code":82,"type":"missing_required_field","message":"fleet run requires --goal <text>","recoverable":false,"hint":"the message names the missing input — supply it and retry","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}

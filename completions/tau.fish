@@ -18,7 +18,7 @@ function __tau_no_subcommand
     set -e tokens[1]
     for t in $tokens
         switch $t
-            case acp fleet skills models guide init doctor setup version
+            case acp fleet skills models guide init config doctor setup version
                 return 1
         end
     end
@@ -85,6 +85,7 @@ complete -c tau -n $top -f -a skills -d 'skills autodiscovery (list|search|load)
 complete -c tau -n $top -f -a models -d 'list available providers and models'
 complete -c tau -n $top -f -a guide -d 'print the embedded operator manual'
 complete -c tau -n $top -f -a init -d 'write a commented starter config'
+complete -c tau -n $top -f -a config -d 'inspect and edit the config file (show|validate|set|get|unset|edit)'
 complete -c tau -n $top -f -a doctor -d 'validate setup (config, provider, key, connectivity)'
 complete -c tau -n $top -f -a setup -d 'one-shot onboarding (init + completions + doctor)'
 complete -c tau -n $top -f -a version -d 'print version (--verbose adds build metadata)'
@@ -161,6 +162,17 @@ complete -c tau -n $skills -f -a search -d 'search skills by keyword'
 complete -c tau -n $skills -f -a load -d 'load a skill into the system context by name'
 
 complete -c tau -n '__tau_using_subcommand guide' -f -l human -d 'render the guide as markdown'
+
+# ── tau config ──────────────────────────────────────────────────────────────
+set -l config '__tau_using_subcommand config'
+complete -c tau -n $config -f -a show -d 'print the resolved effective config (keys redacted)'
+complete -c tau -n $config -f -a validate -d 'check a config file (CI/pre-commit)'
+complete -c tau -n $config -f -a set -d 'set a config key to a value'
+complete -c tau -n $config -f -a get -d 'print a config key value (secrets redacted)'
+complete -c tau -n $config -f -a unset -d 'remove a config key'
+complete -c tau -n $config -f -a edit -d 'open the config in $EDITOR (validates on save)'
+complete -c tau -n $config -f -l mode -x -a 'text json' -d 'output mode'
+complete -c tau -n $config -f -l raw -d 'print secret values unredacted (config get)'
 
 # ── tau init / tau doctor / tau setup ───────────────────────────────────────
 set -l init '__tau_using_subcommand init'

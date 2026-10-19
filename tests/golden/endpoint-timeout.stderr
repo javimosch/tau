@@ -1,1 +1,1 @@
-{"err":{"code":105,"type":"Timeout","message":"request failed","recoverable":false}}
+{"err":{"code":105,"type":"Timeout","message":"request failed","recoverable":false,"hint":"raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md"}}

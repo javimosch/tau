@@ -118,7 +118,7 @@ _tau_complete() {
             ;;
 
         config)
-            COMPREPLY=($(compgen -W "show validate set get unset edit" -- "$cur"))
+            COMPREPLY=($(compgen -W "show validate set get unset edit --mode --raw" -- "$cur"))
             ;;
 
         init)
@@ -126,7 +126,7 @@ _tau_complete() {
             ;;
 
         doctor)
-            COMPREPLY=($(compgen -W "--offline --deep --probe --selftest --fix --yes --json --report --shell --provider --model --api-key" -- "$cur"))
+            COMPREPLY=($(compgen -W "--offline --deep --probe --selftest --fix --yes -y --json --report --shell --provider --model --api-key" -- "$cur"))
             ;;
 
         setup)

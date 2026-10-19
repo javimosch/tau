@@ -14,16 +14,18 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'doctor', 'setup', 'version')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'config', 'doctor', 'setup', 'version')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
                      '--coordinator-model', '--worker-model', '--sequential', '--parallel',
                      '--items', '--schema')
     $skillSubs   = @('list', 'search', 'load')
+    $configSubs  = @('show', 'validate', 'set', 'get', 'unset', 'edit')
+    $configFlags = @('--mode', '--raw')
     $guideFlags  = @('--human')
     $initFlags   = @('--force', '--stdout', '--provider')
-    $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
+    $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '-y', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive')
     $versionFlags = @('--verbose', '--mode')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
@@ -55,6 +57,7 @@ $TauArgumentCompleter = {
         'models'              = 'list available providers and models'
         'guide'               = 'print the embedded operator manual'
         'init'                = 'write a commented starter config'
+        'config'              = 'inspect and edit the config file (show|validate|set|get|unset|edit)'
         'doctor'              = 'validate setup (config, provider, key, connectivity)'
         'setup'               = 'one-shot onboarding (init + completions + doctor)'
         'version'             = 'print version (--verbose adds build metadata)'
@@ -223,6 +226,7 @@ $TauArgumentCompleter = {
     switch ($sub) {
         'acp'    { return & $emit $acpArgs 'Command' }
         'skills' { return & $emit $skillSubs 'Command' }
+        'config' { return & $emit ($configSubs + $configFlags) 'ParameterName' }
         'guide'  { return & $emit $guideFlags 'ParameterName' }
         'init'   { return & $emit $initFlags 'ParameterName' }
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
