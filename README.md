@@ -61,6 +61,12 @@ version tags — and before publish, each archive is smoke-tested on its
 matching OS/arch runner by installing it through `install.sh`/`install.ps1`
 and running `tau --version`/`--help`.
 
+**Updating:** `tau upgrade` checks the latest release, asks before changing
+anything (a `[y/N]` prompt on a terminal, `--yes` for scripts), then re-runs
+this same verified installer over the running binary — no separate update
+channel to trust. `tau upgrade --dry-run` prints the plan first; `tau version
+--check` is the read-only form.
+
 **Windows (PowerShell — installs `tau-windows-x86_64.zip` to
 `%LOCALAPPDATA%\Programs\tau`):**
 
@@ -216,6 +222,7 @@ tau gives agents what they need:
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
 - **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling; `--fix` remediates common issues (missing config, loose permissions, missing completions) behind per-fix confirmation, and `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network; an `update_available` check warns when a newer release exists (`tau version --check` is the standalone form; opt out via `TAU_NO_UPDATE_CHECK=1`)
 - **Update check** — `tau version --check` compares the running binary against the latest GitHub release and prints `update_available` + the release URL; non-blocking (always exits 0, short timeout) and opt-out via `TAU_NO_UPDATE_CHECK`
+- **Self-update** — `tau upgrade` reuses that check, confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan
 - **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal

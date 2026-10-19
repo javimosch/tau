@@ -72,6 +72,7 @@ _tau() {
                 'doctor:validate setup (config, provider, key, connectivity)'
                 'guide:print the embedded operator manual'
                 'version:print version (--verbose adds build metadata)'
+                'upgrade:self-update in place via the verified install.sh'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -241,6 +242,13 @@ _tau() {
                         '--verbose[include build metadata (commit, target, build date, zig version)]' \
                         '--check[non-blocking update check against the latest release]' \
                         '--mode=[output mode]:mode:(text json)'
+                    ;;
+
+                upgrade)
+                    _arguments \
+                        '(-y --yes)'{-y,--yes}'[upgrade without prompting]' \
+                        '--dir=[install destination]:dir:_files -/' \
+                        '--dry-run[print the resolved plan; install nothing]'
                     ;;
             esac
             ;;

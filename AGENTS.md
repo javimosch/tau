@@ -364,6 +364,25 @@ tau version --check                # Non-blocking update check vs latest release
 # TAU_NO_UPDATE_CHECK=1; TAU_UPDATE_URL overrides the lookup URL.
 ```
 
+#### 19. Self-Update (`tau upgrade`)
+```bash
+tau upgrade                      # Check latest release, [y/N] prompt on a TTY, install
+tau upgrade --yes                # Non-interactive (env TAU_YES=1)
+tau upgrade --dir /opt/bin       # Override destination (default: the running
+                                 # binary's directory; env TAU_INSTALL_DIR)
+tau upgrade --dry-run            # Print the resolved plan; install nothing
+# → {"name":"tau","version":"0.4.0","checked":true,"latest":"0.5.0","tag":"v0.5.0",
+#    "update_available":true,"status":"upgraded","detail":"installed tau 0.5.0 -> /opt/bin/tau",
+#    "release_url":"...","install_dir":"/opt/bin"}
+# status: up_to_date|upgraded|declined|skipped|failed|dry_run — exit 0 for
+# up_to_date/upgraded/declined/dry_run, 1 for skipped/failed. Downloads and
+# execs the release tag's own install.sh, so upgrades get the same fail-closed
+# SHA256 verification as fresh installs (TAU_BASE_URL/TAU_SKIP_CHECKSUM/
+# TAU_VERIFY_SIGSTORE flow through). TAU_INSTALL_URL overrides the installer
+# script URL (file:// stubs in tests). POSIX-only; Windows exits 111 and
+# points at install.ps1.
+```
+
 ### Storage Paths
 
 | Path | Purpose |
@@ -404,6 +423,8 @@ tau version --check                # Non-blocking update check vs latest release
 | `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
 | `src/errors.zig` | Stable error-code catalog + shared `{"err"}` envelope emitter | Error codes/hints, envelope fields |
 | `src/version.zig` | Version const + build metadata (`build.*`, `buildJson`, `buildLine`) | Version bump, build metadata |
+| `src/update.zig` | `tau version --check` + doctor `update_available` release lookup (curl, TAU_UPDATE_URL/TAU_NO_UPDATE_CHECK) | Update-check behavior |
+| `src/upgrade.zig` | `tau upgrade` self-update — check → confirm → staged `install.sh` exec | Upgrade flow, install-dir resolution |
 | `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
 | `src/term.zig` | Portable stdout/stderr | Terminal output changes |
 | `install.sh` | curl-able installer for prebuilt releases | Installer/flag/env changes |

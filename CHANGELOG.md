@@ -67,6 +67,17 @@ are backward compatible.
   check that warns when a newer release exists. Opt out everywhere via
   `TAU_NO_UPDATE_CHECK=1`; `TAU_UPDATE_URL` overrides the lookup URL (for
   proxies/mirrors and `file://` stubs in tests); `doctor --offline` skips it
+- `tau upgrade` — self-update in place. Reuses the `version --check` lookup,
+  confirms on a TTY (`--yes`/`-y` or `TAU_YES=1` approves non-interactively;
+  a non-TTY run without `--yes` exits 1 as `skipped`), then downloads the
+  release tag's own `install.sh` and runs it — so upgrades go through the
+  same fail-closed SHA256-verified install path as fresh installs. `--dir`
+  overrides the destination (default: the running binary's directory; env
+  `TAU_INSTALL_DIR`), `--dry-run` prints the resolved plan, and
+  `TAU_INSTALL_URL` overrides the installer script URL for mirrors/tests.
+  Emits one JSON report on stdout with a `status` field
+  (`up_to_date`/`upgraded`/`declined`/`skipped`/`failed`/`dry_run`); POSIX
+  only — Windows returns exit 111 with a pointer at `install.ps1`
 - `tau init` — write a commented starter `~/.config/tau/config.json` seeded
   from detected provider env keys (`--force`, `--stdout`, `--provider`)
 - `tau setup` — one-shot onboarding: scaffolds the config (init), installs

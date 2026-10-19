@@ -227,6 +227,15 @@ const help_text =
     \\      --check                   Non-blocking check for a newer release
     \\                              (always exits 0; opt out via
     \\                              TAU_NO_UPDATE_CHECK)
+    \\  tau upgrade                 Self-update in place: check the latest
+    \\                              release, confirm, then run the release's
+    \\                              own verified install.sh (SHA256-checked,
+    \\                              fail-closed). POSIX-only.
+    \\      --yes, -y               Upgrade without prompting (env TAU_YES=1);
+    \\                              a TTY gets a [y/N] prompt instead
+    \\      --dir <path>            Install destination (default: the running
+    \\                              binary's directory; env TAU_INSTALL_DIR)
+    \\      --dry-run               Print the resolved plan; install nothing
     \\
     \\Models:
     \\  tau models                    List available providers and models
@@ -444,6 +453,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
     .{ .a = "tau version [--verbose] [--check]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1)." },
+    .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run]", .b = "self-update in place via the release's verified install.sh; prompts on a TTY, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau config show [--flags]", .b = "print the resolved effective config (file+env+flags merged; keys redacted)." },
     .{ .a = "tau config validate [path]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit)." },
@@ -843,6 +853,14 @@ pub fn main(init: std.process.Init) !void {
             };
             std.process.exit(code);
         },
+        .upgrade => {
+            const upgrade = @import("upgrade.zig");
+            const code = upgrade.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "upgrade failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
         .err => {
             const msg = parsed.err_msg orelse "invalid arguments";
             printErrorJson(@intFromEnum(ExitCode.invalid_argument), "invalid_argument", msg, false);
@@ -1130,6 +1148,7 @@ test {
     _ = @import("setup.zig");
     _ = @import("version.zig");
     _ = @import("update.zig");
+    _ = @import("upgrade.zig");
 }
 
 test "flag_specs appear in help_text" {

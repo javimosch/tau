@@ -14,7 +14,7 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'config', 'doctor', 'setup', 'version')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'config', 'doctor', 'setup', 'version', 'upgrade')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
@@ -28,6 +28,7 @@ $TauArgumentCompleter = {
     $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '-y', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive')
     $versionFlags = @('--verbose', '--check', '--mode')
+    $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'vscode', 'jetbrains', 'all')
     $globalFlags = @(
@@ -61,6 +62,7 @@ $TauArgumentCompleter = {
         'doctor'              = 'validate setup (config, provider, key, connectivity)'
         'setup'               = 'one-shot onboarding (init + completions + doctor)'
         'version'             = 'print version (--verbose adds build metadata)'
+        'upgrade'             = 'self-update in place via the verified install.sh'
         'run'                 = 'decompose a goal and dispatch workers'
         'status'              = 'check status of a fleet by id'
         'list'                = 'list all known fleets / skills'
@@ -123,6 +125,7 @@ $TauArgumentCompleter = {
         '--selftest'          = 'credential-free end-to-end session against a loopback stub'
         '--verbose'           = 'include build metadata in version output'
         '--check'             = 'non-blocking update check against the latest release'
+        '--dir'               = 'install destination (default: the running binary dir)'
     }
 
     # Emit $candidates filtered by the word being completed.
@@ -208,6 +211,7 @@ $TauArgumentCompleter = {
             return & $emit $tools 'ParameterValue'
         }
         '--load-agents-md' { return & $completeFile $wordToComplete }
+        '--dir'            { return & $completeFile $wordToComplete }
         '--schema' {
             if ($currentWord.StartsWith('@')) { return & $atFiles $wordToComplete }
             return
@@ -233,6 +237,7 @@ $TauArgumentCompleter = {
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
         'setup'  { return & $emit $setupFlags 'ParameterName' }
         'version' { return & $emit $versionFlags 'ParameterName' }
+        'upgrade' { return & $emit $upgradeFlags 'ParameterName' }
         'models' { return }
         'fleet'  {
             $fleetSub = ''

@@ -149,6 +149,19 @@ pub const Config = struct {
     /// everywhere (including the `tau doctor` warning) via TAU_NO_UPDATE_CHECK.
     version_check: bool = false,
 
+    // --- Upgrade (src/upgrade.zig) ---
+    /// `tau upgrade --yes|-y` — apply the self-update without prompting
+    /// (env `TAU_YES=1`). Without it, a TTY stdin gets a [y/N] prompt and a
+    /// non-interactive run is skipped.
+    upgrade_yes: bool = false,
+    /// `tau upgrade --dir <path>` — install destination override. Precedence:
+    /// flag > `TAU_INSTALL_DIR` > the running binary's own directory >
+    /// the installer's default (~/.local/bin).
+    upgrade_dir: ?[]const u8 = null,
+    /// `tau upgrade --dry-run` — report the update check plus the resolved
+    /// install plan without prompting, downloading, or installing anything.
+    upgrade_dry_run: bool = false,
+
     // --- Skills autodiscovery ---
     /// `tau skills <list|search|load>` subcommand selector. Null means no skills subcommand.
     skills_sub: ?[]const u8 = null,

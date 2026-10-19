@@ -204,13 +204,15 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 | `TAU_API_KEY` | Fallback API key, used after provider-specific env vars. |
 | `TAU_ENDPOINT` | Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers. |
 | `TAU_DEBUG_LOG` | Overrides the `--debug` diagnostic log destination (default `~/.config/tau/debug/<timestamp>.log`). |
-| `TAU_NO_UPDATE_CHECK` | Any non-empty, non-`0` value disables the update check everywhere — `tau version --check` and the `tau doctor` `update_available` warning. |
+| `TAU_NO_UPDATE_CHECK` | Any non-empty, non-`0` value disables the update check everywhere — `tau version --check`, `tau upgrade`, and the `tau doctor` `update_available` warning. |
 | `TAU_UPDATE_URL` | Overrides the release lookup URL used by the update check (default: the GitHub latest-release API). Useful for mirrors/proxies and `file://` stubs in tests. |
+| `TAU_INSTALL_URL` | Overrides the installer script `tau upgrade` downloads and runs (default: the `install.sh` shipped at the release tag). Useful for mirrors and `file://` stubs in tests. |
+| `TAU_INSTALL_DIR` | `tau upgrade` install destination when `--dir` is absent (default: the running binary's own directory, else the installer's `~/.local/bin`). Also honored by `install.sh` itself. |
 | `XIAOMI_API_KEY`, `PIZIG_API_KEY` | API keys for the `xiaomi` provider (tried in that order). |
 | `OPENAI_API_KEY` | API key for the `openai` provider. |
 | `DEEPSEEK_API_KEY` | API key for the `deepseek` provider. |
 | `OPENCODE_API_KEY` | API key for the `opencode-go` provider. |
-| `TAU_YES` | `1`/`true`/`yes`/`on` enables `tau setup --yes` (approve all write steps). Any other value, including `0`, is off. |
+| `TAU_YES` | `1`/`true`/`yes`/`on` enables `tau setup --yes` (approve all write steps) and `tau upgrade --yes` (self-update without prompting). Any other value, including `0`, is off. |
 | `TAU_NONINTERACTIVE` | Same truthiness rules; enables `tau setup --non-interactive` (unattended contract for scripts/CI). |
 | `TAU_SETUP_SHELL` | `tau setup` shell override when `--shell` is absent (`bash|zsh|fish|pwsh|all`); invalid values fail with exit 80. |
 | `TAU_SETUP_CLIENT` | `tau setup` editor client when `--client` is absent (`zed|nvim|vscode|jetbrains|all`); invalid values fail with exit 80. |

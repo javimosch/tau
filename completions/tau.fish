@@ -18,7 +18,7 @@ function __tau_no_subcommand
     set -e tokens[1]
     for t in $tokens
         switch $t
-            case acp fleet skills models guide init config doctor setup version
+            case acp fleet skills models guide init config doctor setup version upgrade
                 return 1
         end
     end
@@ -89,6 +89,7 @@ complete -c tau -n $top -f -a config -d 'inspect and edit the config file (show|
 complete -c tau -n $top -f -a doctor -d 'validate setup (config, provider, key, connectivity)'
 complete -c tau -n $top -f -a setup -d 'one-shot onboarding (init + completions + doctor)'
 complete -c tau -n $top -f -a version -d 'print version (--verbose adds build metadata)'
+complete -c tau -n $top -f -a upgrade -d 'self-update in place via the verified install.sh'
 
 complete -c tau -n $top -s h -l help -d 'show help text'
 complete -c tau -n $top -s v -l version -d 'show version'
@@ -210,5 +211,10 @@ set -l version '__tau_using_subcommand version'
 complete -c tau -n $version -f -l verbose -d 'include build metadata (commit, target, build date, zig version)'
 complete -c tau -n $version -f -l check -d 'non-blocking update check against the latest release'
 complete -c tau -n $version -f -l mode -x -a 'text json' -d 'output mode'
+
+set -l upgrade '__tau_using_subcommand upgrade'
+complete -c tau -n $upgrade -f -s y -l yes -d 'upgrade without prompting'
+complete -c tau -n $upgrade -f -l dir -x -d 'install destination (default: the running binary dir)'
+complete -c tau -n $upgrade -f -l dry-run -d 'print the resolved plan; install nothing'
 
 # `tau models` takes no further arguments.

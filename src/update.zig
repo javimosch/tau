@@ -109,10 +109,11 @@ fn parseTag(arena: std.mem.Allocator, body: []const u8) ?[]const u8 {
     };
 }
 
-/// GET the lookup URL via curl; returns the response body (gpa-allocated) or
-/// null on any failure: curl missing, non-zero exit (-f rejects HTTP >= 400),
-/// timeout, empty body.
-fn fetchLatest(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, url: []const u8) ?[]u8 {
+/// GET a URL via curl; returns the response body (gpa-allocated) or null on
+/// any failure: curl missing, non-zero exit (-f rejects HTTP >= 400),
+/// timeout, empty body. Shared by the release lookup and `tau upgrade`'s
+/// installer download — same transport, same short --max-time.
+pub fn fetchLatest(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, url: []const u8) ?[]u8 {
     const mt = std.fmt.allocPrint(arena, "{d}", .{max_time_s}) catch return null;
     const ua = std.fmt.allocPrint(arena, "User-Agent: tau/{s}", .{ver.version}) catch return null;
     const timeout = std.Io.Timeout{ .duration = .{

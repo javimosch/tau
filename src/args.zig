@@ -4,7 +4,7 @@ const goalmod = @import("goal.zig");
 const suggest = @import("suggest.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, config, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, config, upgrade, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -185,6 +185,31 @@ pub fn parse(
             } else return errResult(arena, "unknown version argument: {s}", .{a});
         }
         return .{ .action = .version, .config = vcfg };
+    }
+
+    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run]` — self-update in
+    // place: run the same release lookup as `tau version --check`, confirm,
+    // then fetch and exec the release tag's own install.sh so the fail-closed
+    // SHA256-verified install path is reused verbatim. The prompt only
+    // appears on a TTY; automation passes --yes (env TAU_YES=1). POSIX-only —
+    // Windows re-runs install.ps1.
+    if (argv.len > 0 and eq(argv[0], "upgrade")) {
+        var ucfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--yes") or eq(a, "-y")) {
+                ucfg.upgrade_yes = true;
+            } else if (eq(a, "--dir")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                ucfg.upgrade_dir = argv[j];
+            } else if (eq(a, "--dry-run")) {
+                ucfg.upgrade_dry_run = true;
+            } else return errResult(arena, "unknown upgrade argument: {s}", .{a});
+        }
+        if (envTruthy(env.get("TAU_YES"))) ucfg.upgrade_yes = true;
+        return .{ .action = .upgrade, .config = ucfg };
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
@@ -1677,6 +1702,68 @@ test "parse: version rejects unknown arguments and missing values" {
     const bad_mode = try parseArgv(a, &.{ "tau", "version", "--mode", "yaml" }, .{});
     try std.testing.expectEqual(Action.err, bad_mode.action);
     try std.testing.expectEqualStrings("invalid --mode (want text|json): yaml", bad_mode.err_msg.?);
+}
+
+test "parse: upgrade selects the upgrade action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(!p.config.upgrade_yes);
+    try std.testing.expect(!p.config.upgrade_dry_run);
+    try std.testing.expect(p.config.upgrade_dir == null);
+}
+
+test "parse: upgrade accepts --yes/-y, --dir and --dry-run" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade", "--yes", "--dir", "/opt/bin", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.upgrade_yes);
+    try std.testing.expect(p.config.upgrade_dry_run);
+    try std.testing.expectEqualStrings("/opt/bin", p.config.upgrade_dir.?);
+
+    const q = try parseArgv(a, &.{ "tau", "upgrade", "-y" }, .{});
+    try std.testing.expect(q.config.upgrade_yes);
+}
+
+test "parse: upgrade TAU_YES env approves like --yes" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_YES", "1" },
+    }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.upgrade_yes);
+
+    const off = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_YES", "0" },
+    }, .{});
+    try std.testing.expect(!off.config.upgrade_yes);
+}
+
+test "parse: upgrade rejects unknown arguments, positionals and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "upgrade", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown upgrade argument: --bogus", bad.err_msg.?);
+
+    const pos = try parseArgv(a, &.{ "tau", "upgrade", "now" }, .{});
+    try std.testing.expectEqual(Action.err, pos.action);
+    try std.testing.expectEqualStrings("unknown upgrade argument: now", pos.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "upgrade", "--dir" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --dir", missing_val.err_msg.?);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {

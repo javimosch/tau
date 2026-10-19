@@ -87,6 +87,7 @@ ALL_TEST_GROUPS=(
   "golden-onboarding:test_group_golden_onboarding"
   "golden-help:test_group_golden_help"
   "update:test_group_update"
+  "upgrade:test_group_upgrade"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -340,6 +341,138 @@ test_group_update() {
 
   # 7. Help advertises the flag.
   "$BIN" --help 2>&1 | grep -q -- '--check' && ok "--help mentions --check" 0 0 || ok "--help mentions --check" 1 0
+}
+
+# Group: `tau upgrade` — self-update in place via the verified install.sh.
+# Reuses the update check (TAU_UPDATE_URL stubs), gates on a confirmation
+# prompt (--yes/TAU_YES on non-TTY), then downloads and execs the release
+# tag's install.sh. Everything is stubbed offline: TAU_UPDATE_URL points at a
+# file:// release payload, TAU_INSTALL_URL at a staged copy of install.sh and
+# TAU_BASE_URL at a staged release tree, so the whole check→confirm→install
+# path runs without network.
+test_group_upgrade() {
+  local stub_home="$SMOKE_TEMP/ug-home"
+  mkdir -p "$stub_home"
+
+  printf '{"tag_name":"v99.9.9","name":"newer"}' > "$SMOKE_TEMP/ug-rel-newer.json"
+  printf '{"tag_name":"v0.4.0"}' > "$SMOKE_TEMP/ug-rel-same.json"
+
+  # 1. Arg validation: unknown flag, positional and missing --dir value all
+  #    exit 80 with an invalid_argument envelope on stderr.
+  capture ug_bogus "$BIN" upgrade --bogus
+  ok "upgrade --bogus exit 80" "$ug_bogus_rc" 80
+  contains "upgrade --bogus envelope" "$ug_bogus_err" '"type":"invalid_argument"'
+  contains "upgrade --bogus names the arg" "$ug_bogus_err" 'unknown upgrade argument: --bogus'
+  capture ug_pos "$BIN" upgrade now
+  ok "upgrade positional exit 80" "$ug_pos_rc" 80
+  capture ug_nodir "$BIN" upgrade --dir
+  ok "upgrade --dir missing value exit 80" "$ug_nodir_rc" 80
+  contains "upgrade --dir missing message" "$ug_nodir_err" 'missing value for --dir'
+
+  # 2. Up to date -> status up_to_date, exit 0.
+  capture ug_same env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-same.json" "$BIN" upgrade
+  ok "upgrade same-version exit 0" "$ug_same_rc" 0
+  contains "same checked:true" "$ug_same_out" '"checked":true'
+  contains "same update_available:false" "$ug_same_out" '"update_available":false'
+  contains "same status" "$ug_same_out" '"status":"up_to_date"'
+
+  # 3. Newer release but no --yes on a non-TTY stdin -> skipped, exit 1,
+  #    detail points at --yes. stdin is pinned to /dev/null so the check is
+  #    deterministic even when the harness itself runs interactively.
+  capture ug_skip env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    sh -c '"$0" upgrade < /dev/null' "$BIN"
+  ok "upgrade unconfirmed exit 1" "$ug_skip_rc" 1
+  contains "unconfirmed status skipped" "$ug_skip_out" '"status":"skipped"'
+  contains "unconfirmed detail names --yes" "$ug_skip_out" 'pass --yes'
+  contains "unconfirmed carries release_url" "$ug_skip_out" '"release_url":"https://github.com/javimosch/tau/releases/tag/v99.9.9"'
+
+  # 4. Opt-out: TAU_NO_UPDATE_CHECK short-circuits the check — checked:false,
+  #    status skipped, reason names the var, exit 1.
+  capture ug_off env TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --yes
+  ok "upgrade opt-out exit 1" "$ug_off_rc" 1
+  contains "opt-out checked:false" "$ug_off_out" '"checked":false'
+  contains "opt-out status skipped" "$ug_off_out" '"status":"skipped"'
+  contains "opt-out detail names the var" "$ug_off_out" 'TAU_NO_UPDATE_CHECK'
+
+  # 5. Lookup failure -> checked:false, status failed, exit 1.
+  capture ug_miss env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-missing.json" "$BIN" upgrade --yes
+  ok "upgrade lookup-failure exit 1" "$ug_miss_rc" 1
+  contains "lookup-failure checked:false" "$ug_miss_out" '"checked":false'
+  contains "lookup-failure status failed" "$ug_miss_out" '"status":"failed"'
+
+  # 6. --dry-run resolves the plan (installer URL + install dir) without
+  #    touching anything — status dry_run, exit 0.
+  capture ug_dry env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" TAU_INSTALL_DIR="$SMOKE_TEMP/ug-dry-dest" "$BIN" upgrade --dry-run
+  ok "upgrade --dry-run exit 0" "$ug_dry_rc" 0
+  contains "dry-run status" "$ug_dry_out" '"status":"dry_run"'
+  contains "dry-run names the installer" "$ug_dry_out" 'install.sh'
+  contains "dry-run resolves install_dir" "$ug_dry_out" "\"install_dir\":\"$SMOKE_TEMP/ug-dry-dest\""
+  [ ! -e "$SMOKE_TEMP/ug-dry-dest" ]; ok "dry-run created nothing" "$?" 0
+
+  # 7. Installer download failure -> status failed, exit 1.
+  capture ug_noinst env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" TAU_INSTALL_URL="file://$SMOKE_TEMP/ug-no-such-install.sh" "$BIN" upgrade --yes
+  ok "upgrade missing-installer exit 1" "$ug_noinst_rc" 1
+  contains "missing-installer status failed" "$ug_noinst_out" '"status":"failed"'
+  contains "missing-installer detail" "$ug_noinst_out" 'installer download failed'
+
+  # 8. Full staged e2e: newer release + staged installer + staged release
+  #    tree -> --yes runs install.sh end to end (checksum verified on
+  #    stderr), the binary lands in TAU_INSTALL_DIR, stdout stays pure JSON.
+  local asset_os asset_arch
+  case "$(uname -s)" in
+    Linux)  asset_os=linux ;;
+    Darwin) asset_os=macos ;;
+    *)      asset_os="" ;;
+  esac
+  asset_arch="$(uname -m)"
+  case "$asset_arch" in
+    amd64) asset_arch=x86_64 ;;
+    arm64) asset_arch=aarch64 ;;
+    x86_64|aarch64) ;;
+    *) asset_arch="" ;;
+  esac
+
+  if [ -n "$asset_os" ] && [ -n "$asset_arch" ]; then
+    local e2e asset
+    e2e="$SMOKE_TEMP/ug-e2e"
+    asset="tau-$asset_os-$asset_arch.tar.gz"
+    mkdir -p "$e2e/srv/download/v99.9.9" "$e2e/pkg" "$e2e/bin"
+    printf '#!/bin/sh\necho "tau 99.9.9"\n' > "$e2e/pkg/tau"
+    chmod +x "$e2e/pkg/tau"
+    tar -czf "$e2e/srv/download/v99.9.9/$asset" -C "$e2e/pkg" tau
+    (cd "$e2e/srv/download/v99.9.9" && \
+      { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
+    cp "$ROOT/install.sh" "$e2e/install.sh"
+
+    capture ug_yes env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+      TAU_INSTALL_URL="file://$e2e/install.sh" \
+      TAU_BASE_URL="file://$e2e/srv" \
+      TAU_INSTALL_DIR="$e2e/bin" \
+      "$BIN" upgrade --yes
+    ok "upgrade --yes e2e exit 0" "$ug_yes_rc" 0
+    contains "e2e status upgraded" "$ug_yes_out" '"status":"upgraded"'
+    contains "e2e detail reports dest" "$ug_yes_out" "installed tau 99.9.9 -> $e2e/bin/tau"
+    contains "e2e installer verified checksum" "$ug_yes_err" 'checksum verified'
+    [ -x "$e2e/bin/tau" ]; ok "e2e installed binary is executable" "$?" 0
+    contains "e2e installed binary runs" "$("$e2e/bin/tau")" 'tau 99.9.9'
+
+    # TAU_YES=1 approves the same way as --yes.
+    rm -f "$e2e/bin/tau"
+    capture ug_envyes env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+      TAU_INSTALL_URL="file://$e2e/install.sh" \
+      TAU_BASE_URL="file://$e2e/srv" \
+      TAU_INSTALL_DIR="$e2e/bin" \
+      TAU_YES=1 \
+      "$BIN" upgrade
+    ok "upgrade TAU_YES e2e exit 0" "$ug_envyes_rc" 0
+    contains "TAU_YES e2e status upgraded" "$ug_envyes_out" '"status":"upgraded"'
+    [ -x "$e2e/bin/tau" ]; ok "TAU_YES e2e installed binary" "$?" 0
+  else
+    note "upgrade: skipping e2e install (unsupported host platform)"
+  fi
+
+  # 9. Help advertises the subcommand.
+  "$BIN" --help 2>&1 | grep -q 'tau upgrade' && ok "--help mentions tau upgrade" 0 0 || ok "--help mentions tau upgrade" 1 0
 }
 
 # guide — the embedded operator manual (cli-guide-spec). JSON default, --human markdown, no runtime fetch.

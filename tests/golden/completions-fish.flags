@@ -2,6 +2,7 @@
 --api-key
 --append-system-prompt
 --auto-agents-md
+--check
 --client
 --compact-keep-recent
 --compact-threshold
@@ -9,6 +10,7 @@
 --coordinator-model
 --debug
 --deep
+--dir
 --dry-run
 --exclude-tools
 --fix

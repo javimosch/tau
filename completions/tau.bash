@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models|init|config|guide|doctor|setup|version)
+            acp|fleet|skills|models|init|config|guide|doctor|setup|version|upgrade)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -52,6 +52,9 @@ _tau_complete() {
             return ;;
         --load-agents-md)
             declare -f _filedir &>/dev/null && _filedir
+            return ;;
+        --dir)
+            declare -f _filedir &>/dev/null && _filedir -d
             return ;;
         --schema)
             if [[ "$cur" == @* ]]; then
@@ -145,9 +148,13 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "--verbose --check --mode" -- "$cur"))
             ;;
 
+        upgrade)
+            COMPREPLY=($(compgen -W "--yes -y --dir --dry-run" -- "$cur"))
+            ;;
+
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet init config guide doctor setup version
+            local top_level="acp models skills fleet init config guide doctor setup version upgrade
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream

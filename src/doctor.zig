@@ -728,7 +728,7 @@ fn checkUpdateAvailable(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Alloc
             .name = name,
             .status = .warn,
             .message = std.fmt.allocPrint(arena, "new release available: {s} (running {s})", .{ latest, version }) catch "new release available",
-            .hint = "upgrade via install.sh or your package manager — " ++ version_mod.releases_page_url,
+            .hint = "run 'tau upgrade' to self-update via the verified installer — " ++ version_mod.releases_page_url,
         };
     return .{
         .name = name,
