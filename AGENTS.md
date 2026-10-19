@@ -249,7 +249,17 @@ tau doctor --probe                     # Live-verify connectivity + credentials 
 tau doctor --selftest                  # Credential-free e2e check: self-spawn against a loopback stub
 tau doctor --provider openai           # Diagnose an override instead of the configured default
 tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
+tau doctor --report                  # Redacted Markdown bundle for bug reports
 # → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
+
+tau bug                              # Pre-filled GitHub issue URL + the redacted bundle
+tau bug --title "x" --body "desc"    # Fill the issue title + description
+tau bug --open                       # Launch the URL ($BROWSER, else open/xdg-open)
+tau bug --out report.md              # Also write the bundle to a file
+tau bug --no-report                  # Omit diagnostics (mutex with --out)
+# → {"title","labels","url","body","report","url_truncated","out","opened","done":true}
+# Exit 0 always; over-long bundles fall back to a short URL body
+# (url_truncated:true) — full text stays in body/report.
 ```
 
 #### 16. Effective Config (`tau config show`)
@@ -413,6 +423,7 @@ tau upgrade --dry-run            # Print the resolved plan; install nothing
 | `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
 | `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
+| `src/bug.zig` | `tau bug` pre-filled GitHub issue (URL + report bundle) | `tau bug` flags/output, issue-URL shape |
 | `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |

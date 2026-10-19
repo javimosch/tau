@@ -255,6 +255,23 @@ pub const Config = struct {
     edit_path: ?[]const u8 = null,
     /// `tau config get --raw` — print secret values unredacted.
     config_raw: bool = false,
+
+    // --- Bug report (src/bug.zig) ---
+    /// `tau bug --title <t>` — pre-filled issue title (default "Bug report").
+    bug_title: ?[]const u8 = null,
+    /// `tau bug --body <text>` — description placed above the diagnostics
+    /// bundle in the issue body.
+    bug_body: ?[]const u8 = null,
+    /// `tau bug --labels <csv>` — pre-filled issue labels (default "bug";
+    /// pass an empty string for none).
+    bug_labels: ?[]const u8 = null,
+    /// `tau bug --open` — launch the issue URL in the system browser
+    /// ($BROWSER, else open/xdg-open/rundll32).
+    bug_open: bool = false,
+    /// `tau bug --out <path>` — also write the diagnostics bundle to a file.
+    bug_out: ?[]const u8 = null,
+    /// `tau bug --no-report` — omit the diagnostics bundle from the issue.
+    bug_no_report: bool = false,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` and

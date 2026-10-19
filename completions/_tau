@@ -70,6 +70,7 @@ _tau() {
                 'config:inspect, validate, or edit the config (show|validate|set|get|unset|edit)'
                 'setup:one-shot onboarding (init + completions + doctor)'
                 'doctor:validate setup (config, provider, key, connectivity)'
+                'bug:file a pre-filled GitHub issue with doctor diagnostics'
                 'guide:print the embedded operator manual'
                 'version:print version (--verbose adds build metadata)'
                 'upgrade:self-update in place via the verified install.sh'
@@ -223,6 +224,22 @@ _tau() {
                         '--yes[apply --fix remediations without prompting]' \
                         '--json[stream NDJSON check/fix events + done:true verdict]' \
                         '--report[Markdown diagnostics bundle for bug reports]' \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:'
+                    ;;
+
+                bug)
+                    _arguments \
+                        '--title=[issue title]:title:' \
+                        '--body=[description above the bundle]:text:' \
+                        '--labels=[issue labels (csv)]:labels:' \
+                        '--open[open the issue URL in the system browser]' \
+                        '--out=[write the diagnostics bundle to a file]:file:_files' \
+                        '--no-report[omit the diagnostics bundle]' \
+                        '--offline[skip network checks]' \
+                        '--deep[run an authenticated probe (spends ~1 token)]' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
                         '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \

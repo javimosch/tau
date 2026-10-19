@@ -206,6 +206,17 @@ const help_text =
     \\      --shell <name>            Completions shell: bash|zsh|fish|pwsh|all
     \\                              (default: detect from $SHELL)
     \\
+    \\  tau bug                     Build a pre-filled GitHub issue carrying the
+    \\                              redacted doctor --report diagnostics bundle
+    \\      --title <text>          Issue title (default: "Bug report")
+    \\      --body <text>           Description placed above the bundle
+    \\      --labels <csv>          Issue labels (default: bug; "" = none)
+    \\      --open                  Open the issue URL in the system browser
+    \\                              ($BROWSER, else open/xdg-open/rundll32)
+    \\      --out <path>            Also write the bundle to a file
+    \\      --no-report             Omit the diagnostics bundle
+    \\      --offline/--deep        Passed through to the diagnostic sweep
+    \\
     \\Config:
     \\  tau config show [flags]       Print the resolved effective config as JSON
     \\                              (config file + env + CLI flags merged; API keys redacted)
@@ -217,7 +228,6 @@ const help_text =
     \\  tau config unset <key> [path] Remove a key from the config file
     \\  tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
     \\                              VISUAL > EDITOR > vi/notepad); validates on save
-    \\
     \\
     \\Version:
     \\  tau version                   Print the version (same as -v/--version)
@@ -452,6 +462,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
+    .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report)." },
     .{ .a = "tau version [--verbose] [--check]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1)." },
     .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run]", .b = "self-update in place via the release's verified install.sh; prompts on a TTY, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
@@ -833,6 +844,14 @@ pub fn main(init: std.process.Init) !void {
             const doctor = @import("doctor.zig");
             const code = doctor.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
                 printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "doctor failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
+        .bug => {
+            const bug = @import("bug.zig");
+            const code = bug.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "bug failed", false);
                 std.process.exit(@intFromEnum(ExitCode.internal_error));
             };
             std.process.exit(code);

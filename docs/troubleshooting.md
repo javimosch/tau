@@ -267,6 +267,7 @@ any of them.
 | `tau doctor --probe` | Live-verify every provider: per-provider connectivity + credential pass/fail rows (key sources only, never key material) |
 | `tau doctor --selftest` | Credential-free end-to-end check: spawns tau against a loopback stub provider (throwaway HOME, stub key) — verifies the installed binary works without real credentials or network; runs under `--offline` |
 | `tau version --check` | Non-blocking update check against the latest release (always exits 0; `TAU_NO_UPDATE_CHECK=1` opts out — also silences the `update_available` doctor warning) |
+| `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |
 | `tau acp status` | Is the ACP daemon running? |
@@ -279,3 +280,8 @@ same path in a `debug_log` field. Credentials are masked
 (`***REDACTED***`), but review the file before sharing — it still contains
 tool I/O and endpoint details. Attach it to a bug report:
 <https://github.com/javimosch/tau/issues>
+
+Or let tau do it: `tau bug --open` builds a pre-filled issue URL carrying the
+redacted `tau doctor --report` bundle and opens it in your browser (`--title`
+and `--body` fill in the title and description, `--out <path>` also writes
+the bundle to a file for manual attaching).

@@ -23,6 +23,10 @@ pub const latest_release_url = "https://api.github.com/repos/javimosch/tau/relea
 /// "upgrade here" link.
 pub const releases_page_url = "https://github.com/javimosch/tau/releases";
 
+/// GitHub "new issue" endpoint `tau bug` pre-fills with the redacted
+/// diagnostics bundle. Query params (title/body/labels) get appended.
+pub const issues_new_url = "https://github.com/javimosch/tau/issues/new";
+
 /// Build metadata baked in by build.zig + comptime `builtin` queries. Surfaced
 /// by `tau version --verbose`, the `tau doctor` report/verdict "build" field,
 /// and the --debug log header — the triage trio that lets a bug report say

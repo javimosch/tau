@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models|init|config|guide|doctor|setup|version|upgrade)
+            acp|fleet|skills|models|init|config|guide|doctor|setup|bug|version|upgrade)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -132,6 +132,10 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "--offline --deep --probe --selftest --fix --yes -y --json --report --shell --provider --model --api-key" -- "$cur"))
             ;;
 
+        bug)
+            COMPREPLY=($(compgen -W "--title --body --labels --open --out --no-report --offline --deep --shell --provider --model --api-key" -- "$cur"))
+            ;;
+
         setup)
             COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive" -- "$cur"))
             ;;
@@ -154,7 +158,7 @@ _tau_complete() {
 
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet init config guide doctor setup version upgrade
+            local top_level="acp models skills fleet init config guide doctor setup bug version upgrade
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream

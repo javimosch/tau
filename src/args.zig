@@ -4,7 +4,7 @@ const goalmod = @import("goal.zig");
 const suggest = @import("suggest.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, config, upgrade, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, config, bug, upgrade, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -277,6 +277,75 @@ pub fn parse(
             dcfg.doctor_bad_provider = bad;
         }
         return .{ .action = .doctor, .config = dcfg };
+    }
+
+    // `tau bug [--title T] [--body TEXT] [--labels CSV] [--open] [--out PATH]
+    // [--no-report] [--offline] [--deep] [--provider P] [--model M]
+    // [--api-key K] [--shell sh]` — build a pre-filled GitHub issue carrying
+    // the redacted `tau doctor --report` bundle; a command, not a prompt.
+    // The diagnostic sweep honors the same overrides as `tau doctor`, so an
+    // unknown provider rides into the report as a failed check (exit-80 only
+    // for malformed arguments). --out and --no-report conflict: there is no
+    // bundle to write.
+    if (argv.len > 0 and eq(argv[0], "bug")) {
+        var bcfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--title")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_title = argv[j];
+            } else if (eq(a, "--body")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_body = argv[j];
+            } else if (eq(a, "--labels")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_labels = argv[j];
+            } else if (eq(a, "--open")) {
+                bcfg.bug_open = true;
+            } else if (eq(a, "--out")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_out = argv[j];
+            } else if (eq(a, "--no-report")) {
+                bcfg.bug_no_report = true;
+            } else if (eq(a, "--offline")) {
+                bcfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                bcfg.doctor_deep = true;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.api_key = argv[j];
+            } else if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!eq(s, "bash") and !eq(s, "zsh") and !eq(s, "fish") and !eq(s, "pwsh") and
+                    !eq(s, "powershell") and !eq(s, "all"))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                bcfg.setup_shell = s;
+            } else return errResult(arena, "unknown bug argument: {s}", .{a});
+        }
+        if (bcfg.bug_out != null and bcfg.bug_no_report)
+            return errResult(arena, "--out and --no-report are mutually exclusive", .{});
+        if (try resolveProviderAndModel(&bcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            bcfg.doctor_bad_provider = bad;
+        }
+        return .{ .action = .bug, .config = bcfg };
     }
 
     // `tau guide [--human]` — embedded operator manual (cli-guide-spec, https://cli-specs.intrane.fr/).
@@ -1643,6 +1712,81 @@ test "parse: doctor carries an unknown provider as a failed check, not exit 80" 
     const q = try parseArgv(a, &.{ "tau", "doctor" }, .{ .provider = "acme" });
     try std.testing.expectEqual(Action.doctor, q.action);
     try std.testing.expectEqualStrings("acme", q.config.doctor_bad_provider.?);
+}
+
+// ── `tau bug` ───────────────────────────────────────────────────────────────
+
+test "parse: bug selects the bug action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expect(p.config.bug_title == null);
+    try std.testing.expect(p.config.bug_body == null);
+    try std.testing.expect(p.config.bug_labels == null);
+    try std.testing.expect(!p.config.bug_open);
+    try std.testing.expect(p.config.bug_out == null);
+    try std.testing.expect(!p.config.bug_no_report);
+    try std.testing.expect(!p.config.doctor_offline);
+    try std.testing.expect(!p.config.doctor_deep);
+}
+
+test "parse: bug accepts title/body/labels/open/out/no-report + doctor overrides" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{
+        "tau",     "bug",       "--title", "crash on --deep",
+        "--body",  "it broke",  "--labels", "bug,triage",
+        "--open",  "--out",     "/tmp/r.md",
+        "--offline", "--deep",  "--provider", "openai",
+        "--api-key", "sk-x",
+    }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expectEqualStrings("crash on --deep", p.config.bug_title.?);
+    try std.testing.expectEqualStrings("it broke", p.config.bug_body.?);
+    try std.testing.expectEqualStrings("bug,triage", p.config.bug_labels.?);
+    try std.testing.expect(p.config.bug_open);
+    try std.testing.expectEqualStrings("/tmp/r.md", p.config.bug_out.?);
+    try std.testing.expect(!p.config.bug_no_report);
+    try std.testing.expect(p.config.doctor_offline);
+    try std.testing.expect(p.config.doctor_deep);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings("sk-x", p.config.api_key.?);
+}
+
+test "parse: bug --out + --no-report is mutually exclusive; bad args exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const mutex = try parseArgv(a, &.{ "tau", "bug", "--out", "r.md", "--no-report" }, .{});
+    try std.testing.expectEqual(Action.err, mutex.action);
+    try std.testing.expectEqualStrings("--out and --no-report are mutually exclusive", mutex.err_msg.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "bug", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown bug argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "bug", "--title" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --title", missing_val.err_msg.?);
+
+    const bad_shell = try parseArgv(a, &.{ "tau", "bug", "--shell", "tcsh" }, .{});
+    try std.testing.expectEqual(Action.err, bad_shell.action);
+}
+
+test "parse: bug carries an unknown provider as a failed check, not exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expectEqualStrings("acme", p.config.doctor_bad_provider.?);
 }
 
 test "parse: version subcommand selects the version action" {

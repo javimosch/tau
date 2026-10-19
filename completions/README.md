@@ -32,6 +32,7 @@ PowerShell.
 | `tau init` | `--force`, `--stdout`, `--provider` |
 | `tau doctor` | `--offline`, `--deep`, `--probe`, `--selftest`, `--fix`, `--yes`/`-y`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive` |
+| `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--mode` |
 

@@ -224,6 +224,7 @@ tau gives agents what they need:
 - **Update check** — `tau version --check` compares the running binary against the latest GitHub release and prints `update_available` + the release URL; non-blocking (always exits 0, short timeout) and opt-out via `TAU_NO_UPDATE_CHECK`
 - **Self-update** — `tau upgrade` reuses that check, confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan
 - **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI
+- **Bug reports** — `tau bug` builds a pre-filled GitHub issue URL carrying the redacted `doctor --report` diagnostics bundle (`--open` launches the system browser, `--out` also writes the bundle to a file, `--no-report` omits diagnostics)
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 
