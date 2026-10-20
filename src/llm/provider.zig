@@ -1,6 +1,7 @@
 const std = @import("std");
 const jsonmod = @import("../json.zig");
 const term = @import("../term.zig");
+const debuglog = @import("../debuglog.zig");
 
 pub const Message = struct {
     role: []const u8,
@@ -506,7 +507,7 @@ pub fn complete(io: std.Io, gpa: std.mem.Allocator, cfg: anytype,
     if (cfg.debug) {
         const debug_raw = try std.fmt.allocPrint(gpa, "[DEBUG] Raw API response: {s}\n", .{result.stdout});
         defer gpa.free(debug_raw);
-        term.err(debug_raw);
+        debuglog.emit(debug_raw);
     }
 
     // Parse tool_calls first: on a tool-call turn the model returns
@@ -785,7 +786,7 @@ pub fn completeStreamWithTools(
         if (cfg.debug) {
             const dbg = try std.fmt.allocPrint(gpa, "[DEBUG] SSE line: {s}\n", .{line});
             defer gpa.free(dbg);
-            term.err(dbg);
+            debuglog.emit(dbg);
         }
 
         const data = switch (classifySseLine(line)) {
@@ -1645,4 +1646,31 @@ test "extractToolCalls: returns empty slice when no tool_calls key is present" {
     // Returns &.{} (static, not heap-allocated) — do not free.
     const tcs = try extractToolCalls(gpa, response);
     try std.testing.expectEqual(@as(usize, 0), tcs.len);
+}
+
+test "docs/providers.md documents every provider's credentials" {
+    const gpa = std.testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "docs/providers.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    try std.testing.expect(std.mem.indexOf(u8, doc, @import("../version.zig").providers_doc_url) != null);
+    for (providers) |p| {
+        if (std.mem.indexOf(u8, doc, p.name) == null) {
+            std.debug.print("providers.md missing provider '{s}'\n", .{p.name});
+            return error.TestUnexpectedResult;
+        }
+        if (std.mem.indexOf(u8, doc, p.endpoint) == null) {
+            std.debug.print("providers.md missing endpoint for '{s}'\n", .{p.name});
+            return error.TestUnexpectedResult;
+        }
+        if (std.mem.indexOf(u8, doc, p.default_model) == null) {
+            std.debug.print("providers.md missing default model for '{s}'\n", .{p.name});
+            return error.TestUnexpectedResult;
+        }
+        for (p.env_keys) |ek| {
+            if (std.mem.indexOf(u8, doc, ek) == null) {
+                std.debug.print("providers.md missing env key '{s}' for '{s}'\n", .{ ek, p.name });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
 }

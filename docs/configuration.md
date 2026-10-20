@@ -7,13 +7,51 @@ Resolution model: **CLI flags > environment > config file > in-code defaults.**
 The config file is loaded first as the base, then command-line flags override it.
 Each section below lists the exact precedence order used by the code.
 
+> **Tip:** `tau doctor` validates this whole chain end-to-end and prints a JSON
+> report — config file parse + permission bits, resolved provider/model/endpoint,
+> which source supplied the API key (never the key itself), shell completions,
+> curl availability, endpoint reachability, and (with `--deep`) an authenticated
+> probe. Exit code is `0` when no check fails, `1` otherwise; `--offline` skips
+> network checks. `tau doctor --selftest` adds a credential-free end-to-end
+> session against a loopback stub provider — it runs even under `--offline`
+> since it never touches the real network. `tau doctor --fix` remediates the fixable outcomes — scaffold
+> a missing config (or move an unparseable one to `config.json.bak` and
+> re-scaffold), tighten permissions to `0700`/`0600`, install completions —
+> prompting per fix on a TTY; `--yes` applies without prompting for
+> non-interactive use.
+
 ---
 
 ## Config file
 
 Path: `~/.config/tau/config.json` (built from `$HOME`).
 
-The file is **optional** — tau runs fine without it. Behavior on load:
+The file is **optional** — tau runs fine without it. `tau init` scaffolds a
+commented starter: it detects which provider API keys are already in your
+environment, selects a matching `provider`, and lists every provider's env var
+in comments. It never copies secret values into the file, and refuses to
+overwrite an existing config unless `--force` is passed (`--stdout` previews
+without writing, `--provider <name>` picks a provider explicitly).
+
+`tau setup` wraps this into one-shot onboarding: it scaffolds the config the
+same way (keeping an existing file instead of failing), installs shell
+completions for the detected shell, then prints the `tau doctor` health
+report — one NDJSON object per step, exit 0 only when everything is healthy.
+
+For unattended onboarding (devcontainers, dotfiles scripts, CI), pass
+`--yes` (`-y`) and/or `--non-interactive`, or set `TAU_YES=1` /
+`TAU_NONINTERACTIVE=1`. Setup never prompts and never reads stdin either
+way — the flags are an explicit contract, recorded as
+`"non_interactive":true`/`"yes":true` in the final verdict so scripts can
+assert it. `TAU_SETUP_SHELL` and `TAU_SETUP_CLIENT` supply `--shell` /
+`--client` when the flags are absent (flag > env > `$SHELL` detection); `CI`
+is deliberately not auto-detected — opt in explicitly.
+
+The file is **JSONC**: `//` line comments and `/* */` block comments are
+stripped before parsing, so a commented config (like the one `tau init`
+writes) loads cleanly.
+
+Behavior on load:
 
 - Missing file, unreadable file, or unset `HOME` → all defaults are used.
 - Invalid JSON → a warning is printed to stderr and defaults are used; tau does
@@ -33,7 +71,7 @@ The file is **optional** — tau runs fine without it. Behavior on load:
 | `mode` | `"text"` \| `"json"` | `"json"` | `--mode <text\|json>` | Unrecognized values are ignored (stays `json`). |
 | `stream` | bool | `true` | `--stream` / `--no-stream` | SSE token streaming; `--no-stream` for batch. |
 | `thinking` | bool | `false` | `--thinking` | Emit reasoning/thinking chunks. |
-| `debug` | bool | `false` | `--debug` | Perf stats + tool I/O on stderr. |
+| `debug` | bool | `false` | `--debug` | Perf stats + tool I/O on stderr, plus a redacted diagnostic log under `~/.config/tau/debug/`. |
 | `temperature` | float | `0.7` | `--temperature <f>` | Sampling temperature. |
 | `max_tokens` | int | — (uncapped) | `--max-tokens <n>` | Output token cap. |
 | `timeout_ms` | int | `120000` | `--timeout-ms <n>` | HTTP request timeout in milliseconds. |
@@ -86,6 +124,8 @@ provider table (also visible via `tau models`):
 
 No provider currently ships a built-in key — supply one via any of the
 mechanisms below. An unknown provider name is rejected with exit code `80`.
+Per-provider credential setup and auth troubleshooting:
+[providers.md](providers.md).
 
 ---
 
@@ -163,11 +203,21 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 |----------|---------|
 | `TAU_API_KEY` | Fallback API key, used after provider-specific env vars. |
 | `TAU_ENDPOINT` | Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers. |
+| `TAU_DEBUG_LOG` | Overrides the `--debug` diagnostic log destination (default `~/.config/tau/debug/<timestamp>.log`). |
+| `TAU_NO_UPDATE_CHECK` | Any non-empty, non-`0` value disables the update check everywhere — `tau version --check`, `tau upgrade`, and the `tau doctor` `update_available` warning. |
+| `TAU_UPDATE_URL` | Overrides the release lookup URL used by the update check (default: the GitHub latest-release API). Useful for mirrors/proxies and `file://` stubs in tests. |
+| `TAU_INSTALL_URL` | Overrides the installer script `tau upgrade` downloads and runs (default: the `install.sh` shipped at the release tag). Useful for mirrors and `file://` stubs in tests. |
+| `TAU_INSTALL_DIR` | `tau upgrade` install destination when `--dir` is absent (default: the running binary's own directory, else the installer's `~/.local/bin`). Also honored by `install.sh` itself. |
 | `XIAOMI_API_KEY`, `PIZIG_API_KEY` | API keys for the `xiaomi` provider (tried in that order). |
 | `OPENAI_API_KEY` | API key for the `openai` provider. |
 | `DEEPSEEK_API_KEY` | API key for the `deepseek` provider. |
 | `OPENCODE_API_KEY` | API key for the `opencode-go` provider. |
+| `TAU_YES` | `1`/`true`/`yes`/`on` enables `tau setup --yes` (approve all write steps) and `tau upgrade --yes` (self-update without prompting). Any other value, including `0`, is off. |
+| `TAU_NONINTERACTIVE` | Same truthiness rules; enables `tau setup --non-interactive` (unattended contract for scripts/CI). |
+| `TAU_SETUP_SHELL` | `tau setup` shell override when `--shell` is absent (`bash|zsh|fish|pwsh|all`); invalid values fail with exit 80. |
+| `TAU_SETUP_CLIENT` | `tau setup` editor client when `--client` is absent (`zed|nvim|vscode|jetbrains|all`); invalid values fail with exit 80. |
 | `HOME` | Root of all tau state: `~/.config/tau/` and `~/.agents/skills/`. If unset, config file, sessions, fleets, skills, and the ACP daemon are all disabled. |
+| `TAU_EDITOR`, `VISUAL`, `EDITOR` | Editor for `tau config edit`, tried in that order (fallback: `vi` / `notepad`). May include arguments, e.g. `TAU_EDITOR="code --wait"`. |
 
 ### Read by the a2a-spawn launcher (not tau)
 
@@ -247,6 +297,130 @@ Boolean config keys (`stream`, `thinking`, `debug`, `auto_compact`) accept
 e.g. `--stream` re-enables streaming when the config file set
 `"stream": false`, and `--no-compact` disables compaction when the file left
 it on. There are no `--no-thinking`/`--no-debug` flags.
+
+---
+
+## Inspecting the resolved config
+
+`tau config show` prints the effective configuration as JSON — the same merge
+a run would see: config file → environment → CLI flags. It's a read-only
+diagnostic; it makes no network calls and never requires an API key.
+
+```bash
+tau config show                       # effective config right now
+tau config show --provider openai     # preview overrides without running
+```
+
+Secrets are never printed. The resolved key is masked (`"***"` plus the last
+four characters) and `api_key.source` reports which precedence level supplied
+it — `"--api-key"`, `"config keys[<provider>]"`, `"env <VAR>"`,
+`"config api_key"`, `"env TAU_API_KEY"`, or `"builtin"`. The `keys` map lists
+each configured per-provider key, also masked. `endpoint_source` says whether
+the endpoint came from the provider table or `env:TAU_ENDPOINT`, and
+`config_file` reports the probed path, whether a file was found, and any parse
+warning.
+
+Subcommand discipline matches `tau fleet`/`tau skills`: bare `tau config` and
+unknown subcommands exit `80`; `tau config show` takes no prompt and rejects
+positional arguments.
+
+## Validating a config file
+
+`tau config validate [path]` checks a config file against the schema without
+running an agent — fully offline, so it is safe for CI jobs and pre-commit
+hooks. With no `path` it validates `~/.config/tau/config.json`.
+
+```bash
+tau config validate                    # validate ~/.config/tau/config.json
+tau config validate ci/prod.json       # validate an explicit file
+tau config validate --mode text        # human-readable errors instead of JSON
+```
+
+The report goes to **stdout** as `{"path":…,"ok":bool,"errors":[{key,message}]}`
+(JSON mode) or one `path: error in "key": message` line per problem (text mode).
+Exit codes: `0` when the file is valid, `1` when any problem is found, `80` for
+CLI misuse. Every problem is listed at once — unknown keys, wrong value types,
+unknown `provider`/`mode` values, out-of-range numbers (`compact_threshold`
+outside 0–1, negative `temperature`, negative or overflowing integers), and
+`keys` entries that aren't strings or name an unknown provider. Syntax errors
+report a line and column. Key *values* are never echoed — `api_key`/`keys`
+contents stay secret.
+
+Example failure output:
+
+```json
+{"path":"bad.json","ok":false,"errors":[{"key":"provider","message":"\"provider\" is not a known provider: \"nope\" — valid providers: xiaomi, openai, deepseek, opencode-go"}]}
+```
+
+The validator is deliberately stricter than the loader: at startup tau ignores
+unknown keys, `null` values, and even invalid JSON, but `config validate`
+reports all of them — dead config is almost always a typo.
+
+## Editing the config file programmatically
+
+`tau config set|get|unset` edit the config **file** directly — the `git config`
+model, not the merged view (`config show` still reports effective values). They
+exist for CI and agent-driven setup, where shelling out to `jq` or hand-editing
+JSONC is fragile. With no `path` they operate on `~/.config/tau/config.json`.
+
+```bash
+tau config set provider openai          # write ~/.config/tau/config.json
+tau config set stream false             # booleans: true/false
+tau config set temperature 0.2          # numbers validated per field
+tau config set keys.openai sk-...       # per-provider API key
+tau config set keys '{"openai":"sk-"}'  # ...or the whole map as a JSON object
+tau config get provider                 # "openai"
+tau config get api_key --raw            # secrets are redacted without --raw
+tau config unset keys.openai            # remove a key
+tau config set provider openai ./ci.json  # explicit path (like validate)
+```
+
+- **Schema-checked**: `set` only accepts keys from the table above (plus
+  `keys.<provider>`), and values are coerced with the same rules
+  `config validate` reports — wrong types, unknown providers/modes, and
+  out-of-range numbers exit `80` before anything is written.
+- **Comment-preserving**: edits are surgical text splices, so the commented
+  `tau init` scaffold and hand-written comments survive a `config set`.
+- **Atomic**: writes go to a temp file renamed over the original; existing
+  permissions are kept, and a newly created file is `0600` (it may hold keys).
+  `set` creates the file — and `~/.config/tau/` — when they don't exist.
+- **git-config semantics**: `get`/`unset` of an absent key exit `1` with a
+  `not_found` envelope; a missing or malformed file also exits `1`. CLI misuse
+  (unknown key, bad value, stray args) exits `80`.
+- **Secrets**: `api_key` and `keys.*` values are masked (`***last4`) in all
+  `set`/`get` output; `get --raw` prints the stored value verbatim.
+
+JSON mode (the default) emits one object per invocation — e.g.
+`{"ok":true,"path":…,"key":"provider","value":"openai","created":false}` for
+`set`, `{"path":…,"key":…,"set":true,"value":…}` for `get`, and
+`{"ok":true,…,"removed":true}` for `unset`. `--mode text` prints the bare value
+for `get` and one human-readable line for `set`/`unset`.
+
+## Editing the config file interactively
+
+`tau config edit [path]` opens the config file in your editor — the human
+counterpart to `config set`, for when you'd rather edit JSONC by hand. The
+editor command resolves like git's: `TAU_EDITOR` > `VISUAL` > `EDITOR` >
+`vi` (`notepad` on Windows), run through the system shell so values with
+arguments like `EDITOR="code --wait"` work.
+
+```bash
+tau config edit                     # edit ~/.config/tau/config.json
+tau config edit ./ci.json           # edit an explicit file
+TAU_EDITOR="code --wait" tau config edit
+```
+
+- **Missing file**: seeded with the commented `tau init` scaffold first
+  (`"created":true` in the JSON output), so the editor opens on real content.
+- **Validated on save**: when the editor exits cleanly, the file is checked
+  with the same rules as `config validate`. On a clean save the JSON report is
+  `{"ok":true,"path":…,"editor":…,"created":bool,"valid":true}` (or
+  `<path>: ok` in text mode). On failure the report lists every problem —
+  misspelled keys include `did you mean "…"?` hints — the file stays on disk
+  so you can rerun `tau config edit` (or fix with `config set`), and tau exits
+  `1`.
+- **Editor failures**: an editor that exits non-zero or can't be launched
+  emits an `editor_failed` envelope and exits `1`; `80` for CLI misuse.
 
 ---
 
