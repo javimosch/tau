@@ -728,6 +728,46 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config get provider --mode text)
   if [ "$out" = "deepseek" ]; then ok "get reads commented file" 0 0; else ok "get reads commented file" 1 0; fi
 
+  # Round-trip property sweep: every field kind set → get → unset restores the
+  # pre-edit state and never disturbs unrelated members.
+  printf '{\n  "plugin_flags": ["--fast", "a,b", "c}d", {"deep": [1]}],\n  "provider": "xiaomi"\n}\n' > "$cfg"
+  local rt_fails=0
+  for pair in "provider|openai" "model|m-42" "mode|text" "stream|true" "temperature|0.25" "max_tokens|256" "timeout_ms|5000"; do
+    k="${pair%%|*}"; v="${pair#*|}"
+    HOME="$mock_home" "$BIN" config set "$k" "$v" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+    got=$(HOME="$mock_home" "$BIN" config get "$k" --mode text 2>/dev/null) || rt_fails=$((rt_fails+1))
+    [ "$got" = "$v" ] || rt_fails=$((rt_fails+1))
+    HOME="$mock_home" "$BIN" config unset "$k" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+    HOME="$mock_home" "$BIN" config get "$k" >/dev/null 2>&1 && rt_fails=$((rt_fails+1))
+  done
+  ok "round-trip sweep set->get->unset (7 fields)" "$rt_fails" 0
+
+  # Nested keys.<provider> round-trip + unrelated array member preserved.
+  rt_fails=0
+  for p in openai deepseek; do
+    HOME="$mock_home" "$BIN" config set "keys.$p" "sk-rt-$p" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+    got=$(HOME="$mock_home" "$BIN" config get "keys.$p" --raw --mode text 2>/dev/null) || rt_fails=$((rt_fails+1))
+    [ "$got" = "sk-rt-$p" ] || rt_fails=$((rt_fails+1))
+  done
+  ok "nested keys.<provider> set->get round-trip" "$rt_fails" 0
+  contains "unrelated array member survives sets" "$(cat "$cfg")" '"plugin_flags": ["--fast", "a,b", "c}d", {"deep": [1]}]'
+  for p in openai deepseek; do
+    HOME="$mock_home" "$BIN" config unset "keys.$p" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+  done
+  HOME="$mock_home" "$BIN" config unset plugin_flags >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+  ok "nested keys.<provider> + array-member unset round-trip" "$rt_fails" 0
+  # The sweep replaced+unset every schema key and plugin_flags; the emptied
+  # keys map remains as a valid (empty) object.
+  if grep -q '"provider"\|"plugin_flags"' "$cfg"; then
+    ok "swept keys fully removed" 1 0
+  else
+    ok "swept keys fully removed" 0 0
+  fi
+  HOME="$mock_home" "$BIN" config get keys >/dev/null 2>&1
+  ok "emptied keys map still readable" "$?" 0
+  out=$(HOME="$mock_home" "$BIN" config validate)
+  contains "file validates after round-trips" "$out" '"ok":true'
+
   # Malformed file -> exit 1 invalid_config (never silently clobbers).
   printf '{"provider": "openai",\n' > "$cfg"
   out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?

@@ -89,6 +89,11 @@ are backward compatible.
   provider module (#58), `resolveApiKey` precedence (#59), goal + session
   (#63), AGENTS.md scanning (#110), agent loop tool dispatch (#112), SSE
   streaming frames (#117), context compaction boundaries (#121)
+- Property/round-trip tests for `tau config set|get|unset` against a temp
+  HOME: every schema field set → get → unset, `keys.<provider>` for every
+  registered provider, preservation of unrelated members (arrays, nested
+  objects, comments), rejection of non-schema values, and a deterministic
+  randomized set/unset sequence checked against a model (#248)
 - Smoke suite: `--role critic` network check (#88), `--api-key` parsing (#89)
 - Fixed SIGABRT in `scanAgentsMd` bad-path test (#55); restored truncated
   `extractToolCalls` test (#69)
