@@ -1285,7 +1285,7 @@ test "formatErrorJson emits the golden envelope including hint and docs link" {
     const got = try formatErrorJson(gpa, 80, "invalid_argument", "bad flag --nope", false);
     defer gpa.free(got);
     try std.testing.expectEqualStrings(
-        "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"bad flag --nope\",\"recoverable\":false,\"hint\":\"run `tau --help` (or `tau --help-json`) for the valid flags and values\",\"docs\":\"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md\"}}\n",
+        "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"bad flag --nope\",\"recoverable\":false,\"hint\":\"run `tau --help` (or `tau --help-json`) for the valid flags and values\",\"docs\":\"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md\",\"explain\":\"tau explain 80\",\"catalog\":\"https://github.com/javimosch/tau/blob/master/docs/errors.md\"}}\n",
         got,
     );
 }

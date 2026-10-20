@@ -4,6 +4,8 @@ const configfile = @import("configfile.zig");
 const jsonmod = @import("json.zig");
 const term = @import("term.zig");
 
+const errors_doc_url = @import("version.zig").errors_doc_url;
+
 /// One environment API key detected on this machine: the provider whose
 /// env_keys matched and the name of the variable that was set.
 pub const DetectedKey = struct {
@@ -152,12 +154,15 @@ fn appendJsonStr(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u
     try buf.append(arena, '"');
 }
 
+// Minimal-envelope emitter for `tau init` — predates the catalog envelope and
+// stays intentionally small, but still carries the explain/catalog footer so
+// every failure points at the offline catalog.
 fn printErr(arena: std.mem.Allocator, code: u8, err_type: []const u8, message: []const u8) void {
     const me = jsonmod.escapeAlloc(arena, message) catch {
-        term.err("{\"err\":{\"code\":110,\"type\":\"internal_error\"}}\n");
+        term.err("{\"err\":{\"code\":110,\"type\":\"internal_error\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n");
         return;
     };
-    const j = std.fmt.allocPrint(arena, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\"}}}}\n", .{ code, err_type, me }) catch return;
+    const j = std.fmt.allocPrint(arena, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ code, err_type, me, code, errors_doc_url }) catch return;
     term.err(j);
 }
 

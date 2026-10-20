@@ -14,6 +14,10 @@ pub const troubleshooting_doc_url = "https://github.com/javimosch/tau/blob/maste
 /// link here instead of the generic troubleshooting page.
 pub const providers_doc_url = "https://github.com/javimosch/tau/blob/master/docs/providers.md";
 
+/// Generated error-catalog URL. Embedded in every `{"err":...}` envelope as
+/// `catalog` so the full code/type/cause/hint table is one hop away.
+pub const errors_doc_url = "https://github.com/javimosch/tau/blob/master/docs/errors.md";
+
 /// GitHub "latest release" API endpoint queried by the update check
 /// (`tau version --check`, `tau doctor` update_available). TAU_UPDATE_URL
 /// overrides it.

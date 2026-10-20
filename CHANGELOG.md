@@ -16,6 +16,11 @@ are backward compatible.
 
 ### Added
 
+- Error envelopes now carry a trailing `explain`/`catalog` footer —
+  `"explain":"tau explain <code>"` is a ready-to-run command agents can exec
+  verbatim, and `"catalog"` links to the generated
+  [errors.md](docs/errors.md) table; both fields are pinned byte-for-byte by
+  the golden error-contract suite (#250)
 - `tau bug` — pre-filled GitHub issue URL carrying the redacted
   `doctor --report` diagnostics bundle (`--title`/`--body`/`--labels`,
   `--open` launches the system browser via `$BROWSER` or the platform

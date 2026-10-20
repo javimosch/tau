@@ -141,7 +141,7 @@ Auth envelopes point here via `docs`; other error classes keep pointing at
 [troubleshooting.md](troubleshooting.md):
 
 ```json
-{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"hint":"set OPENAI_API_KEY env var, or use --api-key <key>","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md"}}
+{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"hint":"set OPENAI_API_KEY env var, or use --api-key <key>","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md","explain":"tau explain 106","catalog":"https://github.com/javimosch/tau/blob/master/docs/errors.md"}}
 ```
 
 Machine-readable exits: `106` = auth failure, `80` = unknown provider name,

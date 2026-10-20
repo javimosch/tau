@@ -6,7 +6,7 @@ tau reports failures on **stderr** as a single-line JSON envelope — even in
 `--mode text`:
 
 ```json
-{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"hint":"set OPENAI_API_KEY env var, or use --api-key <key>","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md"}}
+{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai' — set OPENAI_API_KEY env var, or use --api-key <key>","recoverable":false,"hint":"set OPENAI_API_KEY env var, or use --api-key <key>","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md","explain":"tau explain 106","catalog":"https://github.com/javimosch/tau/blob/master/docs/errors.md"}}
 ```
 
 - `code` is also the process exit code — scripts can branch on `$?`.
@@ -16,6 +16,12 @@ tau reports failures on **stderr** as a single-line JSON envelope — even in
 - `docs` links to the guide for that error class — auth failures (code 106)
   link to [providers.md](providers.md), everything else links back to this
   page (`https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md`).
+- `explain` is the ready-to-run `tau explain <code>` command — it prints the
+  catalog entry (cause + fix + docs link) offline. Agents can exec it
+  verbatim.
+- `catalog` links to [errors.md](errors.md), the generated catalog of every
+  error code. `explain` and `catalog` are always the last fields in the
+  envelope.
 
 ## Stable error catalog
 

@@ -17,6 +17,7 @@ const debuglog = @import("debuglog.zig");
 
 const doc_url = @import("version.zig").troubleshooting_doc_url;
 const providers_doc_url = @import("version.zig").providers_doc_url;
+const errors_doc_url = @import("version.zig").errors_doc_url;
 
 /// One entry in the stable error catalog (docs/troubleshooting.md mirrors
 /// it; docs/errors.md is generated from it by scripts/gen-errors-doc.py).
@@ -114,9 +115,12 @@ pub const Opts = struct {
 };
 
 /// Serialize the canonical envelope:
-/// {"err":{"code":N,"type":"T","message":"M","recoverable":B,"hint":"H","docs":"U"[,"debug_log":"P"]}}
-/// debug_log is spliced in only when --debug opened a diagnostic log.
-/// Caller owns the returned slice.
+/// {"err":{"code":N,"type":"T","message":"M","recoverable":B,"hint":"H","docs":"U"[,"debug_log":"P"],"explain":"tau explain N","catalog":"U"}}
+/// debug_log is spliced in only when --debug opened a diagnostic log. The
+/// trailing `explain`/`catalog` fields are the envelope footer — a stable,
+/// machine-actionable pointer (an agent can exec err.explain verbatim) that
+/// keeps the envelope single-line per the stderr contract. Caller owns the
+/// returned slice.
 pub fn format(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opts) ![]u8 {
     const te = try json.escapeAlloc(a, opts.type_name orelse spec.type_name);
     defer a.free(te);
@@ -129,7 +133,7 @@ pub fn format(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opts)
     // When --debug opened a diagnostic log, link it so bug reports can attach it.
     const suf = debuglog.envelopeSuffix(a) orelse "";
     defer if (suf.len > 0) a.free(suf);
-    return std.fmt.allocPrint(a, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"{s}}}}}\n", .{ spec.code, te, me, opts.recoverable orelse spec.recoverable, he, de, suf });
+    return std.fmt.allocPrint(a, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"{s},\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ spec.code, te, me, opts.recoverable orelse spec.recoverable, he, de, suf, spec.code, errors_doc_url });
 }
 
 /// Print the envelope to stderr. Best-effort: on OOM a stack-formatted
@@ -199,9 +203,9 @@ pub fn formatEntryHuman(a: std.mem.Allocator, spec: Spec) ![]u8 {
 /// OOM path: spec fields and doc_url are comptime-trusted literals (no
 /// escaping needed), formatted into a stack buffer.
 fn emitFallback(write: *const fn ([]const u8) void, spec: Spec) void {
-    var buf: [768]u8 = undefined;
-    const j = std.fmt.bufPrint(&buf, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"internal error\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"}}}}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.hint, spec.docs }) catch
-        "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"internal error\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\"}}\n";
+    var buf: [1024]u8 = undefined;
+    const j = std.fmt.bufPrint(&buf, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"internal error\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\",\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.hint, spec.docs, spec.code, errors_doc_url }) catch
+        "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"internal error\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n";
     write(j);
 }
 
@@ -214,13 +218,13 @@ const testing = std.testing;
 /// Expected golden envelope line for each catalog spec (same order as `specs`).
 /// Deliberate changes must update this table and docs/troubleshooting.md.
 const golden = [_][]const u8{
-    "{\"err\":{\"code\":1,\"type\":\"not_found\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"the message names what was not found — check the name/path and retry\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"run `tau --help` (or `tau --help-json`) for the valid flags and values\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":82,\"type\":\"missing_required_field\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"the message names the missing input — supply it and retry\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":105,\"type\":\"Timeout\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":106,\"type\":\"AuthFailed\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY\",\"docs\":\"" ++ providers_doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":111,\"type\":\"unimplemented\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"not supported on this platform — the message names the workaround\",\"docs\":\"" ++ doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":1,\"type\":\"not_found\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"the message names what was not found — check the name/path and retry\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 1\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":80,\"type\":\"invalid_argument\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"run `tau --help` (or `tau --help-json`) for the valid flags and values\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 80\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":82,\"type\":\"missing_required_field\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"the message names the missing input — supply it and retry\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 82\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":105,\"type\":\"Timeout\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 105\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":106,\"type\":\"AuthFailed\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY\",\"docs\":\"" ++ providers_doc_url ++ "\",\"explain\":\"tau explain 106\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":111,\"type\":\"unimplemented\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"not supported on this platform — the message names the workaround\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 111\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
 };
 
 test "golden envelope bytes for every catalog spec" {
@@ -249,7 +253,7 @@ test "format honors type/hint/recoverable/docs overrides" {
     });
     defer gpa.free(got);
     try testing.expectEqualStrings(
-        "{\"err\":{\"code\":110,\"type\":\"HTTPRequestFailed\",\"message\":\"boom\",\"recoverable\":true,\"hint\":\"check TAU_ENDPOINT\",\"docs\":\"https://example.com/fix\"}}\n",
+        "{\"err\":{\"code\":110,\"type\":\"HTTPRequestFailed\",\"message\":\"boom\",\"recoverable\":true,\"hint\":\"check TAU_ENDPOINT\",\"docs\":\"https://example.com/fix\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
         got,
     );
 }
@@ -370,4 +374,38 @@ test "formatEntryHuman renders cause, hint, and docs from the spec" {
         "exit 105  Timeout (recoverable: false)\n  cause: an HTTP request to the provider endpoint exceeded --timeout-ms\n  fix:   raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)\n  docs:  " ++ doc_url ++ "\n",
         got,
     );
+}
+
+test "envelope footer fields name the explain command and errors.md catalog" {
+    // The trailing explain/catalog fields are the envelope's footer: stable,
+    // machine-actionable, and the same on stdout (fleet) and stderr.
+    const gpa = testing.allocator;
+    for (specs) |s| {
+        const got = try format(gpa, s, "<msg>", .{});
+        defer gpa.free(got);
+        var buf: [40]u8 = undefined;
+        const needle = std.fmt.bufPrint(&buf, "\"explain\":\"tau explain {d}\"", .{s.code}) catch unreachable;
+        try testing.expect(std.mem.indexOf(u8, got, needle) != null);
+        const cat = "\"catalog\":\"" ++ errors_doc_url ++ "\"";
+        try testing.expect(std.mem.indexOf(u8, got, cat) != null);
+        // Footer is last: explain/catalog come after docs (and after
+        // debug_log when spliced) — nothing follows catalog before }}}.
+        const tail = "\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n";
+        try testing.expect(std.mem.endsWith(u8, got, tail));
+    }
+}
+
+test "explain footer resolves against the explain catalog" {
+    // The footer's promise must be true: every code an envelope can name (any
+    // u8 the process can exit with, including uncataloged ones) resolves via
+    // findSpec — except 0, which is success and never produces an envelope.
+    var buf: [8]u8 = undefined;
+    for (specs) |s| {
+        const q = std.fmt.bufPrint(&buf, "{d}", .{s.code}) catch unreachable;
+        try testing.expect(findSpec(q) != null);
+    }
+    const u = specFor(42);
+    try testing.expect(findSpec("42") != null);
+    try testing.expectEqual(@as(u8, 42), u.code);
+    try testing.expect(findSpec("0") == null);
 }

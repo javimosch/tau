@@ -2128,6 +2128,16 @@ test_group_dry_run() {
     [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 80: $err_env_err"
   fi
 
+  # Envelope footer (task #250): every envelope ends with a stable
+  # explain/catalog pointer — a ready-to-run `tau explain <code>` plus the
+  # generated docs/errors.md link, on both stderr and fleet's stdout channel.
+  if printf '%s' "$err_env_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("explain") == "tau explain 80"; assert "docs/errors.md" in e.get("catalog","")' 2>/dev/null; then
+    ok "envelope 80 footer has explain + catalog" 0 0
+  else
+    ok "envelope 80 missing explain/catalog footer" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 80 footer: $err_env_err"
+  fi
+
   # Error envelope for missing required field (exit 82)
   # fleet run without --goal writes to stdout via fleetRequires (term.out, not
   # term.err). --api-key fake: key resolution precedes the --goal check, so a
@@ -2144,6 +2154,12 @@ test_group_dry_run() {
   else
     ok "envelope 82 missing type/hint/docs" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 82: $err_82_out"
+  fi
+  if printf '%s' "$err_82_out" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; assert e.get("explain") == "tau explain 82"; assert "docs/errors.md" in e.get("catalog","")' 2>/dev/null; then
+    ok "envelope 82 (stdout) footer has explain + catalog" 0 0
+  else
+    ok "envelope 82 (stdout) missing explain/catalog footer" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 82 footer: $err_82_out"
   fi
 
   # Error envelope for internal error (exit 110) triggered by fake API key

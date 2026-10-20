@@ -18,7 +18,7 @@ in `--mode text` (fleet subcommands are the exception: they report on
 stdout):
 
 ```json
-{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai'","recoverable":false,"hint":"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md"}}
+{"err":{"code":106,"type":"AuthFailed","message":"no API key for provider 'openai'","recoverable":false,"hint":"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md","explain":"tau explain 106","catalog":"https://github.com/javimosch/tau/blob/master/docs/errors.md"}}
 ```
 
 | Field | Meaning |
@@ -30,6 +30,8 @@ stdout):
 | `hint` | Canned remediation for the error class; dynamic failures override it with a more specific fix. |
 | `docs` | Guide link for that error class (see the table below). |
 | `debug_log` | Present only when `--debug` opened a diagnostic log — attach it to bug reports. |
+| `explain` | Ready-to-run `tau explain <code>` command — prints this entry's cause and fix offline. Always the penultimate field; agents can exec it verbatim. |
+| `catalog` | Link back to this catalog. Always the last field — `explain`/`catalog` together form the envelope footer. |
 
 ## Catalog
 
