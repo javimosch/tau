@@ -66,6 +66,15 @@ export PATH="$PWD/zig-out/bin:$PATH"
 
 ### 3. Configure an API key
 
+Optional — scaffold a commented starter config first (detects which provider
+API keys are already exported, picks a matching provider, never copies secret
+values into the file):
+
+```bash
+./zig-out/bin/tau init          # writes ~/.config/tau/config.json
+./zig-out/bin/tau init --stdout # preview without writing
+```
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
@@ -424,7 +433,8 @@ Streaming output:
 
 ### Config File
 
-Optional config at `~/.config/tau/config.json`:
+Optional config at `~/.config/tau/config.json`. `tau init` writes a commented
+starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 
 ```json
 {
@@ -438,6 +448,25 @@ Optional config at `~/.config/tau/config.json`:
 ```
 
 CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md).
+
+Inspect the resolved effective config (config file + env + CLI flags merged) with `tau config show` — output is JSON and API keys are always redacted:
+
+```bash
+tau config show                          # what tau would use right now
+tau config show --provider openai        # preview flag overrides without running
+```
+
+Edit the file programmatically (git-config style — comments preserved, values
+schema-checked, writes atomic):
+
+```bash
+tau config set provider openai           # creates the file if missing
+tau config set keys.openai sk-...        # per-provider API key
+tau config get provider                  # read a value (secrets redacted)
+tau config unset keys.openai             # remove a key
+tau config validate                      # offline schema check (CI/pre-commit)
+tau config schema                        # JSON Schema for editor autocomplete
+```
 
 ### Providers
 
