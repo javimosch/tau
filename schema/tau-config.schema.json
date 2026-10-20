@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json",
+  "title": "tau configuration",
+  "description": "Schema for ~/.config/tau/config.json — a JSONC file (// and /* */ comments allowed). Every key is optional; `tau config validate` reports unknown keys.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string", "description": "Editor hint pointing at this schema. Written by `tau init`; accepted but ignored by the loader." },
+    "provider": { "type": "string", "enum": ["xiaomi", "openai", "deepseek", "opencode-go"], "description": "Active provider name — selects the API endpoint and default model. TAU_ENDPOINT overrides the endpoint." },
+    "model": { "type": "string", "description": "Model id, or 'provider/id' shorthand. Defaults to the provider's default model." },
+    "api_key": { "type": "string", "minLength": 1, "description": "Global API key — used only when no keys[] entry or provider env var matches. Stored in plaintext; prefer env vars." },
+    "keys": { "type": "object", "description": "Per-provider API keys — an entry outranks that provider's env var and the global api_key.", "propertyNames": { "enum": ["xiaomi", "openai", "deepseek", "opencode-go"] }, "additionalProperties": { "type": "string", "minLength": 1 } },
+    "mode": { "type": "string", "enum": ["text", "json"], "description": "Output format for results: 'json' (agent-friendly envelopes) or 'text' (human-readable prose)." },
+    "stream": { "type": "boolean", "description": "Stream responses token-by-token (SSE)." },
+    "thinking": { "type": "boolean", "description": "Emit reasoning/thinking chunks alongside the response." },
+    "debug": { "type": "boolean", "description": "Write perf stats and tool I/O diagnostics to stderr." },
+    "temperature": { "type": "number", "minimum": 0, "description": "Sampling temperature." },
+    "max_tokens": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Cap on output tokens per response." },
+    "timeout_ms": { "type": "integer", "minimum": 0, "description": "HTTP request timeout in milliseconds." },
+    "context_window": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Token capacity used for the auto-compaction threshold; defaults to the provider's context window." },
+    "auto_compact": { "type": "boolean", "description": "Auto-compact history when estimated tokens exceed compact_threshold of context_window." },
+    "compact_threshold": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of context_window that triggers auto-compaction." },
+    "compact_keep_recent_tokens": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Recent tokens kept verbatim through compaction." },
+    "goal_max_iterations": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Per-run agentic loop cap in /goal mode." },
+    "goal_max_continues": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Cross-invocation continuation cap for goal mode." }
+  },
+  "additionalProperties": false
+}

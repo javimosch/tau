@@ -239,6 +239,57 @@ tau --auto-agents-md \
   --mode text "follow project rules"     # Auto-load cwd/AGENTS.md
 ```
 
+#### 15. Effective Config (`tau config show`)
+```bash
+tau config show                          # Resolved config (file+env+flags), keys redacted
+tau config show --provider openai        # Preview flag overrides without running
+# → {"config_file":{...},"provider":"openai","api_key":{"set":true,"value":"***wxyz","source":"env OPENAI_API_KEY"},...}
+# api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
+```
+
+#### 15b. Config Validation (`tau config validate`)
+```bash
+tau config validate                      # Validate ~/.config/tau/config.json
+tau config validate ci/prod.json         # Validate an explicit file
+tau config validate --mode text          # Human-readable error lines
+# → {"path":"…","ok":false,"errors":[{"key":"provider","message":"…"}]}  (stdout)
+# Exit 0 = valid, 1 = problems found, 80 = CLI misuse. Fully offline; key
+# values are never echoed. For CI/pre-commit gates.
+```
+
+#### 15c. Config Editing (`tau config set|get|unset`)
+```bash
+tau config set provider openai           # Schema-checked write (creates file, 0600)
+tau config set keys.openai sk-...        # Per-provider key via keys.<provider>
+tau config get provider                  # Read a FILE value (JSON mode default)
+tau config get api_key --mode text       # → "***last4" (secrets redacted; --raw prints raw)
+tau config unset keys.openai             # Remove a key
+tau config set mode text ./ci.json       # Optional trailing path
+# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename).
+# Exit 0 ok; 1 = key/file not found or invalid file; 80 = bad key/value/args.
+```
+
+#### 15d. Interactive Config Editing (`tau config edit`)
+```bash
+tau config edit                        # Open ~/.config/tau/config.json in $EDITOR
+TAU_EDITOR="code --wait" tau config edit  # Editor: TAU_EDITOR > VISUAL > EDITOR > vi/notepad
+tau config edit ./ci.json              # Explicit path
+# Missing file → seeded with the commented `tau init` scaffold first.
+# On editor exit the file is validated (same checks/report as `config
+# validate`, incl. did-you-mean on misspelled keys); bad saves exit 1 but
+# stay on disk. Editor non-zero exit → editor_failed envelope, exit 1.
+```
+
+#### 15e. Config Schema (`tau config schema`)
+```bash
+tau config schema                          # JSON Schema (draft 2020-12) on stdout
+tau config schema > tau-config.schema.json # Export for editor wiring
+# Generated from FileConfig (can't drift); canonical copy checked in at
+# schema/tau-config.schema.json — regenerate after key changes with the
+# redirect above. `tau init` writes a "$schema" key pointing at the
+# published URL so editors autocomplete out of the box.
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
@@ -251,6 +302,17 @@ TAU_BIN="$HOME/ai/tau-custom/zig-out/bin/tau" a2a-spawn --cli tau --id custom --
 ```
 
 Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations 40 --timeout-ms 300000`.
+
+#### 15. Config Scaffolding
+```bash
+tau init                                 # Write commented starter ~/.config/tau/config.json
+tau init --stdout                        # Preview the scaffold without writing
+tau init --force                         # Overwrite an existing config
+tau init --provider openai               # Scaffold for a specific provider
+# Detects set provider env keys (marks them "*"), picks a matching provider,
+# and never copies secret values into the file. config.json is JSONC:
+# `//` and `/* */` comments are stripped on load.
+```
 
 ### Storage Paths
 
@@ -277,6 +339,7 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `src/fleet.zig` | Fleet orchestration | Fleet command changes |
 | `src/config.zig` | `Config` struct + `Role` enum + key resolution | Adding config fields |
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
+| `src/configedit.zig` | `tau config set|get|unset` JSONC splice editor | Config editing changes |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |
 | `src/llm/provider.zig` | LLM providers, HTTP, streaming | Adding providers |

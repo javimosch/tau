@@ -30,6 +30,25 @@ are backward compatible.
   expanded with copy-pasteable configs for JetBrains, VS Code, Neovim
   (avante.nvim, CodeCompanion.nvim), Emacs (agent-shell), and Toad (#158)
 - `tau models` subcommand — list providers and their default models
+- `tau config show` — print the resolved effective config (config file + env +
+  CLI flags merged) as JSON with API keys redacted and their source reported
+  (#140)
+- `tau config validate [path]` — offline config-file validation for CI and
+  pre-commit hooks; JSON report on stdout, exit 1 listing every problem
+  (unknown keys, type mismatches, bad provider/mode, range violations) (#177)
+- `tau config set|get|unset` — schema-validated, comment-preserving edits to
+  the config file (git-config model) for CI and agent-driven setup; `set`
+  creates the file atomically (`0600`), keys are `<field>` or `keys.<provider>`,
+  secrets are redacted in output unless `get --raw` (#202)
+- `tau config edit [path]` — open the config in `$EDITOR` (`TAU_EDITOR` >
+  `VISUAL` > `EDITOR` > `vi`/`notepad`), validated on save with the same
+  checks as `config validate`; a missing file is seeded with the `tau init`
+  scaffold and misspelled keys get `did you mean "…"?` hints (#212)
+- `tau config schema` — emit the config file's JSON Schema (draft 2020-12),
+  generated from the same `FileConfig` the loader and `config validate` use
+  so it cannot drift; a canonical copy is published at
+  `schema/tau-config.schema.json` and `tau init` writes a `$schema` key so
+  editors give autocomplete/validation out of the box (#218)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 
 ### Fixed
@@ -70,6 +89,11 @@ are backward compatible.
   provider module (#58), `resolveApiKey` precedence (#59), goal + session
   (#63), AGENTS.md scanning (#110), agent loop tool dispatch (#112), SSE
   streaming frames (#117), context compaction boundaries (#121)
+- Property/round-trip tests for `tau config set|get|unset` against a temp
+  HOME: every schema field set → get → unset, `keys.<provider>` for every
+  registered provider, preservation of unrelated members (arrays, nested
+  objects, comments), rejection of non-schema values, and a deterministic
+  randomized set/unset sequence checked against a model (#248)
 - Smoke suite: `--role critic` network check (#88), `--api-key` parsing (#89)
 - Fixed SIGABRT in `scanAgentsMd` bad-path test (#55); restored truncated
   `extractToolCalls` test (#69)

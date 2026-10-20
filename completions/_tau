@@ -66,6 +66,8 @@ _tau() {
                 'models:list available providers and models'
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+                'init:write a commented starter config (~/.config/tau/config.json)'
+                'config:inspect, validate, or edit the config (show|validate|set|get|unset|edit|schema)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -121,6 +123,78 @@ _tau() {
                         'load:load a skill into the system context by name'
                     )
                     _arguments '1: :_describe skill_subcommand skill_cmds'
+                    ;;
+
+                config)
+                    local curcontext="$curcontext" state line
+                    _arguments -C \
+                        '1: :->config_sub' \
+                        '*:: :->config_opts'
+                    case $state in
+                        config_sub)
+                            local -a config_cmds=(
+                                'show:print the resolved effective config (keys redacted)'
+                                'validate:check a config file (CI/pre-commit)'
+                                'set:set a config key to a value'
+                                'get:print a config key value (secrets redacted)'
+                                'unset:remove a config key'
+                                'edit:open the config in $EDITOR (validates on save)'
+                                'schema:print the config file JSON Schema (draft 2020-12)'
+                            )
+                            _describe 'config subcommand' config_cmds
+                            ;;
+                        config_opts)
+                            # $line[1] is the config subcommand just typed.
+                            case ${line[1]} in
+                                validate)
+                                    _arguments \
+                                        '--mode=[report format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                set)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '2:value:' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                get)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '--raw[print secret values unredacted]' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                unset)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                edit)
+                                    _arguments \
+                                        '--mode=[report format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                schema)
+                                    _arguments \
+                                        '--mode=[output format]:mode:(text json)'
+                                    ;;
+                                *)
+                                    # `config show` accepts the normal override
+                                    # flags so the merged result is previewed.
+                                    _arguments $global_opts
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+
+                init)
+                    _arguments \
+                        '--force[overwrite an existing config file]' \
+                        '--stdout[print the starter config without writing it]' \
+                        '--provider=[scaffold for a specific provider]:provider:(xiaomi openai deepseek opencode-go)'
                     ;;
 
                 models)
