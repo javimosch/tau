@@ -43,6 +43,9 @@ are backward compatible.
   without the flag it reports detected editors), and embeds the `doctor`
   health report; emits one NDJSON object per step plus a final verdict and
   exits non-zero when any step fails; idempotent on re-run
+- `docs/editors.md` — step-by-step ACP client setup guide for Zed, VS Code,
+  and Neovim mirroring `tau setup --client` output (statuses, written files,
+  snippet fallback, in-editor next steps) (#246)
 - Shell completions for fish and PowerShell (`completions/tau.fish`,
   `completions/tau.ps1`); all four scripts now complete `init`, `setup`,
   `doctor`, and `guide`
