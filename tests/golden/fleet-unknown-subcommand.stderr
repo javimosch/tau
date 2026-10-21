@@ -1,0 +1,1 @@
+{"err":{"code":80,"type":"invalid_argument","message":"unknown fleet argument: bogus","recoverable":false,"hint":"run `tau --help` (or `tau --help-json`) for the valid flags and values","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md","explain":"tau explain 80","catalog":"https://github.com/javimosch/tau/blob/master/docs/errors.md"}}
