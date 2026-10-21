@@ -16,6 +16,12 @@ are backward compatible.
 
 ### Added
 
+- `examples/clients/` — runnable editor/desktop config files that wire a
+  client to `tau acp serve`: Zed, VS Code, JetBrains (byte-identical to what
+  `tau setup --client <name> --yes` writes, verified in the `client-examples`
+  smoke group), Cursor (same `acp.agents` shape via the Open VSX extension),
+  and Claude Desktop via the mcacp MCP↔ACP bridge; the same group runs
+  `tau config validate` on the config `tau setup` writes (#253)
 - Error envelopes now carry a trailing `explain`/`catalog` footer —
   `"explain":"tau explain <code>"` is a ready-to-run command agents can exec
   verbatim, and `"catalog"` links to the generated
