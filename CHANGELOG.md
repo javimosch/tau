@@ -193,6 +193,13 @@ are backward compatible.
   (`--human` for prose), or lists the whole catalog with no argument.
   Sourced from the same `src/errors.zig` registry that generates
   docs/errors.md (#226)
+- Coverage-guided fuzz harness for tau's input parsers — `config
+  set|get|unset` document splices (`src/configedit.zig`), argv parsing
+  (`src/args.zig`), config-file loading (`src/configfile.zig`), and ACP
+  JSON-RPC frames (`src/acp.zig`). Each harness is a `std.testing.fuzz` unit
+  test: the seed corpus runs under plain `zig build test` on every platform,
+  and a `fuzz` job in the `ci` workflow mutates the corpus for a bounded run
+  via `zig build test --fuzz` (`scripts/fuzz.sh` for local use) (#256)
 
 ### Fixed
 

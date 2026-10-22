@@ -171,3 +171,43 @@ jobs:
           ./install.ps1 -Dir "$env:RUNNER_TEMP/tau-bin"
           & "$env:RUNNER_TEMP/tau-bin/tau.exe" --version
           & ./scripts/e2e-first-run.ps1 -Tau "$env:RUNNER_TEMP/tau-bin\tau.exe"
+
+  fuzz:
+    # Bounded coverage-guided fuzz of tau's input parsers — `config
+    # set|get|unset` document splices, argv parsing, config-file loading, and
+    # the ACP JSON-RPC frame handler. `zig build test --fuzz=N` rebuilds the
+    # test binary with coverage instrumentation and mutates each seed corpus
+    # for N runs per harness; the same seeds run as ordinary unit tests on
+    # every `zig build test` matrix leg.
+    #
+    # Two Zig 0.16 constraints shape this job: `--fuzz` is POSIX-only (no
+    # Windows), and the 0.16.0 test runner fails to compile in fuzz mode under
+    # Debug — scripts/fuzz.sh therefore builds ReleaseSafe. A crash writes the
+    # offending input to .zig-cache/f/crash, uploaded below for debugging.
+    name: fuzz (linux-x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        shell: bash
+        run: |
+          curl -fsSL "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$HOME/zig"
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$HOME/zig" --strip-components=1
+          "$HOME/zig/zig" version
+
+      - name: Bounded fuzz run
+        shell: bash
+        env:
+          ZIG: "$HOME/zig/zig"
+        run: ./scripts/fuzz.sh 10000
+
+      - name: Upload crash corpus
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash
+          path: .zig-cache/f/
+          if-no-files-found: ignore

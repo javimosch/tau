@@ -1301,3 +1301,106 @@ test "runEditor: no path and no HOME is an argument error" {
         else => @panic("expected invalid_argument"),
     }
 }
+
+// ── Fuzz harness ─────────────────────────────────────────────────────────────
+// Runs deterministically on the seed corpus under `zig build test`, and under
+// coverage-guided mutation with `zig build test --fuzz=<N>` (POSIX 64-bit only
+// — see scripts/fuzz.sh and the `fuzz` job in .github/workflows/ci.yml).
+
+const fuzzseeds = @import("fuzzseeds.zig");
+
+/// One fuzzed `config set|unset|get` pass over a generated document: scan the
+/// doc, resolve a (possibly malformed) dotted key, and — for set — coerce a raw
+/// value. Rejects at any stage (bad JSONC, unknown key, uncoercible value) are
+/// valid outcomes; what must never happen is a "successful" edit leaving a
+/// document the scanner can no longer parse, or a `get` returning a span
+/// outside the input.
+fn fuzzConfigEdit(_: void, smith: *std.testing.Smith) !void {
+    var doc_buf: [256]u8 = undefined;
+    var key_buf: [64]u8 = undefined;
+    var val_buf: [128]u8 = undefined;
+    const doc = doc_buf[0..smith.slice(&doc_buf)];
+    const key = key_buf[0..smith.slice(&key_buf)];
+    const val = val_buf[0..smith.slice(&val_buf)];
+    const sub_i = smith.index(3); // 0 = set, 1 = unset, 2 = get
+
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    const obj = scanDoc(a, doc) catch return;
+    // Every reported span must index the original bytes.
+    for (obj.members) |m| {
+        try testing.expect(m.key_start < doc.len);
+        try testing.expect(m.value_start < m.value_end and m.value_end <= doc.len);
+        if (m.leading_comma) |c| try testing.expect(c < doc.len);
+        if (m.trailing_comma) |c| try testing.expect(c < doc.len);
+    }
+
+    const kp = switch (parseKeyPath(a, key, sub_i == 0)) {
+        .ok => |k| k,
+        .fail => return,
+    };
+
+    if (sub_i == 0) {
+        const token = switch (coerceValue(a, kp, val) catch return) {
+            .ok => |t| t,
+            .fail => return,
+        };
+        const new_bytes = applySet(a, doc, obj, kp, token) catch return;
+        // Invariant 1: a successful set produces a parseable document.
+        const new_obj = scanDoc(a, new_bytes) catch {
+            std.debug.print("config set corrupted doc\nkey={s} val={s}\nbefore: {s}\nafter:  {s}\n", .{ key, val, doc, new_bytes });
+            return error.SetCorruptedDoc;
+        };
+        // Invariant 2: the coerced token is reachable through the key. The
+        // `keys` whole-map coercion echoes the raw literal verbatim, so a
+        // token may carry outer whitespace that never lands inside the stored
+        // value's span — compare trimmed.
+        const got = (try lookupValue(a, .{ .bytes = new_bytes, .obj = new_obj }, kp)) orelse {
+            std.debug.print("config set lost the value\nkey={s} token={s}\nafter: {s}\n", .{ key, token, new_bytes });
+            return error.SetLostValue;
+        };
+        try testing.expectEqualStrings(std.mem.trim(u8, token, " \t\r\n"), got);
+    } else if (sub_i == 1) {
+        const new_bytes = (applyUnset(a, .{ .bytes = doc, .obj = obj }, kp) catch return) orelse return;
+        const new_obj = scanDoc(a, new_bytes) catch {
+            std.debug.print("config unset corrupted doc\nkey={s}\nbefore: {s}\nafter:  {s}\n", .{ key, doc, new_bytes });
+            return error.UnsetCorruptedDoc;
+        };
+        // The key must be gone (lookupValue resolves the last member match,
+        // same as the loader's shadowing semantics).
+        if (try lookupValue(a, .{ .bytes = new_bytes, .obj = new_obj }, kp)) |_| {
+            std.debug.print("config unset left the key behind\nkey={s}\nafter: {s}\n", .{ key, new_bytes });
+            return error.UnsetKeptKey;
+        }
+    } else {
+        // get: any returned value slice must stay inside the scanned doc.
+        if (try lookupValue(a, .{ .bytes = doc, .obj = obj }, kp)) |rawv| {
+            const off = @intFromPtr(rawv.ptr) - @intFromPtr(doc.ptr);
+            try testing.expect(off + rawv.len <= doc.len);
+        }
+    }
+}
+
+test "fuzz: config set/unset/get never corrupt the document" {
+    try std.testing.fuzz({}, fuzzConfigEdit, .{ .corpus = &.{
+        // set a known field on a commented doc
+        fuzzseeds.slice("// mine\n{\n  \"provider\": \"xiaomi\",\n  \"debug\": false\n}\n") ++ fuzzseeds.slice("provider") ++ fuzzseeds.slice("openai") ++ fuzzseeds.int(0),
+        // set a keys.<provider> entry
+        fuzzseeds.slice("{ \"keys\": { \"openai\": \"sk-1\" } }") ++ fuzzseeds.slice("keys.deepseek") ++ fuzzseeds.slice("sk-xyz") ++ fuzzseeds.int(0),
+        // unset an existing field
+        fuzzseeds.slice("{ \"mode\": \"text\", \"debug\": true }") ++ fuzzseeds.slice("mode") ++ fuzzseeds.slice("") ++ fuzzseeds.int(1),
+        // unset a keys entry
+        fuzzseeds.slice("{ \"keys\": { \"openai\": \"sk-1\", \"deepseek\": \"sk-2\" } }") ++ fuzzseeds.slice("keys.openai") ++ fuzzseeds.slice("") ++ fuzzseeds.int(1),
+        // get through comments
+        fuzzseeds.slice("{ /* c */ \"temperature\": 0.5, \"keys\": {\"xiaomi\": \"k\"} }") ++ fuzzseeds.slice("temperature") ++ fuzzseeds.slice("") ++ fuzzseeds.int(2),
+        // duplicate keys shadow (unset must remove every occurrence)
+        fuzzseeds.slice("{ \"model\": \"a\", \"model\": \"b\" }") ++ fuzzseeds.slice("model") ++ fuzzseeds.slice("gpt-1") ++ fuzzseeds.int(0),
+        // malformed docs and keys are rejects, not crashes
+        fuzzseeds.slice("{ \"provider\": ") ++ fuzzseeds.slice("provider") ++ fuzzseeds.slice("openai") ++ fuzzseeds.int(0),
+        fuzzseeds.slice("{}") ++ fuzzseeds.slice("keys") ++ fuzzseeds.slice("{\"openai\":\"sk-9\"}") ++ fuzzseeds.int(0),
+        fuzzseeds.slice("[]") ++ fuzzseeds.slice("x") ++ fuzzseeds.slice("1") ++ fuzzseeds.int(1),
+        fuzzseeds.slice("{\"a\":1}") ++ fuzzseeds.slice("..") ++ fuzzseeds.slice("..") ++ fuzzseeds.int(2),
+    } });
+}

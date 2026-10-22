@@ -459,3 +459,49 @@ test "load: commented (JSONC) config file parses cleanly" {
     // No invalid-JSON warning was produced.
     try testing.expectEqual(@as(?[]const u8, null), cfg.config_warning);
 }
+
+// ── Fuzz harness ─────────────────────────────────────────────────────────────
+// Runs deterministically on the seed corpus under `zig build test`, and under
+// coverage-guided mutation with `zig build test --fuzz=<N>` (POSIX 64-bit only
+// — see scripts/fuzz.sh and the `fuzz` job in .github/workflows/ci.yml).
+
+const fuzzseeds = @import("fuzzseeds.zig");
+
+/// One fuzzed config.json through `load`. stripComments + the typed
+/// FileConfig parse contain all the index arithmetic worth hammering; `load`
+/// itself is exercised end-to-end via a temp HOME so the result stays faithful
+/// (warning paths included). Any Config shape is acceptable — the contract is
+/// only "no crash, no UB, graceful degradation to defaults".
+fn fuzzConfigLoad(_: void, smith: *std.testing.Smith) !void {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    var buf: [512]u8 = undefined;
+    const bytes = buf[0..smith.slice(&buf)];
+
+    var th = try TestHome.init(a);
+    defer th.deinit();
+    try th.writeConfig(a, bytes);
+
+    const cfg = load(testing.io, a, &th.env);
+    // Loading the same bytes twice must be deterministic — the parse is pure.
+    const cfg2 = load(testing.io, a, &th.env);
+    try testing.expectEqualStrings(cfg.provider, cfg2.provider);
+    try testing.expectEqualStrings(cfg.model, cfg2.model);
+    try testing.expect((cfg.config_warning == null) == (cfg2.config_warning == null));
+    if (cfg.config_warning) |w| try testing.expectEqualStrings(w, cfg2.config_warning.?);
+}
+
+test "fuzz: config file loading survives arbitrary bytes" {
+    try std.testing.fuzz({}, fuzzConfigLoad, .{ .corpus = &.{
+        fuzzseeds.slice("{ \"provider\": \"openai\", \"model\": \"gpt-x\" }"),
+        fuzzseeds.slice("// comment\n{\n  \"keys\": { \"deepseek\": \"sk-1\" },\n  \"mode\": \"text\"\n}\n"),
+        fuzzseeds.slice("{ \"temperature\": 1e309, \"max_tokens\": -1, \"stream\": \"yes\" }"),
+        fuzzseeds.slice("{ \"keys\": [1,2,3], \"keys\": {\"openai\": 7} }"),
+        fuzzseeds.slice("/* unterminated"),
+        fuzzseeds.slice("{ \"a\": \"b\x00c\" }"),
+        fuzzseeds.slice("\xff\xfe{\"provider\":null}"),
+        fuzzseeds.slice(""),
+    } });
+}
