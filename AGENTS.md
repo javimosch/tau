@@ -455,7 +455,8 @@ tau upgrade --dry-run            # Print the resolved plan; install nothing
 
 ```bash
 zig build                    # Compile (fast)
-zig build test               # Full unit test suite
+zig build test               # Full unit test suite (fuzz harnesses run their seed corpus)
+./scripts/fuzz.sh [N]        # Bounded coverage-guided fuzz of input parsers (POSIX only)
 ./scripts/smoke.sh           # Offline smoke: help, flags, parsing
 ./scripts/smoke.sh --net     # Online smoke: LLM calls (needs API key)
 ./scripts/smoke.sh --bench   # Resource benchmarks

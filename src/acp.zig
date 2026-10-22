@@ -912,3 +912,73 @@ test "formatAcpDaemonJson includes optional note" {
     const acp = parsed.value.object.get("acp").?;
     try std.testing.expectEqualStrings("already running", acp.object.get("note").?.string);
 }
+
+// ── Fuzz harness ─────────────────────────────────────────────────────────────
+// Runs deterministically on the seed corpus under `zig build test`, and under
+// coverage-guided mutation with `zig build test --fuzz=<N>` (POSIX 64-bit only
+// — see scripts/fuzz.sh and the `fuzz` job in .github/workflows/ci.yml).
+
+const fuzzseeds = @import("fuzzseeds.zig");
+
+/// One fuzzed newline-delimited JSON-RPC frame through handleMessage, exactly
+/// as serveConn dispatches it. Fully offline: the env map has no HOME (session
+/// persistence no-ops) and cfg.api_key is null (session/prompt answers -32000
+/// before any provider/tool call).
+fn fuzzAcpFrame(_: void, smith: *std.testing.Smith) !void {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    var line_buf: [512]u8 = undefined;
+    const line = std.mem.trim(u8, line_buf[0..smith.slice(&line_buf)], " \t\r\n");
+    if (line.len == 0) return;
+
+    var env = std.process.Environ.Map.init(a);
+    var rr = std.Io.Reader.fixed("");
+    var out = std.Io.Writer.Allocating.init(a);
+    defer out.deinit();
+
+    // session/new and session/load chdir to the client-supplied cwd (Linux
+    // only, via chdirBestEffort) — snapshot ours so a fuzzed path like "/"
+    // can't strand the test process in a different directory.
+    var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var cwd_saved = false;
+    if (builtin.os.tag == .linux) {
+        const rc = std.os.linux.getcwd(&cwd_buf, cwd_buf.len);
+        cwd_saved = std.os.linux.errno(rc) == .SUCCESS;
+    }
+
+    client_fs_read = false;
+    client_fs_write = false;
+    handleMessage(std.testing.io, a, cfgmod.Config{}, &env, &rr, line, &out.writer) catch {};
+
+    if (builtin.os.tag == .linux) {
+        if (cwd_saved) _ = std.os.linux.chdir(@ptrCast(&cwd_buf));
+    }
+
+    // Framing contract: everything emitted must be whole lines of valid JSON.
+    var it = std.mem.splitScalar(u8, out.written(), '\n');
+    while (it.next()) |l| {
+        const t = std.mem.trim(u8, l, " \t\r");
+        if (t.len == 0) continue;
+        var parsed = std.json.parseFromSlice(std.json.Value, a, t, .{}) catch {
+            std.debug.print("acp emitted a non-JSON line: {s}\ninput: {s}\n", .{ t, line });
+            return error.InvalidAcpFrame;
+        };
+        parsed.deinit();
+    }
+}
+
+test "fuzz: JSON-RPC frame handling never crashes or emits invalid frames" {
+    try std.testing.fuzz({}, fuzzAcpFrame, .{ .corpus = &.{
+        fuzzseeds.slice("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"clientCapabilities\":{\"fs\":{\"readTextFile\":true,\"writeTextFile\":true}}}}"),
+        fuzzseeds.slice("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/tmp\"}}"),
+        fuzzseeds.slice("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/load\",\"params\":{\"sessionId\":\"s-1\",\"cwd\":\".\"}}"),
+        fuzzseeds.slice("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s-1\",\"prompt\":[{\"text\":\"hi\"}]}}"),
+        fuzzseeds.slice("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"no/such/method\"}"),
+        fuzzseeds.slice("{\"method\":\"session/cancel\"}"),
+        fuzzseeds.slice("not json at all"),
+        fuzzseeds.slice("[1,2,3]"),
+        fuzzseeds.slice("{\"id\":[],\"method\":{\"x\":1},\"params\":\"\xf0\x28\x8c\xbc\"}"),
+    } });
+}

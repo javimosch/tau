@@ -2153,3 +2153,52 @@ fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {
     const msg = try std.fmt.allocPrint(arena, "unknown provider '{s}' — valid providers: {s} (run 'tau models' for details)", .{ given, buf.items });
     return .{ .action = .err, .err_msg = msg };
 }
+
+// ── Fuzz harness ─────────────────────────────────────────────────────────────
+// Runs deterministically on the seed corpus under `zig build test`, and under
+// coverage-guided mutation with `zig build test --fuzz=<N>` (POSIX 64-bit only
+// — see scripts/fuzz.sh and the `fuzz` job in .github/workflows/ci.yml).
+
+const fuzzseeds = @import("fuzzseeds.zig");
+
+/// One generated argv passed to `parse`. Up to 32 tokens of <=128 bytes each.
+/// A leading '@' is rewritten to '#': tau treats `@path` as file injection
+/// (positionals and `--schema @file` both read at parse time), and a
+/// fuzzer-chosen path like `/dev/zero` would hang or exhaust memory — the
+/// file-read branch is covered by the unit tests, not here.
+fn fuzzArgv(_: void, smith: *std.testing.Smith) !void {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+
+    var bufs: [32][128]u8 = undefined;
+    var argv: [33][]const u8 = undefined;
+    argv[0] = "tau";
+    var argc: usize = 1;
+    while (argc < argv.len and !smith.eos()) {
+        const n = smith.slice(&bufs[argc - 1]);
+        const tok = bufs[argc - 1][0..n];
+        if (tok.len > 0 and tok[0] == '@') tok[0] = '#';
+        argv[argc] = tok;
+        argc += 1;
+    }
+
+    var env = std.process.Environ.Map.init(a);
+    const p = parse(std.testing.io, a, argv[0..argc], &env, .{}) catch return;
+    // Every rejection must carry the message main prints in the {"err"}
+    // envelope — action == .err with a null err_msg is a bug.
+    if (p.action == .err) try std.testing.expect(p.err_msg != null);
+}
+
+test "fuzz: argv parser survives arbitrary flag/positional mixes" {
+    try std.testing.fuzz({}, fuzzArgv, .{ .corpus = &.{
+        fuzzseeds.argv(&.{ "--provider", "openai", "--mode", "text", "hi" }),
+        fuzzseeds.argv(&.{ "config", "set", "provider", "openai" }),
+        fuzzseeds.argv(&.{ "config", "unset", "keys.deepseek" }),
+        fuzzseeds.argv(&.{ "acp", "serve", "--max-iterations", "x" }),
+        fuzzseeds.argv(&.{ "fleet", "run", "--goal", "ship it", "--sequential" }),
+        fuzzseeds.argv(&.{ "--temperature", "nan", "--max-tokens", "-1", "@x" }),
+        fuzzseeds.argv(&.{"\x00\xff\xfe--help"}),
+        fuzzseeds.argv(&.{ "-t", "bash,read", "--schema", "{}", "/goal add tests" }),
+    } });
+}
