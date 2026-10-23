@@ -122,6 +122,11 @@ are backward compatible.
   `VISUAL` > `EDITOR` > `vi`/`notepad`), validated on save with the same
   checks as `config validate`; a missing file is seeded with the `tau init`
   scaffold and misspelled keys get `did you mean "…"?` hints (#212)
+- `tau config schema` — emit the config file's JSON Schema (draft 2020-12),
+  generated from the same `FileConfig` the loader and `config validate` use
+  so it cannot drift; a canonical copy is published at
+  `schema/tau-config.schema.json` and `tau init` writes a `$schema` key so
+  editors give autocomplete/validation out of the box (#218)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and
@@ -239,6 +244,11 @@ are backward compatible.
   (#63), AGENTS.md scanning (#110), agent loop tool dispatch (#112), SSE
   streaming frames (#117), context compaction boundaries (#121), `tau doctor`
   diagnostics incl. live-probe stub coverage (#165)
+- Property/round-trip tests for `tau config set|get|unset` against a temp
+  HOME: every schema field set → get → unset, `keys.<provider>` for every
+  registered provider, preservation of unrelated members (arrays, nested
+  objects, comments), rejection of non-schema values, and a deterministic
+  randomized set/unset sequence checked against a model (#248)
 - Golden/snapshot smoke groups: `golden-errors` byte-locks error envelopes and
   exit codes (#208); `golden-onboarding` byte-locks the first-run surface —
   `tau init`, `tau setup` (incl. `--client`), and `tau config edit` —

@@ -1301,3 +1301,338 @@ test "runEditor: no path and no HOME is an argument error" {
         else => @panic("expected invalid_argument"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Property / round-trip tests — drive `run` end-to-end (set → get → unset)
+// against a temp HOME so the same ~/.config/tau/config.json resolution as the
+// CLI is under test. Harness mirrors init.zig's InitHome.
+// ---------------------------------------------------------------------------
+
+/// Throwaway HOME rooted at a fresh tmp dir; env map carries only HOME so
+/// `run`'s path resolution ($HOME/.config/tau/config.json) is exercised.
+const EditHome = struct {
+    tmp: testing.TmpDir,
+    env: std.process.Environ.Map,
+    home: []const u8,
+
+    fn init(arena: std.mem.Allocator) !EditHome {
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+        var env = std.process.Environ.Map.init(arena);
+        try env.put("HOME", home);
+        return .{ .tmp = tmp, .env = env, .home = home };
+    }
+
+    fn configPath(self: *const EditHome, arena: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(arena, "{s}/.config/tau/config.json", .{self.home});
+    }
+
+    fn readConfig(self: *const EditHome, arena: std.mem.Allocator) ?[]u8 {
+        const p = self.configPath(arena) catch return null;
+        return std.Io.Dir.cwd().readFileAlloc(testing.io, p, arena, .unlimited) catch null;
+    }
+
+    fn sub(self: *EditHome, arena: std.mem.Allocator, s: Sub, key: []const u8, value: ?[]const u8, raw: bool) !Outcome {
+        return run(testing.io, arena, s, key, value, null, &self.env, raw, .json);
+    }
+
+    fn deinit(self: *EditHome) void {
+        self.tmp.cleanup();
+    }
+};
+
+fn expectOk(outcome: Outcome) ![]const u8 {
+    switch (outcome) {
+        .ok => |s| return s,
+        .fail => |f| {
+            std.debug.print("unexpected fail code={d} type={s}: {s}\n", .{ f.code, f.type_name, f.message });
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+
+fn expectFailCode(outcome: Outcome, code: u8) !void {
+    switch (outcome) {
+        .ok => |s| {
+            std.debug.print("expected fail {d}, got ok: {s}\n", .{ code, s });
+            return error.TestUnexpectedResult;
+        },
+        .fail => |f| try testing.expectEqual(code, f.code),
+    }
+}
+
+/// Structural JSON equality: objects compare order-insensitively, numbers
+/// compare across the integer/float split so `"5"` and `"5.0"` from different
+/// code paths still match.
+fn jsonEq(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) {
+        if (a == .integer and b == .float)
+            return @as(f64, @floatFromInt(a.integer)) == b.float;
+        if (a == .float and b == .integer)
+            return a.float == @as(f64, @floatFromInt(b.integer));
+        return false;
+    }
+    return switch (a) {
+        .null => true,
+        .bool => |x| x == b.bool,
+        .integer => |x| x == b.integer,
+        .float => |x| x == b.float,
+        .number_string => |x| std.mem.eql(u8, x, b.number_string),
+        .string => |x| std.mem.eql(u8, x, b.string),
+        .array => |x| blk: {
+            if (x.items.len != b.array.items.len) break :blk false;
+            for (x.items, b.array.items) |av, bv| {
+                if (!jsonEq(av, bv)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |x| blk: {
+            if (x.count() != b.object.count()) break :blk false;
+            var it = x.iterator();
+            while (it.next()) |e| {
+                const bv = b.object.get(e.key_ptr.*) orelse break :blk false;
+                if (!jsonEq(e.value_ptr.*, bv)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
+/// Parse a `get`/`set` success payload and hand back its `"value"` member.
+fn payloadValue(arena: std.mem.Allocator, payload: []const u8) !std.json.Value {
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, payload, .{});
+    return v.object.get("value") orelse error.TestUnexpectedResult;
+}
+
+/// Parse the config file on disk and return the member value for `key`
+/// (top-level only — `keys.<p>` handled by `fileKeysEntry`).
+fn fileMember(arena: std.mem.Allocator, th: *const EditHome, key: []const u8) !?std.json.Value {
+    const bytes = th.readConfig(arena) orelse return null;
+    const stripped = configfile.stripComments(arena, bytes) catch bytes;
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch return error.TestUnexpectedResult;
+    if (v != .object) return error.TestUnexpectedResult;
+    return v.object.get(key);
+}
+
+fn fileKeysEntry(arena: std.mem.Allocator, th: *const EditHome, pname: []const u8) !?std.json.Value {
+    const keys = (try fileMember(arena, th, "keys")) orelse return null;
+    if (keys != .object) return error.TestUnexpectedResult;
+    return keys.object.get(pname);
+}
+
+/// The raw CLI value `config set` accepts for each schema field.
+fn validRawFor(comptime f: std.builtin.Type.StructField) []const u8 {
+    if (comptime std.mem.eql(u8, f.name, "provider")) return "openai";
+    if (comptime std.mem.eql(u8, f.name, "mode")) return "text";
+    if (comptime std.mem.eql(u8, f.name, "keys")) return "{\"openai\":\"sk-rt-a\",\"deepseek\":\"sk-rt-b\"}";
+    return switch (comptime fieldKind(f.type)) {
+        .string => "rt-value",
+        .boolean => "true",
+        .integer => "123",
+        .number => "0.25",
+        .any_json => "{}",
+    };
+}
+
+test "property: every schema field round-trips set → get → unset in a temp HOME" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    // get on a missing file reports not_found (exit 1), never an envelope bug.
+    try expectFailCode(try th.sub(arena, .get, "provider", null, false), 1);
+
+    // Set every field, then confirm each reads back through get and through
+    // the file itself. get uses --raw so secret fields compare verbatim.
+    inline for (file_fields) |f| {
+        const raw = comptime validRawFor(f);
+        const kp = (parseKeyPath(arena, f.name, true)).ok;
+        const expected = try std.json.parseFromSliceLeaky(std.json.Value, arena, (try coerceValue(arena, kp, raw)).ok, .{});
+
+        const set_out = try expectOk(try th.sub(arena, .set, f.name, raw, false));
+        try testing.expect(std.mem.indexOf(u8, set_out, "\"ok\":true") != null);
+        try testing.expect(std.mem.indexOf(u8, set_out, "\"key\":\"" ++ f.name ++ "\"") != null);
+
+        const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, f.name, null, true)));
+        try testing.expect(jsonEq(expected, got));
+
+        const on_disk = (try fileMember(arena, &th, f.name)) orelse return error.TestUnexpectedResult;
+        try testing.expect(jsonEq(expected, on_disk));
+    }
+
+    // The whole file is one JSON object holding exactly the schema fields.
+    const full = (try fileMember(arena, &th, "provider")) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("openai", full.string);
+
+    // Unset each field: the key is gone while the remaining fields survive.
+    var remaining: usize = file_fields.len;
+    inline for (file_fields) |f| {
+        const unset_out = try expectOk(try th.sub(arena, .unset, f.name, null, false));
+        try testing.expect(std.mem.indexOf(u8, unset_out, "\"removed\":true") != null);
+        try expectFailCode(try th.sub(arena, .get, f.name, null, true), 1);
+        remaining -= 1;
+
+        const bytes = th.readConfig(arena) orelse return error.TestUnexpectedResult;
+        const stripped = configfile.stripComments(arena, bytes) catch bytes;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(u32, @intCast(remaining)), v.object.count());
+    }
+}
+
+test "property: keys.<provider> round-trips for every registered provider" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    for (cfgmod.providers) |p| {
+        const key = try std.fmt.allocPrint(arena, "keys.{s}", .{p.name});
+        const secret = try std.fmt.allocPrint(arena, "sk-rt-{s}", .{p.name});
+
+        _ = try expectOk(try th.sub(arena, .set, key, secret, false));
+        // Earlier entries survive each new set (nested-map preservation).
+        const stored = (try fileKeysEntry(arena, &th, p.name)) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(secret, stored.string);
+
+        const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, key, null, true)));
+        try testing.expectEqualStrings(secret, got.string);
+
+        // Default get redacts — the secret never reaches stdout.
+        const masked = try expectOk(try th.sub(arena, .get, key, null, false));
+        try testing.expect(std.mem.indexOf(u8, masked, secret) == null);
+        try testing.expect(std.mem.indexOf(u8, masked, "\"redacted\":true") != null);
+    }
+
+    for (cfgmod.providers) |p| {
+        const key = try std.fmt.allocPrint(arena, "keys.{s}", .{p.name});
+        _ = try expectOk(try th.sub(arena, .unset, key, null, false));
+        try expectFailCode(try th.sub(arena, .get, key, null, true), 1);
+        // The keys object itself (possibly empty) stays a valid object.
+        if (try fileMember(arena, &th, "keys")) |kv| try testing.expect(kv == .object);
+    }
+}
+
+test "set/unset preserve unrelated members — arrays, nested objects, comments" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    const arr_literal = "[\"--fast\", \"a,b\", \"c}d\", {\"deep\": [1, {\"x\": \"y\"}]}]";
+    const seeded = "{\n  // user comment\n  \"plugin_flags\": " ++ arr_literal ++ ",\n  \"extra\": {\"list\": [[true, null], \"s\\\"q\"], \"n\": -3.5},\n  \"provider\": \"xiaomi\",\n  \"trailing\": \"keep\"\n}\n";
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = try th.configPath(arena), .data = seeded });
+
+    // get returns array values verbatim for non-schema members.
+    const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, "plugin_flags", null, false)));
+    const want = try std.json.parseFromSliceLeaky(std.json.Value, arena, arr_literal, .{});
+    try testing.expect(jsonEq(want, got));
+
+    // A set on a schema key leaves the unrelated members byte-identical.
+    _ = try expectOk(try th.sub(arena, .set, "mode", "text", false));
+    const after_set = th.readConfig(arena).?;
+    try testing.expect(std.mem.indexOf(u8, after_set, "\"plugin_flags\": " ++ arr_literal) != null);
+    try testing.expect(std.mem.indexOf(u8, after_set, "// user comment") != null);
+    try testing.expect(std.mem.indexOf(u8, after_set, "\"extra\": {\"list\": [[true, null], \"s\\\"q\"], \"n\": -3.5}") != null);
+
+    // unset removes an array-valued member cleanly and keeps the rest valid.
+    _ = try expectOk(try th.sub(arena, .unset, "plugin_flags", null, false));
+    try expectFailCode(try th.sub(arena, .get, "plugin_flags", null, false), 1);
+    const after_unset = th.readConfig(arena).?;
+    try testing.expect(std.mem.indexOf(u8, after_unset, "plugin_flags") == null);
+    try testing.expect(std.mem.indexOf(u8, after_unset, "\"trailing\": \"keep\"") != null);
+    const still = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, after_unset) catch after_unset, .{}) catch return error.TestUnexpectedResult;
+    try testing.expect(still == .object);
+}
+
+test "set rejects array/non-object values for schema fields without touching the file" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    _ = try expectOk(try th.sub(arena, .set, "provider", "openai", false));
+    const before = th.readConfig(arena).?;
+
+    try expectFailCode(try th.sub(arena, .set, "keys", "[\"openai\"]", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "keys", "{\"openai\":[1,2]}", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "keys", "{\"nope\":\"sk-x\"}", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "stream", "[true]", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "provider", "[\"openai\"]", false), 80);
+    try testing.expectEqualStrings(before, th.readConfig(arena).?);
+}
+
+test "property: random set/unset sequence keeps the file valid and consistent" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    var prng = std.Random.DefaultPrng.init(0x7a9);
+    const rnd = prng.random();
+
+    // Key pool mixes scalar fields and nested keys.<provider> entries.
+    const keys_pool = [_][]const u8{ "provider", "model", "mode", "stream", "thinking", "temperature", "max_tokens", "timeout_ms", "compact_threshold", "keys.openai", "keys.deepseek", "keys.xiaomi" };
+    const providers = [_][]const u8{ "openai", "deepseek", "xiaomi" };
+
+    // Model of what should be stored, keyed by the dotted CLI path.
+    var model = std.StringHashMap(std.json.Value).init(arena);
+
+    var i: usize = 0;
+    while (i < 160) : (i += 1) {
+        const key = keys_pool[rnd.intRangeLessThan(usize, 0, keys_pool.len)];
+        const do_set = rnd.boolean();
+        if (do_set) {
+            const raw: []const u8 = blk: {
+                if (std.mem.eql(u8, key, "provider")) break :blk providers[rnd.intRangeLessThan(usize, 0, providers.len)];
+                if (std.mem.eql(u8, key, "mode")) break :blk if (rnd.boolean()) "text" else "json";
+                if (std.mem.eql(u8, key, "stream") or std.mem.eql(u8, key, "thinking")) break :blk if (rnd.boolean()) "true" else "false";
+                if (std.mem.eql(u8, key, "temperature") or std.mem.eql(u8, key, "compact_threshold"))
+                    break :blk try std.fmt.allocPrint(arena, "0.{d}", .{rnd.intRangeLessThan(u8, 1, 10)});
+                if (std.mem.eql(u8, key, "max_tokens") or std.mem.eql(u8, key, "timeout_ms"))
+                    break :blk try std.fmt.allocPrint(arena, "{d}", .{rnd.intRangeLessThan(u32, 1, 10000)});
+                if (std.mem.startsWith(u8, key, "keys."))
+                    break :blk try std.fmt.allocPrint(arena, "sk-r{d}", .{rnd.intRangeLessThan(u32, 0, 1000)});
+                break :blk try std.fmt.allocPrint(arena, "m-{d}", .{rnd.intRangeLessThan(u32, 0, 1000)});
+            };
+            _ = try expectOk(try th.sub(arena, .set, key, raw, false));
+            const kp = (parseKeyPath(arena, key, true)).ok;
+            const tok = (try coerceValue(arena, kp, raw)).ok;
+            try model.put(key, try std.json.parseFromSliceLeaky(std.json.Value, arena, tok, .{}));
+        } else {
+            if (model.contains(key)) {
+                _ = try expectOk(try th.sub(arena, .unset, key, null, false));
+                _ = model.remove(key);
+            } else {
+                try expectFailCode(try th.sub(arena, .unset, key, null, false), 1);
+            }
+        }
+
+        // Invariant after every op: the file is still one strict-JSON object.
+        const bytes = th.readConfig(arena) orelse return error.TestUnexpectedResult;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, bytes) catch bytes, .{}) catch return error.TestUnexpectedResult;
+        try testing.expect(v == .object);
+    }
+
+    // Final consistency: every key in the pool matches the model through get.
+    for (keys_pool) |key| {
+        if (model.get(key)) |want| {
+            const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, key, null, true)));
+            try testing.expect(jsonEq(want, got));
+        } else {
+            try expectFailCode(try th.sub(arena, .get, key, null, true), 1);
+        }
+    }
+}
