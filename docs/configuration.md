@@ -108,6 +108,48 @@ Not everything is file-configurable. Flag-only settings include `--session`,
 AGENTS.md flags (`--scan-agents`, `--load-agents-md`, `--auto-agents-md`).
 See `tau --help` or `tau --help-json` for the full flag list.
 
+### JSON Schema and editor autocomplete
+
+`tau config schema` prints the config file's JSON Schema (draft 2020-12) to
+stdout. It is generated from the same `FileConfig` struct the loader and
+`tau config validate` derive their checks from, so the schema can't drift from
+the keys tau accepts: unknown keys are rejected (`additionalProperties:
+false`), `provider` enumerates the provider table, `keys` restricts its member
+names to providers, and integer/range constraints mirror the validator.
+
+A canonical copy is checked in at [`schema/tau-config.schema.json`](../schema/tau-config.schema.json)
+and is reachable at a stable URL:
+
+```
+https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json
+```
+
+To get autocomplete, hover docs, and validation in an editor:
+
+- **Per file** — add a `$schema` key. `tau init` writes one automatically;
+  the loader ignores it and `tau config validate` accepts it:
+
+  ```json
+  { "$schema": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json" }
+  ```
+
+- **VS Code, globally** — map the path in `json.schemas` settings:
+
+  ```json
+  "json.schemas": [
+    {
+      "fileMatch": ["**/.config/tau/config.json"],
+      "url": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json"
+    }
+  ]
+  ```
+
+- **Offline / pinned** — emit a local copy (`tau config schema >
+  tau-config.schema.json`) and point `$schema` or `fileMatch` at the file.
+
+Editors using the standard JSON language service honor `$schema` even in
+JSONC files, so a commented `tau init` config still gets completions.
+
 ---
 
 ## Providers

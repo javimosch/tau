@@ -21,7 +21,7 @@ $TauArgumentCompleter = {
                      '--coordinator-model', '--worker-model', '--sequential', '--parallel',
                      '--items', '--schema')
     $skillSubs   = @('list', 'search', 'load')
-    $configSubs  = @('show', 'validate', 'set', 'get', 'unset', 'edit')
+    $configSubs  = @('show', 'validate', 'set', 'get', 'unset', 'edit', 'schema')
     $configFlags = @('--mode', '--raw')
     $guideFlags  = @('--human')
     $initFlags   = @('--force', '--stdout', '--provider')
@@ -63,7 +63,7 @@ $TauArgumentCompleter = {
         'models'              = 'list available providers and models'
         'guide'               = 'print the embedded operator manual'
         'init'                = 'write a commented starter config'
-        'config'              = 'inspect and edit the config file (show|validate|set|get|unset|edit)'
+        'config'              = 'inspect and edit the config file (show|validate|set|get|unset|edit|schema)'
         'doctor'              = 'validate setup (config, provider, key, connectivity)'
         'setup'               = 'one-shot onboarding (init + completions + doctor)'
         'bug'                 = 'file a pre-filled GitHub issue with doctor diagnostics'

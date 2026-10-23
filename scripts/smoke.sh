@@ -69,6 +69,7 @@ ALL_TEST_GROUPS=(
   "config-edit:test_group_config_edit"
   "config-editor:test_group_config_editor"
   "bug:test_group_bug"
+  "config-schema:test_group_config_schema"
   "init:test_group_init"
   "setup:test_group_setup"
   "goal:test_group_goal_offline"
@@ -1011,6 +1012,46 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config get provider --mode text)
   if [ "$out" = "deepseek" ]; then ok "get reads commented file" 0 0; else ok "get reads commented file" 1 0; fi
 
+  # Round-trip property sweep: every field kind set → get → unset restores the
+  # pre-edit state and never disturbs unrelated members.
+  printf '{\n  "plugin_flags": ["--fast", "a,b", "c}d", {"deep": [1]}],\n  "provider": "xiaomi"\n}\n' > "$cfg"
+  local rt_fails=0
+  for pair in "provider|openai" "model|m-42" "mode|text" "stream|true" "temperature|0.25" "max_tokens|256" "timeout_ms|5000"; do
+    k="${pair%%|*}"; v="${pair#*|}"
+    HOME="$mock_home" "$BIN" config set "$k" "$v" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+    got=$(HOME="$mock_home" "$BIN" config get "$k" --mode text 2>/dev/null) || rt_fails=$((rt_fails+1))
+    [ "$got" = "$v" ] || rt_fails=$((rt_fails+1))
+    HOME="$mock_home" "$BIN" config unset "$k" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+    HOME="$mock_home" "$BIN" config get "$k" >/dev/null 2>&1 && rt_fails=$((rt_fails+1))
+  done
+  ok "round-trip sweep set->get->unset (7 fields)" "$rt_fails" 0
+
+  # Nested keys.<provider> round-trip + unrelated array member preserved.
+  rt_fails=0
+  for p in openai deepseek; do
+    HOME="$mock_home" "$BIN" config set "keys.$p" "sk-rt-$p" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+    got=$(HOME="$mock_home" "$BIN" config get "keys.$p" --raw --mode text 2>/dev/null) || rt_fails=$((rt_fails+1))
+    [ "$got" = "sk-rt-$p" ] || rt_fails=$((rt_fails+1))
+  done
+  ok "nested keys.<provider> set->get round-trip" "$rt_fails" 0
+  contains "unrelated array member survives sets" "$(cat "$cfg")" '"plugin_flags": ["--fast", "a,b", "c}d", {"deep": [1]}]'
+  for p in openai deepseek; do
+    HOME="$mock_home" "$BIN" config unset "keys.$p" >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+  done
+  HOME="$mock_home" "$BIN" config unset plugin_flags >/dev/null 2>&1 || rt_fails=$((rt_fails+1))
+  ok "nested keys.<provider> + array-member unset round-trip" "$rt_fails" 0
+  # The sweep replaced+unset every schema key and plugin_flags; the emptied
+  # keys map remains as a valid (empty) object.
+  if grep -q '"provider"\|"plugin_flags"' "$cfg"; then
+    ok "swept keys fully removed" 1 0
+  else
+    ok "swept keys fully removed" 0 0
+  fi
+  HOME="$mock_home" "$BIN" config get keys >/dev/null 2>&1
+  ok "emptied keys map still readable" "$?" 0
+  out=$(HOME="$mock_home" "$BIN" config validate)
+  contains "file validates after round-trips" "$out" '"ok":true'
+
   # Malformed file -> exit 1 invalid_config (never silently clobbers).
   printf '{"provider": "openai",\n' > "$cfg"
   out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?
@@ -1717,6 +1758,64 @@ test_group_bug() {
     HOME="$mock_home" "$BIN" bug --offline --provider nope
   ok "unknown provider still exits 0" "$bug_badprov_rc" 0
   contains "bad provider inside the bundle" "$bug_badprov_out" "unknown provider 'nope'"
+}
+
+# Group: `tau config schema` — emits the config file's JSON Schema (draft
+# 2020-12), generated from FileConfig; canonical copy checked in at
+# schema/tau-config.schema.json. Fully offline.
+test_group_config_schema() {
+  local out rc tmpdir
+
+  note "tau config schema"
+
+  tmpdir="$(mktemp -d)"; register_temp_dir "$tmpdir"
+
+  # Usage errors -> invalid_argument (80).
+  "$BIN" config schema extra >/dev/null 2>&1;  ok "config schema extra arg -> exit 80" "$?" 80
+  "$BIN" config schema --bogus >/dev/null 2>&1; ok "config schema unknown flag -> exit 80" "$?" 80
+  "$BIN" config schema --mode >/dev/null 2>&1;  ok "config schema bare --mode -> exit 80" "$?" 80
+
+  # The emitted document: draft 2020-12, every config key, provider enum,
+  # unknown keys rejected, $schema member allowed.
+  out=$("$BIN" config schema); rc=$?
+  ok "config schema -> exit 0" "$rc" 0
+  contains "schema is draft 2020-12" "$out" 'draft/2020-12/schema'
+  contains "schema rejects unknown keys" "$out" '"additionalProperties": false'
+  contains "schema lists provider" "$out" '"provider"'
+  contains "schema lists keys" "$out" '"keys"'
+  contains "provider enum has xiaomi" "$out" '"xiaomi"'
+  contains 'schema permits $schema member' "$out" '"$schema"'
+
+  if printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get("type")=="object" and len(d.get("properties",{}))>=18 else 1)' 2>/dev/null; then
+    ok "config schema output parses as a JSON Schema" 0 0
+  else
+    ok "config schema output parses as a JSON Schema" 1 0
+  fi
+
+  # --mode is accepted; both modes emit the same JSON document.
+  out=$("$BIN" config schema --mode text); rc=$?
+  ok "config schema --mode text -> exit 0" "$rc" 0
+  contains "text mode still emits the schema" "$out" '"additionalProperties": false'
+
+  # The checked-in published copy is byte-identical to what tau emits.
+  if "$BIN" config schema | diff -q - "$SCRIPT_DIR/../schema/tau-config.schema.json" >/dev/null 2>&1; then
+    ok "schema/tau-config.schema.json is in sync" 0 0
+  else
+    ok "schema/tau-config.schema.json is in sync" 1 0
+  fi
+
+  # End-to-end: the init scaffold (now carrying "$schema") validates clean.
+  "$BIN" init --stdout > "$tmpdir/init.json" 2>/dev/null; rc=$?
+  ok "init --stdout -> exit 0" "$rc" 0
+  contains "init scaffold carries \$schema" "$(cat "$tmpdir/init.json")" '"$schema"'
+  out=$("$BIN" config validate "$tmpdir/init.json"); rc=$?
+  ok "init scaffold validates clean" "$rc" 0
+
+  # A non-string $schema is the only way to misuse it.
+  printf '{"$schema":42}' > "$tmpdir/badschema.json"
+  out=$("$BIN" config validate "$tmpdir/badschema.json"); rc=$?
+  ok "non-string \$schema flagged -> exit 1" "$rc" 1
+  contains "non-string \$schema message" "$out" '"key":"$schema"'
 }
 
 # Group: tau init — commented starter config scaffold

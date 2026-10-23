@@ -28,7 +28,7 @@ PowerShell.
 | `tau acp` | `start stop status serve` |
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
-| `tau config` | `show validate set get unset edit` + `--mode`, `--raw` (+ global flags for `show`, zsh) |
+| `tau config` | `show validate set get unset edit schema` + `--mode`, `--raw` (+ global flags for `show`, zsh) |
 | `tau init` | `--force`, `--stdout`, `--provider` |
 | `tau doctor` | `--offline`, `--deep`, `--probe`, `--selftest`, `--fix`, `--yes`/`-y`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive` |

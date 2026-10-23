@@ -228,6 +228,9 @@ const help_text =
     \\  tau config unset <key> [path] Remove a key from the config file
     \\  tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
     \\                              VISUAL > EDITOR > vi/notepad); validates on save
+    \\  tau config schema             Print the config file's JSON Schema
+    \\                              (draft 2020-12) — for editor autocomplete
+    \\                              and validation of config files
     \\
     \\Version:
     \\  tau version                   Print the version (same as -v/--version)
@@ -477,6 +480,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau config get <key> [path] [--raw]", .b = "print a config file value; secrets are redacted unless --raw." },
     .{ .a = "tau config unset <key> [path]", .b = "remove a key from the config file." },
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
+    .{ .a = "tau config schema", .b = "emit the JSON Schema (draft 2020-12) for the config file — also published at schema/tau-config.schema.json for editor autocomplete/validation." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
     .{ .a = "tau explain [<code|type>]", .b = "offline error-catalog lookup — cause + remediation (JSON; --human for prose)." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
@@ -1004,6 +1008,15 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(@intFromEnum(ExitCode.invalid_argument));
         },
         .config => {
+            if (std.mem.eql(u8, parsed.config.config_sub orelse "show", "schema")) {
+                const cschema = @import("configschema.zig");
+                const doc = cschema.schemaJson(arena) catch {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), "OutOfMemory", "config schema failed", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                };
+                term.out(doc);
+                return;
+            }
             if (std.mem.eql(u8, parsed.config.config_sub orelse "show", "validate")) {
                 const cval = @import("configvalidate.zig");
                 const path = parsed.config.validate_path orelse (configfile.path(arena, init.environ_map) orelse {

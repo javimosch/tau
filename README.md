@@ -146,7 +146,8 @@ values into the file):
 Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
 installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
 to override), can write ACP client config for your editor
-(`--client zed|nvim|vscode|jetbrains|all` — see [docs/acp.md](docs/acp.md)),
+(`--client zed|nvim|vscode|jetbrains|all` — step-by-step guide in
+[docs/editors.md](docs/editors.md), all clients in [docs/acp.md](docs/acp.md)),
 and finishes with the `tau doctor` health report:
 
 ```bash
@@ -552,6 +553,7 @@ tau config set keys.openai sk-...        # per-provider API key
 tau config get provider                  # read a value (secrets redacted)
 tau config unset keys.openai             # remove a key
 tau config validate                      # offline schema check (CI/pre-commit)
+tau config schema                        # JSON Schema for editor autocomplete
 ```
 
 ### Providers

@@ -86,6 +86,15 @@ jobs:
         shell: bash
         run: '"$HOME/zig/zig" build test --summary all'
 
+      - name: Config schema drift check
+        # schema/tau-config.schema.json is the published copy editors fetch
+        # via the $schema URL — it must match `tau config schema` output
+        # byte-for-byte (the unit suite pins the same invariant; this step
+        # checks the shipped binary's output directly).
+        # Regenerate: zig build && ./zig-out/bin/tau config schema > schema/tau-config.schema.json
+        shell: bash
+        run: '"$TAU_BIN" config schema | diff - schema/tau-config.schema.json'
+
       - name: Offline smoke groups
         shell: bash
         run: ./scripts/smoke.sh
