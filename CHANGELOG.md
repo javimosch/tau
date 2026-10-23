@@ -105,6 +105,9 @@ are backward compatible.
   so scripts can assert it). Env equivalents honored at parse time (flag >
   env > detect): `TAU_YES`, `TAU_NONINTERACTIVE`, `TAU_SETUP_SHELL`,
   `TAU_SETUP_CLIENT`
+- `docs/editors.md` — step-by-step ACP client setup guide for Zed, VS Code,
+  and Neovim mirroring `tau setup --client` output (statuses, written files,
+  snippet fallback, in-editor next steps) (#246)
 - Shell completions for fish and PowerShell (`completions/tau.fish`,
   `completions/tau.ps1`); all four scripts now complete `init`, `setup`,
   `doctor`, and `guide`
