@@ -144,6 +144,9 @@ Config:
   tau config unset <key> [path] Remove a key from the config file
   tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
                               VISUAL > EDITOR > vi/notepad); validates on save
+  tau config schema             Print the config file's JSON Schema
+                              (draft 2020-12) — for editor autocomplete
+                              and validation of config files
 
 Version:
   tau version                   Print the version (same as -v/--version)

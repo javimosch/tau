@@ -130,6 +130,11 @@ are backward compatible.
   so it cannot drift; a canonical copy is published at
   `schema/tau-config.schema.json` and `tau init` writes a `$schema` key so
   editors give autocomplete/validation out of the box (#218)
+- Config-schema hardening: the checked-in `schema/tau-config.schema.json` is
+  drift-checked in CI against `tau config schema` on every platform leg (in
+  addition to the byte-pinning unit test), and `docs/editors.md` documents
+  per-editor autocomplete setup — `$schema`, VS Code `json.schemas`, Zed LSP
+  settings, Neovim jsonls, and a fully offline local-copy path (#259)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and

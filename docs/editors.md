@@ -206,6 +206,85 @@ Setup is additive and never deletes:
 - Generated snippets under `~/.config/tau/snippets/` are inert leftovers —
   delete them freely.
 
+## Config file autocomplete
+
+The same JSON language server your editor already uses for `settings.json`
+can autocomplete and validate `~/.config/tau/config.json` — the file is JSONC
+(comments allowed) and has a published JSON Schema.
+
+`tau init` writes a `"$schema"` key into the scaffold, so a fresh config gets
+key suggestions, hover docs, and squiggles out of the box — no editor setting
+needed, in Zed and VS Code alike:
+
+```jsonc
+{
+  // Resolved by the editor's JSON language server; ignored by tau.
+  "$schema": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json",
+  "provider": "xiaomi"
+}
+```
+
+For a config that predates `tau init`, add the same `"$schema"` line by hand —
+`tau config validate` accepts it (string only; a non-string value is
+flagged). If you'd rather not touch the file, bind the schema by path
+instead:
+
+- **VS Code** — in `settings.json`:
+
+  ```json
+  "json.schemas": [
+    {
+      "fileMatch": ["**/.config/tau/config.json"],
+      "url": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json"
+    }
+  ]
+  ```
+
+- **Zed** — same idea, routed through the JSON language server settings:
+
+  ```jsonc
+  "lsp": {
+    "json-language-server": {
+      "settings": {
+        "json": {
+          "schemas": [
+            {
+              "fileMatch": ["*/.config/tau/config.json"],
+              "url": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json"
+            }
+          ]
+        }
+      }
+    }
+  }
+  ```
+
+- **Neovim (jsonls)** — pass a schema association in the server settings:
+
+  ```lua
+  require("lspconfig").jsonls.setup({
+    settings = {
+      json = {
+        schemas = {
+          { fileMatch = { "*/.config/tau/config.json" },
+            url = "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json" },
+        },
+      },
+    },
+  })
+  ```
+
+- **Offline / pinned** — `tau config schema` prints the document itself;
+  save it (`tau config schema > tau-config.schema.json`) and point
+  `$schema`/`url` at the local file.
+
+The schema is generated from the same `FileConfig` struct the loader and
+`tau config validate` use, so it cannot drift from the keys tau accepts —
+adding a `FileConfig` field without schema metadata is a compile error, and
+CI diffs the checked-in `schema/tau-config.schema.json` against the binary's
+output on every platform leg. Details and per-key semantics live in
+[docs/configuration.md](configuration.md#json-schema-and-editor-autocomplete).
+
 ## See also
 
 - [docs/acp.md](acp.md) — JetBrains, Emacs, Toad, generic stdio clients,
