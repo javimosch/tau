@@ -39,6 +39,10 @@ tau --session myproject "/goal status"
 
 Zero to your first response in five steps. Every command below is copy-pasteable.
 
+> **No API key yet?** `sh examples/quickstart/quickstart.sh` runs the real
+> binary — chat, tool loop, and ACP-over-stdio — against a bundled stub model
+> server. Zero credentials, zero config, zero network.
+
 ### 1. Prerequisites
 
 - **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against

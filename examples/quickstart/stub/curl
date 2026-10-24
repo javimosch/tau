@@ -1,0 +1,101 @@
+#!/bin/sh
+# examples/quickstart/stub/curl — a stub "model server" for the tau quickstart.
+#
+# tau performs provider HTTP by spawning `curl` and reading the response body
+# from the child's stdout. This shim stands in for curl on PATH: it ignores the
+# URL, inspects the --data-raw request body, and prints a canned
+# OpenAI-compatible response — SSE `data:` frames for streaming requests (the
+# default) or a single JSON object for --no-stream. No sockets, no credentials,
+# no network.
+#
+# Behavior by request body:
+#   contains "tool_call_id"  → a tool result is being submitted → final answer
+#   contains "tools":[       → tools are offered → ask tau to run `read` on the
+#                              bundled hello.txt (demonstrates the agent loop)
+#   otherwise                → plain canned chat answer
+set -u
+
+body=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data-raw)
+      if [ $# -ge 2 ]; then body=$2; shift 2; else shift; fi ;;
+    --data-raw=*) body=${1#--data-raw=}; shift ;;
+    *) shift ;;
+  esac
+done
+
+# Absolute path to the bundled sample file (this script lives in stub/).
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HELLO=$(CDPATH= cd -- "$HERE/.." && pwd)/hello.txt
+# JSON-escape the path for embedding inside the tool_call arguments string.
+HELLO_J=$(printf '%s' "$HELLO" | sed 's/[\\"]/\\&/g')
+
+CHAT_A='Hello from the tau quickstart stub. '
+CHAT_B='No API key is in play — this answer was written to stdout by a shell script (examples/quickstart/stub/curl) standing in for a real model. '
+CHAT_C='Everything tau does — parsing, streaming, exit codes — is real; only the model is fake.'
+
+FINAL_A='The read tool call you just saw was real: tau asked for it, executed it, and fed the file contents back into the conversation. '
+FINAL_B='This closing summary is canned, but the loop is not — export a real API key and tau runs the same loop against a live provider.'
+
+TC_ARGS='{\"path\":\"'"$HELLO_J"'\"}'
+
+emit_stream_chat() {
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{"role":"assistant","content":"%s"}}]}\n' "$CHAT_A"
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{"content":"%s"}}]}\n' "$CHAT_B"
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{"content":"%s"}}]}\n' "$CHAT_C"
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{}}],"usage":{"total_tokens":42}}\n'
+  printf 'data: [DONE]\n'
+}
+
+emit_stream_tool_call() {
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_stub_1","type":"function","function":{"name":"read","arguments":"%s"}}]}}]}\n' "$TC_ARGS"
+  printf 'data: [DONE]\n'
+}
+
+emit_stream_final() {
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{"content":"%s"}}]}\n' "$FINAL_A"
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{"content":"%s"}}]}\n' "$FINAL_B"
+  printf 'data: {"id":"stub","choices":[{"index":0,"delta":{}}],"usage":{"total_tokens":87}}\n'
+  printf 'data: [DONE]\n'
+}
+
+emit_json_chat() {
+  printf '{"id":"stub","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"%s%s%s"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":33,"total_tokens":42}}\n' \
+    "$CHAT_A" "$CHAT_B" "$CHAT_C"
+}
+
+emit_json_tool_call() {
+  printf '{"id":"stub","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_stub_1","type":"function","function":{"name":"read","arguments":"%s"}}]},"finish_reason":"tool_calls"}],"usage":{"total_tokens":17}}\n' \
+    "$TC_ARGS"
+}
+
+emit_json_final() {
+  printf '{"id":"stub","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"%s%s"},"finish_reason":"stop"}],"usage":{"prompt_tokens":40,"completion_tokens":47,"total_tokens":87}}\n' \
+    "$FINAL_A" "$FINAL_B"
+}
+
+case "$body" in
+  *'"tool_call_id"'*) kind=final ;;
+  *'"tools":['*)      kind=tool  ;;
+  *)                  kind=chat  ;;
+esac
+
+case "$body" in
+  *'"stream":true'*) stream=1 ;;
+  *)                 stream=0 ;;
+esac
+
+if [ "$stream" -eq 1 ]; then
+  case "$kind" in
+    chat)  emit_stream_chat ;;
+    tool)  emit_stream_tool_call ;;
+    final) emit_stream_final ;;
+  esac
+else
+  case "$kind" in
+    chat)  emit_json_chat ;;
+    tool)  emit_json_tool_call ;;
+    final) emit_json_final ;;
+  esac
+fi

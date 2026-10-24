@@ -2,6 +2,14 @@
 
 Ready-to-run shell scripts covering the most common tau workflows.
 
+> **No API key?** Start with [`quickstart/`](quickstart/) — a zero-config demo
+> that runs real tau invocations (chat, tool loop, ACP over stdio) against a
+> local stub model server. Nothing below it on this page needs credentials.
+>
+> ```bash
+> sh examples/quickstart/quickstart.sh
+> ```
+
 ## Prerequisites
 
 - tau installed: `zig build` from the repo root produces `zig-out/bin/tau`. Add it to your `PATH` or set `TAU_BIN=/path/to/tau`.
