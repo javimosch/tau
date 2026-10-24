@@ -20,6 +20,9 @@ are backward compatible.
 - Per-provider API keys in the config file via the `keys` object (#31)
 - Shell completions for bash and zsh (`completions/`) (#46)
 - `examples/` — runnable end-to-end tau session scripts (#42)
+- `examples/quickstart/` — runnable zero-config quickstart: a stub model
+  server (curl-compatible stdio shim) + script demos chat, the tool loop, and
+  ACP-over-stdio with no API key, config, or network (#262)
 - Actionable error messages with recovery hints for missing API key, unknown
   provider, and malformed config (#43)
 - `CONTRIBUTING.md` — build, test, and PR workflow guide (#62)

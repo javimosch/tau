@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "quickstart:test_group_quickstart"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -745,6 +746,39 @@ test_group_fleet_flags() {
   fi
 
   "$BIN" fleet run --goal "x" --bogus >/dev/null 2>&1;   ok "fleet run --bogus -> invalid_argument" "$?" 80
+}
+
+# Group: examples/quickstart — zero-config stub demo
+# Runs examples/quickstart/quickstart.sh end-to-end (chat + tool loop + ACP
+# over stdio) and pins the stub-curl contract directly: PATH-shadowed curl
+# serves canned SSE/JSON so tau runs the full provider path offline.
+test_group_quickstart() {
+  local qdir="$ROOT/examples/quickstart"
+
+  note "examples/quickstart — zero-config stub run"
+
+  if [ ! -x "$qdir/stub/curl" ] || [ ! -f "$qdir/quickstart.sh" ]; then
+    skip_test "quickstart example" "examples/quickstart missing or stub not executable"
+    return
+  fi
+
+  # Full script, end to end.
+  capture qs env TAU_BIN="$BIN" sh "$qdir/quickstart.sh"
+  ok "quickstart.sh exits 0" "$qs_rc" 0
+  contains "quickstart step 1 streams canned chunks" "$qs_out" '"chunk":"Hello from the tau quickstart stub.'
+  contains "quickstart step 2 completes the tool loop" "$qs_out" 'The read tool call you just saw was real'
+  contains "quickstart step 3 emits ACP session updates" "$qs_out" '"sessionUpdate":"agent_message_chunk"'
+
+  # Direct contract: the stub curl answers a streaming chat turn.
+  capture stub env PATH="$qdir/stub:$PATH" TAU_API_KEY=stub "$BIN" --no-tools --mode text "hi"
+  ok "stub curl chat turn exits 0" "$stub_rc" 0
+  contains "stub curl streams canned content" "$stub_out" "quickstart stub"
+
+  # Direct contract: tools-bearing request gets a read tool_call, the tool
+  # result turn gets the canned summary (non-streaming variant exercised too).
+  capture stubtc env PATH="$qdir/stub:$PATH" TAU_API_KEY=stub "$BIN" --no-stream --tools read --mode text "read the file"
+  ok "stub curl tool loop exits 0" "$stubtc_rc" 0
+  contains "stub curl tool loop ends with canned summary" "$stubtc_out" "closing summary is canned"
 }
 
 # Group: --bench regression guard

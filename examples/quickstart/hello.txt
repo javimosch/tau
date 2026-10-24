@@ -1,0 +1,10 @@
+Hello from the tau quickstart.
+
+This file exists so the stub "model" has something real to point the read
+tool at. When you ran quickstart.sh, tau received a canned tool_call asking
+for read{"path":".../hello.txt"}, executed it for real, and streamed the
+contents back into the conversation — no API key required.
+
+Everything after the stub is genuine tau: request building, SSE parsing,
+tool dispatch, session writes, exit codes. Swap in real credentials and the
+same flow runs against a live provider.
