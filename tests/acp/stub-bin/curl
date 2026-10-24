@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Stub `curl` for the ACP mock-client integration test. tau shells out to
+# `curl` for provider HTTP, so shadowing it on PATH turns `tau acp serve`
+# into a fully offline, deterministic agent.
+#
+# Dispatch is driven by the request body (`--data-raw` argument):
+#   contains TRIGGER_ERROR      -> a retryable provider error body. tau retries
+#                                  (backoff) then fails the turn with -32001.
+#   contains "role":"tool"      -> the conversation carries a tool result, i.e.
+#      or TRIGGER_PLAIN           this is the follow-up call -> final answer.
+#   anything else               -> a tool_calls response running
+#                                  `echo ACP_STUB_TOOL_OK` via the bash tool.
+#
+# Used by tests/acp/mock_client.py. POSIX only — a native Windows binary
+# cannot exec an extensionless shell script, so the keyed scenario is skipped
+# on win32.
+set -u
+
+body=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--data-raw" ]; then
+    body="$a"
+  fi
+  prev="$a"
+done
+
+case "$body" in
+  *TRIGGER_ERROR*)
+    printf '%s\n' '{"error":{"message":"stubbed provider failure","type":"server_error"}}'
+    ;;
+  *'"role":"tool"'*|*TRIGGER_PLAIN*)
+    printf '%s\n' '{"choices":[{"message":{"role":"assistant","content":"ACP_STUB_FINAL_ANSWER"}}],"usage":{"total_tokens":7}}'
+    ;;
+  *)
+    printf '%s\n' '{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_stub_1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"echo ACP_STUB_TOOL_OK\"}"}}]}}],"usage":{"total_tokens":5}}'
+    ;;
+esac
+exit 0

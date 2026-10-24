@@ -272,6 +272,22 @@ path is available — `start`/`stop`/`status` exit `111` (unimplemented).
   with compacted context across editor restarts.
 - **Reasoning is streamed** as `agent_thought_chunk` notifications.
 
+## Testing
+
+`tests/acp/mock_client.py` is a stdlib-only mock ACP client that spawns
+`tau acp serve` and drives the protocol end to end — the `initialize`
+handshake, `session/new` / `session/load`, a full tool-call turn (provider
+HTTP is stubbed by `tests/acp/stub-bin/curl`, so no network or API key is
+needed), JSON-RPC error envelopes, and exit codes:
+
+```sh
+python3 tests/acp/mock_client.py --bin ./zig-out/bin/tau --verbose
+```
+
+It runs in CI as the `acp-protocol` smoke group
+(`scripts/smoke.sh --group acp-protocol`). On Windows the keyed tool-call
+scenario is skipped — a native binary cannot exec the shell-script curl shim.
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |

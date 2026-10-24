@@ -62,6 +62,7 @@ ALL_TEST_GROUPS=(
   "issue11:test_group_issue11_flags"
   "model:test_group_model_shorthand"
   "acp:test_group_acp"
+  "acp-protocol:test_group_acp_protocol"
   "config-file:test_group_config_file"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
@@ -432,6 +433,29 @@ test_group_acp() {
     ok "acp serve --acp-socket recognized (parse error on bad --max-iterations, exit 80)" 0 0
   else
     ok "acp serve --acp-socket recognized (exit $rc)" 1 0
+  fi
+}
+
+# Group: ACP JSON-RPC protocol integration (mock client)
+# Drives `tau acp serve` stdio end to end: initialize handshake, session/new +
+# session/load, a real tool_call -> tool_call_update -> agent_message_chunk
+# turn (provider HTTP stubbed via tests/acp/stub-bin/curl), JSON-RPC error
+# envelopes (-32601 / -32000 / -32001), and exit codes. Offline.
+test_group_acp_protocol() {
+  note "ACP JSON-RPC protocol integration (mock client)"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "acp-protocol mock client" "python3 not found"
+    return
+  fi
+
+  capture acp_proto python3 "$ROOT/tests/acp/mock_client.py" --bin "$BIN"
+  if [ "$acp_proto_rc" = "0" ]; then
+    ok "acp mock-client protocol suite" 0 0
+    [ "$SMOKE_VERBOSE" = "1" ] && printf '%s\n' "$acp_proto_out" >&2
+  else
+    ok "acp mock-client protocol suite" 1 0
+    printf '%s\n%s\n' "$acp_proto_out" "$acp_proto_err" >&2
   fi
 }
 
