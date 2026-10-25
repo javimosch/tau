@@ -583,6 +583,12 @@ Outputs CSV with max RSS (KB), user CPU time, system CPU time, and wall time for
 - [v0.4.0 — JSON Schema + Skills Autodiscovery](./docs/changelog-2026-06-product.md) · [HTML (with technical tab)](./docs/changelog-2026-06.html)
 - [Full index](./docs/changelog.html) · [Roadmap](./docs/roadmap.md)
 
+## 🔒 Security
+
+[SECURITY.md](./SECURITY.md) — report vulnerabilities privately, verify your
+install (source build → checksum → sigstore/SLSA where shipped), and see how
+tau handles credentials, tool access, and on-disk data.
+
 ## License
 
 MIT — <a href="https://www.linkedin.com/in/arancibiajav/" target="_blank">Javier Leandro Arancibia</a>
