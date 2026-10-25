@@ -91,6 +91,7 @@ ALL_TEST_GROUPS=(
   "update:test_group_update"
   "upgrade:test_group_upgrade"
   "errors-doc:test_group_errors_doc"
+  "config-doc:test_group_config_doc"
   "explain:test_group_explain"
   "golden-maintenance:test_group_golden_maintenance"
   "bench:test_group_bench_smoke:slow"
@@ -3082,6 +3083,62 @@ test_group_errors_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/errors.md.bak" "$doc"
   else
     skip_test "errors-doc: --check detects a stale doc" "docs/errors.md missing"
+  fi
+}
+
+# Group: generated docs/config.md drift check
+# docs/config.md is rendered from the `tau config schema` output (canonical
+# copy: schema/tau-config.schema.json) by scripts/gen-config-doc.py;
+# --check regenerates in memory and fails on drift.
+test_group_config_doc() {
+  note "generated docs/config.md drift check"
+
+  local doc="$ROOT/docs/config.md"
+  local gen="$ROOT/scripts/gen-config-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "config-doc: docs/config.md exists" 0 0
+    contains "config-doc: doc declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "config-doc: docs/config.md exists" 1 0
+    contains "config-doc: doc declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "config-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "config-doc: emitted schema renders to the same doc" "python3 not on PATH"
+    skip_test "config-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "config-doc: --check passes (no drift)" 0 0
+  else
+    ok "config-doc: --check passes (no drift)" 1 0
+  fi
+
+  # The doc must also match what the shipped binary emits — piping
+  # `tau config schema` through the generator's stdin mode must --check clean.
+  if "$BIN" config schema | python3 "$gen" - --check >/dev/null 2>&1; then
+    ok "config-doc: emitted schema renders to the same doc" 0 0
+  else
+    ok "config-doc: emitted schema renders to the same doc" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/config.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "config-doc: --check detects a stale doc" 0 1
+    else
+      ok "config-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/config.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/config.md.bak" "$doc"
+  else
+    skip_test "config-doc: --check detects a stale doc" "docs/config.md missing"
   fi
 }
 

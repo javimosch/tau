@@ -115,7 +115,9 @@ stdout. It is generated from the same `FileConfig` struct the loader and
 `tau config validate` derive their checks from, so the schema can't drift from
 the keys tau accepts: unknown keys are rejected (`additionalProperties:
 false`), `provider` enumerates the provider table, `keys` restricts its member
-names to providers, and integer/range constraints mirror the validator.
+names to providers, and integer/range constraints mirror the validator. The
+generated, drift-checked key-by-key reference rendered from that schema lives
+at [docs/config.md](config.md).
 
 A canonical copy is checked in at [`schema/tau-config.schema.json`](../schema/tau-config.schema.json)
 and is reachable at a stable URL:
