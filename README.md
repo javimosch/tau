@@ -535,7 +535,7 @@ starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 }
 ```
 
-CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md).
+CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md) (generated, drift-checked key table: [docs/config.md](docs/config.md)).
 
 Inspect the resolved effective config (config file + env + CLI flags merged) with `tau config show` — output is JSON and API keys are always redacted:
 

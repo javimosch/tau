@@ -95,6 +95,14 @@ jobs:
         shell: bash
         run: '"$TAU_BIN" config schema | diff - schema/tau-config.schema.json'
 
+      - name: Config doc drift check
+        # docs/config.md is generated from the schema by
+        # scripts/gen-config-doc.py — this proves the shipped reference is in
+        # sync (the unit suite and the config-doc smoke group pin the same
+        # invariant). Regenerate: python3 scripts/gen-config-doc.py
+        shell: bash
+        run: '"$TAU_BIN" config schema | python3 scripts/gen-config-doc.py - --check'
+
       - name: Offline smoke groups
         shell: bash
         run: ./scripts/smoke.sh

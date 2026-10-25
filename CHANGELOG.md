@@ -135,6 +135,10 @@ are backward compatible.
   addition to the byte-pinning unit test), and `docs/editors.md` documents
   per-editor autocomplete setup — `$schema`, VS Code `json.schemas`, Zed LSP
   settings, Neovim jsonls, and a fully offline local-copy path (#259)
+- `docs/config.md` — human-readable config-file key reference generated from
+  `tau config schema` output by `scripts/gen-config-doc.py`; drift-checked
+  three ways (byte-pinning unit test, `config-doc` smoke group, CI step on
+  every platform leg) so the doc can never diverge from the schema (#269)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and

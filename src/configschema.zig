@@ -340,3 +340,28 @@ test "schema: checked-in schema file matches the emitted document" {
         return error.TestFailed;
     }
 }
+
+test "docs/config.md generated reference mirrors the schema" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/config.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    // The file must declare itself generated so nobody hand-edits it.
+    try testing.expect(std.mem.indexOf(u8, doc, "GENERATED FILE") != null);
+    try testing.expect(std.mem.indexOf(u8, doc, "scripts/gen-config-doc.py") != null);
+    inline for (file_fields) |f| {
+        // Every config key must appear as a table row with its schema
+        // description — regenerate docs/config.md if this fails:
+        //   python3 scripts/gen-config-doc.py
+        var buf: [80]u8 = undefined;
+        const row = std.fmt.bufPrint(&buf, "| `{s}` |", .{f.name}) catch unreachable;
+        if (std.mem.indexOf(u8, doc, row) == null) {
+            std.debug.print("docs/config.md missing key row '{s}'\n", .{row});
+            return error.TestUnexpectedResult;
+        }
+        const desc = comptime fieldMeta(f.name).desc;
+        if (std.mem.indexOf(u8, doc, desc) == null) {
+            std.debug.print("docs/config.md missing description for key '{s}'\n", .{f.name});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
