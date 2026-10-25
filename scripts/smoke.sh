@@ -90,6 +90,7 @@ ALL_TEST_GROUPS=(
   "golden-help:test_group_golden_help"
   "update:test_group_update"
   "upgrade:test_group_upgrade"
+  "upgrade-keep-state:test_group_upgrade_keep_state"
   "errors-doc:test_group_errors_doc"
   "explain:test_group_explain"
   "golden-maintenance:test_group_golden_maintenance"
@@ -478,6 +479,53 @@ test_group_upgrade() {
 
   # 9. Help advertises the subcommand.
   "$BIN" --help 2>&1 | grep -q 'tau upgrade' && ok "--help mentions tau upgrade" 0 0 || ok "--help mentions tau upgrade" 1 0
+}
+
+# upgrade-keep-state — previous-stable upgrade e2e: existing configs and
+# client wiring survive `tau upgrade` (scripts/e2e-upgrade-keep-state.sh).
+test_group_upgrade_keep_state() {
+  local out rc ps
+  local drv="$ROOT/scripts/e2e-upgrade-keep-state.sh"
+
+  note "upgrade-keep-state: previous-stable upgrade e2e driver"
+
+  # ── driver surface ──
+  [ -f "$drv" ];  ok "e2e-upgrade-keep-state.sh exists" "$?" 0
+  [ -x "$drv" ];  ok "e2e-upgrade-keep-state.sh is executable" "$?" 0
+  bash -n "$drv" 2>/dev/null; ok "e2e-upgrade-keep-state.sh passes bash -n" "$?" 0
+  contains "driver seeds a previous-stable config" "$(cat "$drv")" 'written by `tau init` on the previous stable release'
+  contains "driver seeds zed client wiring" "$(cat "$drv")" '.config/zed/settings.json'
+  contains "driver seeds vscode client wiring" "$(cat "$drv")" '.config/Code/User/settings.json'
+  contains "driver seeds jetbrains client wiring" "$(cat "$drv")" '.jetbrains/acp.json'
+  contains "driver hashes state before upgrade" "$(cat "$drv")" 'hashes.before'
+  contains "driver stages a file:// release tree" "$(cat "$drv")" 'srv/download/v99.9.9'
+  contains "driver scrubs provider keys" "$(cat "$drv")" 'XIAOMI_API_KEY'
+  contains "driver runs upgrade --yes" "$(cat "$drv")" 'upgrade --yes'
+  contains "driver re-checks state after upgrade" "$(cat "$drv")" 'byte-identical'
+  contains "driver verifies old config on the new binary" "$(cat "$drv")" 'config validate'
+
+  # ── ci.yml wiring (drift guards for the first-run job's upgrade step) ──
+  local ci="$ROOT/.github/workflows/ci.yml"
+  [ -f "$ci" ]; ok "ci.yml exists" "$?" 0
+  contains "ci runs the keep-state driver" "$(cat "$ci")" "e2e-upgrade-keep-state.sh"
+  contains "ci step named for upgrade state" "$(cat "$ci")" "upgrade keeps config and client wiring"
+  contains "ci upgrade step is POSIX-only" "$(cat "$ci")" "upgrade defers to install.ps1 on"
+
+  # ── end-to-end: run the driver against $BIN ──
+  case "$(uname -s)" in Linux|Darwin) ;; *) skip_test "e2e-upgrade-keep-state end-to-end" "unsupported host platform"; return ;; esac
+  if [ -x "$BIN" ]; then
+    ps="$(mktemp -d)"
+    out=$("$drv" "$BIN" "$ps" 2>&1); rc=$?
+    ok "e2e-upgrade-keep-state.sh exit" "$rc" 0
+    contains "e2e reports PASS" "$out" "e2e-upgrade-keep-state: PASS"
+    contains "e2e seeded and hashed state" "$out" "seeded previous-stable state"
+    contains "e2e upgrade reported upgraded" "$out" "status=upgraded"
+    contains "e2e state byte-identical" "$out" "byte-identical"
+    contains "e2e new binary reads old config" "$out" "reads and validates the previous-stable config"
+    rm -rf "$ps"
+  else
+    skip_test "e2e-upgrade-keep-state end-to-end" "no built tau binary at $BIN"
+  fi
 }
 
 # guide — the embedded operator manual (cli-guide-spec). JSON default, --human markdown, no runtime fetch.

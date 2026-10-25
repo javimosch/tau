@@ -201,6 +201,14 @@ are backward compatible.
   `scripts/e2e-first-run.sh` / `scripts/e2e-first-run.ps1`. The release
   workflow's install-smoke jobs assert the shipped artifact self-verifies
   the same way (#233)
+- Previous-stable upgrade e2e (`scripts/e2e-upgrade-keep-state.sh`): seeds a
+  previous-release HOME — v0.4.0-shape config, a session, an nvim snippet,
+  and Zed/VS Code/JetBrains ACP client wiring pointed at the installed
+  binary — runs `tau upgrade --yes` against a staged `file://` release, then
+  asserts every state file is byte-identical and the new binary still reads
+  and validates the old config (`config get`, `config validate`). Runs as
+  the `upgrade-keep-state` smoke group and as a POSIX step in the `ci`
+  workflow's `first-run` job against the install.sh-installed binary (#266)
 - `tau explain [<code|type>] [--human]` — offline error-catalog lookup:
   prints a stable entry's cause, remediation hint, and docs link as JSON
   (`--human` for prose), or lists the whole catalog with no argument.

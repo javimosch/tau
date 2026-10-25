@@ -64,7 +64,9 @@ and running `tau --version`/`--help`.
 **Updating:** `tau upgrade` checks the latest release, asks before changing
 anything (a `[y/N]` prompt on a terminal, `--yes` for scripts), then re-runs
 this same verified installer over the running binary — no separate update
-channel to trust. `tau upgrade --dry-run` prints the plan first; `tau version
+channel to trust. Upgrades only replace the binary: your config, sessions,
+and editor ACP client wiring are left untouched and keep working on the new
+release. `tau upgrade --dry-run` prints the plan first; `tau version
 --check` is the read-only form.
 
 **Windows (PowerShell — installs `tau-windows-x86_64.zip` to
