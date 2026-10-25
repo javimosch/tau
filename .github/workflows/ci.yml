@@ -165,6 +165,18 @@ jobs:
           "$RUNNER_TEMP/tau-bin/tau" --version
           ./scripts/e2e-first-run.sh "$RUNNER_TEMP/tau-bin/tau"
 
+      - name: Previous-stable upgrade keeps config and client wiring
+        # `tau upgrade` must be a binary-only operation: the keep-state e2e
+        # seeds a previous-stable HOME (old-format config, sessions, and
+        # Zed/VS Code/JetBrains ACP client wiring pointed at the installed
+        # binary), upgrades in place through a staged file:// release, then
+        # verifies every file byte-for-byte and re-reads the old config on
+        # the new binary. POSIX only — upgrade defers to install.ps1 on
+        # Windows.
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/e2e-upgrade-keep-state.sh "$RUNNER_TEMP/tau-bin/tau"
+
       - name: Install via install.ps1 and run the first-run path (Windows)
         # Same staging contract as the POSIX legs; the staged tree is reached
         # via a file:// TAU_BASE_URL. SHA256SUMS.txt is written in the exact
