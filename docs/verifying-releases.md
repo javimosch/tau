@@ -8,6 +8,7 @@ you need — each layer is independent and strictly stronger than the last.
 | Checksum | `SHA256SUMS.txt` | The download is intact — not corrupted, not swapped for another file on the release page | `sha256sum`/`shasum` (automatic in `install.sh`/`install.ps1`) |
 | Signature | `<asset>.sigstore.json` | The asset was built and signed by `.github/workflows/release.yml` on a `v*` tag of `javimosch/tau` | `cosign` |
 | Provenance | repo attestation store | SLSA build provenance: which repo, workflow, ref, and runner produced the asset | `gh` CLI |
+| Contents | `<asset>.sbom.json` | CycloneDX SBOM: exactly which bytes and files shipped in the archive, plus the toolchain that built them | any JSON reader |
 
 All signing is **keyless**: the release job mints a short-lived Fulcio
 certificate from its GitHub OIDC identity and records every signature in the
@@ -27,6 +28,11 @@ For each `v*` tag, `.github/workflows/release.yml` attaches:
 - SLSA v1 build-provenance attestations for every asset listed in
   `SHA256SUMS.txt`, stored in the repo's attestation store (visible under
   the repo's **Attestations** tab)
+- `<asset>.sbom.json` — a CycloneDX 1.6 SBOM per archive, generated in CI by
+  `scripts/generate-sbom.py`. Each documents the archive's SHA-256, every
+  file inside the archive (individually hashed), the release version and
+  commit, and the Zig toolchain. SBOMs are cosign-signed
+  (`<asset>.sbom.json.sigstore.json`) and SLSA-attested like the archives
 
 The workflow self-verifies every bundle with `cosign verify-blob` before the
 release is created, so an unverifiable signature can never reach the release
@@ -108,7 +114,40 @@ gh attestation verify tau-linux-x86_64.tar.gz --repo javimosch/tau
 
 A passing check prints the attestation's source repository and ref. The
 attestation names its subjects by the exact filenames in `SHA256SUMS.txt`,
-so `gh` matches the file you downloaded automatically.
+so `gh` matches the file you downloaded automatically. The SBOM files are
+attestation subjects too:
+
+```bash
+gh attestation verify tau-linux-x86_64.tar.gz.sbom.json --repo javimosch/tau
+```
+
+## SBOM — contents verification
+
+Each archive ships a CycloneDX 1.6 SBOM named `<asset>.sbom.json`. The
+document's first component carries the archive's SHA-256, so you can confirm
+an SBOM describes the bytes you downloaded:
+
+```bash
+python3 - <<'PY'
+import hashlib, json
+bom = json.load(open("tau-linux-x86_64.tar.gz.sbom.json"))
+expected = bom["components"][0]["hashes"][0]["content"]
+actual = hashlib.sha256(open("tau-linux-x86_64.tar.gz", "rb").read()).hexdigest()
+assert expected == actual, "SBOM does not match this archive"
+print("SBOM matches the archive")
+PY
+```
+
+The remaining components enumerate every file inside the archive with its
+own SHA-256 — after extracting, you can spot-check any member the same way.
+SBOMs are deterministic (the document timestamp is the tag's commit date and
+the serial is derived from the release coordinates), so you can also
+regenerate one locally and diff:
+
+```bash
+scripts/generate-sbom.py --dist . --version <x.y.z> --commit <tag-commit-sha> \
+  --timestamp <tag-commit-date>
+```
 
 ## Failure modes, mapped
 
@@ -118,3 +157,4 @@ so `gh` matches the file you downloaded automatically.
 | `could not download <asset>.sigstore.json` | That release predates signing, or the bundle was stripped. Treat the asset as unauthenticated. |
 | `signature verification failed` / `cosign verify-blob` errors | The asset was **not** produced by tau's release workflow — do not run it. |
 | `gh attestation verify` finds no attestation | Same conclusion as a missing bundle: the asset is not covered by release provenance. |
+| `<asset>.sbom.json` missing or fails signature/attestation | The release predates SBOM generation, or the file was swapped — do not trust the contents listing it describes. |

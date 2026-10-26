@@ -1333,6 +1333,16 @@ test_group_release() {
     contains "release publishes signature bundles" "$(cat "$wf")" "dist/*.sigstore.json"
     contains "release notes mention verification" "$(cat "$wf")" "gh attestation verify"
     contains "release notes link the verify doc" "$(cat "$wf")" "docs/verifying-releases.md"
+
+    # ── SBOM drift guards (task #272) ──
+    contains "release job checks out the repo" "$(cat "$wf")" "actions/checkout"
+    contains "release job generates SBOMs" "$(cat "$wf")" "generate-sbom.py"
+    contains "SBOMs are CycloneDX" "$(cat "$wf")" "CycloneDX"
+    contains "release job validates SBOMs" "$(cat "$wf")" "Validate SBOM documents"
+    contains "signing loop covers SBOMs" "$(cat "$wf")" '*.sbom.json SHA256SUMS.txt'
+    contains "release job attests SBOMs" "$(cat "$wf")" "subject-path: dist/*.sbom.json"
+    contains "release publishes SBOMs" "$(cat "$wf")" "dist/*.sbom.json"
+    contains "release notes mention SBOMs" "$(cat "$wf")" "sbom.json"
   fi
 
   # ── Homebrew formula generator ──
@@ -1556,6 +1566,84 @@ test_group_release() {
   "$sgen" --bogus >/dev/null 2>&1
   ok "scoop generator rejects unknown flag" "$?" 1
   rm -rf "$sdir"
+
+  # ── CycloneDX SBOM generator (task #272) ──
+  local bgen="$ROOT/scripts/generate-sbom.py"
+  [ -f "$bgen" ];  ok "SBOM generator exists" "$?" 0
+  [ -x "$bgen" ];  ok "SBOM generator is executable" "$?" 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m py_compile "$bgen" 2>/dev/null
+    ok "SBOM generator compiles under python3" "$?" 0
+
+    out=$("$bgen" --help 2>&1); rc=$?
+    ok "SBOM generator --help exit" "$rc" 0
+    contains "SBOM generator --help shows usage" "$out" "--dist"
+
+    # stage a fake release tree: one tarball + one zip in release layout
+    local bdir
+    bdir="$(mktemp -d)"
+    mkdir -p "$bdir/pkg/share/man/man1" "$bdir/pkg/share/man/man5"
+    echo fake-tau > "$bdir/pkg/tau"
+    echo man1 > "$bdir/pkg/share/man/man1/tau.1"
+    echo man5 > "$bdir/pkg/share/man/man5/tau-config.5"
+    tar -czf "$bdir/dist-dummy" -C "$bdir/pkg" tau share 2>/dev/null
+    mkdir -p "$bdir/dist"
+    mv "$bdir/dist-dummy" "$bdir/dist/tau-linux-x86_64.tar.gz"
+    python3 - "$bdir/dist/tau-windows-x86_64.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("tau.exe", "fake")
+    z.writestr("share/man/man1/tau.1", "m")
+PY
+
+    out=$("$bgen" --dist "$bdir/dist" --version 1.2.3 --commit abcdef1234 --timestamp 2026-01-02T03:04:05Z 2>&1); rc=$?
+    ok "SBOM generator runs on staged dist" "$rc" 0
+    [ -f "$bdir/dist/tau-linux-x86_64.tar.gz.sbom.json" ]; ok "SBOM emitted for tarball" "$?" 0
+    [ -f "$bdir/dist/tau-windows-x86_64.zip.sbom.json" ]; ok "SBOM emitted for zip" "$?" 0
+
+    local sbom="$bdir/dist/tau-linux-x86_64.tar.gz.sbom.json"
+    if [ -f "$sbom" ]; then
+      contains "SBOM is CycloneDX 1.6" "$(cat "$sbom")" '"bomFormat": "CycloneDX"'
+      contains "SBOM spec version" "$(cat "$sbom")" '"specVersion": "1.6"'
+      contains "SBOM names tau" "$(cat "$sbom")" '"name": "tau"'
+      contains "SBOM carries version" "$(cat "$sbom")" '"version": "1.2.3"'
+      contains "SBOM is MIT licensed" "$(cat "$sbom")" '"id": "MIT"'
+      contains "SBOM lists the archive" "$(cat "$sbom")" '"name": "tau-linux-x86_64.tar.gz"'
+      contains "SBOM lists a member" "$(cat "$sbom")" '"name": "share/man/man1/tau.1"'
+      contains "SBOM records zig target" "$(cat "$sbom")" '"zig:target"'
+      contains "SBOM links the commit" "$(cat "$sbom")" "abcdef1234"
+      contains "SBOM carries timestamp" "$(cat "$sbom")" '"timestamp": "2026-01-02T03:04:05Z"'
+      # the document must bind to the exact archive bytes
+      local asha
+      asha=$(sha256sum "$bdir/dist/tau-linux-x86_64.tar.gz" | cut -d' ' -f1)
+      contains "SBOM embeds the archive sha256" "$(cat "$sbom")" "$asha"
+    fi
+
+    # determinism: identical inputs → byte-identical documents
+    mkdir -p "$bdir/dist2"
+    cp "$bdir/dist/"*.tar.gz "$bdir/dist2/"
+    "$bgen" --dist "$bdir/dist2" --version 1.2.3 --commit abcdef1234 --timestamp 2026-01-02T03:04:05Z >/dev/null 2>&1
+    cmp -s "$sbom" "$bdir/dist2/tau-linux-x86_64.tar.gz.sbom.json"
+    ok "SBOM output is deterministic" "$?" 0
+
+    out=$("$bgen" --dist "$bdir/dist" --outdir "$bdir/dist2" --dry-run 2>&1); rc=$?
+    ok "SBOM --dry-run exit" "$rc" 0
+    contains "SBOM --dry-run announces files" "$out" "would write"
+
+    # fail-closed paths
+    "$bgen" --dist "$bdir/missing" >/dev/null 2>&1
+    ok "SBOM generator rejects missing dist dir" "$?" 1
+    mkdir -p "$bdir/empty"
+    "$bgen" --dist "$bdir/empty" >/dev/null 2>&1
+    ok "SBOM generator rejects empty dist dir" "$?" 1
+    "$bgen" --dist "$bdir/dist" --version notaversion >/dev/null 2>&1
+    ok "SBOM generator rejects malformed version" "$?" 1
+    "$bgen" --bogus >/dev/null 2>&1
+    ok "SBOM generator rejects unknown flag" "$?" 1
+    rm -rf "$bdir"
+  else
+    note "release: skipping SBOM generator checks (python3 unavailable)"
+  fi
 
   # ── setup-tau composite action (repo-root action.yml) ──
   local act="$ROOT/action.yml"
