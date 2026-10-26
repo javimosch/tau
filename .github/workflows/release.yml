@@ -25,14 +25,20 @@ name: release
 # and abort on any mismatch (fail closed — set TAU_SKIP_CHECKSUM=1 to opt out).
 #
 # Authenticity: the release job additionally signs every asset (archives +
-# SHA256SUMS.txt) with keyless Sigstore/cosign — the GitHub OIDC token
+# SHA256SUMS.txt + SBOMs) with keyless Sigstore/cosign — the GitHub OIDC token
 # mints a short-lived Fulcio certificate and the signature lands in the Rekor
 # transparency log, so nothing secret has to be stored. Each asset ships a
 # `<asset>.sigstore.json` bundle, the release self-verifies every bundle
-# before publish, and the archives get a SLSA build-provenance attestation
-# (`gh attestation verify <asset> --repo javimosch/tau`). Consumers verify
-# manually per docs/verifying-releases.md, or set TAU_VERIFY_SIGSTORE=1 to
-# make install.sh / install.ps1 run `cosign verify-blob` themselves.
+# before publish, and the archives + SBOMs get a SLSA build-provenance
+# attestation (`gh attestation verify <asset> --repo javimosch/tau`).
+# Consumers verify manually per docs/verifying-releases.md, or set
+# TAU_VERIFY_SIGSTORE=1 to make install.sh / install.ps1 run
+# `cosign verify-blob` themselves.
+#
+# SBOM: the release job generates a CycloneDX 1.6 SBOM per archive
+# (<asset>.sbom.json via scripts/generate-sbom.py) covering the archive
+# hash, every file inside it, the release version/commit, and the Zig
+# toolchain. SBOMs are signed and attested like every other asset.
 #
 # Homebrew: the homebrew job regenerates Formula/tau.rb from the published
 # checksums and pushes it to javimosch/homebrew-tap on stable tags, so
@@ -309,6 +315,8 @@ jobs:
       id-token: write        # keyless Sigstore signing + attestation OIDC
       attestations: write    # SLSA provenance in the repo's attestation store
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: dist-*
@@ -325,6 +333,38 @@ jobs:
         # would make every install.sh run abort (verification is fail-closed).
         run: (cd dist && sha256sum -c SHA256SUMS.txt)
 
+      - name: Generate CycloneDX SBOMs
+        # One <asset>.sbom.json per archive: CycloneDX 1.6 describing the
+        # archive hash, every file inside it, and the Zig toolchain. The tag's
+        # commit date is passed as the timestamp so the documents are
+        # reproducible — regenerate them locally and diff.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          scripts/generate-sbom.py \
+            --dist dist \
+            --version "${TAG#v}" \
+            --commit "${{ github.sha }}" \
+            --timestamp "$(git log -1 --format=%cI)"
+          ls -la dist/*.sbom.json
+
+      - name: Validate SBOM documents
+        # Fail-closed: a malformed SBOM must never reach the release page.
+        run: |
+          set -euo pipefail
+          cd dist
+          for f in *.tar.gz *.zip; do
+            test -f "$f.sbom.json" || { echo "::error::missing $f.sbom.json"; exit 1; }
+            python3 - "$f.sbom.json" <<'PY'
+          import json, sys
+          bom = json.load(open(sys.argv[1]))
+          assert bom["bomFormat"] == "CycloneDX" and bom["specVersion"] == "1.6", "not a CycloneDX 1.6 document"
+          assert bom["metadata"]["component"]["name"] == "tau", "metadata component mismatch"
+          assert any(c["name"] == sys.argv[1].removesuffix(".sbom.json") for c in bom["components"]), "archive component missing"
+          PY
+          done
+
       - name: Install cosign
         # cosign v3 sign-blob always emits a Sigstore bundle (signature +
         # Fulcio cert + Rekor entry) — consumers need no tlog lookups.
@@ -333,12 +373,12 @@ jobs:
       - name: Sign release assets (keyless Sigstore)
         # Keyless: the job's OIDC token proves this workflow ran on this tag;
         # no signing key material exists anywhere to leak. Every published
-        # asset — archives and the checksum manifest — gets a
+        # asset — archives, SBOMs, and the checksum manifest — gets a
         # <name>.sigstore.json bundle next to it.
         run: |
           set -euo pipefail
           cd dist
-          for f in *.tar.gz *.zip SHA256SUMS.txt; do
+          for f in *.tar.gz *.zip *.sbom.json SHA256SUMS.txt; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
           ls -la *.sigstore.json
@@ -351,7 +391,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          for f in *.tar.gz *.zip SHA256SUMS.txt; do
+          for f in *.tar.gz *.zip *.sbom.json SHA256SUMS.txt; do
             cosign verify-blob \
               --bundle "$f.sigstore.json" \
               --certificate-identity-regexp '^https://github\.com/javimosch/tau/\.github/workflows/release\.yml@refs/tags/v' \
@@ -366,6 +406,16 @@ jobs:
         uses: actions/attest-build-provenance@v3
         with:
           subject-checksums: dist/SHA256SUMS.txt
+
+      - name: Attest SBOM provenance (SLSA)
+        # Same provenance for the CycloneDX documents: each <asset>.sbom.json
+        # becomes an attestation subject, so
+        # `gh attestation verify <asset>.sbom.json --repo javimosch/tau`
+        # resolves it. The SBOM's own `components[0].hashes` binds it to the
+        # exact archive bytes it describes.
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.sbom.json
 
       - name: Create GitHub release
         env:
@@ -398,13 +448,16 @@ jobs:
 
               gh attestation verify tau-linux-x86_64.tar.gz --repo javimosch/tau
 
+          Each archive also has a CycloneDX SBOM (`<asset>.sbom.json`),
+          signed and attested the same way.
+
           See docs/verifying-releases.md for the full verification guide.
           EOF
           gh release create "$TAG" \
             --title "tau $TAG" \
             --notes-file /tmp/release-notes.md \
             "$@" \
-            dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt dist/*.sigstore.json
+            dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt dist/*.sigstore.json dist/*.sbom.json
 
   homebrew:
     # Publishes Formula/tau.rb to the javimosch/homebrew-tap repository so

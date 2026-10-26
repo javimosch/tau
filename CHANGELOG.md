@@ -85,6 +85,14 @@ are backward compatible.
   `install.ps1` can opt into signature verification via
   `TAU_VERIFY_SIGSTORE=1` (fail closed; needs cosign). See
   `docs/verifying-releases.md` (#184)
+- Per-artifact SBOMs: the release job generates a CycloneDX 1.6 SBOM
+  (`<asset>.sbom.json` via `scripts/generate-sbom.py`, stdlib-only and
+  deterministic — commit-stamped timestamp, uuid5 serial) for every release
+  archive, covering the archive hash, each file inside it (individually
+  hashed), the release version/commit, and the Zig toolchain. SBOMs are
+  validated before publish, cosign-signed, SLSA-attested
+  (`gh attestation verify <asset>.sbom.json --repo javimosch/tau`), and
+  uploaded next to the archives (#272)
 
 ### Fixed
 

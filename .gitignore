@@ -21,6 +21,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+__pycache__/
 
 # Smoke test documentation
 smoke.md

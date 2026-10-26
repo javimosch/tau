@@ -60,9 +60,11 @@ built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on
 version tags — and before publish, each archive is smoke-tested on its
 matching OS/arch runner by installing it through `install.sh`/`install.ps1`
 and running `tau --version`/`--help`. Every asset also ships a keyless
-Sigstore/cosign signature bundle (`<asset>.sigstore.json`) and a SLSA
-build-provenance attestation — set `TAU_VERIFY_SIGSTORE=1` to have the
-installers run `cosign verify-blob` too, or verify manually per
+Sigstore/cosign signature bundle (`<asset>.sigstore.json`), a SLSA
+build-provenance attestation, and a CycloneDX SBOM (`<asset>.sbom.json`)
+listing the archive hash and every file inside it — set
+`TAU_VERIFY_SIGSTORE=1` to have the installers run `cosign verify-blob`
+too, or verify manually per
 [`docs/verifying-releases.md`](docs/verifying-releases.md).
 
 **Windows (PowerShell — installs `tau-windows-x86_64.zip` to
