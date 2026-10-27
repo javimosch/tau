@@ -139,6 +139,13 @@ are backward compatible.
   `tau config schema` output by `scripts/gen-config-doc.py`; drift-checked
   three ways (byte-pinning unit test, `config-doc` smoke group, CI step on
   every platform leg) so the doc can never diverge from the schema (#269)
+- `schema/tau-doctor.schema.json` + `docs/doctor-json.md` — a draft 2020-12
+  JSON Schema for every `tau doctor --json` NDJSON line (check/fix/verdict
+  events) and a generated human-readable reference; drift-checked three ways
+  (`doctor.zig` unit tests pin the `$defs` to the serialized structs,
+  `scripts/check-doctor-schema.py` validates real binary output — run by the
+  `doctor-schema` smoke group — and a CI step re-validates on every platform
+  leg) (#275)
 - Fleet parser accepts `--provider`, `--model`, and `--api-key` overrides
 - `--debug` now writes a redacted diagnostic log to
   `~/.config/tau/debug/<timestamp>.log` (override with `TAU_DEBUG_LOG`) and

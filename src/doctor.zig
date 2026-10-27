@@ -2263,3 +2263,187 @@ test "selftestServe: drains a POST and answers with the canned completion" {
     const served = stub.await(testing.io);
     try testing.expect(served >= 1);
 }
+
+// ---------------------------------------------------------------------------
+// schema/tau-doctor.schema.json drift pins — the checked-in schema describes
+// every NDJSON line `tau doctor --json` can emit. These tests keep its $defs
+// honest against the serialized shapes (field names, enums, required keys);
+// scripts/check-doctor-schema.py validates real binary output against the
+// same file (doctor-schema smoke group + CI).
+// ---------------------------------------------------------------------------
+
+fn doctorSchema(a: std.mem.Allocator) !std.json.Value {
+    const raw = std.Io.Dir.cwd().readFileAlloc(testing.io, "schema/tau-doctor.schema.json", a, .unlimited) catch {
+        std.debug.print("schema/tau-doctor.schema.json missing — see docs/doctor-json.md\n", .{});
+        return error.TestFailed;
+    };
+    return std.json.parseFromSliceLeaky(std.json.Value, a, raw, .{});
+}
+
+fn schemaDef(v: std.json.Value, name: []const u8) std.json.Value {
+    return v.object.get("$defs").?.object.get(name).?;
+}
+
+fn expectRequired(def: std.json.Value, comptime want: []const []const u8) !void {
+    const req = def.object.get("required").?.array;
+    if (req.items.len != want.len) {
+        std.debug.print("doctor schema required len {d} != {d}\n", .{ req.items.len, want.len });
+        return error.TestFailed;
+    }
+    inline for (want) |w| {
+        var found = false;
+        for (req.items) |r| found = found or std.mem.eql(u8, r.string, w);
+        if (!found) {
+            std.debug.print("doctor schema missing required key '{s}'\n", .{w});
+            return error.TestFailed;
+        }
+    }
+}
+
+fn expectProps(def: std.json.Value, comptime want: []const []const u8) !void {
+    const props = def.object.get("properties").?.object;
+    if (props.count() != want.len) {
+        std.debug.print("doctor schema properties len {d} != {d}\n", .{ props.count(), want.len });
+        return error.TestFailed;
+    }
+    inline for (want) |w| {
+        if (props.get(w) == null) {
+            std.debug.print("doctor schema missing property '{s}'\n", .{w});
+            return error.TestFailed;
+        }
+    }
+}
+
+fn expectEnumMatches(comptime E: type, prop: std.json.Value) !void {
+    const en = prop.object.get("enum").?.array;
+    const tags = @typeInfo(E).@"enum".fields;
+    if (en.items.len != tags.len) {
+        std.debug.print("doctor schema enum len {d} != {d}\n", .{ en.items.len, tags.len });
+        return error.TestFailed;
+    }
+    inline for (tags, 0..) |t, i| {
+        try testing.expectEqualStrings(t.name, en.items[i].string);
+    }
+}
+
+fn expectDoneConst(def: std.json.Value, want: bool) !void {
+    const done = def.object.get("properties").?.object.get("done").?.object;
+    try testing.expect(done.get("const").? == .bool);
+    try testing.expectEqual(want, done.get("const").?.bool);
+}
+
+test "doctor schema: root is a draft 2020-12 oneOf over the three event types" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const v = try doctorSchema(a);
+    try testing.expect(v == .object);
+    try testing.expectEqualStrings("https://json-schema.org/draft/2020-12/schema", v.object.get("$schema").?.string);
+
+    const one_of = v.object.get("oneOf").?.array;
+    try testing.expectEqual(@as(usize, 3), one_of.items.len);
+    try testing.expectEqualStrings("#/$defs/check_event", one_of.items[0].object.get("$ref").?.string);
+    try testing.expectEqualStrings("#/$defs/fix_event", one_of.items[1].object.get("$ref").?.string);
+    try testing.expectEqualStrings("#/$defs/verdict_event", one_of.items[2].object.get("$ref").?.string);
+}
+
+test "doctor schema: check def mirrors the serialized Check shape" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const check = schemaDef(try doctorSchema(a), "check");
+    // Serialized fields = Check fields minus `fix` (internal --fix signal).
+    const fields = @typeInfo(Check).@"struct".fields;
+    try expectRequired(check, &.{ "name", "status", "message" });
+    try expectProps(check, &.{ "name", "status", "message", "hint" });
+    try testing.expectEqual(@as(usize, 5), fields.len); // pins the "minus fix" math above
+    try expectEnumMatches(CheckStatus, check.object.get("properties").?.object.get("status").?);
+}
+
+test "doctor schema: fix def mirrors the serialized FixOutcome shape" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const fix = schemaDef(try doctorSchema(a), "fix");
+    try expectRequired(fix, &.{ "id", "check", "status", "detail" });
+    try expectProps(fix, &.{ "id", "check", "status", "detail" });
+    try expectEnumMatches(FixStatus, fix.object.get("properties").?.object.get("status").?);
+}
+
+test "doctor schema: summary and build defs mirror the tally/build objects" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const v = try doctorSchema(a);
+    const summary = schemaDef(v, "summary");
+    const sfields = @typeInfo(Summary).@"struct".fields;
+    try testing.expectEqual(@as(usize, 4), sfields.len);
+    try expectRequired(summary, &.{ "ok", "warn", "fail", "skip" });
+    try expectProps(summary, &.{ "ok", "warn", "fail", "skip" });
+
+    const build = schemaDef(v, "build");
+    const bdecls = @typeInfo(version_mod.build).@"struct".decls;
+    const breq = build.object.get("required").?.array;
+    try testing.expectEqual(bdecls.len, breq.items.len);
+    inline for (bdecls) |d| {
+        // The decl is `date`; the serialized key is `build_date`.
+        const key = if (comptime std.mem.eql(u8, d.name, "date")) "build_date" else d.name;
+        var found = false;
+        for (breq.items) |r| found = found or std.mem.eql(u8, r.string, key);
+        if (!found) {
+            std.debug.print("doctor schema build def missing '{s}'\n", .{key});
+            return error.TestFailed;
+        }
+    }
+    try expectProps(build, &.{ "commit", "target", "build_date", "zig" });
+}
+
+test "doctor schema: event envelopes pin the done marker and payload keys" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const v = try doctorSchema(a);
+    const check_ev = schemaDef(v, "check_event");
+    try expectRequired(check_ev, &.{ "check", "done" });
+    try expectDoneConst(check_ev, false);
+
+    const fix_ev = schemaDef(v, "fix_event");
+    try expectRequired(fix_ev, &.{ "fix", "done" });
+    try expectDoneConst(fix_ev, false);
+
+    const verdict = schemaDef(v, "verdict_event");
+    try expectRequired(verdict, &.{ "ok", "version", "build", "summary", "done" });
+    try expectProps(verdict, &.{ "ok", "version", "build", "summary", "fixes", "done" });
+    try expectDoneConst(verdict, true);
+}
+
+test "docs/doctor-json.md generated reference mirrors the schema" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/doctor-json.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    // The file must declare itself generated so nobody hand-edits it —
+    // regenerate docs/doctor-json.md if this fails:
+    //   python3 scripts/gen-doctor-doc.py
+    try testing.expect(std.mem.indexOf(u8, doc, "GENERATED FILE") != null);
+    try testing.expect(std.mem.indexOf(u8, doc, "scripts/gen-doctor-doc.py") != null);
+    inline for (.{ "check_event", "fix_event", "verdict_event", "check", "fix", "summary", "build" }) |name| {
+        const heading = "### " ++ name;
+        if (std.mem.indexOf(u8, doc, heading) == null) {
+            std.debug.print("docs/doctor-json.md missing section '{s}'\n", .{heading});
+            return error.TestFailed;
+        }
+    }
+    // Every serialized field appears as a table row.
+    inline for (.{ "name", "status", "message", "hint", "id", "check", "detail", "ok", "warn", "fail", "skip", "commit", "target", "build_date", "zig", "version", "done", "fixes", "summary", "build" }) |f| {
+        const row = "| `" ++ f ++ "`";
+        if (std.mem.indexOf(u8, doc, row) == null) {
+            std.debug.print("docs/doctor-json.md missing field row '{s}'\n", .{row});
+            return error.TestFailed;
+        }
+    }
+}

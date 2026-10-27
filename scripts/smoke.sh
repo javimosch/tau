@@ -92,6 +92,7 @@ ALL_TEST_GROUPS=(
   "upgrade:test_group_upgrade"
   "errors-doc:test_group_errors_doc"
   "config-doc:test_group_config_doc"
+  "doctor-schema:test_group_doctor_schema"
   "explain:test_group_explain"
   "golden-maintenance:test_group_golden_maintenance"
   "bench:test_group_bench_smoke:slow"
@@ -3139,6 +3140,113 @@ test_group_config_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/config.md.bak" "$doc"
   else
     skip_test "config-doc: --check detects a stale doc" "docs/config.md missing"
+  fi
+}
+
+# Group: `tau doctor --json` output schema — schema/tau-doctor.schema.json
+# describes every NDJSON line the stream emits; scripts/check-doctor-schema.py
+# validates real binary output against it (per-line shape + stream invariants)
+# and docs/doctor-json.md is generated from it by scripts/gen-doctor-doc.py.
+# Fully offline.
+test_group_doctor_schema() {
+  local scrub mock_home rc
+  local schema="$ROOT/schema/tau-doctor.schema.json"
+  local gen="$ROOT/scripts/gen-doctor-doc.py"
+  local check="$ROOT/scripts/check-doctor-schema.py"
+  local doc="$ROOT/docs/doctor-json.md"
+
+  note "tau doctor --json output schema"
+
+  scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+
+  # The checked-in schema exists and is a draft 2020-12 document.
+  if [ -f "$schema" ]; then
+    ok "doctor-schema: schema file exists" 0 0
+    contains "doctor-schema: draft 2020-12" "$(cat "$schema")" 'draft/2020-12/schema'
+  else
+    ok "doctor-schema: schema file exists" 1 0
+    contains "doctor-schema: draft 2020-12" "" 'draft/2020-12/schema'
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "doctor-schema: real output validates" "python3 not on PATH"
+    skip_test "doctor-schema: --fix stream validates" "python3 not on PATH"
+    skip_test "doctor-schema: rejects malformed stream" "python3 not on PATH"
+    skip_test "doctor-schema: doc --check passes" "python3 not on PATH"
+    skip_test "doctor-schema: doc --check detects stale" "python3 not on PATH"
+    return 0
+  fi
+
+  # Keyless run: check events + a fail verdict — covers check_event and
+  # verdict_event. Exit code is 1 by design; only stdout matters here.
+  "${scrub[@]}" HOME="$mock_home" "$BIN" doctor --json --offline > "$SMOKE_TEMP/doctor.ndjson" 2>/dev/null
+  rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then ok "doctor-schema: run exit code 0|1" 0 0; else ok "doctor-schema: run exit code 0|1" 1 0; fi
+  if python3 "$check" "$SMOKE_TEMP/doctor.ndjson" >/dev/null 2>&1; then
+    ok "doctor-schema: real output validates" 0 0
+  else
+    ok "doctor-schema: real output validates" 1 0
+  fi
+  contains "doctor-schema: verdict terminates stream" "$(tail -1 "$SMOKE_TEMP/doctor.ndjson")" '"done":true'
+
+  # --fix --yes in a bare HOME emits fix_event lines + a verdict carrying the
+  # fixes array — covers every event type in the schema.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-schema HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --json --offline --fix --yes \
+    > "$SMOKE_TEMP/doctor-fix.ndjson" 2>/dev/null
+  rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then ok "doctor-schema: --fix run exit code 0|1" 0 0; else ok "doctor-schema: --fix run exit code 0|1" 1 0; fi
+  if python3 "$check" "$SMOKE_TEMP/doctor-fix.ndjson" >/dev/null 2>&1; then
+    ok "doctor-schema: --fix stream validates" 0 0
+  else
+    ok "doctor-schema: --fix stream validates" 1 0
+  fi
+  contains "doctor-schema: fix events emitted" "$(cat "$SMOKE_TEMP/doctor-fix.ndjson")" '"fix":{"id":"'
+
+  # Non-vacuity: a corrupt stream must fail validation.
+  printf '{"done":true}\n' > "$SMOKE_TEMP/bad.ndjson"
+  if python3 "$check" "$SMOKE_TEMP/bad.ndjson" >/dev/null 2>&1; then
+    ok "doctor-schema: rejects malformed stream" 0 1
+  else
+    ok "doctor-schema: rejects malformed stream" 0 0
+  fi
+  # A mid-stream done:true must fail too.
+  { head -1 "$SMOKE_TEMP/doctor.ndjson"; printf '{"ok":true,"version":"x","build":{"commit":"c","target":"t","build_date":"d","zig":"z"},"summary":{"ok":0,"warn":0,"fail":0,"skip":0},"done":true}\n'; head -1 "$SMOKE_TEMP/doctor.ndjson"; } > "$SMOKE_TEMP/mid.ndjson"
+  if python3 "$check" "$SMOKE_TEMP/mid.ndjson" >/dev/null 2>&1; then
+    ok "doctor-schema: rejects mid-stream verdict" 0 1
+  else
+    ok "doctor-schema: rejects mid-stream verdict" 0 0
+  fi
+
+  # docs/doctor-json.md drift check, mirroring the config-doc group.
+  if [ -f "$doc" ]; then
+    ok "doctor-schema: docs/doctor-json.md exists" 0 0
+    contains "doctor-schema: doc declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "doctor-schema: docs/doctor-json.md exists" 1 0
+    contains "doctor-schema: doc declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "doctor-schema: doc --check passes" 0 0
+  else
+    ok "doctor-schema: doc --check passes" 1 0
+  fi
+
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/doctor-json.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "doctor-schema: doc --check detects stale" 0 1
+    else
+      ok "doctor-schema: doc --check detects stale" 0 0
+    fi
+    cp "$SMOKE_TEMP/doctor-json.md.bak" "$doc"
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/doctor-json.md.bak" "$doc"
+  else
+    skip_test "doctor-schema: doc --check detects stale" "docs/doctor-json.md missing"
   fi
 }
 

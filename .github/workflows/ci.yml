@@ -103,6 +103,30 @@ jobs:
         shell: bash
         run: '"$TAU_BIN" config schema | python3 scripts/gen-config-doc.py - --check'
 
+      - name: Doctor stream schema + doc drift check
+        # schema/tau-doctor.schema.json describes every NDJSON line
+        # `tau doctor --json` emits — validate real shipped-binary output
+        # against it (a keyless run covers check/verdict events; a --fix run
+        # covers fix events and the verdict's fixes array), then prove the
+        # generated reference doc is in sync. The doctor-schema smoke group
+        # and the doctor.zig unit tests pin the same invariants.
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/plain" "$tmp/fix"
+          rc=0
+          env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+            HOME="$tmp/plain" "$TAU_BIN" doctor --json --offline > "$tmp/plain.ndjson" || rc=$?
+          [ "$rc" -le 1 ] || { echo "doctor exited $rc"; exit 1; }
+          python3 scripts/check-doctor-schema.py "$tmp/plain.ndjson"
+          rc=0
+          env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+            TAU_API_KEY=sk-ci HOME="$tmp/fix" SHELL=/bin/bash "$TAU_BIN" doctor --json --offline --fix --yes \
+            > "$tmp/fix.ndjson" || rc=$?
+          [ "$rc" -le 1 ] || { echo "doctor --fix exited $rc"; exit 1; }
+          python3 scripts/check-doctor-schema.py "$tmp/fix.ndjson"
+          python3 scripts/gen-doctor-doc.py --check
+
       - name: Offline smoke groups
         shell: bash
         run: ./scripts/smoke.sh

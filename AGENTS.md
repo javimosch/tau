@@ -250,7 +250,10 @@ tau doctor --selftest                  # Credential-free e2e check: self-spawn a
 tau doctor --provider openai           # Diagnose an override instead of the configured default
 tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
 tau doctor --report                  # Redacted Markdown bundle for bug reports
+tau doctor --json                    # NDJSON: {"check":{...},"done":false} per check, {"fix":{...}} under --fix, terminal {"ok":...,"done":true}
 # → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
+# --json stream contract: schema/tau-doctor.schema.json + docs/doctor-json.md
+#   tau doctor --json --offline | python3 scripts/check-doctor-schema.py -
 
 tau bug                              # Pre-filled GitHub issue URL + the redacted bundle
 tau bug --title "x" --body "desc"    # Fill the issue title + description
@@ -439,6 +442,7 @@ tau upgrade --dry-run            # Print the resolved plan; install nothing
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
 | `src/configedit.zig` | `tau config set|get|unset`/`config edit` JSONC splice editor | Config editing changes |
 | `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
+| `schema/tau-doctor.schema.json` | `tau doctor --json` NDJSON event schema (+ `scripts/check-doctor-schema.py` validator, `scripts/gen-doctor-doc.py` → docs/doctor-json.md) | Changing doctor event shapes |
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
 | `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
 | `src/bug.zig` | `tau bug` pre-filled GitHub issue (URL + report bundle) | `tau bug` flags/output, issue-URL shape |
