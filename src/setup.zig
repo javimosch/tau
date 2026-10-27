@@ -12,6 +12,13 @@
 // verdict's "non_interactive"/"yes" fields. --shell/--client env equivalents
 // (TAU_SETUP_SHELL, TAU_SETUP_CLIENT) are resolved at parse time (flag >
 // env > detect). CI is deliberately not auto-detected.
+//
+// Preview contract (`--dry-run`): every step still resolves and reads the
+// real filesystem, but no file is created or modified — write outcomes are
+// reported as "would_create"/"would_install"/"would_append" and each
+// write-capable step object plus the verdict carry "dry_run":true. Read-only
+// outcomes (exists/already_installed/present/manual/skipped/failed) keep
+// their normal names so a dry run reports the plan in the same vocabulary.
 
 const std = @import("std");
 const term = @import("term.zig");
@@ -113,13 +120,16 @@ pub fn rcBlock(arena: std.mem.Allocator, k: ShellKind) ![]u8 {
 }
 
 /// Write `data` to `path` (creating parent dirs) only when the content
-/// differs. Returns whether the file was actually written.
-pub const WriteResult = enum { written, unchanged };
+/// differs. Returns whether the file was actually written. When `dry` is
+/// set nothing is written: a differing (or missing) file reports
+/// `.would_write` so callers can preview the change.
+pub const WriteResult = enum { written, unchanged, would_write };
 
-pub fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8) !WriteResult {
+pub fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8, dry: bool) !WriteResult {
     if (std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited)) |cur| {
         if (std.mem.eql(u8, cur, data)) return .unchanged;
     } else |_| {}
+    if (dry) return .would_write;
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
         std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
     }
@@ -128,16 +138,18 @@ pub fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, da
 }
 
 /// Append `block` to the rc file unless it already carries rc_marker.
-pub const RcResult = enum { appended, present };
+/// `would_append` is returned in dry-run mode when the marker is absent.
+pub const RcResult = enum { appended, present, would_append };
 
-pub fn ensureRcBlock(io: std.Io, arena: std.mem.Allocator, path: []const u8, block: []const u8) !RcResult {
+pub fn ensureRcBlock(io: std.Io, arena: std.mem.Allocator, path: []const u8, block: []const u8, dry: bool) !RcResult {
     const cur = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch "";
     if (std.mem.indexOf(u8, cur, rc_marker) != null) return .present;
+    if (dry) return .would_append;
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(arena, cur);
     if (cur.len > 0 and !std.mem.endsWith(u8, cur, "\n")) try out.append(arena, '\n');
     try out.appendSlice(arena, block);
-    _ = try writeIfChanged(io, arena, path, out.items);
+    _ = try writeIfChanged(io, arena, path, out.items, false);
     return .appended;
 }
 
@@ -162,8 +174,11 @@ fn emit(buf: *std.ArrayList(u8)) void {
 // --- Step 1: init ---------------------------------------------------------
 
 /// Scaffold the config file unless one already exists. Returns false when the
-/// step failed (e.g. HOME unset or the write failed).
+/// step failed (e.g. HOME unset or the write failed). In dry-run mode the
+/// scaffold is rendered and compared but never written — the step reports
+/// "would_create".
 fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+    const dry = cfg.setup_dry_run;
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "{\"step\":\"init\",\"status\":");
 
@@ -188,7 +203,7 @@ fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
 
     if (!exists) {
         const body = try initmod.renderConfig(arena, det, p);
-        _ = writeIfChanged(io, arena, path, body) catch |err| {
+        _ = writeIfChanged(io, arena, path, body, dry) catch |err| {
             try buf.appendSlice(arena, "\"failed\",\"message\":");
             const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
             try js(arena, &buf, msg);
@@ -196,7 +211,7 @@ fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             emit(&buf);
             return false;
         };
-        try buf.appendSlice(arena, "\"created\"");
+        try buf.appendSlice(arena, if (dry) "\"would_create\"" else "\"created\"");
     } else {
         try buf.appendSlice(arena, "\"exists\"");
     }
@@ -215,7 +230,9 @@ fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
         if (!first) try buf.append(arena, ',');
         try js(arena, &buf, "TAU_API_KEY");
     }
-    try buf.appendSlice(arena, "]}");
+    try buf.appendSlice(arena, "]");
+    if (dry) try buf.appendSlice(arena, ",\"dry_run\":true");
+    try buf.appendSlice(arena, "}");
     emit(&buf);
     return true;
 }
@@ -253,20 +270,21 @@ pub const CompletionInstall = struct {
 
 /// Write the completion script for shell `k` (creating parent dirs) and, for
 /// shells that need one, append the rc hook unless the marker is present.
-/// Shared by `tau setup` and `tau doctor --fix`.
-pub fn installCompletion(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ShellKind) !CompletionInstall {
+/// Shared by `tau setup` and `tau doctor --fix`. When `dry` is set nothing
+/// is written — `wrote`/`rc_status` report `.would_write`/`.would_append`.
+pub fn installCompletion(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ShellKind, dry: bool) !CompletionInstall {
     const path = try installPath(arena, home, k);
-    const wrote = try writeIfChanged(io, arena, path, shellContent(k));
+    const wrote = try writeIfChanged(io, arena, path, shellContent(k), dry);
     var out: CompletionInstall = .{ .path = path, .wrote = wrote };
     if (try rcPath(arena, home, k)) |rp| {
         out.rc_path = rp;
-        if (ensureRcBlock(io, arena, rp, try rcBlock(arena, k))) |r| {
+        if (ensureRcBlock(io, arena, rp, try rcBlock(arena, k), dry)) |r| {
             out.rc_status = r;
         } else |_| {
             out.rc_failed = true;
         }
     }
-    if (k == .zsh) {
+    if (k == .zsh and !dry) {
         // Drop the cached completion dump so the new _tau is picked up.
         const dump = try std.fmt.allocPrint(arena, "{s}/.zcompdump", .{home});
         std.Io.Dir.cwd().deleteFile(io, dump) catch {};
@@ -290,22 +308,26 @@ pub fn resolveShells(arena: std.mem.Allocator, cfg: Config, env: *std.process.En
     return list.toOwnedSlice(arena);
 }
 
+/// What installOne did (or, in dry-run mode, would do) for one shell.
+const InstallOneOutcome = enum { failed, no_change, changed, would_change };
+
 /// Install one shell's completion script (+ rc hook when the shell needs it)
 /// and append its JSON entry to `shells` — a `[`-opened list where `first`
-/// says no comma is needed yet. Returns false on write failure.
-fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), first: bool, home: []const u8, k: ShellKind) !bool {
+/// says no comma is needed yet. In dry-run mode a pending change reports
+/// "would_install"/"would_append" and nothing is written.
+fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), first: bool, home: []const u8, k: ShellKind, dry: bool) !InstallOneOutcome {
     if (!first) try shells.append(arena, ',');
 
     try shells.appendSlice(arena, "{\"shell\":");
     try js(arena, shells, shellName(k));
 
-    const inst = installCompletion(io, arena, home, k) catch |err| {
+    const inst = installCompletion(io, arena, home, k, dry) catch |err| {
         const path = installPath(arena, home, k) catch "?";
         try shells.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
         const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
         try js(arena, shells, msg);
         try shells.append(arena, '}');
-        return false;
+        return .failed;
     };
     const ok = !inst.rc_failed;
 
@@ -320,7 +342,11 @@ fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), 
     if (!ok) {
         try shells.appendSlice(arena, "\"failed\"");
     } else {
-        try shells.appendSlice(arena, if (inst.wrote == .written) "\"installed\"" else "\"already_installed\"");
+        try shells.appendSlice(arena, switch (inst.wrote) {
+            .would_write => "\"would_install\"",
+            .written => "\"installed\"",
+            .unchanged => "\"already_installed\"",
+        });
     }
     try shells.appendSlice(arena, ",\"path\":");
     try js(arena, shells, inst.path);
@@ -332,12 +358,19 @@ fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), 
         else => {},
     }
     try shells.append(arena, '}');
-    return ok;
+    if (!ok) return .failed;
+    if (inst.wrote == .would_write or inst.rc_status == .would_append) return .would_change;
+    if (inst.wrote == .written or inst.rc_status == .appended) return .changed;
+    return .no_change;
 }
 
 /// Install completions for every resolved shell. Returns false when any
-/// install failed; a detection skip is reported but not a failure.
+/// install failed; a detection skip is reported but not a failure. In
+/// dry-run mode nothing is written: the step status is "would_install" when
+/// any shell has a pending change, "installed" when everything is already
+/// current.
 fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+    const dry = cfg.setup_dry_run;
     var buf: std.ArrayList(u8) = .empty;
     const home = env.get("HOME") orelse {
         try buf.appendSlice(arena, "{\"step\":\"completions\",\"status\":\"failed\",\"message\":");
@@ -361,15 +394,27 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
     var entries: std.ArrayList(u8) = .empty;
     try entries.append(arena, '[');
     var ok = true;
+    var any_would = false;
     for (shells, 0..) |k, i| {
-        if (!try installOne(io, arena, &entries, i == 0, home, k)) ok = false;
+        switch (try installOne(io, arena, &entries, i == 0, home, k, dry)) {
+            .failed => ok = false,
+            .would_change => any_would = true,
+            else => {},
+        }
     }
     try entries.append(arena, ']');
 
     try buf.appendSlice(arena, "{\"step\":\"completions\",\"status\":");
-    try buf.appendSlice(arena, if (ok) "\"installed\"" else "\"failed\"");
+    if (!ok) {
+        try buf.appendSlice(arena, "\"failed\"");
+    } else if (any_would) {
+        try buf.appendSlice(arena, "\"would_install\"");
+    } else {
+        try buf.appendSlice(arena, "\"installed\"");
+    }
     try buf.appendSlice(arena, ",\"shells\":");
     try buf.appendSlice(arena, entries.items);
+    if (dry) try buf.appendSlice(arena, ",\"dry_run\":true");
     try buf.appendSlice(arena, "}");
     emit(&buf);
     return ok;
@@ -620,16 +665,20 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     return list.toOwnedSlice(arena);
 }
 
-/// How one client's configuration ended.
-const ClientOutcome = enum { installed, already_installed, manual, failed };
+/// How one client's configuration ended. `would_install` is the dry-run
+/// counterpart of `installed`: the write was previewed, not performed.
+const ClientOutcome = enum { installed, already_installed, manual, failed, would_install };
 
 /// Configure one client and append its JSON entry to `entries` — a
 /// `[`-opened list where `first` suppresses the comma. Never touches an
 /// existing settings file: when the file is absent a minimal one is written,
 /// when it's present without a "tau" entry a paste-ready snippet lands in
 /// ~/.config/tau/snippets/ instead (existing files are JSONC — rewriting
-/// them would destroy user comments).
-fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, command: []const u8) !ClientOutcome {
+/// them would destroy user comments). In dry-run mode every write is
+/// previewed: a fresh settings file reports "would_install", snippet
+/// outcomes stay "manual" (snippet_path names the file that would be
+/// written).
+fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, command: []const u8, dry: bool) !ClientOutcome {
     if (!first) try entries.append(arena, ',');
     try entries.appendSlice(arena, "{\"client\":");
     try js(arena, entries, clientName(k));
@@ -647,7 +696,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         // Neovim ACP plugins are configured in Lua — splicing arbitrary user
         // config is unsafe, so always emit a paste-ready snippet.
         const snip = try snippetPath(arena, home, k);
-        _ = writeIfChanged(io, arena, snip, try renderNvimSnippet(arena, command)) catch |err| {
+        _ = writeIfChanged(io, arena, snip, try renderNvimSnippet(arena, command), dry) catch |err| {
             try fail(arena, entries, snip, err);
             return .failed;
         };
@@ -675,18 +724,26 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
 
     if (cur == null and !unreadable) {
         // No settings file — write a fresh minimal one.
-        const wrote = writeIfChanged(io, arena, path, try renderClientJson(arena, k, command)) catch |err| {
+        const wrote = writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), dry) catch |err| {
             try fail(arena, entries, path, err);
             return .failed;
         };
         try entries.appendSlice(arena, ",\"status\":");
-        try entries.appendSlice(arena, if (wrote == .written) "\"installed\"" else "\"already_installed\"");
+        try entries.appendSlice(arena, switch (wrote) {
+            .would_write => "\"would_install\"",
+            .written => "\"installed\"",
+            .unchanged => "\"already_installed\"",
+        });
         try entries.appendSlice(arena, ",\"command\":");
         try js(arena, entries, command);
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
         try entries.append(arena, '}');
-        return if (wrote == .written) .installed else .already_installed;
+        return switch (wrote) {
+            .would_write => .would_install,
+            .written => .installed,
+            .unchanged => .already_installed,
+        };
     }
 
     if (cur) |b| {
@@ -708,7 +765,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         "existing settings file has no \"tau\" entry";
 
     const snip = try snippetPath(arena, home, k);
-    _ = writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command)) catch |err| {
+    _ = writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), dry) catch |err| {
         try fail(arena, entries, snip, err);
         return .failed;
     };
@@ -725,8 +782,12 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
 /// Configure editor ACP clients for `tau acp serve`. Without --client the
 /// step reports which supported editors appear installed and is skipped.
 /// Returns false only on IO failures — "manual" outcomes pass the verdict
-/// but carry a `next` field telling the user what to do.
+/// but carry a `next` field telling the user what to do. In dry-run mode
+/// nothing is written: the step status is "would_install" when any client
+/// has a pending fresh-file write, "installed" when everything is already
+/// configured.
 fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+    const dry = cfg.setup_dry_run;
     var buf: std.ArrayList(u8) = .empty;
     const home = env.get("HOME") orelse {
         try buf.appendSlice(arena, "{\"step\":\"clients\",\"status\":\"failed\",\"message\":");
@@ -762,17 +823,28 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
     try entries.append(arena, '[');
     var ok = true;
     var all_manual = true;
+    var any_would = false;
     for (clients, 0..) |k, i| {
-        const outcome = try configureClient(io, arena, &entries, i == 0, home, k, command);
+        const outcome = try configureClient(io, arena, &entries, i == 0, home, k, command, dry);
         if (outcome == .failed) ok = false;
         if (outcome != .manual) all_manual = false;
+        if (outcome == .would_install) any_would = true;
     }
     try entries.append(arena, ']');
 
     try buf.appendSlice(arena, "{\"step\":\"clients\",\"status\":");
-    try buf.appendSlice(arena, if (!ok) "\"failed\"" else if (all_manual) "\"manual\"" else "\"installed\"");
+    if (!ok) {
+        try buf.appendSlice(arena, "\"failed\"");
+    } else if (all_manual) {
+        try buf.appendSlice(arena, "\"manual\"");
+    } else if (any_would) {
+        try buf.appendSlice(arena, "\"would_install\"");
+    } else {
+        try buf.appendSlice(arena, "\"installed\"");
+    }
     try buf.appendSlice(arena, ",\"clients\":");
     try buf.appendSlice(arena, entries.items);
+    if (dry) try buf.appendSlice(arena, ",\"dry_run\":true");
     try buf.appendSlice(arena, "}");
     emit(&buf);
     return ok;
@@ -793,7 +865,9 @@ pub fn unattended(cfg: Config) bool {
 /// still pass); 1 on any failure — including a doctor report with failed
 /// checks, since onboarding is not healthy yet. In unattended mode the
 /// verdict carries "non_interactive":true (and "yes":true when --yes was
-/// given) so scripts can confirm the contract was requested.
+/// given) so scripts can confirm the contract was requested. Under
+/// --dry-run the write steps preview their changes (`would_*` statuses) and
+/// the verdict carries "dry_run":true.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     var ok = try stepInit(io, arena, cfg, env);
     if (!try stepCompletions(io, arena, cfg, env)) ok = false;
@@ -813,6 +887,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     try js(arena, &buf, version);
     if (unattended(cfg)) try buf.appendSlice(arena, ",\"non_interactive\":true");
     if (cfg.setup_yes) try buf.appendSlice(arena, ",\"yes\":true");
+    if (cfg.setup_dry_run) try buf.appendSlice(arena, ",\"dry_run\":true");
     try buf.appendSlice(arena, "}");
     emit(&buf);
     return if (ok) 0 else 1;
@@ -913,9 +988,34 @@ test "writeIfChanged writes once then reports unchanged" {
     const root = try tmp.dir.realPathFileAlloc(io, ".", a);
     const p = try std.fmt.allocPrint(a, "{s}/sub/dir/f.txt", .{root});
 
-    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abc"));
-    try testing.expectEqual(WriteResult.unchanged, try writeIfChanged(io, a, p, "abc"));
-    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abd"));
+    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abc", false));
+    try testing.expectEqual(WriteResult.unchanged, try writeIfChanged(io, a, p, "abc", false));
+    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abd", false));
+}
+
+test "writeIfChanged in dry-run previews the write without touching the file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // Missing file: reports would_write, creates nothing — parent dirs too.
+    const p = try std.fmt.allocPrint(a, "{s}/sub/dir/f.txt", .{root});
+    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "abc", true));
+    try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/sub", .{root})));
+
+    // Identical content is still a no-op (unchanged, not would_write).
+    _ = try writeIfChanged(io, a, p, "abc", false);
+    try testing.expectEqual(WriteResult.unchanged, try writeIfChanged(io, a, p, "abc", true));
+
+    // Differing content previews, and the real bytes survive.
+    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "abd", true));
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, p, a, .unlimited);
+    try testing.expectEqualStrings("abc", got);
 }
 
 test "ensureRcBlock appends the marker once and is idempotent" {
@@ -930,16 +1030,16 @@ test "ensureRcBlock appends the marker once and is idempotent" {
     const rc = try std.fmt.allocPrint(a, "{s}/.zshrc", .{root});
 
     // Missing file -> created with the block.
-    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n"));
+    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false));
     // Second run detects the marker -> no duplicate.
-    try testing.expectEqual(RcResult.present, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n"));
+    try testing.expectEqual(RcResult.present, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false));
 
     const got = try std.Io.Dir.cwd().readFileAlloc(io, rc, a, .unlimited);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, got, rc_marker));
 
     // Existing content without a trailing newline still gets a clean join.
-    _ = try writeIfChanged(io, a, rc, "export A=1");
-    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n"));
+    _ = try writeIfChanged(io, a, rc, "export A=1", false);
+    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false));
     const got2 = try std.Io.Dir.cwd().readFileAlloc(io, rc, a, .unlimited);
     try testing.expect(std.mem.indexOf(u8, got2, "export A=1\n# tau completions\n") != null);
 }
@@ -1044,7 +1144,7 @@ test "configureClient installs a fresh zed settings file, then detects it" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau");
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"installed\"") != null);
 
@@ -1058,8 +1158,61 @@ test "configureClient installs a fresh zed settings file, then detects it" {
 
     // Second run: the tau entry is detected, nothing is rewritten.
     entries.clearRetainingCapacity();
-    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau");
+    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
     try testing.expectEqual(ClientOutcome.already_installed, oc2);
+}
+
+test "configureClient in dry-run previews a fresh settings file without writing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", true);
+    try testing.expectEqual(ClientOutcome.would_install, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"would_install\"") != null);
+
+    // Nothing landed — not even the parent .config/zed directory.
+    const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited));
+    try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home})));
+
+    // Dry-run on an already-configured client still reports already_installed.
+    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    entries.clearRetainingCapacity();
+    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", true);
+    try testing.expectEqual(ClientOutcome.already_installed, oc2);
+}
+
+test "configureClient dry-run keeps manual outcome and writes no snippet" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
+    const orig = "{\n  // keep me\n  \"vim_mode\": true\n}\n";
+    _ = try writeIfChanged(io, a, sp, orig, false);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", true);
+    try testing.expectEqual(ClientOutcome.manual, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
+
+    // Neither the settings file nor the snippet file was touched.
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+    try testing.expectEqualStrings(orig, got);
+    const snip = try std.fmt.allocPrint(a, "{s}/.config/tau/snippets/zed.jsonc", .{home});
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, snip, a, .unlimited));
 }
 
 test "configureClient leaves an existing settings file alone and emits a snippet" {
@@ -1074,10 +1227,10 @@ test "configureClient leaves an existing settings file alone and emits a snippet
 
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     const orig = "{\n  // user comment must survive\n  \"vim_mode\": true\n}\n";
-    _ = try writeIfChanged(io, a, sp, orig);
+    _ = try writeIfChanged(io, a, sp, orig, false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau");
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"manual\"") != null);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
@@ -1107,7 +1260,7 @@ test "configureClient nvim always writes a lua snippet and reports manual" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau");
+    const oc = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"editor_detected\":false") != null);
 

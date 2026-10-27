@@ -153,6 +153,7 @@ and finishes with the `tau doctor` health report:
 ```bash
 ./zig-out/bin/tau setup                    # detect everything, write nothing extra
 ./zig-out/bin/tau setup --client zed       # also configure Zed's agent_servers
+./zig-out/bin/tau setup --dry-run          # preview every write, change nothing
 ./zig-out/bin/tau setup --non-interactive --shell bash --client zed \
     --offline                              # unattended: devcontainers, dotfiles, CI
 ```
@@ -224,7 +225,7 @@ tau gives agents what they need:
 - **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling (stream contract + JSON Schema: [docs/doctor-json.md](docs/doctor-json.md)); `--fix` remediates common issues (missing config, loose permissions, missing completions) behind per-fix confirmation, and `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network; an `update_available` check warns when a newer release exists (`tau version --check` is the standalone form; opt out via `TAU_NO_UPDATE_CHECK=1`)
 - **Update check** — `tau version --check` compares the running binary against the latest GitHub release and prints `update_available` + the release URL; non-blocking (always exits 0, short timeout) and opt-out via `TAU_NO_UPDATE_CHECK`
 - **Self-update** — `tau upgrade` reuses that check, confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan
-- **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI
+- **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|all`), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI, and `--dry-run` previews every write step (`would_*` statuses + `"dry_run":true`) without touching the filesystem
 - **Bug reports** — `tau bug` builds a pre-filled GitHub issue URL carrying the redacted `doctor --report` diagnostics bundle (`--open` launches the system browser, `--out` also writes the bundle to a file, `--no-report` omits diagnostics)
 - **Offline error catalog** — `tau explain <code|type>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md))
 - **Sessions** — persistent conversation + goal state

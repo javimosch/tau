@@ -2138,6 +2138,72 @@ test_group_setup() {
   "$BIN" setup --shell >/dev/null 2>&1; ok "setup --shell (missing value) -> exit 80" "$?" 80
   "$BIN" setup --client emacs >/dev/null 2>&1; ok "setup --client emacs -> exit 80" "$?" 80
   "$BIN" setup --client >/dev/null 2>&1; ok "setup --client (missing value) -> exit 80" "$?" 80
+
+  # ── --dry-run: preview every write step, change nothing ─────────────────
+
+  # Fresh HOME + --dry-run: steps report would_* statuses, the verdict is
+  # marked, and no file or directory is created.
+  local mock_home19; mock_home19="$(mktemp -d)"; register_temp_dir "$mock_home19"
+  capture s20 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home19" SHELL=/bin/zsh XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --dry-run --client zed
+  ok "setup --dry-run exits 0" "$s20_rc" 0
+  local d1 d2 d3 d5
+  d1=$(printf '%s' "$s20_out" | sed -n '1p')
+  d2=$(printf '%s' "$s20_out" | sed -n '2p')
+  d3=$(printf '%s' "$s20_out" | sed -n '3p')
+  d5=$(printf '%s' "$s20_out" | sed -n '5p')
+  contains "dry-run init reports would_create" "$d1" '"step":"init","status":"would_create"'
+  contains "dry-run marks the init step" "$d1" '"dry_run":true'
+  contains "dry-run completions reports would_install" "$d2" '"step":"completions","status":"would_install"'
+  contains "dry-run rc preview reports would_append" "$d2" '"rc_status":"would_append"'
+  contains "dry-run marks the completions step" "$d2" '"dry_run":true'
+  contains "dry-run marks the clients step" "$d3" '"step":"clients","status":"would_install"'
+  contains "dry-run zed entry reports would_install" "$d3" '"status":"would_install"'
+  contains "dry-run marks the clients object" "$d3" '"dry_run":true'
+  contains "dry-run verdict is marked" "$d5" '"step":"setup","ok":true'
+  contains "dry-run verdict carries the flag" "$d5" '"dry_run":true'
+  [ ! -e "$mock_home19/.config/tau/config.json" ]; ok "dry-run wrote no config.json" "$?" 0
+  [ ! -e "$mock_home19/.zsh/completions/_tau" ]; ok "dry-run installed no completion" "$?" 0
+  [ ! -e "$mock_home19/.zshrc" ]; ok "dry-run created no .zshrc" "$?" 0
+  [ ! -e "$mock_home19/.config/zed/settings.json" ]; ok "dry-run wrote no zed settings" "$?" 0
+  [ ! -e "$mock_home19/.config" ]; ok "dry-run created no .config dir at all" "$?" 0
+
+  # The previewed plan then applies cleanly for real on the same HOME.
+  capture s21 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home19" SHELL=/bin/zsh XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed
+  ok "real run after dry-run exits 0" "$s21_rc" 0
+  contains "real run reports created" "$s21_out" '"step":"init","status":"created"'
+  contains "real run verdict is not marked" "$s21_out" '"step":"setup","ok":true'
+  printf '%s' "$s21_out" | grep -q 'dry_run'; ok "real run carries no dry_run marker" "$?" 1
+  [ -f "$mock_home19/.config/tau/config.json" ]; ok "real run wrote config.json" "$?" 0
+  [ -f "$mock_home19/.config/zed/settings.json" ]; ok "real run wrote zed settings" "$?" 0
+
+  # Dry-run on a fully configured HOME reports the read-only statuses
+  # (exists/already_installed/present) — nothing left to change.
+  capture s22 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home19" SHELL=/bin/zsh XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --dry-run --client zed
+  ok "dry-run on configured HOME exits 0" "$s22_rc" 0
+  contains "noop dry-run init reports exists" "$s22_out" '"step":"init","status":"exists"'
+  contains "noop dry-run reports already_installed" "$s22_out" '"status":"already_installed"'
+  contains "noop dry-run rc reports present" "$s22_out" '"rc_status":"present"'
+  contains "noop dry-run verdict is still marked" "$s22_out" '"dry_run":true'
+
+  # --client nvim in dry-run: manual outcome is unchanged, no snippet lands.
+  local mock_home20; mock_home20="$(mktemp -d)"; register_temp_dir "$mock_home20"
+  capture s23 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home20" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --dry-run --client nvim
+  ok "setup --dry-run --client nvim exits 0" "$s23_rc" 0
+  contains "nvim dry-run stays manual" "$s23_out" '"client":"nvim","status":"manual"'
+  contains "nvim dry-run names the would-be snippet" "$s23_out" '"snippet_path":'
+  [ ! -e "$mock_home20/.config/tau/snippets/nvim.lua" ]; ok "nvim dry-run wrote no snippet" "$?" 0
+
+  # Dry-run composes with the unattended contract flags.
+  local mock_home21; mock_home21="$(mktemp -d)"; register_temp_dir "$mock_home21"
+  capture s24 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home21" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --dry-run --yes --non-interactive
+  ok "setup --dry-run --yes --non-interactive exits 0" "$s24_rc" 0
+  contains "dry+unattended verdict has all markers" "$s24_out" '"non_interactive":true,"yes":true,"dry_run":true'
+  [ ! -e "$mock_home21/.config/tau/config.json" ]; ok "dry+yes wrote nothing" "$?" 0
 }
 
 # Group: Issue #17 goal mode subcommands offline

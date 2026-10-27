@@ -215,6 +215,7 @@ _tau() {
                         '--deep[run an authenticated probe in the doctor step]' \
                         '(-y --yes)'{-y,--yes}'[unattended: approve all write steps]' \
                         '--non-interactive[unattended contract for scripts/CI]' \
+                        '--dry-run[preview write steps; change nothing]' \
                         '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \
                         '--api-key=[diagnose an override API key]:key:'

@@ -414,7 +414,7 @@ pub fn parse(
 
     // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
     // [--api-key K] [--offline] [--deep] [--client <zed|nvim|vscode|jetbrains|all>]
-    // [--yes|-y] [--non-interactive]`
+    // [--yes|-y] [--non-interactive] [--dry-run]`
     // — one-shot onboarding: scaffold the config (init), install shell
     // completions, write/detect editor ACP client config, embed a doctor
     // health report.
@@ -466,6 +466,8 @@ pub fn parse(
                 scfg.setup_yes = true;
             } else if (eq(a, "--non-interactive")) {
                 scfg.setup_non_interactive = true;
+            } else if (eq(a, "--dry-run")) {
+                scfg.setup_dry_run = true;
             } else return errResult(arena, "unknown setup argument: {s}", .{a});
         }
         // Env equivalents so dotfiles/devcontainers configure setup without
@@ -2080,6 +2082,7 @@ test "parse: setup --yes/-y/--non-interactive set the unattended flags" {
     try std.testing.expectEqual(Action.setup, bare.action);
     try std.testing.expect(!bare.config.setup_yes);
     try std.testing.expect(!bare.config.setup_non_interactive);
+    try std.testing.expect(!bare.config.setup_dry_run);
 
     const y = try parseArgv(a, &.{ "tau", "setup", "--yes" }, .{});
     try std.testing.expect(y.config.setup_yes);
@@ -2088,6 +2091,14 @@ test "parse: setup --yes/-y/--non-interactive set the unattended flags" {
     const ni = try parseArgv(a, &.{ "tau", "setup", "--non-interactive" }, .{});
     try std.testing.expect(ni.config.setup_non_interactive);
     try std.testing.expect(!ni.config.setup_yes);
+    const dr = try parseArgv(a, &.{ "tau", "setup", "--dry-run" }, .{});
+    try std.testing.expect(dr.config.setup_dry_run);
+    try std.testing.expect(!dr.config.setup_yes);
+    // --dry-run composes with the other setup flags.
+    const dc = try parseArgv(a, &.{ "tau", "setup", "--client", "zed", "--dry-run", "--yes" }, .{});
+    try std.testing.expect(dc.config.setup_dry_run);
+    try std.testing.expect(dc.config.setup_yes);
+    try std.testing.expectEqualStrings("zed", dc.config.setup_client.?);
 }
 
 test "parse: setup TAU_YES/TAU_NONINTERACTIVE env enable unattended flags" {

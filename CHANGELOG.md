@@ -105,6 +105,11 @@ are backward compatible.
   so scripts can assert it). Env equivalents honored at parse time (flag >
   env > detect): `TAU_YES`, `TAU_NONINTERACTIVE`, `TAU_SETUP_SHELL`,
   `TAU_SETUP_CLIENT`
+- `tau setup --dry-run` — preview the whole onboarding without touching the
+  filesystem: write steps report `would_create`/`would_install`/`would_append`
+  statuses (read-only outcomes keep their normal names), every write-capable
+  step and the verdict carry `"dry_run":true`, and no file or directory is
+  created — so the plan can be diffed against a real run
 - `docs/editors.md` — step-by-step ACP client setup guide for Zed, VS Code,
   and Neovim mirroring `tau setup --client` output (statuses, written files,
   snippet fallback, in-editor next steps) (#246)

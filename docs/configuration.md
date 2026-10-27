@@ -37,6 +37,9 @@ without writing, `--provider <name>` picks a provider explicitly).
 same way (keeping an existing file instead of failing), installs shell
 completions for the detected shell, then prints the `tau doctor` health
 report — one NDJSON object per step, exit 0 only when everything is healthy.
+Add `--dry-run` to preview the plan without writing: steps report
+`would_create`/`would_install`/`would_append` and the verdict carries
+`"dry_run":true`.
 
 For unattended onboarding (devcontainers, dotfiles scripts, CI), pass
 `--yes` (`-y`) and/or `--non-interactive`, or set `TAU_YES=1` /

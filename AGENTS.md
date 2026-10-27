@@ -355,6 +355,7 @@ tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
 tau setup --client zed         # Write editor ACP config: zed|nvim|vscode|jetbrains|all
 tau setup --offline            # Skip network checks in the doctor step
 tau setup -y --non-interactive # Unattended contract (verdict records non_interactive/yes)
+tau setup --dry-run            # Preview all writes (would_* statuses); change nothing
 # Env equivalents (flag > env > detect): TAU_YES, TAU_NONINTERACTIVE,
 # TAU_SETUP_SHELL, TAU_SETUP_CLIENT. CI is not auto-detected.
 # Emits one NDJSON object per step plus a final verdict:
@@ -363,6 +364,9 @@ tau setup -y --non-interactive # Unattended contract (verdict records non_intera
 #   {"step":"clients","status":"installed|manual|skipped|failed","clients":[...]}
 #   {"step":"doctor","report":{...same shape as `tau doctor`...}}
 #   {"step":"setup","ok":bool,"version":..}
+# --dry-run previews writes as would_create|would_install|would_append and
+# marks the write steps + verdict with "dry_run":true; read-only outcomes
+# (exists/already_installed/present/manual) keep their names.
 # Idempotent: existing config is kept, rc edits carry a "# tau completions"
 # marker so re-runs don't duplicate. Exit 0 when every step is ok/skipped,
 # 1 on any failure (including a doctor report with failed checks).

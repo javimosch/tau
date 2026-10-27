@@ -17,7 +17,13 @@ tau setup --client zed         # configure one editor
 tau setup --client vscode      # (or the alias: --client code)
 tau setup --client nvim        # writes a paste-ready Lua snippet
 tau setup --client all         # zed + nvim + vscode + jetbrains
+tau setup --client all --dry-run  # preview every write, change nothing
 ```
+
+`--dry-run` composes with all of the above: the same NDJSON plan is emitted
+with `would_install` statuses and `"dry_run":true` markers, and no file is
+created or modified — useful to check which editor config files setup would
+touch before letting it.
 
 Anything else is rejected before setup runs:
 

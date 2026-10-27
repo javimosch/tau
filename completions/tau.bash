@@ -137,7 +137,7 @@ _tau_complete() {
             ;;
 
         setup)
-            COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive" -- "$cur"))
+            COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive --dry-run" -- "$cur"))
             ;;
 
         guide)

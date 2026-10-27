@@ -66,6 +66,8 @@ Setup:
       --non-interactive       Unattended contract for scripts/CI: never
                               prompts, never reads stdin (env
                               TAU_NONINTERACTIVE=1)
+      --dry-run               Preview every write step (would_* statuses
+                              + "dry_run":true); change nothing
 
 Goal mode (in the prompt):
   /goal <objective>            Work autonomously until the objective is audited-complete

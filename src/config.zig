@@ -243,6 +243,10 @@ pub const Config = struct {
     /// `tau setup --non-interactive` — unattended contract for scripts/CI
     /// (env `TAU_NONINTERACTIVE=1`): guaranteed never to prompt or read stdin.
     setup_non_interactive: bool = false,
+    /// `tau setup --dry-run` — preview every write step without touching the
+    /// filesystem: steps report `would_*` statuses plus `"dry_run":true` so
+    /// scripts can diff the plan against a real run.
+    setup_dry_run: bool = false,
 
     // --- Config subcommands (src/configedit.zig / src/configvalidate.zig) ---
     /// `tau config` subcommand carried through parse. Null/absent means the

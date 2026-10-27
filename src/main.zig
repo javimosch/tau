@@ -150,6 +150,8 @@ const help_text =
     \\      --non-interactive       Unattended contract for scripts/CI: never
     \\                              prompts, never reads stdin (env
     \\                              TAU_NONINTERACTIVE=1)
+    \\      --dry-run               Preview every write step (would_* statuses
+    \\                              + "dry_run":true); change nothing
     \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
@@ -468,7 +470,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
-    .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
+    .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive] [--dry-run]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). --dry-run previews every write (would_* statuses) and changes nothing. Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
     .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report)." },
     .{ .a = "tau version [--verbose] [--check]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1)." },
