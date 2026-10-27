@@ -1,0 +1,214 @@
+name: ci
+
+# Runs the zig unit test suite and the offline smoke groups on a native runner
+# for every platform the release workflow ships a binary for (linux x86_64 +
+# aarch64, macos x86_64 + aarch64, windows x86_64). Because release tags are
+# cut from master, a green matrix on master — and the tag push itself — means
+# no platform-specific regression reaches a published binary untested.
+#
+# Everything runs through `shell: bash` (Git Bash on Windows) so the same
+# commands work on every leg. Zig is invoked by absolute path — no PATH
+# mutation needed, which avoids POSIX↔Windows path translation pitfalls.
+#
+# `workflow_call` lets the release workflow gate publishing on this matrix
+# once both workflows are merged.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request: {}
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One leg per release artifact: the zig archive named here matches
+          # the archive layout at https://ziglang.org/download/0.16.0/.
+          - { os: ubuntu-latest,    label: linux-x86_64,   zig_pkg: zig-x86_64-linux-0.16.0,   ext: tar.xz, bin: tau }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,  zig_pkg: zig-aarch64-linux-0.16.0,  ext: tar.xz, bin: tau }
+          - { os: macos-15-intel,   label: macos-x86_64,   zig_pkg: zig-x86_64-macos-0.16.0,   ext: tar.xz, bin: tau }
+          - { os: macos-latest,     label: macos-aarch64,  zig_pkg: zig-aarch64-macos-0.16.0,  ext: tar.xz, bin: tau }
+          - { os: windows-latest,   label: windows-x86_64, zig_pkg: zig-x86_64-windows-0.16.0, ext: zip,    bin: tau.exe }
+    env:
+      TAU_BIN: ${{ github.workspace }}/zig-out/bin/${{ matrix.bin }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}" -o "$RUNNER_TEMP/zig.${{ matrix.ext }}"
+          mkdir -p "$HOME/zig"
+          tar -xf "$RUNNER_TEMP/zig.${{ matrix.ext }}" -C "$HOME/zig" --strip-components=1
+          "$HOME/zig/zig" version
+
+      - name: Install Zig 0.16.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}"
+          curl.exe -fsSL $url -o "$env:RUNNER_TEMP\zig.zip"
+          Expand-Archive "$env:RUNNER_TEMP\zig.zip" "$env:USERPROFILE"
+          Move-Item "$env:USERPROFILE\${{ matrix.zig_pkg }}" "$env:USERPROFILE\zig"
+          & "$env:USERPROFILE\zig\zig.exe" version
+
+      - name: Ensure python3 is available (Windows)
+        # The smoke harness drives several assertions through python3. GitHub
+        # Windows images ship `python`; expose it as `python3` if the alias is
+        # absent so scripts/smoke.sh runs unmodified.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if ! command -v python3 >/dev/null 2>&1; then
+            mkdir -p "$RUNNER_TEMP/shims"
+            printf '#!/bin/sh\nexec python "$@"\n' > "$RUNNER_TEMP/shims/python3"
+            chmod +x "$RUNNER_TEMP/shims/python3"
+            echo "$RUNNER_TEMP/shims" >> "$GITHUB_PATH"
+          fi
+
+      - name: Build
+        shell: bash
+        run: '"$HOME/zig/zig" build'
+
+      - name: Unit tests
+        shell: bash
+        run: '"$HOME/zig/zig" build test --summary all'
+
+      - name: Config schema drift check
+        # schema/tau-config.schema.json is the published copy editors fetch
+        # via the $schema URL — it must match `tau config schema` output
+        # byte-for-byte (the unit suite pins the same invariant; this step
+        # checks the shipped binary's output directly).
+        # Regenerate: zig build && ./zig-out/bin/tau config schema > schema/tau-config.schema.json
+        shell: bash
+        run: '"$TAU_BIN" config schema | diff - schema/tau-config.schema.json'
+
+      - name: Config doc drift check
+        # docs/config.md is generated from the schema by
+        # scripts/gen-config-doc.py — this proves the shipped reference is in
+        # sync (the unit suite and the config-doc smoke group pin the same
+        # invariant). Regenerate: python3 scripts/gen-config-doc.py
+        shell: bash
+        run: '"$TAU_BIN" config schema | python3 scripts/gen-config-doc.py - --check'
+
+      - name: Doctor stream schema + doc drift check
+        # schema/tau-doctor.schema.json describes every NDJSON line
+        # `tau doctor --json` emits — validate real shipped-binary output
+        # against it (a keyless run covers check/verdict events; a --fix run
+        # covers fix events and the verdict's fixes array), then prove the
+        # generated reference doc is in sync. The doctor-schema smoke group
+        # and the doctor.zig unit tests pin the same invariants.
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/plain" "$tmp/fix"
+          rc=0
+          env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+            HOME="$tmp/plain" "$TAU_BIN" doctor --json --offline > "$tmp/plain.ndjson" || rc=$?
+          [ "$rc" -le 1 ] || { echo "doctor exited $rc"; exit 1; }
+          python3 scripts/check-doctor-schema.py "$tmp/plain.ndjson"
+          rc=0
+          env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+            TAU_API_KEY=sk-ci HOME="$tmp/fix" SHELL=/bin/bash "$TAU_BIN" doctor --json --offline --fix --yes \
+            > "$tmp/fix.ndjson" || rc=$?
+          [ "$rc" -le 1 ] || { echo "doctor --fix exited $rc"; exit 1; }
+          python3 scripts/check-doctor-schema.py "$tmp/fix.ndjson"
+          python3 scripts/gen-doctor-doc.py --check
+
+      - name: Offline smoke groups
+        shell: bash
+        run: ./scripts/smoke.sh
+
+      - name: Offline feature smoke
+        shell: bash
+        run: ./scripts/smoke-features.sh --offline
+
+  first-run:
+    # Clean-environment first-run e2e: builds tau, stages it as a local
+    # release tree (srv/latest/download/<asset> + SHA256SUMS.txt — the exact
+    # layout the installers fetch), installs it through the shipped installer
+    # (install.sh on POSIX, install.ps1 on Windows) against a file://
+    # TAU_BASE_URL so nothing touches the network, then drives the documented
+    # first-run path — `tau setup --yes` and `tau doctor --selftest` — in a
+    # scratch HOME with every credential source scrubbed. Locks the
+    # install → onboard → self-verify chain for every released platform.
+    name: first-run (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One leg per release artifact, same zig archives as the test job.
+          - { os: ubuntu-latest,    label: linux-x86_64,   zig_pkg: zig-x86_64-linux-0.16.0,   ext: tar.xz, asset: tau-linux-x86_64.tar.gz }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64,  zig_pkg: zig-aarch64-linux-0.16.0,  ext: tar.xz, asset: tau-linux-aarch64.tar.gz }
+          - { os: macos-15-intel,   label: macos-x86_64,   zig_pkg: zig-x86_64-macos-0.16.0,   ext: tar.xz, asset: tau-macos-x86_64.tar.gz }
+          - { os: macos-latest,     label: macos-aarch64,  zig_pkg: zig-aarch64-macos-0.16.0,  ext: tar.xz, asset: tau-macos-aarch64.tar.gz }
+          - { os: windows-latest,   label: windows-x86_64, zig_pkg: zig-x86_64-windows-0.16.0, ext: zip,    asset: tau-windows-x86_64.zip }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}" -o "$RUNNER_TEMP/zig.${{ matrix.ext }}"
+          mkdir -p "$HOME/zig"
+          tar -xf "$RUNNER_TEMP/zig.${{ matrix.ext }}" -C "$HOME/zig" --strip-components=1
+          "$HOME/zig/zig" version
+
+      - name: Install Zig 0.16.0 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://ziglang.org/download/0.16.0/${{ matrix.zig_pkg }}.${{ matrix.ext }}"
+          curl.exe -fsSL $url -o "$env:RUNNER_TEMP\zig.zip"
+          Expand-Archive "$env:RUNNER_TEMP\zig.zip" "$env:USERPROFILE"
+          Move-Item "$env:USERPROFILE\${{ matrix.zig_pkg }}" "$env:USERPROFILE\zig"
+          & "$env:USERPROFILE\zig\zig.exe" version
+
+      - name: Build
+        shell: bash
+        run: '"$HOME/zig/zig" build'
+
+      - name: Install via install.sh and run the first-run path
+        # Stage the built binary exactly where install.sh looks for a latest
+        # release, point TAU_BASE_URL at the staged tree, then run the clean
+        # HOME e2e driver on the INSTALLED binary — not the build output.
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p srv/latest/download
+          tar -czf "srv/latest/download/${{ matrix.asset }}" -C zig-out/bin tau
+          (cd srv/latest/download && { sha256sum "${{ matrix.asset }}" 2>/dev/null || shasum -a 256 "${{ matrix.asset }}"; } > SHA256SUMS.txt)
+          TAU_BASE_URL="file://$PWD/srv" sh ./install.sh --dir "$RUNNER_TEMP/tau-bin"
+          "$RUNNER_TEMP/tau-bin/tau" --version
+          ./scripts/e2e-first-run.sh "$RUNNER_TEMP/tau-bin/tau"
+
+      - name: Install via install.ps1 and run the first-run path (Windows)
+        # Same staging contract as the POSIX legs; the staged tree is reached
+        # via a file:// TAU_BASE_URL. SHA256SUMS.txt is written in the exact
+        # '<hash>  <name>' format the installer matches on.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force srv/latest/download | Out-Null
+          Compress-Archive zig-out/bin/tau.exe "srv/latest/download/${{ matrix.asset }}"
+          $h = (Get-FileHash -Algorithm SHA256 "srv/latest/download/${{ matrix.asset }}").Hash.ToLower()
+          Set-Content -Path srv/latest/download/SHA256SUMS.txt -Value "$h  ${{ matrix.asset }}" -Encoding ASCII
+          $env:TAU_BASE_URL = "file:///" + (Resolve-Path srv).Path.Replace('\','/')
+          ./install.ps1 -Dir "$env:RUNNER_TEMP/tau-bin"
+          & "$env:RUNNER_TEMP/tau-bin/tau.exe" --version
+          & ./scripts/e2e-first-run.ps1 -Tau "$env:RUNNER_TEMP/tau-bin\tau.exe"

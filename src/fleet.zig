@@ -5,6 +5,7 @@ const term = @import("term.zig");
 const session_mod = @import("session.zig");
 const provider_mod = @import("llm/provider.zig");
 const helpers = @import("helpers.zig");
+const errs = @import("errors.zig");
 
 /// One work item in a fleet — the unit of work for a single worker.
 pub const WorkItem = struct {
@@ -261,16 +262,11 @@ pub fn extractCoordinatorJson(gpa: std.mem.Allocator, response: []const u8) ?[]c
 /// fallback minimal diagnostic is emitted so the reader is never silent.
 fn logInvalidWorkItem(idx: usize, field: []const u8) void {
     var buf: [512]u8 = undefined;
-    if (std.fmt.bufPrint(
-        &buf,
-        "{{\"err\":{{\"code\":110,\"message\":\"InvalidWorkItem at index {d}: missing or non-string field '{s}'\"}}}}\n",
-        .{ idx, field },
-    )) |msg| {
-        term.err(msg);
-    } else |_| {
-        // Fallback when 512-byte buffer is too small for the field name.
-        term.err("{\"err\":{\"code\":110,\"message\":\"InvalidWorkItem (overflow)\"}}\n");
-    }
+    // Fallback when 512-byte buffer is too small for the field name.
+    const msg = std.fmt.bufPrint(&buf,
+        "InvalidWorkItem at index {d}: missing or non-string field '{s}'",
+        .{ idx, field }) catch "InvalidWorkItem (overflow)";
+    errs.printErr(std.heap.page_allocator, errs.internal_error, msg, .{});
 }
 
 /// Sanitize a byte slice to valid UTF-8 by replacing any non-UTF-8 sequences
@@ -817,11 +813,11 @@ fn cancelCmd(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: 
     // than silently lying to the caller.
     if (try loadManifest(io, arena, env, id)) |reloaded| {
         if (reloaded.global_status != .cancelled) {
-            term.out("{\"err\":{\"code\":110,\"message\":\"cancel did not persist global_status\"}}\n");
+            errs.printOut(arena, errs.internal_error, "cancel did not persist global_status", .{});
             return 110;
         }
     } else {
-        term.out("{\"err\":{\"code\":110,\"message\":\"cancel persisted but reload failed\"}}\n");
+        errs.printOut(arena, errs.internal_error, "cancel persisted but reload failed", .{});
         return 110;
     }
     try helpers.fleetPrintJson(gpa, updated);
