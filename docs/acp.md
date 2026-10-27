@@ -11,6 +11,14 @@ full agentic tool loop and streams back `session/update` notifications
 (`tool_call` → `tool_call_update` → `agent_message_chunk`), ending with a
 `session/prompt` response carrying a `stopReason`.
 
+> **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `jetbrains`,
+> `all`) writes these configs for you during onboarding — a minimal settings
+> file when none exists, or a paste-ready snippet under
+> `~/.config/tau/snippets/` when the file already exists (your comments are
+> preserved). Run it without `--client` to see which editors were detected.
+> [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
+> VS Code, and Neovim, step by step.
+
 ## Quick start: tau in Zed
 
 1. Build or install tau so the binary is on your `PATH` (or note its absolute

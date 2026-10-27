@@ -1,0 +1,1 @@
+{"name":"tau","version":"0.4.0","checked":true,"latest":"99.9.9","tag":"v99.9.9","update_available":true,"status":"failed","detail":"installer download failed (file://<HOME>/rel/no-such-install.sh)","release_url":"https://github.com/javimosch/tau/releases/tag/v99.9.9","install_dir":"<HOME>/ug-dest"}
