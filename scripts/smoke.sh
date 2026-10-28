@@ -94,6 +94,7 @@ ALL_TEST_GROUPS=(
   "errors-doc:test_group_errors_doc"
   "config-doc:test_group_config_doc"
   "doctor-schema:test_group_doctor_schema"
+  "compat-doc:test_group_compat_doc"
   "explain:test_group_explain"
   "golden-maintenance:test_group_golden_maintenance"
   "bench:test_group_bench_smoke:slow"
@@ -3519,6 +3520,70 @@ test_group_doctor_schema() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/doctor-json.md.bak" "$doc"
   else
     skip_test "doctor-schema: doc --check detects stale" "docs/doctor-json.md missing"
+  fi
+}
+
+# Group: generated docs/compatibility.md drift check
+# docs/compatibility.md is rendered from the ClientKind registry in
+# src/setup.zig (+ src/doctor.zig check/fix ids) by
+# scripts/gen-compat-doc.py; --check regenerates in memory and fails on
+# drift. Fully offline.
+test_group_compat_doc() {
+  note "generated docs/compatibility.md drift check"
+
+  local doc="$ROOT/docs/compatibility.md"
+  local gen="$ROOT/scripts/gen-compat-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "compat-doc: docs/compatibility.md exists" 0 0
+    contains "compat-doc: doc declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "compat-doc: docs/compatibility.md exists" 1 0
+    contains "compat-doc: doc declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "compat-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "compat-doc: binary accepts the same client names" "python3 not on PATH"
+    skip_test "compat-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "compat-doc: --check passes (no drift)" 0 0
+  else
+    ok "compat-doc: --check passes (no drift)" 1 0
+  fi
+
+  # The matrix's --client names must be the ones the shipped binary accepts:
+  # every canonical client name in the doc (first table column) must appear
+  # in the invalid-client error's want-list.
+  local err names missing=""
+  err="$("$BIN" setup --client bogus 2>&1)"
+  names="$(sed -n 's/^| `\([a-z]*\)` | `\1`.*/\1/p' "$doc" 2>/dev/null)"
+  for n in $names; do
+    case "$err" in *"$n"*) ;; *) missing="$missing $n";; esac
+  done
+  if [ -n "$names" ] && [ -z "$missing" ]; then
+    ok "compat-doc: binary accepts the same client names" 0 0
+  else
+    ok "compat-doc: binary accepts the same client names (missing:$missing)" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/compatibility.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "compat-doc: --check detects a stale doc" 0 1
+    else
+      ok "compat-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/compatibility.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/compatibility.md.bak" "$doc"
+  else
+    skip_test "compat-doc: --check detects a stale doc" "docs/compatibility.md missing"
   fi
 }
 

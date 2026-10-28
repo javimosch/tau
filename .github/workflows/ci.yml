@@ -103,6 +103,15 @@ jobs:
         shell: bash
         run: '"$TAU_BIN" config schema | python3 scripts/gen-config-doc.py - --check'
 
+      - name: Compat doc drift check
+        # docs/compatibility.md is generated from the ClientKind registry in
+        # src/setup.zig (+ src/doctor.zig check/fix ids) by
+        # scripts/gen-compat-doc.py — this proves the shipped matrix is in
+        # sync (the unit suite and the compat-doc smoke group pin the same
+        # invariant). Regenerate: python3 scripts/gen-compat-doc.py
+        shell: bash
+        run: python3 scripts/gen-compat-doc.py --check
+
       - name: Doctor stream schema + doc drift check
         # schema/tau-doctor.schema.json describes every NDJSON line
         # `tau doctor --json` emits — validate real shipped-binary output

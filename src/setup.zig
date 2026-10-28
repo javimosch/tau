@@ -1497,3 +1497,34 @@ test "remedyClientWiring: missing file gets a minimal one; no-entry gets a snipp
     const d3 = try remedyClientWiring(io, a, home, .vscode, exe);
     try testing.expect(std.mem.indexOf(u8, d3, "already up to date") != null);
 }
+
+test "docs/compatibility.md generated matrix mirrors the client registry" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/compatibility.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    // The file must declare itself generated so nobody hand-edits it.
+    try testing.expect(std.mem.indexOf(u8, doc, "GENERATED FILE") != null);
+    try testing.expect(std.mem.indexOf(u8, doc, "scripts/gen-compat-doc.py") != null);
+    // The "code" alias must be listed.
+    try testing.expect(std.mem.indexOf(u8, doc, "alias `code`") != null);
+    inline for (.{ .zed, .nvim, .vscode, .jetbrains }) |k| {
+        var buf: [160]u8 = undefined;
+        const row = std.fmt.bufPrint(&buf, "| `{s}` |", .{clientName(k)}) catch unreachable;
+        if (std.mem.indexOf(u8, doc, row) == null) {
+            std.debug.print("docs/compatibility.md missing client row '{s}'\n", .{row});
+            return error.TestUnexpectedResult;
+        }
+        if (try clientSettingsPath(gpa, "~", k)) |p| {
+            defer gpa.free(p);
+            if (std.mem.indexOf(u8, doc, p) == null) {
+                std.debug.print("docs/compatibility.md missing settings path '{s}'\n", .{p});
+                return error.TestUnexpectedResult;
+            }
+            const sec = clientSectionKey(k);
+            if (std.mem.indexOf(u8, doc, sec) == null) {
+                std.debug.print("docs/compatibility.md missing section key '{s}'\n", .{sec});
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
