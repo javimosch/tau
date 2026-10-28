@@ -194,6 +194,16 @@ const help_text =
     \\                              with --json
     \\      --shell <name>            Completions shell: bash|zsh|fish|pwsh|all
     \\                              (default: detect from $SHELL)
+    \\  tau bug                     Build a pre-filled GitHub issue carrying the
+    \\                              redacted doctor --report diagnostics bundle
+    \\      --title <text>          Issue title (default: "Bug report")
+    \\      --body <text>           Description placed above the bundle
+    \\      --labels <csv>          Issue labels (default: bug; "" = none)
+    \\      --open                  Open the issue URL in the system browser
+    \\                              ($BROWSER, else open/xdg-open/rundll32)
+    \\      --out <path>            Also write the bundle to a file
+    \\      --no-report             Omit the diagnostics bundle
+    \\      --offline/--deep        Passed through to the diagnostic sweep
     \\
     \\Config:
     \\  tau config show [flags]       Print the resolved effective config as JSON
@@ -358,6 +368,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--offline|--deep]", .b = "one-shot onboarding: init + install shell completions + doctor health summary (NDJSON)." },
     .{ .a = "tau doctor [--offline|--deep|--probe] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
+    .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau config show [--flags]", .b = "print the resolved effective config (file+env+flags merged; keys redacted)." },
     .{ .a = "tau config validate [path]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit)." },
@@ -741,6 +752,14 @@ pub fn main(init: std.process.Init) !void {
             const doctor = @import("doctor.zig");
             const code = doctor.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
                 printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "doctor failed", false);
+                std.process.exit(@intFromEnum(ExitCode.internal_error));
+            };
+            std.process.exit(code);
+        },
+        .bug => {
+            const bug = @import("bug.zig");
+            const code = bug.run(io, gpa, arena, parsed.config, init.environ_map) catch |err| {
+                printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "bug failed", false);
                 std.process.exit(@intFromEnum(ExitCode.internal_error));
             };
             std.process.exit(code);
