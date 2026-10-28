@@ -12,8 +12,10 @@
 //
 // `--fix` remediates fixable outcomes: scaffold a missing config (init),
 // restore an unparseable one (moved to config.json.bak first), tighten POSIX
-// permission bits (0700 dir / 0600 file), install shell completions. Fixes
-// apply per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
+// permission bits (0700 dir / 0600 file), install shell completions, and
+// wire `tau acp serve` into detected editor clients (a fresh settings file,
+// or a paste-ready snippet when the file can't be touched). Fixes apply
+// per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
 // non-interactive runs report them as skipped. The emitted report reflects
 // the post-fix state when anything was applied.
 //
@@ -57,6 +59,12 @@ pub const FixKind = enum {
     chmod_config,
     /// Install/refresh shell completion scripts (+ rc hooks where needed).
     install_completions,
+    /// Wire `tau acp serve` into Zed's settings (minimal file or snippet).
+    wire_client_zed,
+    /// Same for VS Code (`acp.agents` in User settings.json).
+    wire_client_vscode,
+    /// Same for JetBrains IDEs (`agent_servers` in acp.json).
+    wire_client_jetbrains,
 };
 
 pub const Check = struct {
@@ -492,6 +500,113 @@ fn checkCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std
         .hint = "run 'tau doctor --fix' to install/refresh completion scripts",
         .fix = .install_completions,
     };
+}
+
+/// Check-name prefix for the per-client rows: `client_zed`, `client_nvim`,
+/// `client_vscode`, `client_jetbrains`. A single `client_wiring` skip row
+/// stands in when HOME is unset or no editor config dir is detected.
+fn clientCheckName(arena: std.mem.Allocator, k: setup.ClientKind) []const u8 {
+    return std.fmt.allocPrint(arena, "client_{s}", .{setup.clientName(k)}) catch "client_?";
+}
+
+/// The per-client FixKind, or null for nvim (Lua config — manual only).
+fn clientFixKind(k: setup.ClientKind) ?FixKind {
+    return switch (k) {
+        .zed => .wire_client_zed,
+        .vscode => .wire_client_vscode,
+        .jetbrains => .wire_client_jetbrains,
+        .nvim => null,
+    };
+}
+
+/// Map one client's inspected wiring state to a check row.
+fn clientWiringRow(arena: std.mem.Allocator, k: setup.ClientKind, w: setup.ClientWiring) Check {
+    const name = clientCheckName(arena, k);
+    const path = w.path orelse "?";
+    const fix = clientFixKind(k);
+    return switch (w.state) {
+        .manual_only => .{
+            .name = name,
+            .status = .skip,
+            .message = "Neovim ACP wiring lives in Lua — cannot verify automatically",
+            .hint = "run 'tau setup --client nvim' to (re)generate ~/.config/tau/snippets/nvim.lua",
+        },
+        .missing_file => .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "editor detected but no settings file at {s}", .{path}) catch "settings file missing",
+            .hint = "run 'tau doctor --fix' to write a minimal settings file with the tau entry",
+            .fix = fix,
+        },
+        .unreadable => .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "cannot read settings file: {s}", .{path}) catch "cannot read settings file",
+            .hint = "check file permissions; 'tau doctor --fix' writes a paste-ready snippet you can merge by hand",
+            .fix = fix,
+        },
+        .unparseable => .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "settings file did not parse as JSON/JSONC: {s}", .{path}) catch "settings file did not parse",
+            .hint = "fix the file's syntax, or run 'tau doctor --fix' for a paste-ready snippet",
+            .fix = fix,
+        },
+        .no_entry => .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "no \"tau\" entry in {s}", .{path}) catch "no tau entry",
+            .hint = "run 'tau setup --client' or 'tau doctor --fix' for a paste-ready snippet to merge by hand",
+            .fix = fix,
+        },
+        .stale => .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "stale tau wiring in {s}: {s}", .{ path, w.reason orelse "entry is broken" }) catch "stale tau wiring",
+            .hint = "update the entry by hand — 'tau doctor --fix' writes a corrected snippet to merge",
+            .fix = fix,
+        },
+        .ok => .{
+            .name = name,
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "tau wired: {s}", .{path}) catch "tau wired",
+        },
+        .not_detected => unreachable, // filtered by clientWiringChecks
+    };
+}
+
+/// Check: every detected editor client carries live `tau acp serve` wiring.
+/// Emits one `client_<name>` row per detected editor (nvim is always a skip —
+/// its config is Lua); a single `client_wiring` skip row advertises the
+/// surface when HOME is unset or no editor config dir exists. Missing or
+/// stale wiring is a warn — the editor fails to spawn tau, but tau itself is
+/// healthy — and is remediated by `tau doctor --fix`.
+fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]Check {
+    var list: std.ArrayList(Check) = .empty;
+    const home = env.get("HOME") orelse {
+        try list.append(arena, .{ .name = "client_wiring", .status = .skip, .message = "skipped (HOME is not set)" });
+        return list.toOwnedSlice(arena);
+    };
+    for ([_]setup.ClientKind{ .zed, .nvim, .vscode, .jetbrains }) |k| {
+        const w = setup.inspectClientWiring(io, arena, home, k) catch |err| {
+            try list.append(arena, .{
+                .name = clientCheckName(arena, k),
+                .status = .warn,
+                .message = std.fmt.allocPrint(arena, "could not inspect client wiring: {s}", .{@errorName(err)}) catch "could not inspect client wiring",
+            });
+            continue;
+        };
+        if (w.state == .not_detected) continue;
+        try list.append(arena, clientWiringRow(arena, k, w));
+    }
+    if (list.items.len == 0)
+        try list.append(arena, .{
+            .name = "client_wiring",
+            .status = .skip,
+            .message = "no supported editor config dirs detected",
+            .hint = "run 'tau setup --client zed|nvim|vscode|jetbrains|all' to wire 'tau acp serve' into an installed editor",
+        });
+    return list.toOwnedSlice(arena);
 }
 
 /// Check 3: effective provider/model/endpoint/context_window after overrides.
@@ -1091,6 +1206,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     const rk = cfgmod.resolveApiKeyInfo(cfg, env);
     try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
+    for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try addCheck(arena, &checks, curl_check, cfg);
@@ -1166,6 +1282,9 @@ fn fixDescription(k: FixKind) []const u8 {
         .restore_config => "move the invalid config to config.json.bak and write a starter config",
         .chmod_config => "restrict permissions (~/.config/tau -> 0700, config.json -> 0600)",
         .install_completions => "install/refresh shell completion scripts",
+        .wire_client_zed => "wire tau into Zed settings (minimal file, or paste-ready snippet)",
+        .wire_client_vscode => "wire tau into VS Code settings (minimal file, or paste-ready snippet)",
+        .wire_client_jetbrains => "wire tau into JetBrains acp.json (minimal file, or paste-ready snippet)",
     };
 }
 
@@ -1250,6 +1369,18 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
                 names.appendSlice(arena, setup.shellName(k)) catch {};
             }
             break :blk std.fmt.allocPrint(arena, "installed completions for {s}", .{names.items}) catch "installed completions";
+        },
+        .wire_client_zed, .wire_client_vscode, .wire_client_jetbrains => blk: {
+            const home = env.get("HOME") orelse break :blk error.HomeUnset;
+            const ck: setup.ClientKind = switch (pf.kind) {
+                .wire_client_zed => .zed,
+                .wire_client_vscode => .vscode,
+                else => .jetbrains,
+            };
+            // Same convention as `tau setup --client`: pin the absolute path
+            // of this binary so the editor's spawn env can't miss it.
+            const command: []const u8 = std.process.executablePathAlloc(io, arena) catch "tau";
+            break :blk setup.remedyClientWiring(io, arena, home, ck, command);
         },
     } catch |err| {
         return .{
@@ -2014,6 +2145,137 @@ test "collectChecks: fixable outcomes are attached to the right checks" {
         if (std.mem.eql(u8, c.name, "auth_probe")) try testing.expect(c.fix == null);
     }
     try testing.expect(saw_scaffold);
+}
+
+// ---------------------------------------------------------------------------
+// editor client wiring tests
+// ---------------------------------------------------------------------------
+
+test "clientWiringChecks: no HOME and no editor dirs yield skip rows" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var env_no_home = std.process.Environ.Map.init(a);
+    const no_home = try clientWiringChecks(testing.io, a, &env_no_home);
+    try testing.expectEqual(@as(usize, 1), no_home.len);
+    try testing.expectEqualStrings("client_wiring", no_home[0].name);
+    try testing.expectEqual(CheckStatus.skip, no_home[0].status);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("client_wiring", rows[0].name);
+    try testing.expectEqual(CheckStatus.skip, rows[0].status);
+    try testing.expect(std.mem.indexOf(u8, rows[0].hint.?, "tau setup --client") != null);
+}
+
+test "clientWiringChecks: detected nvim reports a manual-only skip" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/nvim", .{home.home}));
+
+    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("client_nvim", rows[0].name);
+    try testing.expectEqual(CheckStatus.skip, rows[0].status);
+    try testing.expect(rows[0].fix == null);
+}
+
+test "clientWiringChecks + wire_client_zed fix: missing settings file round-trips" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, zed_dir);
+
+    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("client_zed", rows[0].name);
+    try testing.expectEqual(CheckStatus.warn, rows[0].status);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message, "no settings file") != null);
+    try testing.expectEqual(FixKind.wire_client_zed, rows[0].fix.?);
+
+    const out = applyFix(testing.io, a, .{}, &home.env, .{ .kind = .wire_client_zed, .check = "client_zed", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    const body = try std.Io.Dir.cwd().readFileAlloc(testing.io, try std.fmt.allocPrint(a, "{s}/settings.json", .{zed_dir}), a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, body, "\"tau\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\": \"custom\"") != null);
+
+    // The written file pins this binary's absolute path, so re-diagnosis is ok.
+    const after = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(@as(usize, 1), after.len);
+    try testing.expectEqual(CheckStatus.ok, after[0].status);
+}
+
+test "clientWiringChecks: no-entry and stale states warn; fix writes a snippet only" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const code_dir = try std.fmt.allocPrint(a, "{s}/.config/Code/User", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, code_dir);
+    const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{code_dir});
+
+    // Settings file parses but has no tau entry -> warn + wire_client fix.
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = sp, .data = "{\n  // user comment\n  \"vim\": true\n}\n" });
+    var rows = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("client_vscode", rows[0].name);
+    try testing.expectEqual(CheckStatus.warn, rows[0].status);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message, "no \"tau\" entry") != null);
+    try testing.expectEqual(FixKind.wire_client_vscode, rows[0].fix.?);
+
+    const out = applyFix(testing.io, a, .{}, &home.env, .{ .kind = .wire_client_vscode, .check = "client_vscode", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    try testing.expect(std.mem.indexOf(u8, out.detail, "snippet") != null);
+    const snip = try std.Io.Dir.cwd().readFileAlloc(testing.io, try std.fmt.allocPrint(a, "{s}/.config/tau/snippets/vscode.jsonc", .{home.home}), a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, snip, "\"acp.agents\"") != null);
+
+    // The user's file is byte-identical — the manual merge is still pending,
+    // so the re-diagnosed check honestly stays warn.
+    const orig = try std.Io.Dir.cwd().readFileAlloc(testing.io, sp, a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, orig, "user comment") != null);
+    rows = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, rows[0].status);
+
+    // A tau entry pointing at a deleted binary is stale.
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = sp, .data = "{\"acp.agents\": {\"tau\": {\"command\": \"/definitely/missing/tau\", \"args\": [\"acp\", \"serve\"]}}}" });
+    rows = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, rows[0].status);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message, "stale tau wiring") != null);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message, "/definitely/missing/tau") != null);
+    try testing.expectEqual(FixKind.wire_client_vscode, rows[0].fix.?);
+}
+
+test "clientWiringChecks: a sane entry is ok, including a bare command name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const code_dir = try std.fmt.allocPrint(a, "{s}/.config/Code/User", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, code_dir);
+    const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{code_dir});
+    // A bare "tau" command can't be disproved offline — stays ok (the args
+    // still have to be right, which they are here).
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = sp, .data = "{\"acp.agents\": {\"tau\": {\"command\": \"tau\", \"args\": [\"acp\", \"serve\"]}}}" });
+
+    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqual(CheckStatus.ok, rows[0].status);
+    try testing.expect(std.mem.indexOf(u8, rows[0].message, "tau wired") != null);
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,17 @@ are backward compatible.
 
 ### Added
 
+- `tau doctor` now detects missing or stale editor client wiring — one
+  `client_<name>` row per detected editor (Zed, VS Code, JetBrains; Neovim
+  reports a manual-only skip since its config is Lua) warns when the
+  settings file is absent, has no `"tau"` entry, or carries a stale entry
+  (dead `command` path, wrong `args`, missing Zed `"type": "custom"`) — and
+  a `client_wiring` skip row advertises the surface when no editor is
+  detected. `tau doctor --fix` remediates per client (`wire_client_*` fix
+  ids): a missing settings file gets a fresh minimal one with the resolved
+  binary's absolute path, while an existing file is never rewritten — the
+  same paste-ready snippet `tau setup --client` emits lands in
+  `~/.config/tau/snippets/` for a manual merge (#278)
 - Error envelopes now carry a trailing `explain`/`catalog` footer —
   `"explain":"tau explain <code>"` is a ready-to-run command agents can exec
   verbatim, and `"catalog"` links to the generated
