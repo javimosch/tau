@@ -158,6 +158,7 @@ _tau() {
                             case ${line[1]} in
                                 validate)
                                     _arguments \
+                                        '--json[emit the stable JSON report (schema-pinned)]' \
                                         '--mode=[report format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
@@ -193,7 +194,9 @@ _tau() {
                                 *)
                                     # `config show` accepts the normal override
                                     # flags so the merged result is previewed.
-                                    _arguments $global_opts
+                                    _arguments \
+                                        '--json[emit the stable JSON object (schema-pinned)]' \
+                                        $global_opts
                                     ;;
                             esac
                             ;;
@@ -265,6 +268,7 @@ _tau() {
                     _arguments \
                         '--verbose[include build metadata (commit, target, build date, zig version)]' \
                         '--check[non-blocking update check against the latest release]' \
+                        '--json[emit the stable {"name","version",...} object]' \
                         '--mode=[output mode]:mode:(text json)'
                     ;;
 

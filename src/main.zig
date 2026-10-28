@@ -222,8 +222,12 @@ const help_text =
     \\Config:
     \\  tau config show [flags]       Print the resolved effective config as JSON
     \\                              (config file + env + CLI flags merged; API keys redacted)
+    \\      --json                    Explicit opt-in to the stable JSON form
+    \\                              (schema/tau-config-show.schema.json)
     \\  tau config validate [path]    Validate a config file — JSON report on stdout,
     \\                              exit 1 with every problem listed (CI/pre-commit)
+    \\      --json                    Explicit opt-in to the stable JSON report
+    \\                              (schema/tau-config-validate.schema.json)
     \\  tau config set <key> <v> [path]  Schema-checked edit to the config FILE
     \\                                 (keys are <field> or keys.<provider>; creates the file)
     \\  tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
@@ -242,6 +246,9 @@ const help_text =
     \\      --check                   Non-blocking check for a newer release
     \\                              (always exits 0; opt out via
     \\                              TAU_NO_UPDATE_CHECK)
+    \\      --json                    Emit the stable {"name","version",...}
+    \\                              object even without --verbose
+    \\                              (schema/tau-version.schema.json)
     \\  tau upgrade                 Self-update in place: check the latest
     \\                              release, confirm, then run the release's
     \\                              own verified install.sh (SHA256-checked,
@@ -291,7 +298,11 @@ fn printVersion(io: std.Io, gpa: std.mem.Allocator, cfg: Config, env: *std.proce
         return;
     }
     const v = blk: {
-        if (!cfg.version_verbose) break :blk std.fmt.allocPrint(a, "{s} {s}\n", .{ name, version }) catch return;
+        // --json upgrades the bare "tau X.Y.Z" line to the stable
+        // {"name","version"} object form (schema/tau-version.schema.json).
+        if (!cfg.version_verbose and !cfg.cli_json) break :blk std.fmt.allocPrint(a, "{s} {s}\n", .{ name, version }) catch return;
+        if (!cfg.version_verbose) break :blk std.fmt.allocPrint(a,
+            "{{\"name\":\"{s}\",\"version\":\"{s}\"}}\n", .{ name, version }) catch return;
         if (cfg.mode == .text) break :blk std.fmt.allocPrint(a,
             "name: {s}\nversion: {s}\ncommit: {s}\ntarget: {s}\nbuild_date: {s}\nzig: {s}\n",
             .{ name, version, b.commit, b.target, b.date, b.zig }) catch return;
@@ -473,11 +484,11 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive] [--dry-run]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). --dry-run previews every write (would_* statuses) and changes nothing. Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
     .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report)." },
-    .{ .a = "tau version [--verbose] [--check]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1)." },
+    .{ .a = "tau version [--verbose] [--check] [--json]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1), --json emits the stable {\"name\",\"version\"} object (schema/tau-version.schema.json)." },
     .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run]", .b = "self-update in place via the release's verified install.sh; prompts on a TTY, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
-    .{ .a = "tau config show [--flags]", .b = "print the resolved effective config (file+env+flags merged; keys redacted)." },
-    .{ .a = "tau config validate [path]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit)." },
+    .{ .a = "tau config show [--flags] [--json]", .b = "print the resolved effective config (file+env+flags merged; keys redacted). --json pins the stable JSON form (schema/tau-config-show.schema.json)." },
+    .{ .a = "tau config validate [path] [--json]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit). --json pins the stable report (schema/tau-config-validate.schema.json)." },
     .{ .a = "tau config set <key> <value> [path]", .b = "schema-checked edit to the config FILE (<field> or keys.<provider>); creates the file if missing." },
     .{ .a = "tau config get <key> [path] [--raw]", .b = "print a config file value; secrets are redacted unless --raw." },
     .{ .a = "tau config unset <key> [path]", .b = "remove a key from the config file." },

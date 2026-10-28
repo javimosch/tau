@@ -269,18 +269,22 @@ tau bug --no-report                  # Omit diagnostics (mutex with --out)
 ```bash
 tau config show                          # Resolved config (file+env+flags), keys redacted
 tau config show --provider openai        # Preview flag overrides without running
+tau config show --json                   # Pin the stable JSON form for scripts
 # → {"config_file":{...},"provider":"openai","api_key":{"set":true,"value":"***wxyz","source":"env OPENAI_API_KEY"},...}
 # api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
+# Stable shape: schema/tau-config-show.schema.json (CI-validated output).
 ```
 
 #### 17. Config Validation (`tau config validate`)
 ```bash
 tau config validate                      # Validate ~/.config/tau/config.json
 tau config validate ci/prod.json         # Validate an explicit file
+tau config validate --json               # Pin the stable JSON report for scripts
 tau config validate --mode text          # Human-readable error lines
 # → {"path":"…","ok":false,"errors":[{"key":"provider","message":"…"}]}  (stdout)
 # Exit 0 = valid, 1 = problems found, 80 = CLI misuse. Fully offline; key
 # values are never echoed. For CI/pre-commit gates.
+# Stable shape: schema/tau-config-validate.schema.json.
 ```
 
 #### 18. Config Editing (`tau config set|get|unset`)
@@ -384,6 +388,8 @@ tau setup --dry-run            # Preview all writes (would_* statuses); change n
 #### 18. Version & Build Metadata
 ```bash
 tau version                    # Same as -v/--version: "tau 0.4.0"
+tau version --json             # Stable object for scripts: {"name":"tau","version":"0.4.0"}
+# Stable shape: schema/tau-version.schema.json (CI-validated output).
 tau version --verbose          # Build metadata as JSON
 # → {"name":"tau","version":"0.4.0","commit":"abc123","target":"x86_64-linux-gnu",
 #    "build_date":"2026-10-14T07:32:16Z","zig":"0.16.0"}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-version.schema.json",
+  "title": "tau version --json output",
+  "description": "Schema for the single JSON object `tau version --json` (and `tau version --verbose|--check` under --mode json) prints on stdout. \"name\" and \"version\" are always present. --verbose adds the build fields (commit, target, build_date, zig); --check adds the update-check fields (checked, latest, update_available, and conditionally tag/update_url/reason). New keys may be added (additive); existing keys keep their names and types.",
+  "type": "object",
+  "required": ["name", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "const": "tau" },
+    "version": { "type": "string", "minLength": 1, "description": "Package version, e.g. \"0.4.0\"." },
+    "commit": { "type": "string", "description": "Short git hash of HEAD at build time (\"unknown\" for tarball builds; \"-dirty\" marks a worktree with uncommitted changes). Emitted with --verbose." },
+    "target": { "type": "string", "description": "arch-os-abi target triple, e.g. \"x86_64-linux-gnu\". Emitted with --verbose." },
+    "build_date": { "type": "string", "description": "UTC build stamp YYYY-MM-DDTHH:MM:SSZ (SOURCE_DATE_EPOCH-aware). Emitted with --verbose." },
+    "zig": { "type": "string", "description": "Zig compiler version that built the binary. Emitted with --verbose." },
+    "checked": { "type": "boolean", "description": "Whether the update lookup actually ran — false when offline, curl is missing, or TAU_NO_UPDATE_CHECK is set. Emitted with --check." },
+    "latest": { "type": ["string", "null"], "description": "Latest released version string when the check ran and found a release; null otherwise. Emitted with --check." },
+    "tag": { "type": "string", "description": "Raw release tag (e.g. \"v0.4.0\") when the registry reported one. Emitted with --check." },
+    "update_available": { "type": "boolean", "description": "true when the latest release is newer than the running binary. Emitted with --check." },
+    "update_url": { "type": "string", "description": "Release page URL for the newer version; present only when update_available is true." },
+    "reason": { "type": "string", "description": "Why the check did not run or did not find a release (e.g. \"disabled (TAU_NO_UPDATE_CHECK)\"); informational, may be reworded." }
+  },
+  "examples": [
+    { "name": "tau", "version": "0.4.0" },
+    { "name": "tau", "version": "0.4.0", "commit": "3c28681", "target": "x86_64-linux-gnu", "build_date": "2026-10-28T12:00:00Z", "zig": "0.16.0" },
+    { "name": "tau", "version": "0.4.0", "checked": false, "latest": null, "update_available": false, "reason": "disabled (TAU_NO_UPDATE_CHECK)" },
+    { "name": "tau", "version": "0.4.0", "checked": true, "latest": "0.5.0", "tag": "v0.5.0", "update_available": true, "update_url": "https://github.com/javimosch/tau/releases/tag/v0.5.0" }
+  ]
+}

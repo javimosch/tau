@@ -136,6 +136,27 @@ jobs:
           python3 scripts/check-doctor-schema.py "$tmp/fix.ndjson"
           python3 scripts/gen-doctor-doc.py --check
 
+      - name: CLI --json schema drift check
+        # schema/tau-config-show.schema.json, schema/tau-config-validate.
+        # schema.json, and schema/tau-version.schema.json pin the single-
+        # object stdout contracts — validate real shipped-binary output
+        # against them (the cli-schemas smoke group pins the same
+        # invariants). TAU_NO_UPDATE_CHECK keeps the --check leg offline.
+        shell: bash
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/home/.config/tau"
+          printf '{"provider":"openai","api_key":"sk-ci"}' > "$tmp/home/.config/tau/config.json"
+          "$TAU_BIN" version --json | python3 scripts/check-cli-schema.py --schema schema/tau-version.schema.json -
+          "$TAU_BIN" version --json --verbose | python3 scripts/check-cli-schema.py --schema schema/tau-version.schema.json -
+          TAU_NO_UPDATE_CHECK=1 "$TAU_BIN" version --json --check | python3 scripts/check-cli-schema.py --schema schema/tau-version.schema.json -
+          HOME="$tmp/home" "$TAU_BIN" config show --json | python3 scripts/check-cli-schema.py --schema schema/tau-config-show.schema.json -
+          "$TAU_BIN" config validate --json "$tmp/home/.config/tau/config.json" | python3 scripts/check-cli-schema.py --schema schema/tau-config-validate.schema.json -
+          rc=0
+          "$TAU_BIN" config validate --json <(printf '{"provider":"nope"}') > "$tmp/bad.json" || rc=$?
+          [ "$rc" -eq 1 ] || { echo "config validate on a bad file exited $rc (want 1)"; exit 1; }
+          python3 scripts/check-cli-schema.py --schema schema/tau-config-validate.schema.json "$tmp/bad.json"
+
       - name: Stability contract drift check
         # docs/stability.md is hand-written policy — this proves it still
         # names every catalog exit code, every schema/ file, and only links

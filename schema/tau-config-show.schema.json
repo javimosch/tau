@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config-show.schema.json",
+  "title": "tau config show output",
+  "description": "Schema for the single JSON object `tau config show` (and `tau config show --json`) prints on stdout: the resolved effective config — config file + environment + CLI flags merged, exactly as a run would see it. Secrets are never emitted: api_key.value is masked and api_key.source reports which precedence level supplied the key. Every key is always present; fields that do not apply serialize as null. New keys may be added (additive); existing keys keep their names and types.",
+  "type": "object",
+  "required": [
+    "version", "config_file", "provider", "model", "endpoint",
+    "endpoint_source", "api_key", "keys", "mode", "role", "session",
+    "stream", "no_tools", "tools_allow", "tools_deny", "thinking", "debug",
+    "dry_run", "temperature", "max_tokens", "timeout_ms", "max_iterations",
+    "context_window", "auto_compact", "compact_threshold",
+    "compact_keep_recent_tokens", "goal_max_iterations", "goal_max_continues"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "string", "description": "tau package version, e.g. \"0.4.0\"." },
+    "config_file": {
+      "type": "object",
+      "description": "Where configuration was loaded from. The file is optional — defaults fill whatever it does not set.",
+      "required": ["path", "exists", "warning"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": ["string", "null"], "description": "Probed config path (~/.config/tau/config.json); null when HOME is unset." },
+        "exists": { "type": "boolean", "description": "Whether a config file was actually read." },
+        "warning": { "type": ["string", "null"], "description": "Parse/degradation warning (e.g. invalid JSON — load continues with defaults); null when the file is absent or clean." }
+      }
+    },
+    "provider": { "type": "string", "description": "Resolved provider name (registry entry or flag/config/env override)." },
+    "model": { "type": "string", "description": "Resolved model id (provider default unless overridden)." },
+    "endpoint": { "type": "string", "description": "Resolved chat-completions endpoint URL." },
+    "endpoint_source": { "type": "string", "enum": ["provider", "env:TAU_ENDPOINT"], "description": "Where the final endpoint came from — the provider table or a TAU_ENDPOINT override." },
+    "api_key": {
+      "type": "object",
+      "description": "Resolved API key — the value is always masked; provenance is reported instead.",
+      "required": ["set", "value", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "set": { "type": "boolean", "description": "Whether any precedence level resolved a key." },
+        "value": { "type": ["string", "null"], "description": "Redacted key (prefix + mask), never the raw secret; null when unset." },
+        "source": { "type": ["string", "null"], "description": "Precedence level that supplied the key: \"--api-key\", \"config keys[<provider>]\", \"env <NAME>\", \"config api_key\", \"env TAU_API_KEY\", or \"builtin\"; null when unset." }
+      }
+    },
+    "keys": { "type": ["object", "null"], "description": "Per-provider keys from the config file, each value redacted; null when the file defines none.", "additionalProperties": { "type": "string" } },
+    "mode": { "type": "string", "enum": ["text", "json"], "description": "Effective output mode." },
+    "role": { "type": "string", "enum": ["author", "critic", "coordinator", "none"], "description": "Effective agent role." },
+    "session": { "type": ["string", "null"], "description": "Session name when persistence is enabled; null otherwise." },
+    "stream": { "type": "boolean" },
+    "no_tools": { "type": "boolean" },
+    "tools_allow": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Tool allowlist (CSV order); null = all tools enabled." },
+    "tools_deny": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Tool denylist; null when none." },
+    "thinking": { "type": "boolean" },
+    "debug": { "type": "boolean" },
+    "dry_run": { "type": "boolean" },
+    "temperature": { "type": ["number", "null"], "description": "Sampling temperature; null when a non-finite value was parsed (e.g. --temperature nan)." },
+    "max_tokens": { "type": ["integer", "null"], "minimum": 0 },
+    "timeout_ms": { "type": "integer", "minimum": 0 },
+    "max_iterations": { "type": "integer", "minimum": 0 },
+    "context_window": { "type": "integer", "minimum": 0 },
+    "auto_compact": { "type": "boolean" },
+    "compact_threshold": { "type": ["number", "null"], "description": "Fraction of context_window that triggers compaction; null when non-finite." },
+    "compact_keep_recent_tokens": { "type": "integer", "minimum": 0 },
+    "goal_max_iterations": { "type": "integer", "minimum": 0 },
+    "goal_max_continues": { "type": "integer", "minimum": 0 }
+  },
+  "examples": [
+    {
+      "version": "0.4.0",
+      "config_file": { "path": "/home/agent/.config/tau/config.json", "exists": true, "warning": null },
+      "provider": "xiaomi",
+      "model": "mimo-v2.5",
+      "endpoint": "https://token-plan-ams.xiaomimimo.com/v1/chat/completions",
+      "endpoint_source": "provider",
+      "api_key": { "set": true, "value": "sk-…", "source": "env XIAOMI_API_KEY" },
+      "keys": null,
+      "mode": "json",
+      "role": "none",
+      "session": null,
+      "stream": true,
+      "no_tools": false,
+      "tools_allow": null,
+      "tools_deny": null,
+      "thinking": false,
+      "debug": false,
+      "dry_run": false,
+      "temperature": 0.7,
+      "max_tokens": null,
+      "timeout_ms": 120000,
+      "max_iterations": 100,
+      "context_window": 256000,
+      "auto_compact": true,
+      "compact_threshold": 0.5,
+      "compact_keep_recent_tokens": 20000,
+      "goal_max_iterations": 50,
+      "goal_max_continues": 20
+    }
+  ]
+}

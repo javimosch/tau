@@ -94,6 +94,7 @@ ALL_TEST_GROUPS=(
   "errors-doc:test_group_errors_doc"
   "config-doc:test_group_config_doc"
   "doctor-schema:test_group_doctor_schema"
+  "cli-schemas:test_group_cli_schemas"
   "compat-doc:test_group_compat_doc"
   "stability-doc:test_group_stability_doc"
   "explain:test_group_explain"
@@ -3521,6 +3522,147 @@ test_group_doctor_schema() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/doctor-json.md.bak" "$doc"
   else
     skip_test "doctor-schema: doc --check detects stale" "docs/doctor-json.md missing"
+  fi
+}
+
+# Group: stable --json stdout schemas (issue #284)
+# `tau config show|validate --json` and `tau version [--verbose|--check]
+# --json` print single JSON objects on stdout whose shapes are pinned by
+# schema/tau-config-show.schema.json, schema/tau-config-validate.schema.json,
+# and schema/tau-version.schema.json. scripts/check-cli-schema.py validates
+# real binary output against them — this is the drift check CI runs. Fully
+# offline (the update check is disabled via TAU_NO_UPDATE_CHECK).
+test_group_cli_schemas() {
+  local scrub mock_home rc out
+  local check="$ROOT/scripts/check-cli-schema.py"
+  local show_schema="$ROOT/schema/tau-config-show.schema.json"
+  local val_schema="$ROOT/schema/tau-config-validate.schema.json"
+  local ver_schema="$ROOT/schema/tau-version.schema.json"
+
+  note "stable --json stdout schemas (config show|validate, version)"
+
+  scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
+  mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
+
+  # The checked-in schemas exist and are draft 2020-12 documents.
+  for s in "$show_schema" "$val_schema" "$ver_schema"; do
+    if [ -f "$s" ]; then
+      ok "cli-schemas: $(basename "$s") exists" 0 0
+      contains "cli-schemas: $(basename "$s") is draft 2020-12" "$(cat "$s")" 'draft/2020-12/schema'
+    else
+      ok "cli-schemas: $(basename "$s") exists" 1 0
+      contains "cli-schemas: $(basename "$s") is draft 2020-12" "" 'draft/2020-12/schema'
+    fi
+  done
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "cli-schemas: output validation" "python3 not on PATH"
+    return 0
+  fi
+
+  # ── tau version --json ─────────────────────────────────────────────────
+  out=$("$BIN" version --json); rc=$?
+  ok "cli-schemas: version --json exit 0" "$rc" 0
+  contains "cli-schemas: version --json object form" "$out" '"name":"tau"'
+  if printf '%s' "$out" | python3 "$check" --schema "$ver_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: version --json validates" 0 0
+  else
+    ok "cli-schemas: version --json validates" 1 0
+  fi
+
+  out=$("$BIN" version --json --verbose); rc=$?
+  ok "cli-schemas: version --json --verbose exit 0" "$rc" 0
+  contains "cli-schemas: --verbose adds build fields" "$out" '"build_date":"'
+  contains "cli-schemas: --verbose adds zig" "$out" '"zig":"'
+  if printf '%s' "$out" | python3 "$check" --schema "$ver_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: version --json --verbose validates" 0 0
+  else
+    ok "cli-schemas: version --json --verbose validates" 1 0
+  fi
+
+  # --check with the update lookup disabled: checked:false + reason.
+  out=$(TAU_NO_UPDATE_CHECK=1 "$BIN" version --json --check); rc=$?
+  ok "cli-schemas: version --json --check exit 0" "$rc" 0
+  contains "cli-schemas: --check reports checked:false" "$out" '"checked":false'
+  contains "cli-schemas: --check reports a reason" "$out" '"reason":"'
+  if printf '%s' "$out" | python3 "$check" --schema "$ver_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: version --json --check validates" 0 0
+  else
+    ok "cli-schemas: version --json --check validates" 1 0
+  fi
+
+  # Mutex with --mode text, in both orders.
+  "$BIN" version --json --mode text >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: version --json --mode text -> exit 80" "$rc" 80
+  "$BIN" version --mode text --json >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: version --mode text --json -> exit 80" "$rc" 80
+
+  # Bare `tau version` keeps the classic "tau X.Y.Z" line (unchanged surface).
+  out=$("$BIN" version)
+  contains "cli-schemas: bare version stays text" "$out" 'tau '
+  case "$out" in
+    \{*) ok "cli-schemas: bare version is not JSON" 1 0 ;;
+    *)   ok "cli-schemas: bare version is not JSON" 0 0 ;;
+  esac
+
+  # ── tau config show --json ─────────────────────────────────────────────
+  mkdir -p "$mock_home/.config/tau"
+  printf '{"provider":"openai","api_key":"sk-cli-secret-999"}' > "$mock_home/.config/tau/config.json"
+  out=$("${scrub[@]}" HOME="$mock_home" "$BIN" config show --json); rc=$?
+  ok "cli-schemas: config show --json exit 0" "$rc" 0
+  contains "cli-schemas: show resolves provider" "$out" '"provider":"openai"'
+  contains "cli-schemas: key source reported" "$out" '"source":"config api_key"'
+  if printf '%s' "$out" | grep -q 'sk-cli-secret-999'; then
+    ok "cli-schemas: raw key never emitted" 1 0
+  else
+    ok "cli-schemas: raw key never emitted" 0 0
+  fi
+  if printf '%s' "$out" | python3 "$check" --schema "$show_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: config show --json validates" 0 0
+  else
+    ok "cli-schemas: config show --json validates" 1 0
+  fi
+
+  "$BIN" config show --json --mode text >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: config show --json --mode text -> exit 80" "$rc" 80
+  "$BIN" --json "prompt" >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: bare --json is not a global flag -> exit 80" "$rc" 80
+
+  # ── tau config validate --json ─────────────────────────────────────────
+  out=$("${scrub[@]}" HOME="$mock_home" "$BIN" config validate --json "$mock_home/.config/tau/config.json"); rc=$?
+  ok "cli-schemas: config validate --json ok file -> exit 0" "$rc" 0
+  contains "cli-schemas: validate ok:true" "$out" '"ok":true'
+  if printf '%s' "$out" | python3 "$check" --schema "$val_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: validate ok report validates" 0 0
+  else
+    ok "cli-schemas: validate ok report validates" 1 0
+  fi
+
+  printf '{"provider":"nope","mode":42}' > "$mock_home/bad.json"
+  out=$("$BIN" config validate --json "$mock_home/bad.json"); rc=$?
+  ok "cli-schemas: config validate --json bad file -> exit 1" "$rc" 1
+  contains "cli-schemas: validate ok:false" "$out" '"ok":false'
+  if printf '%s' "$out" | python3 "$check" --schema "$val_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: validate error report validates" 0 0
+  else
+    ok "cli-schemas: validate error report validates" 1 0
+  fi
+
+  "$BIN" config validate --json --mode text "$mock_home/bad.json" >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: validate --json --mode text -> exit 80" "$rc" 80
+
+  # Non-vacuity: the checker must reject docs that violate the schema.
+  printf '{"name":"tau"}' > "$SMOKE_TEMP/badver.json"
+  if python3 "$check" --schema "$ver_schema" "$SMOKE_TEMP/badver.json" >/dev/null 2>&1; then
+    ok "cli-schemas: checker rejects missing required key" 0 1
+  else
+    ok "cli-schemas: checker rejects missing required key" 0 0
+  fi
+  printf '{"name":"tau","version":"0.4.0","bogus":1}' > "$SMOKE_TEMP/badver2.json"
+  if python3 "$check" --schema "$ver_schema" "$SMOKE_TEMP/badver2.json" >/dev/null 2>&1; then
+    ok "cli-schemas: checker rejects unexpected key" 0 1
+  else
+    ok "cli-schemas: checker rejects unexpected key" 0 0
   fi
 }
 
