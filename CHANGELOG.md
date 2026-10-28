@@ -16,6 +16,18 @@ are backward compatible.
 
 ### Added
 
+- **docs/stability.md** — the public stability and deprecation contract for
+  scriptable adoption. It assigns every machine-readable surface a tier
+  (stable / informational / internal), pins the `{"err"}` envelope and
+  exit-code table, the `done:true` NDJSON stream marker, stdout purity,
+  the checked-in `schema/*.json` files, config-file key semantics and
+  precedence, `TAU_*` env vars, the ACP wire protocol, and the installer
+  checksum contract; and it defines the deprecation policy (announce in
+  CHANGELOG → one-release overlap where old + new both work → removal
+  under **Breaking**, with exit codes never reused). A new
+  `scripts/check-stability-doc.py` drift check keeps the doc aligned with
+  the shipped catalog, schemas, and linked docs, wired into CI as the
+  `stability-doc` smoke group (#289)
 - ANSI styling now follows the standard color-policy env vars across every
   command — `NO_COLOR` (any non-empty value), `CLICOLOR=0`, and `TERM=dumb`
   all keep output byte-clean, while `CLICOLOR_FORCE` (non-empty, non-`0`)

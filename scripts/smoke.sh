@@ -95,6 +95,7 @@ ALL_TEST_GROUPS=(
   "config-doc:test_group_config_doc"
   "doctor-schema:test_group_doctor_schema"
   "compat-doc:test_group_compat_doc"
+  "stability-doc:test_group_stability_doc"
   "explain:test_group_explain"
   "golden-maintenance:test_group_golden_maintenance"
   "bench:test_group_bench_smoke:slow"
@@ -3584,6 +3585,54 @@ test_group_compat_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/compatibility.md.bak" "$doc"
   else
     skip_test "compat-doc: --check detects a stale doc" "docs/compatibility.md missing"
+  fi
+}
+
+# Group: docs/stability.md contract alignment
+# The stability contract is hand-written policy, so it is not generated —
+# scripts/check-stability-doc.py verifies its claims instead: every catalog
+# exit code named, every schema/ file referenced, every relative link
+# resolving, required sections present.
+test_group_stability_doc() {
+  note "docs/stability.md contract drift check"
+
+  local doc="$ROOT/docs/stability.md"
+  local check="$ROOT/scripts/check-stability-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "stability-doc: docs/stability.md exists" 0 0
+    contains "stability-doc: doc declares the deprecation policy" "$(cat "$doc")" "## Deprecation policy"
+  else
+    ok "stability-doc: docs/stability.md exists" 1 0
+    contains "stability-doc: doc declares the deprecation policy" "" "## Deprecation policy"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "stability-doc: checker passes (no drift)" "python3 not on PATH"
+    skip_test "stability-doc: checker detects drift" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$check" >/dev/null 2>&1; then
+    ok "stability-doc: checker passes (no drift)" 0 0
+  else
+    ok "stability-doc: checker passes (no drift)" 1 0
+  fi
+
+  # Prove the checker isn't vacuous: break a link, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/stability.md.bak"
+    printf '\n[stale](errors-missing.md)\n' >> "$doc"
+    if python3 "$check" >/dev/null 2>&1; then
+      ok "stability-doc: checker detects drift" 0 1
+    else
+      ok "stability-doc: checker detects drift" 0 0
+    fi
+    cp "$SMOKE_TEMP/stability.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$check" >/dev/null 2>&1 || cp "$SMOKE_TEMP/stability.md.bak" "$doc"
+  else
+    skip_test "stability-doc: checker detects drift" "docs/stability.md missing"
   fi
 }
 

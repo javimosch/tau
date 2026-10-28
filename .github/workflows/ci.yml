@@ -136,6 +136,13 @@ jobs:
           python3 scripts/check-doctor-schema.py "$tmp/fix.ndjson"
           python3 scripts/gen-doctor-doc.py --check
 
+      - name: Stability contract drift check
+        # docs/stability.md is hand-written policy — this proves it still
+        # names every catalog exit code, every schema/ file, and only links
+        # to docs that exist (the stability-doc smoke group pins the same).
+        shell: bash
+        run: python3 scripts/check-stability-doc.py
+
       - name: Offline smoke groups
         shell: bash
         run: ./scripts/smoke.sh
