@@ -231,20 +231,12 @@ fn appendMdRow(arena: std.mem.Allocator, buf: *std.ArrayList(u8), secrets: []con
 /// secrets from every source plus the generic Bearer/`"api_key":`/NAME=
 /// patterns). Paths stay visible, same convention as the debug log; the
 /// footer reminds the user to review before attaching.
-fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
+pub fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
     const s = summarize(checks);
     const b = version_mod.build;
     // Mask list = credentials derivable from this cfg/env plus everything
     // registered process-wide — the bundle must not leak either kind.
-    const secrets = blk: {
-        const local = debuglog.collectSecrets(arena, env, cfg);
-        const reg = debuglog.registeredSecrets();
-        if (reg.len == 0) break :blk local;
-        const both = try arena.alloc([]const u8, local.len + reg.len);
-        @memcpy(both[0..local.len], local);
-        @memcpy(both[local.len..], reg);
-        break :blk both;
-    };
+    const secrets = try debuglog.collectAllSecrets(arena, env, cfg);
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "# tau doctor report\n\n**Verdict:** ");
     try buf.appendSlice(arena, if (s.fail == 0) "ok" else "**FAILING**");

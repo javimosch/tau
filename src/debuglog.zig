@@ -211,6 +211,19 @@ pub fn registeredSecrets() []const []const u8 {
     return g_secrets.items;
 }
 
+/// collectSecrets plus everything registered process-wide (registerSecrets,
+/// open, addSecretsForTest) — the full mask list for serializers that must
+/// not leak either kind.
+pub fn collectAllSecrets(a: std.mem.Allocator, env: *std.process.Environ.Map, cfg: cfgmod.Config) ![]const []const u8 {
+    const local = collectSecrets(a, env, cfg);
+    const reg = registeredSecrets();
+    if (reg.len == 0) return local;
+    const both = try a.alloc([]const u8, local.len + reg.len);
+    @memcpy(both[0..local.len], local);
+    @memcpy(both[local.len..], reg);
+    return both;
+}
+
 /// Redact `s` with every secret registered for this process — empty before
 /// registerSecrets/open runs, in which case only the generic Bearer,
 /// `"api_key":`, and `NAME=` credential patterns are masked. Error envelopes

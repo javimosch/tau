@@ -16,6 +16,12 @@ are backward compatible.
 
 ### Added
 
+- `tau bug` — pre-filled GitHub issue URL carrying the redacted
+  `doctor --report` diagnostics bundle (`--title`/`--body`/`--labels`,
+  `--open` launches the system browser via `$BROWSER` or the platform
+  opener, `--out` writes the bundle to a file, `--no-report` omits
+  diagnostics; over-long bundles fall back to a short link body while the
+  JSON `body`/`report` fields keep everything) (#241)
 - `TAU_ENDPOINT` env var — point tau at any OpenAI-compatible server (#64)
 - Per-provider API keys in the config file via the `keys` object (#31)
 - Shell completions for bash and zsh (`completions/`) (#46)
@@ -104,6 +110,10 @@ are backward compatible.
 
 ### Fixed
 
+- `tau bug` now masks registered credentials in the user-controlled
+  `--title`/`--labels`/`--body` channels too — a key pasted into the issue
+  description can no longer leak into the pre-filled URL, JSON envelope, or
+  `--out` attachment. Property tests pin the invariant end-to-end (#279)
 - `tau doctor` no longer false-fails a commented (JSONC) config file — the
   `config_file` check strips `//` and `/* */` comments before parsing, same
   as the runtime loader, so a `tau init` scaffold reports `ok`
