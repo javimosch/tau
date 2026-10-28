@@ -1395,9 +1395,11 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
 
 /// Prompt on stderr and read one line from the (TTY) stdin reader. Only an
 /// explicit y/yes approves; empty lines, EOF, and read errors decline.
-fn confirmFix(arena: std.mem.Allocator, r: *std.Io.Reader, pf: PlannedFix) bool {
+/// `styled` bolds the prompt — callers resolve it via term.colorEnabled so
+/// NO_COLOR/CLICOLOR=0/TERM=dumb/non-TTY stderr all stay plain.
+fn confirmFix(arena: std.mem.Allocator, r: *std.Io.Reader, pf: PlannedFix, styled: bool) bool {
     const prompt = std.fmt.allocPrint(arena, "doctor --fix: {s} — apply? [y/N] ", .{pf.description}) catch return false;
-    term.err(prompt);
+    term.err(term.sgrWrap(arena, prompt, "1", styled) catch prompt);
     const line = (r.takeDelimiter('\n') catch return false) orelse return false;
     const t = std.mem.trim(u8, line, " \t\r");
     return std.ascii.eqlIgnoreCase(t, "y") or std.ascii.eqlIgnoreCase(t, "yes");
@@ -1446,10 +1448,11 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     var outcomes: std.ArrayList(FixOutcome) = .empty;
     if (planned.len > 0) {
         const interactive = !cfg.doctor_yes and (std.Io.File.stdin().isTty(io) catch false);
+        const styled = interactive and term.colorEnabled(io, env, std.Io.File.stderr());
         var rbuf: [512]u8 = undefined;
         var fr = std.Io.File.stdin().reader(io, &rbuf);
         for (planned) |pf| {
-            const approved = cfg.doctor_yes or (interactive and confirmFix(arena, &fr.interface, pf));
+            const approved = cfg.doctor_yes or (interactive and confirmFix(arena, &fr.interface, pf, styled));
             const o = if (approved)
                 applyFix(io, arena, cfg, env, pf)
             else
@@ -2006,15 +2009,15 @@ test "confirmFix: only y/yes approves; blank, other text, and EOF decline" {
     const pf = PlannedFix{ .kind = .scaffold_config, .check = "config_file", .description = "d" };
 
     var r_yes = std.Io.Reader.fixed("y\n");
-    try testing.expect(confirmFix(a, &r_yes, pf));
+    try testing.expect(confirmFix(a, &r_yes, pf, false));
     var r_yes2 = std.Io.Reader.fixed(" YES \r\n");
-    try testing.expect(confirmFix(a, &r_yes2, pf));
+    try testing.expect(confirmFix(a, &r_yes2, pf, false));
     var r_no = std.Io.Reader.fixed("n\n");
-    try testing.expect(!confirmFix(a, &r_no, pf));
+    try testing.expect(!confirmFix(a, &r_no, pf, false));
     var r_blank = std.Io.Reader.fixed("\n");
-    try testing.expect(!confirmFix(a, &r_blank, pf));
+    try testing.expect(!confirmFix(a, &r_blank, pf, false));
     var r_eof = std.Io.Reader.fixed("");
-    try testing.expect(!confirmFix(a, &r_eof, pf));
+    try testing.expect(!confirmFix(a, &r_eof, pf, false));
 }
 
 test "applyFix scaffold_config writes a commented config under a fresh HOME" {

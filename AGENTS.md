@@ -418,6 +418,21 @@ tau upgrade --dry-run            # Print the resolved plan; install nothing
 # points at install.ps1.
 ```
 
+#### 22. Color Policy
+```bash
+# Only one surface is styled: the interactive [y/N] prompts of
+# `tau upgrade` and `tau doctor --fix` (bold on a TTY stderr). Machine
+# channels — stdout JSON/NDJSON, --mode text, stderr error envelopes —
+# are never styled.
+# First match wins (src/term.zig colorPolicy):
+#   CLICOLOR_FORCE (non-empty, !="0") → styled, even non-TTY
+#   NO_COLOR (non-empty)              → plain
+#   CLICOLOR=0                        → plain
+#   TERM=dumb                         → plain
+#   otherwise                         → stream.isTty()
+# Locked by the golden-color smoke group (pty matrix + byte snapshots).
+```
+
 ### Storage Paths
 
 | Path | Purpose |
@@ -463,7 +478,7 @@ tau upgrade --dry-run            # Print the resolved plan; install nothing
 | `src/update.zig` | `tau version --check` + doctor `update_available` release lookup (curl, TAU_UPDATE_URL/TAU_NO_UPDATE_CHECK) | Update-check behavior |
 | `src/upgrade.zig` | `tau upgrade` self-update — check → confirm → staged `install.sh` exec | Upgrade flow, install-dir resolution |
 | `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
-| `src/term.zig` | Portable stdout/stderr | Terminal output changes |
+| `src/term.zig` | Portable stdout/stderr + color policy (`colorEnabled`/`colorPolicy`/`sgrWrap` — NO_COLOR/CLICOLOR/CLICOLOR_FORCE/TERM=dumb/TTY) | Terminal output changes, styling new surfaces |
 | `install.sh` | curl-able installer for prebuilt releases | Installer/flag/env changes |
 | `action.yml` | `setup-tau` composite GitHub Action (wraps `install.sh`) | Action inputs/outputs |
 | `.github/workflows/release.yml` | Tag-triggered release build + smoke + publish + Homebrew tap update | Release process changes |

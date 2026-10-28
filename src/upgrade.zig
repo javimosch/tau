@@ -271,10 +271,12 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     }
 
     const interactive = !cfg.upgrade_yes and (std.Io.File.stdin().isTty(io) catch false);
+    const styled = interactive and term.colorEnabled(io, env, std.Io.File.stderr());
     var rbuf: [512]u8 = undefined;
     var fr = std.Io.File.stdin().reader(io, &rbuf);
+    const prompt = std.fmt.allocPrint(arena, "upgrade: tau {s} -> {s} — install the update? [y/N] ", .{ ver.version, latest }) catch "upgrade? [y/N] ";
     const approved = cfg.upgrade_yes or
-        (interactive and confirm(&fr.interface, std.fmt.allocPrint(arena, "upgrade: tau {s} -> {s} — install the update? [y/N] ", .{ ver.version, latest }) catch "upgrade? [y/N] "));
+        (interactive and confirm(&fr.interface, term.sgrWrap(arena, prompt, "1", styled) catch prompt));
     if (!approved) {
         emit(arena, .{
             .checked = true,

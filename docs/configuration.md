@@ -265,6 +265,23 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 | `TAU_SETUP_CLIENT` | `tau setup` editor client when `--client` is absent (`zed|nvim|vscode|jetbrains|all`); invalid values fail with exit 80. |
 | `HOME` | Root of all tau state: `~/.config/tau/` and `~/.agents/skills/`. If unset, config file, sessions, fleets, skills, and the ACP daemon are all disabled. |
 | `TAU_EDITOR`, `VISUAL`, `EDITOR` | Editor for `tau config edit`, tried in that order (fallback: `vi` / `notepad`). May include arguments, e.g. `TAU_EDITOR="code --wait"`. |
+| `NO_COLOR` | Any non-empty value disables ANSI styling. See [color policy](#color-policy). |
+| `CLICOLOR` | `0` disables ANSI styling; any other value defers to the TTY probe. |
+| `CLICOLOR_FORCE` | Non-empty, non-`0` forces ANSI styling even on non-TTY streams (overrides `NO_COLOR`). |
+| `TERM` | `dumb` disables ANSI styling. |
+
+### Color policy
+
+tau styles exactly one surface: the interactive `[y/N]` confirmation
+prompts of `tau upgrade` and `tau doctor --fix`, rendered bold on a TTY
+stderr. Machine-consumed channels — stdout JSON/NDJSON, `--mode text`,
+stderr error envelopes — are never styled, no matter what the env says.
+
+The decision (in `src/term.zig`, `colorPolicy`) follows the
+[no-color.org](https://no-color.org) and CLICOLOR conventions, first match
+wins: `CLICOLOR_FORCE` (non-empty, non-`0`) → styled; `NO_COLOR`
+(non-empty) → plain; `CLICOLOR=0` → plain; `TERM=dumb` → plain; otherwise
+style only when the stream is a TTY.
 
 ### Read by the a2a-spawn launcher (not tau)
 
