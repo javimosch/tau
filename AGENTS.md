@@ -433,6 +433,16 @@ tau upgrade --dry-run            # Print the resolved plan; install nothing
 # Locked by the golden-color smoke group (pty matrix + byte snapshots).
 ```
 
+#### 23. Stability Contract
+```bash
+# docs/stability.md is the public stability + deprecation contract —
+# which exit codes, --json schemas, config keys, env vars, and wire
+# formats are stable vs informational vs internal, and how deprecations
+# are announced/phased out. It is hand-written policy (not generated);
+# scripts/check-stability-doc.py keeps it aligned with src/errors.zig,
+# schema/, and linked docs. Drift check: the stability-doc smoke group.
+```
+
 ### Storage Paths
 
 | Path | Purpose |
