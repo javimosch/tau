@@ -22,6 +22,10 @@ are backward compatible.
   opener, `--out` writes the bundle to a file, `--no-report` omits
   diagnostics; over-long bundles fall back to a short link body while the
   JSON `body`/`report` fields keep everything) (#241)
+- Crash handler — panics (and segfaults via the segfault handler) write a
+  redacted diagnostic bundle to `~/.config/tau/crashes/` and print a `note:`
+  pointing at `tau bug`; `tau doctor --report` (and therefore `tau bug`)
+  attaches the newest bundle under a `## Last crash` section (#285)
 - `TAU_ENDPOINT` env var — point tau at any OpenAI-compatible server (#64)
 - Per-provider API keys in the config file via the `keys` object (#31)
 - Shell completions for bash and zsh (`completions/`) (#46)

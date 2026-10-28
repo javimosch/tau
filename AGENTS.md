@@ -370,6 +370,7 @@ tau version --verbose --mode text   # Same fields as key: value lines
 | `~/.config/tau/acp.pid` | ACP daemon PID file |
 | `~/.config/tau/acp.log` | ACP daemon log |
 | `~/.config/tau/debug/<ts>.log` | Redacted diagnostic log written by `--debug` (override: `TAU_DEBUG_LOG`) |
+| `~/.config/tau/crashes/crash-<ts>-<ns>.log` | Redacted panic/crash bundle; newest is auto-attached by `tau doctor --report`/`tau bug` |
 
 ### How to Extend Tau
 
@@ -402,6 +403,7 @@ tau version --verbose --mode text   # Same fields as key: value lines
 | `src/errors.zig` | Stable error-code catalog + shared `{"err"}` envelope emitter | Error codes/hints, envelope fields |
 | `src/version.zig` | Version const + build metadata (`build.*`, `buildJson`, `buildLine`) | Version bump, build metadata |
 | `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
+| `src/crash.zig` | Panic handler → redacted crash bundle + `tau bug` pointer | Crash bundle format, `TAU_CRASH_SELFTEST` hook |
 | `src/term.zig` | Portable stdout/stderr | Terminal output changes |
 
 #### Validation Commands

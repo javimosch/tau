@@ -7,10 +7,15 @@ const json = @import("json.zig");
 const agent = @import("agent.zig");
 const debuglog = @import("debuglog.zig");
 const errs = @import("errors.zig");
+const crash = @import("crash.zig");
 const Config = cfgmod.Config;
 
 pub const name = "tau";
 pub const version = @import("version.zig").version;
+
+// Route every panic (and segfaults via the segfault handler) through the
+// crash bundle writer before the default trace + abort — see crash.zig.
+pub const panic = std.debug.FullPanic(crash.panicHandler);
 
 // Semantic exit codes (Square-style).
 const ExitCode = enum(u8) {
@@ -714,6 +719,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     term.init(io); // portable stdout/stderr (replaces Linux-only write syscalls)
+    crash.init(io, arena, init.environ_map, init.minimal.args);
 
     // Config-file defaults (~/.config/tau/config.json); CLI flags override these.
     const base_cfg: Config = configfile.load(io, arena, init.environ_map);
@@ -730,6 +736,12 @@ pub fn main(init: std.process.Init) !void {
     // output mask them — not just the --debug log. Deduped; debuglog.open
     // re-registers under --debug.
     debuglog.registerSecrets(arena, init.environ_map, parsed.config);
+
+    // Smoke/e2e hook: forces a panic through the installed handler so the
+    // crash-bundle write + `tau bug` pointer can be exercised end to end.
+    if (init.environ_map.get("TAU_CRASH_SELFTEST") != null) {
+        @panic("crash selftest (TAU_CRASH_SELFTEST)");
+    }
 
     switch (parsed.action) {
         .help => {

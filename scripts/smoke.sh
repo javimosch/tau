@@ -65,6 +65,7 @@ ALL_TEST_GROUPS=(
   "config-file:test_group_config_file"
   "doctor:test_group_doctor"
   "bug:test_group_bug"
+  "crash:test_group_crash"
   "init:test_group_init"
   "setup:test_group_setup"
   "config-show:test_group_config_show"
@@ -1521,6 +1522,83 @@ test_group_bug() {
     HOME="$mock_home" "$BIN" bug --offline --provider nope
   ok "unknown provider still exits 0" "$bug_badprov_rc" 0
   contains "bad provider inside the bundle" "$bug_badprov_out" "unknown provider 'nope'"
+}
+
+# Group: crash handler — a panic writes a redacted diagnostic bundle and
+# points at `tau bug`, which attaches the newest bundle automatically.
+test_group_crash() {
+  local mock_home crashes_dir bundle perms
+
+  note "crash handler (panic -> redacted bundle -> `tau bug` reporting path)"
+
+  mock_home="$(mktemp -d)"
+  register_temp_dir "$mock_home"
+  crashes_dir="$mock_home/.config/tau/crashes"
+
+  # 1. TAU_CRASH_SELFTEST routes a panic through the installed handler: the
+  #    process still aborts (nonzero exit), stderr keeps the panic trace,
+  #    and the note names the bundle path + `tau bug`.
+  capture crash_run env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" TAU_CRASH_SELFTEST=1 "$BIN" --api-key k-crashsecret-999 "hi"
+  if [ "$crash_run_rc" -ne 0 ]; then
+    ok "crashing run exits nonzero" 0 0
+  else
+    ok "crashing run exits nonzero" 1 0
+  fi
+  contains "stderr names the bundle path" "$crash_run_err" 'diagnostic bundle written to'
+  contains "stderr points at tau bug" "$crash_run_err" 'tau bug'
+  contains "panic trace still reaches stderr" "$crash_run_err" 'crash selftest'
+
+  # 2. The bundle lands under ~/.config/tau/crashes/, owner-only, carrying
+  #    the panic + build metadata + argv with the --api-key literal masked.
+  bundle="$(ls "$crashes_dir"/crash-*.log 2>/dev/null | sort | tail -1)"
+  if [ -n "$bundle" ] && [ -f "$bundle" ]; then
+    ok "bundle file written" 0 0
+    perms="$(stat -c %a "$bundle" 2>/dev/null || stat -f %Lp "$bundle" 2>/dev/null)"
+    ok "bundle is owner-only (600)" "$perms" "600"
+    contains "bundle carries the panic message" "$(cat "$bundle")" 'panic: crash selftest'
+    contains "bundle carries build metadata" "$(cat "$bundle")" '# build: commit='
+    contains "bundle carries the argv line" "$(cat "$bundle")" '# argv:'
+    contains "api-key literal is masked" "$(cat "$bundle")" '***REDACTED***'
+    lacks "api-key literal never on disk" "$(cat "$bundle")" 'k-crashsecret-999'
+  else
+    ok "bundle file written" 1 0
+    ok "bundle is owner-only (600)" 1 0
+    ok "bundle carries the panic message" 1 0
+    ok "bundle carries build metadata" 1 0
+    ok "bundle carries the argv line" 1 0
+    ok "api-key literal is masked" 1 0
+    ok "api-key literal never on disk" 1 0
+  fi
+
+  # 3. `tau bug` attaches the newest bundle: the "Last crash" section lands
+  #    in the report, the issue body, and the --out file — still masked.
+  capture crash_bug env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline --out "$mock_home/report.md"
+  ok "bug after a crash exits 0" "$crash_bug_rc" 0
+  contains "report includes the crash section" "$crash_bug_out" '## Last crash'
+  contains "crash panic text inside the report" "$crash_bug_out" 'panic: crash selftest'
+  lacks "crash secret never in the bug envelope" "$crash_bug_out" 'k-crashsecret-999'
+  if [ -f "$mock_home/report.md" ]; then
+    contains "--out carries the crash section" "$(cat "$mock_home/report.md")" '## Last crash'
+    lacks "--out never carries the crash secret" "$(cat "$mock_home/report.md")" 'k-crashsecret-999'
+  else
+    ok "--out file written" 1 0
+    ok "--out file written" 1 0
+  fi
+
+  # 4. A second crash keeps history: a fresh bundle lands alongside the
+  #    first and the report still resolves a newest file.
+  capture crash_two env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" TAU_CRASH_SELFTEST=1 "$BIN" "again"
+  if [ "$crash_two_rc" -ne 0 ]; then
+    ok "second crash exits nonzero" 0 0
+  else
+    ok "second crash exits nonzero" 1 0
+  fi
+  local count
+  count="$(ls "$crashes_dir"/crash-*.log 2>/dev/null | wc -l | tr -d ' ')"
+  ok "crash history keeps both bundles" "$count" "2"
 }
 
 # Group: tau init — commented starter config scaffold

@@ -255,6 +255,25 @@ any of them.
 
 ---
 
+## Crashes (panic / SIGABRT)
+
+### `thread ... panic: ...` with a `note: tau crashed` line
+
+tau installs a panic handler: on any panic (safety check, `unreachable`, or
+a segfault routed through the segfault handler) it writes a redacted
+diagnostic bundle to `~/.config/tau/crashes/crash-<UTC>-<ns>.log`
+(owner-only, `0600`) and prints a `note:` pointing at `tau bug`. The
+bundle carries build metadata, the crash timestamp, the masked argv line,
+and the panic message — masked exactly like the `--debug` log, so it is
+safe to attach.
+
+Run `tau bug` to file the report — it embeds `tau doctor --report`, which
+now attaches the newest crash bundle automatically under a `## Last crash`
+section. To inspect the bundle without filing a report, run
+`tau doctor --report`, or read the file under `~/.config/tau/crashes/`
+directly. A crash keeps the default stack trace and abort exit status —
+nothing is swallowed.
+
 ## Diagnostic toolkit
 
 | Command | Use it to |
