@@ -167,6 +167,13 @@ are backward compatible.
   `tau config schema` output by `scripts/gen-config-doc.py`; drift-checked
   three ways (byte-pinning unit test, `config-doc` smoke group, CI step on
   every platform leg) so the doc can never diverge from the schema (#269)
+- `docs/compatibility.md` — generated editor-client compatibility matrix
+  (settings file, agent-section key, entry shape, snippet fallback, doctor
+  check/fix ids, and the minimum tau version per integration path) rendered
+  from the `ClientKind` registry in `src/setup.zig` by
+  `scripts/gen-compat-doc.py`; drift-checked three ways (doc-mirror unit
+  test, `compat-doc` smoke group including a binary-vs-doc `--client` name
+  check, CI step on every platform leg) (#283)
 - `schema/tau-doctor.schema.json` + `docs/doctor-json.md` — a draft 2020-12
   JSON Schema for every `tau doctor --json` NDJSON line (check/fix/verdict
   events) and a generated human-readable reference; drift-checked three ways

@@ -293,6 +293,9 @@ output on every platform leg. Details and per-key semantics live in
 
 ## See also
 
+- [docs/compatibility.md](compatibility.md) — generated matrix of every
+  supported client: config location, entry shape, doctor check/fix ids, and
+  the minimum tau version each path needs.
 - [docs/acp.md](acp.md) — JetBrains, Emacs, Toad, generic stdio clients,
   `tau acp start|stop|status` socket mode, and what the editor sees.
 - [docs/configuration.md](configuration.md) — provider, model, and API-key
