@@ -86,6 +86,7 @@ ALL_TEST_GROUPS=(
   "release:test_group_release"
   "first-run:test_group_first_run"
   "golden-errors:test_group_golden_errors"
+  "golden-color:test_group_golden_color"
   "golden-onboarding:test_group_golden_onboarding"
   "golden-help:test_group_golden_help"
   "update:test_group_update"
@@ -2873,6 +2874,161 @@ PY
     fi
     kill "$listener_pid" 2>/dev/null || true
   fi
+}
+
+# Group: golden NO_COLOR/CLICOLOR/non-TTY snapshots (Issue #282)
+# Locks the terminal-color contract end to end:
+#   * machine-consumed channels (stdout JSON/NDJSON, stderr envelopes) never
+#     carry SGR bytes — even under CLICOLOR_FORCE=1, the strongest demand
+#     for styling tau recognizes;
+#   * the two interactive [y/N] prompts (`tau upgrade`, `tau doctor --fix`)
+#     style bold on a TTY stderr and stay byte-clean under NO_COLOR,
+#     CLICOLOR=0, TERM=dumb, and any non-TTY stream;
+#   * CLICOLOR_FORCE=1 is the explicit override — it styles even a non-TTY
+#     stream (a non-TTY stderr pinned byte-exact by the golden files below).
+# The prompt cases attach tau to a fresh pty via scripts/pty-run.py (POSIX —
+# skipped where os.fork is unavailable) so the TTY gates genuinely engage.
+# The stderr-redirect variants capture the raw prompt bytes into
+# tests/golden/color-* files. Regenerate after an intentional prompt change:
+#   GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-color
+
+# _COLOR_SCRUB_U — the provider-key + color-policy env scrub as a plain word
+# list. pty-run.py execs its command directly, so shell functions cannot
+# cross that exec boundary — pty cases pass `env $_COLOR_SCRUB_U` verbatim.
+_COLOR_SCRUB_U="-u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY \
+-u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
+-u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
+-u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u BROWSER \
+-u NO_COLOR -u CLICOLOR -u CLICOLOR_FORCE"
+
+# The sweep calls below use `env $_COLOR_SCRUB_U` too — same scrub as
+# _golden_env plus the color inputs, so ambient NO_COLOR/CLICOLOR/
+# CLICOLOR_FORCE cannot leak in. Each case sets its own HOME and TERM.
+
+# _no_esc <name> <file> — pass when <file> carries no ESC (0x1b) byte.
+_no_esc() {
+  if LC_ALL=C grep -q $'\033' "$2"; then
+    ok "$1" 1 0
+  else
+    ok "$1" 0 0
+  fi
+}
+
+# _has_bold <name> <file> — pass when <file> contains an SGR bold sequence.
+_has_bold() {
+  if LC_ALL=C grep -q $'\033\[1m' "$2"; then
+    ok "$1" 0 0
+  else
+    ok "$1" 1 0
+  fi
+}
+
+test_group_golden_color() {
+  GOLDEN_DIR="$ROOT/tests/golden"
+  local mock_home="$SMOKE_TEMP/color-home"
+  mkdir -p "$mock_home"
+  printf '{"tag_name":"v99.9.9","name":"newer"}' > "$SMOKE_TEMP/color-rel-newer.json"
+
+  local of ef cf
+  of="$(mktemp)"; ef="$(mktemp)"; cf="$(mktemp)"
+  register_temp_file "$of" "$ef" "$cf"
+
+  # ── Machine channels stay byte-clean even under CLICOLOR_FORCE=1: if
+  #    styling ever leaked into stdout JSON/NDJSON, --help, or stderr
+  #    envelopes it would surface here. ──
+  _color_sweep() {
+    local name="$1"; shift
+    env $_COLOR_SCRUB_U CLICOLOR_FORCE=1 "$@" >"$of" 2>"$ef" || true
+    cat "$of" "$ef" > "$cf"
+    _no_esc "no SGR bytes: $name under CLICOLOR_FORCE=1" "$cf"
+  }
+
+  _color_sweep "--help"        "$BIN" --help
+  _color_sweep "--version"     "$BIN" --version
+  _color_sweep "explain"       "$BIN" explain 80
+  _color_sweep "invalid flag"  "$BIN" --bogus x
+  _color_sweep "doctor report" env HOME="$mock_home" "$BIN" doctor --offline
+  _color_sweep "config show"   env HOME="$mock_home" "$BIN" config show
+  _color_sweep "setup --dry-run" env HOME="$mock_home" "$BIN" setup --dry-run
+  _color_sweep "upgrade non-TTY" env TAU_UPDATE_URL="file://$SMOKE_TEMP/color-rel-newer.json" \
+    sh -c '"$0" upgrade < /dev/null' "$BIN"
+
+  # ── Interactive [y/N] prompts on a real pty ──
+  if ! command -v python3 >/dev/null 2>&1 || \
+     ! python3 -c 'import os,sys;sys.exit(0 if hasattr(os,"fork") else 1)' 2>/dev/null; then
+    skip_test "pty color matrix" "python3 with os.fork unavailable (POSIX only)"
+    return
+  fi
+
+  local PTY="$ROOT/scripts/pty-run.py" pty_out="$SMOKE_TEMP/color-pty.bin"
+  local errf="$SMOKE_TEMP/color-err.txt" feed=$'n\nn\nn\n'
+  local rel="file://$SMOKE_TEMP/color-rel-newer.json"
+
+  # Positive control: a TTY stderr styles the prompt bold — proves the
+  # negative assertions below are not vacuous.
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
+      "$BIN" upgrade || true
+  _has_bold "upgrade prompt styled on a TTY" "$pty_out"
+  contains "upgrade JSON still emitted" "$(cat "$pty_out")" '"status":"declined"'
+
+  # Each documented opt-out keeps the TTY prompt plain.
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U NO_COLOR=1 TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
+      "$BIN" upgrade || true
+  _no_esc "upgrade prompt plain under NO_COLOR" "$pty_out"
+  contains "upgrade prompt text still emitted" "$(cat "$pty_out")" "install the update? [y/N]"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U CLICOLOR=0 TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
+      "$BIN" upgrade || true
+  _no_esc "upgrade prompt plain under CLICOLOR=0" "$pty_out"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U TERM=dumb HOME="$mock_home" TAU_UPDATE_URL="$rel" \
+      "$BIN" upgrade || true
+  _no_esc "upgrade prompt plain under TERM=dumb" "$pty_out"
+
+  # stderr redirected to a file is non-TTY: force styles it (golden),
+  # default leaves it plain (golden).
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U CLICOLOR_FORCE=1 TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
+      sh -c '"$0" upgrade 2>"$1"' "$BIN" "$errf" || true
+  _golden_stream color-upgrade-force.stderr "$errf"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
+      sh -c '"$0" upgrade 2>"$1"' "$BIN" "$errf" || true
+  _golden_stream color-upgrade-plain.stderr "$errf"
+
+  # doctor --fix prompts (fresh HOME -> scaffold + completions fixes).
+  rm -rf "$mock_home"; mkdir -p "$mock_home"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U TERM=xterm-256color HOME="$mock_home" SHELL=/bin/bash \
+      "$BIN" doctor --offline --fix || true
+  _has_bold "doctor --fix prompt styled on a TTY" "$pty_out"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U NO_COLOR=1 TERM=xterm-256color HOME="$mock_home" SHELL=/bin/bash \
+      "$BIN" doctor --offline --fix || true
+  _no_esc "doctor --fix prompt plain under NO_COLOR" "$pty_out"
+  contains "doctor prompt text still emitted" "$(cat "$pty_out")" "apply? [y/N]"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U CLICOLOR=0 TERM=xterm-256color HOME="$mock_home" SHELL=/bin/bash \
+      "$BIN" doctor --offline --fix || true
+  _no_esc "doctor --fix prompt plain under CLICOLOR=0" "$pty_out"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U CLICOLOR_FORCE=1 TERM=xterm-256color HOME="$mock_home" SHELL=/bin/bash \
+      sh -c '"$0" doctor --offline --fix 2>"$1"' "$BIN" "$errf" || true
+  _golden_stream color-doctor-force.stderr "$errf"
+
+  python3 "$PTY" "$pty_out" "$feed" \
+    env $_COLOR_SCRUB_U TERM=xterm-256color HOME="$mock_home" SHELL=/bin/bash \
+      sh -c '"$0" doctor --offline --fix 2>"$1"' "$BIN" "$errf" || true
+  _golden_stream color-doctor-plain.stderr "$errf"
 }
 
 # Group: golden onboarding snapshots (Issue #223)

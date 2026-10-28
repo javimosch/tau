@@ -230,6 +230,7 @@ tau gives agents what they need:
 - **Offline error catalog** — `tau explain <code|type>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md))
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
+- **Standard color policy** — `NO_COLOR`, `CLICOLOR=0`, and `TERM=dumb` keep output byte-clean; `CLICOLOR_FORCE` overrides. Only interactive prompts are styled (e.g. `tau upgrade`, `tau doctor --fix`); stdout JSON/NDJSON and error envelopes never carry escapes — see [docs/configuration.md](docs/configuration.md#color-policy)
 
 With tau:
 1. **Execute** single-shot commands with `tau "prompt"` — JSON output by default

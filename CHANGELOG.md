@@ -16,6 +16,18 @@ are backward compatible.
 
 ### Added
 
+- ANSI styling now follows the standard color-policy env vars across every
+  command — `NO_COLOR` (any non-empty value), `CLICOLOR=0`, and `TERM=dumb`
+  all keep output byte-clean, while `CLICOLOR_FORCE` (non-empty, non-`0`)
+  is the explicit override. The policy lives in one place
+  (`src/term.zig` `colorPolicy`) and gates the two surfaces tau styles —
+  the interactive `[y/N]` prompts of `tau upgrade` and `tau doctor --fix`,
+  now rendered bold on a TTY stderr. Machine-consumed channels (stdout
+  JSON/NDJSON, `--mode text`, stderr error envelopes) are never styled.
+  The contract is locked end to end by the `golden-color` smoke group: a
+  byte-clean sweep under `CLICOLOR_FORCE=1`, a real-pty matrix over the
+  opt-outs (via new `scripts/pty-run.py`), and byte-exact snapshots of the
+  styled and plain prompt bytes (#282)
 - `tau doctor` now detects missing or stale editor client wiring — one
   `client_<name>` row per detected editor (Zed, VS Code, JetBrains; Neovim
   reports a manual-only skip since its config is Lua) warns when the
