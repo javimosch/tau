@@ -425,7 +425,7 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 /// Editor clients setup can configure to spawn `tau acp serve`.
 pub const ClientKind = enum { zed, nvim, vscode, jetbrains };
 
-fn clientName(k: ClientKind) []const u8 {
+pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
         .zed => "zed",
         .nvim => "nvim",
@@ -648,6 +648,130 @@ fn hasTauEntry(arena: std.mem.Allocator, k: ClientKind, bytes: []const u8) ?bool
         else => return false,
     };
     return agents.get("tau") != null;
+}
+
+/// How one client's `tau acp serve` wiring looks to `tau doctor`. nvim
+/// always reports .manual_only — its plugin config is Lua and can't be
+/// introspected safely; the JSON clients classify their settings file.
+pub const WiringState = enum {
+    /// No editor config dir — the client isn't installed here.
+    not_detected,
+    /// nvim: wiring lives in Lua; doctor can only point at the snippet.
+    manual_only,
+    /// Settings file absent — the fix writes a fresh minimal one.
+    missing_file,
+    /// Settings file exists but can't be read.
+    unreadable,
+    /// Settings file exists but isn't valid JSON/JSONC.
+    unparseable,
+    /// Parseable settings file with no "tau" entry in the agent section.
+    no_entry,
+    /// A "tau" entry exists but is broken (dead command path, wrong args,
+    /// or — zed only — a missing "type":"custom").
+    stale,
+    /// Wired — the entry looks sane.
+    ok,
+};
+
+pub const ClientWiring = struct {
+    state: WiringState,
+    /// Settings-file path for JSON clients (null for nvim/not_detected).
+    path: ?[]const u8 = null,
+    /// What makes a .stale entry broken.
+    reason: ?[]const u8 = null,
+};
+
+/// The args every JSON-client tau entry must carry: ["acp", "serve"] —
+/// anything else spawns the wrong command (or no agent at all).
+fn acpServeArgs(e: std.json.ObjectMap) bool {
+    const a = e.get("args") orelse return false;
+    if (a != .array or a.array.items.len != 2) return false;
+    const items = a.array.items;
+    return items[0] == .string and std.mem.eql(u8, items[0].string, "acp") and
+        items[1] == .string and std.mem.eql(u8, items[1].string, "serve");
+}
+
+/// Classify one client's wiring for `tau doctor`. Detection mirrors the
+/// setup clients step: the editor's config dir must exist before its
+/// settings file is even consulted, so doctor only reports editors that are
+/// actually installed. Staleness is checked deliberately narrow — a wired
+/// command that names a filesystem path must exist on disk, args must be
+/// ["acp","serve"], and Zed entries need "type":"custom". A bare "tau"
+/// command can't be disproved offline and stays ok.
+pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind) !ClientWiring {
+    if (!dirExists(io, try clientConfigDir(arena, home, k))) return .{ .state = .not_detected };
+    if (k == .nvim) return .{ .state = .manual_only };
+    const path = (try clientSettingsPath(arena, home, k)).?;
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
+        if (err == error.FileNotFound) return .{ .state = .missing_file, .path = path };
+        return .{ .state = .unreadable, .path = path };
+    };
+    const stripped = configfile.stripComments(arena, bytes) catch
+        return .{ .state = .unparseable, .path = path };
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch
+        return .{ .state = .unparseable, .path = path };
+    const entry: ?std.json.ObjectMap = blk: {
+        if (parsed != .object) break :blk null;
+        const section = parsed.object.get(clientSectionKey(k)) orelse break :blk null;
+        if (section != .object) break :blk null;
+        const e = section.object.get("tau") orelse break :blk null;
+        break :blk switch (e) {
+            .object => |o| o,
+            else => null,
+        };
+    };
+    const e = entry orelse return .{ .state = .no_entry, .path = path };
+
+    const cmd = e.get("command");
+    if (cmd == null or cmd.? != .string)
+        return .{ .state = .stale, .path = path, .reason = "the \"tau\" entry has no \"command\" string" };
+    const command = cmd.?.string;
+    // A wired command that names a filesystem path must resolve — a moved or
+    // reinstalled binary is the classic stale wiring. Other stat failures are
+    // undeterminable offline, so they don't warn.
+    if (std.mem.indexOfScalar(u8, command, '/') != null) {
+        if (std.Io.Dir.cwd().statFile(io, command, .{})) |st| {
+            if (st.kind == .directory)
+                return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "wired command is a directory: {s}", .{command}) };
+        } else |err| switch (err) {
+            error.FileNotFound => return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "wired command does not exist: {s}", .{command}) },
+            else => {},
+        }
+    }
+    if (!acpServeArgs(e))
+        return .{ .state = .stale, .path = path, .reason = "the \"tau\" entry args are not [\"acp\", \"serve\"]" };
+    if (k == .zed) {
+        const t = e.get("type");
+        if (t == null or t.? != .string or !std.mem.eql(u8, t.?.string, "custom"))
+            return .{ .state = .stale, .path = path, .reason = "zed entries need \"type\": \"custom\"" };
+    }
+    return .{ .state = .ok, .path = path };
+}
+
+/// The `tau doctor --fix` remediation for one client. Mirrors `tau setup
+/// --client`: a missing settings file gets a fresh minimal one (the wiring
+/// is actually repaired); anything else gets the paste-ready snippet under
+/// ~/.config/tau/snippets/ — existing settings files are never rewritten.
+/// Returns the report detail; errors surface as a failed fix outcome.
+pub fn remedyClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind, command: []const u8) ![]const u8 {
+    const w = try inspectClientWiring(io, arena, home, k);
+    switch (w.state) {
+        .missing_file => {
+            const path = w.path.?;
+            _ = try writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), false);
+            return std.fmt.allocPrint(arena, "wrote minimal settings file: {s}", .{path});
+        },
+        .unreadable, .unparseable, .no_entry, .stale => {
+            const snip = try snippetPath(arena, home, k);
+            const wrote = try writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), false);
+            return switch (wrote) {
+                .unchanged => std.fmt.allocPrint(arena, "snippet already up to date: {s} — merge the \"tau\" block into {s} by hand", .{ snip, w.path.? }),
+                else => std.fmt.allocPrint(arena, "wrote paste-ready snippet: {s} — merge the \"tau\" block into {s} by hand", .{ snip, w.path.? }),
+            };
+        },
+        .ok => return "already wired — nothing to do",
+        .not_detected, .manual_only => return error.NothingToFix,
+    }
 }
 
 /// The clients setup should configure: explicit --client (validated
@@ -1273,4 +1397,103 @@ test "configureClient nvim always writes a lua snippet and reports manual" {
     try testing.expect(std.mem.indexOf(u8, snip, "acp_providers") != null);
     try testing.expect(std.mem.indexOf(u8, snip, "codecompanion") != null);
     try testing.expect(std.mem.indexOf(u8, snip, "/abs/tau") != null);
+}
+
+test "inspectClientWiring: detection, missing/unparseable/no-entry, staleness signals" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // Editor not installed -> not_detected (doctor emits no row).
+    try testing.expectEqual(WiringState.not_detected, (try inspectClientWiring(io, a, home, .zed)).state);
+
+    const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, zed_dir);
+    const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{zed_dir});
+
+    try testing.expectEqual(WiringState.missing_file, (try inspectClientWiring(io, a, home, .zed)).state);
+
+    _ = try writeIfChanged(io, a, sp, "{ not json", false);
+    try testing.expectEqual(WiringState.unparseable, (try inspectClientWiring(io, a, home, .zed)).state);
+
+    _ = try writeIfChanged(io, a, sp, "{\"agent_servers\": {}}", false);
+    try testing.expectEqual(WiringState.no_entry, (try inspectClientWiring(io, a, home, .zed)).state);
+
+    // Entry whose command names a dead path -> stale.
+    _ = try writeIfChanged(io, a, sp, "{\"agent_servers\": {\"tau\": {\"type\":\"custom\",\"command\":\"/missing/tau\",\"args\":[\"acp\",\"serve\"]}}}", false);
+    const dead = try inspectClientWiring(io, a, home, .zed);
+    try testing.expectEqual(WiringState.stale, dead.state);
+    try testing.expect(std.mem.indexOf(u8, dead.reason.?, "/missing/tau") != null);
+
+    // Live command but wrong args -> stale. The test exe is a real path.
+    const exe = try std.process.executablePathAlloc(io, a);
+    var esc: std.ArrayList(u8) = .empty;
+    try json.escapeInto(a, &esc, exe);
+    const bad_args = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"type\":\"custom\",\"command\":\"{s}\",\"args\":[\"serve\"]}}}}}}", .{esc.items});
+    _ = try writeIfChanged(io, a, sp, bad_args, false);
+    const st_args = try inspectClientWiring(io, a, home, .zed);
+    try testing.expectEqual(WiringState.stale, st_args.state);
+    try testing.expect(std.mem.indexOf(u8, st_args.reason.?, "args") != null);
+
+    // Zed without "type":"custom" -> stale; the same entry is fine for
+    // jetbrains (no type requirement).
+    const no_type = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{esc.items});
+    _ = try writeIfChanged(io, a, sp, no_type, false);
+    try testing.expectEqual(WiringState.stale, (try inspectClientWiring(io, a, home, .zed)).state);
+
+    const jb_dir = try std.fmt.allocPrint(a, "{s}/.jetbrains", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, jb_dir);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/acp.json", .{jb_dir}), no_type, false);
+    try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .jetbrains)).state);
+
+    // Fully correct zed entry -> ok.
+    const good = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"type\":\"custom\",\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{esc.items});
+    _ = try writeIfChanged(io, a, sp, good, false);
+    try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .zed)).state);
+}
+
+test "remedyClientWiring: missing file gets a minimal one; no-entry gets a snippet" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const exe = try std.process.executablePathAlloc(io, a);
+
+    const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, zed_dir);
+
+    const d1 = try remedyClientWiring(io, a, home, .zed, exe);
+    try testing.expect(std.mem.indexOf(u8, d1, "minimal settings file") != null);
+    try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .zed)).state);
+
+    // An existing settings file without a tau entry is never rewritten — the
+    // remedy is the same paste-ready snippet `tau setup --client` emits.
+    const code_dir = try std.fmt.allocPrint(a, "{s}/.config/Code/User", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, code_dir);
+    const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{code_dir});
+    const orig = "{\n  // keep me\n  \"vim\": true\n}\n";
+    _ = try writeIfChanged(io, a, sp, orig, false);
+
+    const d2 = try remedyClientWiring(io, a, home, .vscode, exe);
+    try testing.expect(std.mem.indexOf(u8, d2, "snippet") != null);
+    try testing.expect(std.mem.indexOf(u8, d2, "by hand") != null);
+    const snip = try std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(a, "{s}/.config/tau/snippets/vscode.jsonc", .{home}), a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, snip, "\"acp.agents\"") != null);
+    try testing.expect(std.mem.indexOf(u8, snip, exe) != null);
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+    try testing.expectEqualStrings(orig, after);
+
+    // Re-running the remedy on the unchanged file reports the snippet is
+    // already up to date.
+    const d3 = try remedyClientWiring(io, a, home, .vscode, exe);
+    try testing.expect(std.mem.indexOf(u8, d3, "already up to date") != null);
 }

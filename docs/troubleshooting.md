@@ -277,6 +277,7 @@ any of them.
 | `tau --thinking "<prompt>"` | Show model reasoning chunks |
 | `tau models` | List providers + default models (JSON) |
 | `tau doctor --report` | Redacted Markdown diagnostics bundle (build metadata, checks, sanitized config) — paste straight into a bug report |
+| `tau doctor --fix [--yes]` | Auto-remediate fixable checks: missing/invalid config, loose permissions, missing completions, and missing or stale editor client wiring (`client_zed`/`client_vscode`/`client_jetbrains` rows — a dead `command` path or wrong `args` counts as stale; an existing settings file is never rewritten — you get a paste-ready snippet in `~/.config/tau/snippets/` instead) |
 | `tau doctor --probe` | Live-verify every provider: per-provider connectivity + credential pass/fail rows (key sources only, never key material) |
 | `tau doctor --selftest` | Credential-free end-to-end check: spawns tau against a loopback stub provider (throwaway HOME, stub key) — verifies the installed binary works without real credentials or network; runs under `--offline` |
 | `tau version --check` | Non-blocking update check against the latest release (always exits 0; `TAU_NO_UPDATE_CHECK=1` opts out — also silences the `update_available` doctor warning) |

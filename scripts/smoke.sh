@@ -1618,6 +1618,56 @@ PYEOF
   fi
 
   "$BIN" --help 2>&1 | grep -q -- "--selftest" && ok "--help mentions --selftest" 0 0 || ok "--help mentions --selftest" 1 0
+
+  # 23. Editor client wiring: detected editors get client_<name> rows —
+  #     missing settings warn fixably, stale entries warn, --fix --yes writes
+  #     a minimal file or a paste-ready snippet; no editor dirs -> a single
+  #     client_wiring skip row.
+  local wire_home
+  wire_home="$(mktemp -d)"
+  register_temp_dir "$wire_home"
+
+  capture doc_wire_none env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$wire_home" "$BIN" doctor --offline
+  contains "no editors -> client_wiring skip row" "$doc_wire_none_out" '"name":"client_wiring","status":"skip"'
+  contains "placeholder names the setup flag" "$doc_wire_none_out" 'tau setup --client'
+
+  mkdir -p "$wire_home/.config/zed" "$wire_home/.config/nvim"
+  capture doc_wire_missing env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$wire_home" "$BIN" doctor --offline
+  contains "zed detected but unwired -> warn" "$doc_wire_missing_out" '"name":"client_zed","status":"warn"'
+  contains "zed warn explains the missing file" "$doc_wire_missing_out" 'no settings file'
+  contains "nvim is a manual-only skip" "$doc_wire_missing_out" '"name":"client_nvim","status":"skip"'
+  if printf '%s' "$doc_wire_missing_out" | grep -qF '"name":"client_vscode"'; then
+    ok "undetected editors emit no row" 1 0
+  else
+    ok "undetected editors emit no row" 0 0
+  fi
+
+  capture doc_wire_fix env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$wire_home" "$BIN" doctor --offline --fix --yes
+  contains "wire fix applied for zed" "$doc_wire_fix_out" '"id":"wire_client_zed","check":"client_zed","status":"applied"'
+  contains "zed re-diagnosed ok" "$doc_wire_fix_out" '"name":"client_zed","status":"ok"'
+  if [ -f "$wire_home/.config/zed/settings.json" ] && grep -q '"agent_servers"' "$wire_home/.config/zed/settings.json"; then
+    ok "zed settings file written with agent_servers" 0 0
+  else
+    ok "zed settings file written with agent_servers" 1 0
+  fi
+  grep -q '"command"' "$wire_home/.config/zed/settings.json" && ok "zed entry pins a command path" 0 0 || ok "zed entry pins a command path" 1 0
+
+  mkdir -p "$wire_home/.config/Code/User"
+  printf '{"acp.agents": {"tau": {"command": "/nonexistent/tau", "args": ["acp", "serve"]}}}' > "$wire_home/.config/Code/User/settings.json"
+  capture doc_wire_stale env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$wire_home" "$BIN" doctor --offline --fix --yes
+  contains "stale vscode wiring warns" "$doc_wire_stale_out" '"name":"client_vscode","status":"warn"'
+  contains "stale message names the dead path" "$doc_wire_stale_out" 'wired command does not exist: /nonexistent/tau'
+  contains "stale fix writes a snippet" "$doc_wire_stale_out" '"id":"wire_client_vscode","check":"client_vscode","status":"applied"'
+  if [ -f "$wire_home/.config/tau/snippets/vscode.jsonc" ] && grep -q '"acp.agents"' "$wire_home/.config/tau/snippets/vscode.jsonc"; then
+    ok "corrected snippet written" 0 0
+  else
+    ok "corrected snippet written" 1 0
+  fi
+  grep -q '/nonexistent/tau' "$wire_home/.config/Code/User/settings.json" && ok "user settings file untouched by snippet fix" 0 0 || ok "user settings file untouched by snippet fix" 1 0
 }
 
 # Group: tau bug — pre-filled GitHub issue carrying the redacted doctor bundle
