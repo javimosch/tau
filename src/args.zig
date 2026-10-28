@@ -155,15 +155,18 @@ pub fn parse(
         return .{ .action = .models, .config = base };
     }
 
-    // `tau version [--verbose] [--check] [--mode text|json]` — command form of
-    // -v/--version. Bare output is `tau 0.4.0` either way; --verbose adds
-    // build metadata (commit, target triple, build date, zig version) as a
-    // JSON object, or key: value lines under --mode text. --check adds a
+    // `tau version [--verbose] [--check] [--json] [--mode text|json]` —
+    // command form of -v/--version. Bare output is `tau 0.4.0` either way;
+    // --json upgrades it to the stable {"name","version"} object form for
+    // scripts (mutually exclusive with --mode text). --verbose adds build
+    // metadata (commit, target triple, build date, zig version) as a JSON
+    // object, or key: value lines under --mode text. --check adds a
     // non-blocking, opt-out (TAU_NO_UPDATE_CHECK) update check against the
     // latest GitHub release; it always exits 0 and reports checked:false
     // rather than failing when the lookup cannot run.
     if (argv.len > 0 and eq(argv[0], "version")) {
         var vcfg: Config = base;
+        var saw_text_mode = false;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
             const a = argv[j];
@@ -171,11 +174,17 @@ pub fn parse(
                 vcfg.version_verbose = true;
             } else if (eq(a, "--check")) {
                 vcfg.version_check = true;
+            } else if (eq(a, "--json")) {
+                if (saw_text_mode) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                vcfg.cli_json = true;
+                vcfg.mode = .json;
             } else if (eq(a, "--mode")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
                 const v = argv[j];
                 if (eq(v, "text")) {
+                    if (vcfg.cli_json) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                    saw_text_mode = true;
                     vcfg.mode = .text;
                 } else if (eq(v, "json")) {
                     vcfg.mode = .json;
@@ -599,13 +608,22 @@ pub fn parse(
         if (eq(argv[1], "validate")) {
             var vcfg: Config = base;
             vcfg.config_sub = "validate";
+            var saw_text_mode = false;
             var j: usize = 2;
             while (j < argv.len) : (j += 1) {
                 const a = argv[j];
-                if (eq(a, "--mode")) {
+                if (eq(a, "--json")) {
+                    // --json pins the stable JSON report form for scripts
+                    // (same shape as --mode json; mutex with --mode text).
+                    if (saw_text_mode) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                    vcfg.cli_json = true;
+                    vcfg.mode = .json;
+                } else if (eq(a, "--mode")) {
                     j += 1;
                     if (j >= argv.len) return missing(arena, a);
                     if (eq(argv[j], "text")) {
+                        if (vcfg.cli_json) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                        saw_text_mode = true;
                         vcfg.mode = .text;
                     } else if (eq(argv[j], "json")) {
                         vcfg.mode = .json;
@@ -745,6 +763,9 @@ pub fn parse(
     var msg_parts: std.ArrayList([]const u8) = .empty;
     var file_parts: std.ArrayList([]const u8) = .empty;
     var help_requested = false;
+    // Tracks an explicit `--mode text` so `config show --json` can reject the
+    // contradictory pair in either order (the chat path ignores it).
+    var saw_text_mode = false;
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
@@ -865,12 +886,28 @@ pub fn parse(
         if (eq(a, "--mode")) {
             const v = val(argv, &i) orelse return missing(arena, a);
             if (eq(v, "text")) {
+                if (config_show and cfg.cli_json)
+                    return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                saw_text_mode = true;
                 cfg.mode = .text;
             } else if (eq(v, "json")) {
                 cfg.mode = .json;
             } else {
                 return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
             }
+            continue;
+        }
+        if (eq(a, "--json")) {
+            // `tau config show --json` — the effective-config output is
+            // always JSON; the flag pins the stable contract explicitly
+            // (same spelling as `tau doctor --json`). Not a global flag —
+            // version/validate parse their own --json; anything else is an
+            // unknown option.
+            if (!config_show) return errResult(arena, "unknown option: {s}", .{a});
+            if (saw_text_mode)
+                return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+            cfg.cli_json = true;
+            cfg.mode = .json;
             continue;
         }
         if (eq(a, "--tools") or eq(a, "-t")) {
@@ -1609,6 +1646,47 @@ test "parse: config show still honours -h" {
     try std.testing.expect(p.help_requested);
 }
 
+test "parse: config show --json pins the stable output contract" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "--json" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // --json composes with the usual override flags.
+    const q = try parseArgv(a, &.{ "tau", "config", "show", "--json", "--provider", "openai" }, .{});
+    try std.testing.expectEqual(Action.config, q.action);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expectEqualStrings("openai", q.config.provider);
+}
+
+test "parse: config show --json and --mode text are mutually exclusive" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const fwd = try parseArgv(a, &.{ "tau", "config", "show", "--json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", fwd.err_msg.?);
+
+    const rev = try parseArgv(a, &.{ "tau", "config", "show", "--mode", "text", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", rev.err_msg.?);
+}
+
+test "parse: --json outside the pinned subcommands is an unknown option" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--json", "hello" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expectEqualStrings("unknown option: --json", p.err_msg.?);
+}
+
 // ── `tau config validate` ────────────────────────────────────────────────────
 
 test "parse: config validate defaults to the resolved config path" {
@@ -1650,6 +1728,33 @@ test "parse: config validate rejects a second positional and unknown flags" {
     const badmode = try parseArgv(a, &.{ "tau", "config", "validate", "--mode", "yaml" }, .{});
     try std.testing.expectEqual(Action.err, badmode.action);
     try std.testing.expect(std.mem.indexOf(u8, badmode.err_msg.?, "invalid --mode") != null);
+}
+
+test "parse: config validate --json forces the stable JSON report" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "validate", "--json" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // A config-file mode:text default does not conflict — only an explicit
+    // flag does.
+    const base = Config{ .mode = .text };
+    const q = try parseArgv(a, &.{ "tau", "config", "validate", "--json" }, base);
+    try std.testing.expectEqual(Action.config, q.action);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, q.config.mode);
+
+    // --json + explicit --mode text is rejected in either order.
+    const fwd = try parseArgv(a, &.{ "tau", "config", "validate", "--json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", fwd.err_msg.?);
+    const rev = try parseArgv(a, &.{ "tau", "config", "validate", "--mode", "text", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", rev.err_msg.?);
 }
 
 // ── `tau doctor` ────────────────────────────────────────────────────────────
@@ -1921,6 +2026,33 @@ test "parse: version rejects unknown arguments and missing values" {
     const bad_mode = try parseArgv(a, &.{ "tau", "version", "--mode", "yaml" }, .{});
     try std.testing.expectEqual(Action.err, bad_mode.action);
     try std.testing.expectEqualStrings("invalid --mode (want text|json): yaml", bad_mode.err_msg.?);
+}
+
+test "parse: version --json selects the stable object output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version", "--json" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+    try std.testing.expect(!p.config.version_verbose);
+    try std.testing.expect(!p.config.version_check);
+
+    // Composes with --verbose/--check.
+    const q = try parseArgv(a, &.{ "tau", "version", "--json", "--verbose", "--check" }, .{});
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expect(q.config.version_verbose);
+    try std.testing.expect(q.config.version_check);
+
+    // --json + explicit --mode text is rejected in either order.
+    const fwd = try parseArgv(a, &.{ "tau", "version", "--json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", fwd.err_msg.?);
+    const rev = try parseArgv(a, &.{ "tau", "version", "--mode", "text", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", rev.err_msg.?);
 }
 
 test "parse: upgrade selects the upgrade action with defaults" {

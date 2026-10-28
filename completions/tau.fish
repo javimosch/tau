@@ -176,6 +176,7 @@ complete -c tau -n $config -f -a unset -d 'remove a config key'
 complete -c tau -n $config -f -a edit -d 'open the config in $EDITOR (validates on save)'
 complete -c tau -n $config -f -a schema -d 'print the config file JSON Schema (draft 2020-12)'
 complete -c tau -n $config -f -l mode -x -a 'text json' -d 'output mode'
+complete -c tau -n $config -f -l json -d 'stable JSON output (show|validate)'
 complete -c tau -n $config -f -l raw -d 'print secret values unredacted (config get)'
 
 # ── tau init / tau doctor / tau setup ───────────────────────────────────────
@@ -228,6 +229,7 @@ complete -c tau -n $bug -f -l api-key -x -d 'diagnose an override API key'
 set -l version '__tau_using_subcommand version'
 complete -c tau -n $version -f -l verbose -d 'include build metadata (commit, target, build date, zig version)'
 complete -c tau -n $version -f -l check -d 'non-blocking update check against the latest release'
+complete -c tau -n $version -f -l json -d 'emit the stable {"name","version",...} object'
 complete -c tau -n $version -f -l mode -x -a 'text json' -d 'output mode'
 
 set -l upgrade '__tau_using_subcommand upgrade'

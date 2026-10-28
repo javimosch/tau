@@ -89,13 +89,13 @@ added; existing fields keep their names, types, and meaning):
 | `tau doctor` report | single-object `{"ok","version","build","checks","summary"}` | [docs/doctor-json.md](doctor-json.md) |
 | `tau doctor --json` | NDJSON check/fix events + terminal `{"ok",...,"done":true}` verdict | [docs/doctor-json.md](doctor-json.md) + [schema/tau-doctor.schema.json](../schema/tau-doctor.schema.json) |
 | `tau config schema` | JSON Schema (draft 2020-12) | [schema/tau-config.schema.json](../schema/tau-config.schema.json) + [docs/config.md](config.md) |
-| `tau config show` | resolved effective config, secrets masked | [docs/configuration.md](configuration.md) |
-| `tau config validate` | `{"path","ok","errors":[{key,message}]}` on stdout; exit 0/1/80 | this file |
+| `tau config show [--json]` | resolved effective config, secrets masked | [schema/tau-config-show.schema.json](../schema/tau-config-show.schema.json) + [docs/configuration.md](configuration.md) |
+| `tau config validate [--json]` | `{"path","ok","errors":[{key,message}]}` on stdout; exit 0/1/80 | [schema/tau-config-validate.schema.json](../schema/tau-config-validate.schema.json) |
 | `tau explain` | `{"errors":[{code,type,recoverable,cause,hint,docs}]}` or one entry | [docs/errors.md](errors.md) |
 | `--help-json` | `{"version","name","description","flags","goal_commands","output_modes","defaults","exit_codes"}` | this file |
 | `tau models` | `{"providers":[{name,default_model,...}]}` | this file |
 | `tau skills list` / `search` | `{"skills":[{name,description}]}` | this file |
-| `tau version` / `--check` | `{"name","version","checked","latest","tag","update_available","update_url"}` | this file |
+| `tau version [--json]` / `--verbose` / `--check` | `{"name","version"}` (+ build fields under `--verbose`, check fields under `--check`) | [schema/tau-version.schema.json](../schema/tau-version.schema.json) |
 | `tau setup` | one NDJSON object per step + terminal verdict (`"dry_run":true` under `--dry-run`, `"yes"`/`"non_interactive"` markers) | this file |
 | `tau bug` | `{"title","labels","url","body","report","url_truncated","out","opened","done":true}`; always exit 0 | this file |
 | `tau upgrade` | JSON step/verdict output; POSIX-only (exit 111 elsewhere) | this file |
@@ -234,7 +234,9 @@ Special rules:
 - `schema/tau-config.schema.json` is byte-compared against
   `tau config schema` output in CI; `schema/tau-doctor.schema.json` is
   validated against real NDJSON streams by
-  `scripts/check-doctor-schema.py`.
+  `scripts/check-doctor-schema.py`; the single-object stdout contracts
+  (`tau-config-show`, `tau-config-validate`, `tau-version`) are validated
+  against real binary output by `scripts/check-cli-schema.py`.
 - `scripts/check-stability-doc.py` keeps this document aligned with the
   shipped catalog, schemas, and docs; the `stability-doc` smoke group
   runs it in CI.

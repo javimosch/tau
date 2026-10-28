@@ -121,7 +121,7 @@ _tau_complete() {
             ;;
 
         config)
-            COMPREPLY=($(compgen -W "show validate set get unset edit schema --mode --raw" -- "$cur"))
+            COMPREPLY=($(compgen -W "show validate set get unset edit schema --mode --raw --json" -- "$cur"))
             ;;
 
         init)
@@ -149,7 +149,7 @@ _tau_complete() {
             ;;
 
         version)
-            COMPREPLY=($(compgen -W "--verbose --check --mode" -- "$cur"))
+            COMPREPLY=($(compgen -W "--verbose --check --json --mode" -- "$cur"))
             ;;
 
         upgrade)

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config-validate.schema.json",
+  "title": "tau config validate report",
+  "description": "Schema for the single JSON object `tau config validate [--json]` prints on stdout (the default under --mode json). The command exits 0 when \"ok\" is true and 1 when it is false, so CI/pre-commit can branch on the exit code or the flag. Validation findings are informational — the set of issue messages may grow; never match on their contents.",
+  "type": "object",
+  "required": ["path", "ok", "errors"],
+  "additionalProperties": false,
+  "properties": {
+    "path": { "type": "string", "description": "The config file that was validated (positional argument or the default ~/.config/tau/config.json)." },
+    "ok": { "type": "boolean", "description": "true when the file parsed and every key passed the schema checks." },
+    "errors": {
+      "type": "array",
+      "description": "Every problem found, in file order. Empty when ok is true.",
+      "items": {
+        "type": "object",
+        "required": ["key", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "key": { "type": ["string", "null"], "description": "The offending config key; null for file-level problems (unreadable file, invalid JSON, non-object top level)." },
+          "message": { "type": "string", "minLength": 1, "description": "Human-readable problem description — informational, may be reworded." }
+        }
+      }
+    }
+  },
+  "examples": [
+    { "path": "/home/agent/.config/tau/config.json", "ok": true, "errors": [] },
+    {
+      "path": "ci/prod.json",
+      "ok": false,
+      "errors": [
+        { "key": "mode", "message": "\"mode\" must be \"text\" or \"json\", got \"yaml\"" },
+        { "key": null, "message": "top level must be a JSON object, got an array" }
+      ]
+    }
+  ]
+}

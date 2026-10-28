@@ -373,7 +373,15 @@ diagnostic; it makes no network calls and never requires an API key.
 ```bash
 tau config show                       # effective config right now
 tau config show --provider openai     # preview overrides without running
+tau config show --json                # explicit opt-in to the stable JSON form
 ```
+
+The output is always JSON; `--json` pins the stable contract explicitly for
+scripts (same spelling as `tau doctor --json`, mutually exclusive with
+`--mode text`). The shape is pinned by
+[schema/tau-config-show.schema.json](../schema/tau-config-show.schema.json) —
+validate a document with
+`python3 scripts/check-cli-schema.py --schema schema/tau-config-show.schema.json out.json`.
 
 Secrets are never printed. The resolved key is masked (`"***"` plus the last
 four characters) and `api_key.source` reports which precedence level supplied
@@ -397,11 +405,16 @@ hooks. With no `path` it validates `~/.config/tau/config.json`.
 ```bash
 tau config validate                    # validate ~/.config/tau/config.json
 tau config validate ci/prod.json       # validate an explicit file
+tau config validate --json             # pin the stable JSON report for scripts
 tau config validate --mode text        # human-readable errors instead of JSON
 ```
 
 The report goes to **stdout** as `{"path":…,"ok":bool,"errors":[{key,message}]}`
 (JSON mode) or one `path: error in "key": message` line per problem (text mode).
+`--json` pins the JSON report even when a `mode: "text"` default is configured
+(mutually exclusive with an explicit `--mode text`); the report shape is pinned
+by
+[schema/tau-config-validate.schema.json](../schema/tau-config-validate.schema.json).
 Exit codes: `0` when the file is valid, `1` when any problem is found, `80` for
 CLI misuse. Every problem is listed at once — unknown keys, wrong value types,
 unknown `provider`/`mode` values, out-of-range numbers (`compact_threshold`

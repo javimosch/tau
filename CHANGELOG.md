@@ -16,6 +16,20 @@ are backward compatible.
 
 ### Added
 
+- **Stable `--json` stdout for `tau config show`, `tau config validate`, and
+  `tau version`** — every command now accepts `--json`, the explicit opt-in
+  to the stable, schema-pinned JSON object form (same spelling as
+  `tau doctor --json`; mutually exclusive with `--mode text`). `tau version
+  --json` upgrades the bare `tau X.Y.Z` line to `{"name","version"}` and
+  composes with `--verbose`/`--check`; `config show`/`validate` already emit
+  JSON, so the flag pins the contract explicitly. Three checked-in draft
+  2020-12 JSON Schemas — `schema/tau-config-show.schema.json`,
+  `schema/tau-config-validate.schema.json`, `schema/tau-version.schema.json`
+  — pin the shapes; the shared `scripts/lib/jsonschema_lite.py` validator
+  (extracted from check-doctor-schema.py) backs the new
+  `scripts/check-cli-schema.py`, and CI + the `cli-schemas` smoke group
+  validate real binary output against them on every leg. Documented in
+  docs/stability.md's contract table (#284)
 - **docs/stability.md** — the public stability and deprecation contract for
   scriptable adoption. It assigns every machine-readable surface a tier
   (stable / informational / internal), pins the `{"err"}` envelope and

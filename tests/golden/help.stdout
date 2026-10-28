@@ -138,8 +138,12 @@ Diagnostics:
 Config:
   tau config show [flags]       Print the resolved effective config as JSON
                               (config file + env + CLI flags merged; API keys redacted)
+      --json                    Explicit opt-in to the stable JSON form
+                              (schema/tau-config-show.schema.json)
   tau config validate [path]    Validate a config file — JSON report on stdout,
                               exit 1 with every problem listed (CI/pre-commit)
+      --json                    Explicit opt-in to the stable JSON report
+                              (schema/tau-config-validate.schema.json)
   tau config set <key> <v> [path]  Schema-checked edit to the config FILE
                                  (keys are <field> or keys.<provider>; creates the file)
   tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
@@ -158,6 +162,9 @@ Version:
       --check                   Non-blocking check for a newer release
                               (always exits 0; opt out via
                               TAU_NO_UPDATE_CHECK)
+      --json                    Emit the stable {"name","version",...}
+                              object even without --verbose
+                              (schema/tau-version.schema.json)
   tau upgrade                 Self-update in place: check the latest
                               release, confirm, then run the release's
                               own verified install.sh (SHA256-checked,
