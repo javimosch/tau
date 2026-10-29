@@ -142,7 +142,8 @@ const help_text =
     \\                              (default: detect from $SHELL; env
     \\                              TAU_SETUP_SHELL)
     \\      --client <name>         Editor ACP client: zed|nvim|vscode|
-    \\                              jetbrains|all (default: detect only; env
+    \\                              jetbrains|windsurf|gemini|claude-desktop|
+    \\                              all (default: detect only; env
     \\                              TAU_SETUP_CLIENT)
     \\      --offline/--deep        Passed through to the doctor step
     \\  -y, --yes                   Unattended: approve all write steps

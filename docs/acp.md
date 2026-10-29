@@ -12,12 +12,15 @@ full agentic tool loop and streams back `session/update` notifications
 `session/prompt` response carrying a `stopReason`.
 
 > **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `jetbrains`,
-> `all`) writes these configs for you during onboarding — a minimal settings
+> `windsurf`, `gemini`, `claude-desktop`, `all`) writes these configs for you
+> during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
-> preserved). Run it without `--client` to see which editors were detected.
+> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop) also get the
+> shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
+> without `--client` to see which editors were detected.
 > [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
-> VS Code, and Neovim, step by step.
+> VS Code, Neovim, and the MCP clients, step by step.
 
 ## Quick start: tau in Zed
 

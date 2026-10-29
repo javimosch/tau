@@ -2106,9 +2106,30 @@ test_group_setup() {
   contains "--client all covers nvim" "$s12_out" '"client":"nvim"'
   contains "--client all covers vscode" "$s12_out" '"client":"vscode"'
   contains "--client all covers jetbrains" "$s12_out" '"client":"jetbrains"'
+  contains "--client all covers windsurf" "$s12_out" '"client":"windsurf"'
+  contains "--client all covers gemini" "$s12_out" '"client":"gemini"'
+  contains "--client all covers claude-desktop" "$s12_out" '"client":"claude-desktop"'
   [ -f "$mock_home10/.config/Code/User/settings.json" ]; ok "vscode settings written" "$?" 0
   grep -q '"acp.agents"' "$mock_home10/.config/Code/User/settings.json"; ok "vscode uses acp.agents key" "$?" 0
   [ -f "$mock_home10/.jetbrains/acp.json" ]; ok "jetbrains acp.json written" "$?" 0
+  [ -f "$mock_home10/.codeium/windsurf/mcp_config.json" ]; ok "windsurf mcp_config.json written" "$?" 0
+  [ -f "$mock_home10/.gemini/settings.json" ]; ok "gemini settings.json written" "$?" 0
+  [ -f "$mock_home10/.config/Claude/claude_desktop_config.json" ]; ok "claude_desktop_config.json written" "$?" 0
+  grep -q '"mcpServers"' "$mock_home10/.gemini/settings.json"; ok "gemini uses mcpServers key" "$?" 0
+  [ -f "$mock_home10/.config/mcacp/mcacp.json" ]; ok "shared mcacp bridge config written" "$?" 0
+  grep -q '"acp", "serve"' "$mock_home10/.config/mcacp/mcacp.json"; ok "mcacp.json wires tau acp serve" "$?" 0
+
+  # An MCP-bridge client reports both halves: the mcpServers entry plus the
+  # shared mcacp.json the bridge reads.
+  local mock_home10b; mock_home10b="$(mktemp -d)"; register_temp_dir "$mock_home10b"
+  capture s12b env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home10b" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client gemini
+  ok "setup --client gemini exits 0" "$s12b_rc" 0
+  contains "gemini step reports installed" "$s12b_out" '"step":"clients","status":"installed"'
+  contains "gemini reports the bridge path" "$s12b_out" '"bridge_path":'
+  contains "gemini bridge reports installed" "$s12b_out" '"bridge_status":"installed"'
+  grep -q '"mcacp"' "$mock_home10b/.gemini/settings.json"; ok "gemini settings names the mcacp server" "$?" 0
+  ! grep -q '"acp"' "$mock_home10b/.gemini/settings.json"; ok "gemini settings never spawn tau directly" "$?" 0
 
   # Without --client the step detects installed editors but writes nothing.
   local mock_home11; mock_home11="$(mktemp -d)"; register_temp_dir "$mock_home11"
@@ -2285,14 +2306,27 @@ test_group_client_examples() {
   # Normalize the embedded absolute command path to "tau" and diff each
   # generated settings file byte-for-byte against the shipped example.
   local spec want
-  for spec in zed vscode jetbrains; do
+  for spec in zed vscode jetbrains mcacp; do
     case "$spec" in
       zed)       want="$h/.config/zed/settings.json" ;;
       vscode)    want="$h/.config/Code/User/settings.json" ;;
       jetbrains) want="$h/.jetbrains/acp.json" ;;
+      mcacp)     want="$h/.config/mcacp/mcacp.json" ;;
     esac
     sed 's|"command": "[^"]*"|"command": "tau"|' "$want" > "$h/norm-$spec.json"
     cmp -s "$h/norm-$spec.json" "$ex/$spec.json"
+    ok "$spec.json matches setup --client output" "$?" 0
+  done
+
+  # MCP-bridge client files carry no tau path — they launch `npx mcacp` — so
+  # they diff byte-for-byte with no normalization.
+  for spec in windsurf gemini claude-desktop; do
+    case "$spec" in
+      windsurf)       want="$h/.codeium/windsurf/mcp_config.json" ;;
+      gemini)         want="$h/.gemini/settings.json" ;;
+      claude-desktop) want="$h/.config/Claude/claude_desktop_config.json" ;;
+    esac
+    cmp -s "$want" "$ex/$spec.json"
     ok "$spec.json matches setup --client output" "$?" 0
   done
 
@@ -2326,16 +2360,19 @@ for p in glob.glob(sys.argv[1] + "/*.json"):
 sys.exit(0 if found >= 3 else 1)' "$ex" 2>/dev/null
   ok "every shipped tau entry uses args [acp serve]" "$?" 0
 
-  # Claude Desktop goes through the mcacp MCP->ACP bridge — both halves of
-  # the wiring must be present and point at `tau acp serve`.
+  # Every MCP client goes through the mcacp MCP->ACP bridge — the shipped
+  # client files must all name the bridge and mcacp.json must point at
+  # `tau acp serve`.
   python3 -c 'import json,sys
-cd = json.load(open(sys.argv[1]))
-mc = json.load(open(sys.argv[2]))
-ok1 = "mcacp" in cd.get("mcpServers", {})
+ok = True
+for p in sys.argv[1:-1]:
+    d = json.load(open(p))
+    ok = ok and "mcacp" in d.get("mcpServers", {})
+mc = json.load(open(sys.argv[-1]))
 tau = mc.get("agent_servers", {}).get("tau", {})
-sys.exit(0 if ok1 and tau.get("args") == ["acp", "serve"] else 1)' \
-    "$ex/claude-desktop.json" "$ex/mcacp.json" 2>/dev/null
-  ok "claude-desktop.json + mcacp.json wire the bridge to tau" "$?" 0
+sys.exit(0 if ok and tau.get("args") == ["acp", "serve"] else 1)' \
+    "$ex/claude-desktop.json" "$ex/windsurf.json" "$ex/gemini.json" "$ex/mcacp.json" 2>/dev/null
+  ok "claude-desktop/windsurf/gemini + mcacp.json wire the bridge to tau" "$?" 0
 }
 
 # Group: Issue #17 goal mode subcommands offline

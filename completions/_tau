@@ -213,7 +213,7 @@ _tau() {
                 setup)
                     _arguments \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
-                        '--client=[editor ACP client]:client:(zed nvim vscode jetbrains all)' \
+                        '--client=[editor ACP client]:client:(zed nvim vscode jetbrains windsurf gemini claude-desktop all)' \
                         '--offline[skip network checks in the doctor step]' \
                         '--deep[run an authenticated probe in the doctor step]' \
                         '(-y --yes)'{-y,--yes}'[unattended: approve all write steps]' \

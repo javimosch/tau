@@ -6,7 +6,9 @@ client's settings path, adjust `"command"` if `tau` is not on the `PATH` the
 client sees, and restart the client.
 
 `tau setup --client` writes these same files for you (`zed`, `vscode`,
-`jetbrains`, `all`; `nvim` gets a paste-ready Lua snippet instead):
+`jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `all`; `nvim` gets a
+paste-ready Lua snippet instead). MCP-only clients also get the shared
+bridge config `~/.config/mcacp/mcacp.json` written in the same pass:
 
 ```bash
 tau setup --client zed --yes     # writes ~/.config/zed/settings.json
@@ -27,6 +29,8 @@ normalized to `tau`), validates the tau config that setup writes with
 | `vscode.json` | VS Code + [ACP Client](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) extension | `~/.config/Code/User/settings.json` (Linux), `~/Library/Application Support/Code/User/settings.json` (macOS), `%APPDATA%\Code\User\settings.json` (Windows) |
 | `cursor.json` | [Cursor](https://cursor.com) + the same ACP Client extension from Open VSX | `~/.config/Cursor/User/settings.json` (Linux), `~/Library/Application Support/Cursor/User/settings.json` (macOS), `%APPDATA%\Cursor\User\settings.json` (Windows) |
 | `jetbrains.json` | JetBrains IDEs (AI Assistant 2025.1+) | `~/.jetbrains/acp.json` |
+| `windsurf.json` + `mcacp.json` | [Windsurf](https://windsurf.com) via the [mcacp](https://github.com/Oortonaut/mcacp) MCP↔ACP bridge | `~/.codeium/windsurf/mcp_config.json` + `~/.config/mcacp/mcacp.json` |
+| `gemini.json` + `mcacp.json` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) via the same mcacp bridge | `~/.gemini/settings.json` + `~/.config/mcacp/mcacp.json` |
 | `claude-desktop.json` + `mcacp.json` | Claude Desktop via the [mcacp](https://github.com/Oortonaut/mcacp) MCP↔ACP bridge | `claude_desktop_config.json` (`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows) + `~/.config/mcacp/mcacp.json` |
 
 If the target file already exists, merge the `"tau"` entry into the existing
@@ -48,22 +52,26 @@ existing settings file and drops a paste-ready snippet in
 3. **tau never needs editing in the client file beyond that.** One entry,
    three fields, done.
 
-## Claude Desktop is a bridge, not a direct connection
+## MCP clients are a bridge, not a direct connection
 
-Claude Desktop speaks MCP, not ACP — it can't spawn `tau acp serve` directly.
+Windsurf, Gemini CLI, and Claude Desktop speak MCP, not ACP — they can't
+spawn `tau acp serve` directly.
 The [mcacp](https://github.com/Oortonaut/mcacp) bridge sits in the middle:
 
 ```
-Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+Windsurf / Gemini CLI / Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
 ```
 
-1. Merge `claude-desktop.json` into `claude_desktop_config.json` (adds the
-   `mcacp` MCP server, launched with `npx`).
+1. Merge the client's file into its settings path (`windsurf.json`,
+   `gemini.json`, or `claude-desktop.json`) — each adds the `mcacp` MCP
+   server, launched with `npx`.
 2. Copy `mcacp.json` to `~/.config/mcacp/mcacp.json` — this is where the
    bridge learns that `tau` means `tau acp serve`. The `agent_servers` shape
-   matches Zed/JetBrains, so the same entry can be copied between them.
-3. Restart Claude Desktop, then ask it to use the tau agent — mcacp exposes
-   session/prompt tools that spawn and drive tau.
+   matches Zed/JetBrains, so the same entry can be copied between them. One
+   file serves every MCP client at once.
+3. Restart the client: Windsurf lists `mcacp` under Settings > MCP servers,
+   Gemini CLI shows its tools under `/mcp`, and Claude Desktop exposes the
+   tau agent under the mcacp server's tools.
 
 Other MCP↔ACP bridges (e.g.
 [`@theorionic/mcp-acp-bridge`](https://github.com/theorionic/mcp-acp-bridge))
