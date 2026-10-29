@@ -16,6 +16,21 @@ are backward compatible.
 
 ### Added
 
+- **`tau setup --client` support for MCP clients: Windsurf, Gemini CLI, and
+  Claude Desktop** — these clients speak MCP, not ACP, so setup wires them
+  through the [mcacp](https://github.com/Oortonaut/mcacp) MCP→ACP bridge and
+  writes two files in one pass: a `mcpServers.mcacp` entry in the client's
+  own settings file (`~/.codeium/windsurf/mcp_config.json`,
+  `~/.gemini/settings.json`, `~/.config/Claude/claude_desktop_config.json`)
+  plus the shared `~/.config/mcacp/mcacp.json` that carries the real
+  `agent_servers.tau` entry (one file serves every MCP client). Step entries
+  report both halves (`bridge_path`/`bridge_status`/`bridge_snippet_path`);
+  `tau doctor` classifies the pair as one `client_<name>` row with new
+  `wire_client_*` `--fix` remediations, and `--client all` covers all seven
+  supported clients. `examples/clients/` ships `windsurf.json`,
+  `gemini.json`, and the existing `claude-desktop.json`/`mcacp.json`, all
+  byte-locked against `tau setup --client --yes` output by the
+  `client-examples` smoke group (#292)
 - **Stable `--json` stdout for `tau config show`, `tau config validate`, and
   `tau version`** — every command now accepts `--json`, the explicit opt-in
   to the stable, schema-pinned JSON object form (same spelling as
@@ -65,6 +80,12 @@ are backward compatible.
   binary's absolute path, while an existing file is never rewritten — the
   same paste-ready snippet `tau setup --client` emits lands in
   `~/.config/tau/snippets/` for a manual merge (#278)
+- `examples/clients/` — runnable editor/desktop config files that wire a
+  client to `tau acp serve`: Zed, VS Code, JetBrains (byte-identical to what
+  `tau setup --client <name> --yes` writes, verified in the `client-examples`
+  smoke group), Cursor (same `acp.agents` shape via the Open VSX extension),
+  and Claude Desktop via the mcacp MCP↔ACP bridge; the same group runs
+  `tau config validate` on the config `tau setup` writes (#253)
 - Error envelopes now carry a trailing `explain`/`catalog` footer —
   `"explain":"tau explain <code>"` is a ready-to-run command agents can exec
   verbatim, and `"catalog"` links to the generated

@@ -209,6 +209,12 @@ def parse_setup(src):
         clients.setdefault(k, {})["needs_type_custom"] = '"type": "custom"' in arm
         clients[k]["acp_serve_args"] = '"args": ["acp", "serve"]' in arm
 
+    # clientUsesBridge: `.a, .b, .c => true,` — MCP-bridge clients.
+    raw, cln = fn_body(src, clean, "clientUsesBridge", "src/setup.zig")
+    for k, arm in switch_arms(raw, cln, "clientUsesBridge").items():
+        rhs = arm.split("=>", 1)[1].strip()
+        clients.setdefault(k, {})["bridge"] = rhs.startswith("true")
+
     # inspectClientWiring: `if (k == .X) return .{ .state = .manual_only }`.
     raw, _ = fn_body(src, clean, "inspectClientWiring", "src/setup.zig")
     for k, state in re.findall(
@@ -301,7 +307,8 @@ def render(members, clients, fixes, version, acp_since):
         else:
             fix = fixes.get(k)
             doctor = f"`client_{k}`" + (f" / `{fix}`" if fix else "")
-        a(f"| `{k}` | {cli} | `{c['config_dir']}` | {settings} | {section} | {extra} | {snippet} | {doctor} |")
+        client_cell = f"`{k}`" + (" (mcacp)" if c.get("bridge") else "")
+        a(f"| {client_cell} | {cli} | `{c['config_dir']}` | {settings} | {section} | {extra} | {snippet} | {doctor} |")
     a("")
     a("`tau setup --client all` expands to every row. Detection (setup with no")
     a("`--client`, or `tau doctor`) only *reports* clients whose config dir")
@@ -309,8 +316,8 @@ def render(members, clients, fixes, version, acp_since):
     a("")
     a("## Config formats")
     a("")
-    a("Every JSON client's `tau` entry spawns the same process — the editor")
-    a("runs `command` + `args`, and `args` must be exactly")
+    a("Every direct-ACP JSON client's `tau` entry spawns the same process —")
+    a("the editor runs `command` + `args`, and `args` must be exactly")
     a("`[\"acp\", \"serve\"]` (anything else is flagged stale by `tau doctor`):")
     a("")
     a("```jsonc")
@@ -323,9 +330,32 @@ def render(members, clients, fixes, version, acp_since):
     a("}")
     a("```")
     a("")
+    bridge_clients = [k for k in members if clients[k].get("bridge")]
+    if bridge_clients:
+        names = ", ".join(f"`{k}`" for k in bridge_clients)
+        a("MCP-bridge clients (" + names + ") speak MCP, not ACP — they can't")
+        a("spawn `tau acp serve` directly. Their `mcpServers` entry launches")
+        a("the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:")
+        a("")
+        a("```jsonc")
+        a('"mcpServers": {')
+        a('  "mcacp": {')
+        a('    "command": "npx",')
+        a('    "args": ["-y", "mcacp"]')
+        a("  }")
+        a("}")
+        a("```")
+        a("")
+        a("`tau setup --client` writes the matching bridge config too —")
+        a("`~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau`")
+        a("entry in the direct-ACP shape above (one file, shared by every")
+        a("bridge client; `tau doctor` checks both halves).")
+        a("")
     a("| File | Format |")
     a("|------|--------|")
     a("| Client settings files (matrix above) | JSONC — `//` and `/* */` comments are tolerated and preserved: existing files are never rewritten, setup emits a paste-ready snippet instead |")
+    if bridge_clients:
+        a("| `~/.config/mcacp/mcacp.json` | JSONC — the mcacp MCP→ACP bridge's `agent_servers.tau` entry, shared by every bridge client |")
     a("| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim) |")
     a("| `~/.config/tau/config.json` | JSONC — see [docs/config.md](config.md) and `schema/tau-config.schema.json` |")
     a("")
@@ -367,7 +397,7 @@ def main():
         if clients[k].get("settings"):
             if "section" not in clients[k]:
                 fail(f"client '{k}' has a settings file but no section key")
-            if not clients[k].get("acp_serve_args"):
+            if not clients[k].get("bridge") and not clients[k].get("acp_serve_args"):
                 fail(f"client '{k}' minimal entry doesn't pin args [\"acp\", \"serve\"]")
     fixes = parse_doctor(DOCTOR_ZIG.read_text())
     version = parse_version(VERSION_ZIG.read_text())

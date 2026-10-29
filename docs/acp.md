@@ -12,12 +12,15 @@ full agentic tool loop and streams back `session/update` notifications
 `session/prompt` response carrying a `stopReason`.
 
 > **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `jetbrains`,
-> `all`) writes these configs for you during onboarding — a minimal settings
+> `windsurf`, `gemini`, `claude-desktop`, `all`) writes these configs for you
+> during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
-> preserved). Run it without `--client` to see which editors were detected.
+> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop) also get the
+> shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
+> without `--client` to see which editors were detected.
 > [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
-> VS Code, and Neovim, step by step.
+> VS Code, Neovim, and the MCP clients, step by step.
 
 ## Quick start: tau in Zed
 
@@ -72,6 +75,10 @@ If `tau` is not on `PATH` inside Zed's spawn environment, use the absolute path:
 > `TAU_API_KEY`, `TAU_ENDPOINT`, or a provider key for the spawned process.
 
 ## Editor integrations
+
+Ready-to-paste settings files for the clients below live in
+[`examples/clients/`](../examples/clients/README.md) — `tau setup --client`
+writes the same files automatically.
 
 Every client below does the same thing under the hood: spawn `tau acp serve`
 and speak JSON-RPC over stdio. Only the config file format differs. In all
@@ -240,6 +247,78 @@ toad acp "tau acp serve" .
 ```
 
 The trailing `.` sets the agent's working directory to the project root.
+
+### Cursor
+
+Cursor doesn't host ACP agents natively, but it is VS Code-compatible — the
+same [ACP Client](https://open-vsx.org/extension/formulahendry/acp-client)
+extension from the Open VSX registry adds ACP support, and the config shape is
+identical to VS Code's (`acp.agents`). Merge the `tau` entry into Cursor's
+`settings.json` (`~/.config/Cursor/User/settings.json` on Linux,
+`~/Library/Application Support/Cursor/User/settings.json` on macOS,
+`%APPDATA%\Cursor\User\settings.json` on Windows):
+
+```json
+{
+  "acp.agents": {
+    "tau": {
+      "command": "tau",
+      "args": ["acp", "serve"],
+      "env": {}
+    }
+  }
+}
+```
+
+`tau setup --client` doesn't target Cursor directly yet — the entry above is
+[`examples/clients/cursor.json`](../examples/clients/cursor.json).
+
+### Claude Desktop (via an MCP↔ACP bridge)
+
+Claude Desktop speaks MCP, not ACP, so it can't spawn `tau acp serve`
+directly. An MCP↔ACP bridge such as [mcacp](https://github.com/Oortonaut/mcacp)
+sits in the middle — Claude Desktop launches the bridge as an MCP server, and
+the bridge spawns and drives tau as an ACP agent:
+
+```
+Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+```
+
+1. Add the bridge to `claude_desktop_config.json`
+   (`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on
+   Windows):
+
+   ```json
+   {
+     "mcpServers": {
+       "mcacp": {
+         "command": "npx",
+         "args": ["-y", "mcacp"]
+       }
+     }
+   }
+   ```
+
+2. Declare tau to the bridge in `~/.config/mcacp/mcacp.json` — the
+   `agent_servers` shape matches Zed/JetBrains:
+
+   ```json
+   {
+     "agent_servers": {
+       "tau": {
+         "command": "tau",
+         "args": ["acp", "serve"],
+         "env": {}
+       }
+     }
+   }
+   ```
+
+3. Restart Claude Desktop and ask it to use the tau agent — mcacp's
+   session/prompt tools spawn `tau acp serve` and stream the exchange.
+
+Both files ship as [`examples/clients/claude-desktop.json`](../examples/clients/claude-desktop.json)
+and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json).
 
 ## Other ACP clients
 

@@ -202,7 +202,7 @@ complete -c tau -n $doctor -f -l api-key -x -d 'diagnose an override API key'
 
 set -l setup '__tau_using_subcommand setup'
 complete -c tau -n $setup -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
-complete -c tau -n $setup -f -l client -x -a 'zed nvim vscode jetbrains all' -d 'configure editor ACP client'
+complete -c tau -n $setup -f -l client -x -a 'zed nvim vscode jetbrains windsurf gemini claude-desktop all' -d 'configure editor ACP client'
 complete -c tau -n $setup -f -l offline -d 'skip network checks in the doctor step'
 complete -c tau -n $setup -f -l deep -d 'run an authenticated probe in the doctor step'
 complete -c tau -n $setup -f -s y -l yes -d 'unattended: approve all write steps'

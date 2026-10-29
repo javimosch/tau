@@ -65,6 +65,12 @@ pub const FixKind = enum {
     wire_client_vscode,
     /// Same for JetBrains IDEs (`agent_servers` in acp.json).
     wire_client_jetbrains,
+    /// Same for Windsurf (`mcpServers` in mcp_config.json via the mcacp bridge).
+    wire_client_windsurf,
+    /// Same for Gemini CLI (`mcpServers` in ~/.gemini/settings.json via mcacp).
+    wire_client_gemini,
+    /// Same for Claude Desktop (`mcpServers` in claude_desktop_config.json via mcacp).
+    wire_client_claude_desktop,
 };
 
 pub const Check = struct {
@@ -503,10 +509,19 @@ fn checkCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std
 }
 
 /// Check-name prefix for the per-client rows: `client_zed`, `client_nvim`,
-/// `client_vscode`, `client_jetbrains`. A single `client_wiring` skip row
+/// `client_vscode`, `client_jetbrains`. Hyphens in client names become
+/// underscores so check names stay identifier-shaped
+/// (`client_claude_desktop`). A single `client_wiring` skip row
 /// stands in when HOME is unset or no editor config dir is detected.
 fn clientCheckName(arena: std.mem.Allocator, k: setup.ClientKind) []const u8 {
-    return std.fmt.allocPrint(arena, "client_{s}", .{setup.clientName(k)}) catch "client_?";
+    const raw = setup.clientName(k);
+    var name: [64]u8 = undefined;
+    if (raw.len >= name.len) return "client_?";
+    @memcpy(name[0..raw.len], raw);
+    for (name[0..raw.len]) |*c| {
+        if (c.* == '-') c.* = '_';
+    }
+    return std.fmt.allocPrint(arena, "client_{s}", .{name[0..raw.len]}) catch "client_?";
 }
 
 /// The per-client FixKind, or null for nvim (Lua config — manual only).
@@ -515,6 +530,9 @@ fn clientFixKind(k: setup.ClientKind) ?FixKind {
         .zed => .wire_client_zed,
         .vscode => .wire_client_vscode,
         .jetbrains => .wire_client_jetbrains,
+        .windsurf => .wire_client_windsurf,
+        .gemini => .wire_client_gemini,
+        .claude_desktop => .wire_client_claude_desktop,
         .nvim => null,
     };
 }
@@ -587,7 +605,7 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
         try list.append(arena, .{ .name = "client_wiring", .status = .skip, .message = "skipped (HOME is not set)" });
         return list.toOwnedSlice(arena);
     };
-    for ([_]setup.ClientKind{ .zed, .nvim, .vscode, .jetbrains }) |k| {
+    for (setup.all_clients) |k| {
         const w = setup.inspectClientWiring(io, arena, home, k) catch |err| {
             try list.append(arena, .{
                 .name = clientCheckName(arena, k),
@@ -604,7 +622,7 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
             .name = "client_wiring",
             .status = .skip,
             .message = "no supported editor config dirs detected",
-            .hint = "run 'tau setup --client zed|nvim|vscode|jetbrains|all' to wire 'tau acp serve' into an installed editor",
+            .hint = "run 'tau setup --client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all' to wire 'tau acp serve' into an installed editor",
         });
     return list.toOwnedSlice(arena);
 }
@@ -1285,6 +1303,9 @@ fn fixDescription(k: FixKind) []const u8 {
         .wire_client_zed => "wire tau into Zed settings (minimal file, or paste-ready snippet)",
         .wire_client_vscode => "wire tau into VS Code settings (minimal file, or paste-ready snippet)",
         .wire_client_jetbrains => "wire tau into JetBrains acp.json (minimal file, or paste-ready snippet)",
+        .wire_client_windsurf => "wire tau into Windsurf via the mcacp bridge (minimal file, or paste-ready snippet)",
+        .wire_client_gemini => "wire tau into Gemini CLI via the mcacp bridge (minimal file, or paste-ready snippet)",
+        .wire_client_claude_desktop => "wire tau into Claude Desktop via the mcacp bridge (minimal file, or paste-ready snippet)",
     };
 }
 
@@ -1370,12 +1391,16 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             }
             break :blk std.fmt.allocPrint(arena, "installed completions for {s}", .{names.items}) catch "installed completions";
         },
-        .wire_client_zed, .wire_client_vscode, .wire_client_jetbrains => blk: {
+        .wire_client_zed, .wire_client_vscode, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop => blk: {
             const home = env.get("HOME") orelse break :blk error.HomeUnset;
             const ck: setup.ClientKind = switch (pf.kind) {
                 .wire_client_zed => .zed,
                 .wire_client_vscode => .vscode,
-                else => .jetbrains,
+                .wire_client_jetbrains => .jetbrains,
+                .wire_client_windsurf => .windsurf,
+                .wire_client_gemini => .gemini,
+                .wire_client_claude_desktop => .claude_desktop,
+                else => unreachable,
             };
             // Same convention as `tau setup --client`: pin the absolute path
             // of this binary so the editor's spawn env can't miss it.

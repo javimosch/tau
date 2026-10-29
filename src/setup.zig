@@ -423,7 +423,11 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 // --- Step 3: editor ACP clients --------------------------------------------
 
 /// Editor clients setup can configure to spawn `tau acp serve`.
-pub const ClientKind = enum { zed, nvim, vscode, jetbrains };
+pub const ClientKind = enum { zed, nvim, vscode, jetbrains, windsurf, gemini, claude_desktop };
+
+/// Every ClientKind, in the order `--client all` expands and detection
+/// iterates: direct ACP clients first, then the MCP-bridge clients.
+pub const all_clients = [_]ClientKind{ .zed, .nvim, .vscode, .jetbrains, .windsurf, .gemini, .claude_desktop };
 
 pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
@@ -431,17 +435,40 @@ pub fn clientName(k: ClientKind) []const u8 {
         .nvim => "nvim",
         .vscode => "vscode",
         .jetbrains => "jetbrains",
+        .windsurf => "windsurf",
+        .gemini => "gemini",
+        .claude_desktop => "claude-desktop",
     };
 }
 
 /// Map a client name (as passed to --client) to a ClientKind. "code" is an
-/// alias for vscode.
+/// alias for vscode, "gemini-cli" for gemini, "claude" for claude-desktop.
 pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "zed")) return .zed;
     if (std.mem.eql(u8, name, "nvim")) return .nvim;
     if (std.mem.eql(u8, name, "vscode") or std.mem.eql(u8, name, "code")) return .vscode;
     if (std.mem.eql(u8, name, "jetbrains")) return .jetbrains;
+    if (std.mem.eql(u8, name, "windsurf")) return .windsurf;
+    if (std.mem.eql(u8, name, "gemini") or std.mem.eql(u8, name, "gemini-cli")) return .gemini;
+    if (std.mem.eql(u8, name, "claude-desktop") or std.mem.eql(u8, name, "claude")) return .claude_desktop;
     return null;
+}
+
+/// Clients that can't spawn `tau acp serve` directly — they speak MCP, not
+/// ACP — so setup wires them to the mcacp MCP→ACP bridge instead. Their
+/// settings entry launches the bridge (`npx mcacp`); the bridge's own
+/// config (~/.config/mcacp/mcacp.json) carries the real tau agent entry.
+pub fn clientUsesBridge(k: ClientKind) bool {
+    return switch (k) {
+        .windsurf, .gemini, .claude_desktop => true,
+        else => false,
+    };
+}
+
+/// The object key the client's agent section must carry — "tau" for direct
+/// ACP clients, "mcacp" (the bridge server name) for MCP-bridge clients.
+fn clientEntryName(k: ClientKind) []const u8 {
+    return if (clientUsesBridge(k)) "mcacp" else "tau";
 }
 
 /// The JSON/JSONC settings file that carries the client config, or null for
@@ -452,6 +479,9 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
         .zed => try std.fmt.allocPrint(arena, "{s}/.config/zed/settings.json", .{home}),
         .vscode => try std.fmt.allocPrint(arena, "{s}/.config/Code/User/settings.json", .{home}),
         .jetbrains => try std.fmt.allocPrint(arena, "{s}/.jetbrains/acp.json", .{home}),
+        .windsurf => try std.fmt.allocPrint(arena, "{s}/.codeium/windsurf/mcp_config.json", .{home}),
+        .gemini => try std.fmt.allocPrint(arena, "{s}/.gemini/settings.json", .{home}),
+        .claude_desktop => try std.fmt.allocPrint(arena, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
         .nvim => null,
     };
 }
@@ -463,15 +493,21 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
         .zed => std.fmt.allocPrint(arena, "{s}/.config/zed", .{home}),
         .vscode => std.fmt.allocPrint(arena, "{s}/.config/Code", .{home}),
         .jetbrains => std.fmt.allocPrint(arena, "{s}/.jetbrains", .{home}),
+        .windsurf => std.fmt.allocPrint(arena, "{s}/.codeium/windsurf", .{home}),
+        .gemini => std.fmt.allocPrint(arena, "{s}/.gemini", .{home}),
+        .claude_desktop => std.fmt.allocPrint(arena, "{s}/.config/Claude", .{home}),
         .nvim => std.fmt.allocPrint(arena, "{s}/.config/nvim", .{home}),
     };
 }
 
-/// The settings key that holds named ACP agent entries per client.
+/// The settings key that holds named agent/server entries per client —
+/// "mcpServers" for the MCP-bridge clients (the entry launches the bridge,
+/// not tau itself).
 fn clientSectionKey(k: ClientKind) []const u8 {
     return switch (k) {
         .zed, .jetbrains => "agent_servers",
         .vscode => "acp.agents",
+        .windsurf, .gemini, .claude_desktop => "mcpServers",
         .nvim => unreachable,
     };
 }
@@ -483,8 +519,17 @@ fn clientNextStep(k: ClientKind) []const u8 {
         .zed => "open the Agent Panel, click +, and pick tau",
         .vscode => "install the ACP Client extension, run 'ACP: Connect to Agent', pick tau",
         .jetbrains => "open the AI Chat tool window and pick tau in the agent selector",
+        .windsurf => "install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers",
+        .gemini => "install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools",
+        .claude_desktop => "install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server",
         .nvim => "pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)",
     };
+}
+
+/// The mcacp bridge's own config — shared by every MCP-bridge client. One
+/// file, one `agent_servers.tau` entry pointing at `tau acp serve`.
+pub fn mcacpConfigPath(arena: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fmt.allocPrint(arena, "{s}/.config/mcacp/mcacp.json", .{home});
 }
 
 /// Where a paste-ready snippet goes when setup can't (or must not) edit the
@@ -492,6 +537,12 @@ fn clientNextStep(k: ClientKind) []const u8 {
 fn snippetPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 {
     const ext: []const u8 = if (k == .nvim) "lua" else "jsonc";
     return std.fmt.allocPrint(arena, "{s}/.config/tau/snippets/{s}.{s}", .{ home, clientName(k), ext });
+}
+
+/// Where the mcacp bridge-side snippet lands when the existing mcacp.json
+/// can't be touched: ~/.config/tau/snippets/mcacp.jsonc.
+fn mcacpSnippetPath(arena: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fmt.allocPrint(arena, "{s}/.config/tau/snippets/mcacp.jsonc", .{home});
 }
 
 fn dirExists(io: std.Io, path: []const u8) bool {
@@ -543,13 +594,60 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
             \\}}
             \\
         , .{cmd}),
+        // MCP-bridge clients launch the mcacp bridge, never tau directly —
+        // their file carries no tau command path at all.
+        .windsurf, .gemini, .claude_desktop => std.fmt.allocPrint(arena,
+            \\{{
+            \\  "mcpServers": {{
+            \\    "mcacp": {{
+            \\      "command": "npx",
+            \\      "args": ["-y", "mcacp"]
+            \\    }}
+            \\  }}
+            \\}}
+            \\
+        , .{}),
         .nvim => unreachable,
     };
+}
+
+/// Full ~/.config/mcacp/mcacp.json when absent — the bridge's agent_servers
+/// section carries the real tau entry (same shape as JetBrains: no type).
+fn renderMcacpJson(arena: std.mem.Allocator, command: []const u8) ![]u8 {
+    var esc: std.ArrayList(u8) = .empty;
+    try json.escapeInto(arena, &esc, command);
+    return std.fmt.allocPrint(arena,
+        \\{{
+        \\  "agent_servers": {{
+        \\    "tau": {{
+        \\      "command": "{s}",
+        \\      "args": ["acp", "serve"],
+        \\      "env": {{}}
+        \\    }}
+        \\  }}
+        \\}}
+        \\
+    , .{esc.items});
 }
 
 /// The JSONC fragment a user pastes into an existing settings file. Not a
 /// whole document — it splices into the top-level object by hand.
 fn renderClientSnippet(arena: std.mem.Allocator, k: ClientKind, command: []const u8) ![]u8 {
+    if (clientUsesBridge(k)) {
+        return std.fmt.allocPrint(arena,
+            \\// tau via the mcacp MCP->ACP bridge — merge into your {s} settings file.
+            \\// If a top-level "mcpServers" object already exists, add just the
+            \\// inner "mcacp" entry to it; otherwise add the whole block. The
+            \\// bridge itself is configured separately — see snippets/mcacp.jsonc.
+            \\"mcpServers": {{
+            \\  "mcacp": {{
+            \\    "command": "npx",
+            \\    "args": ["-y", "mcacp"]
+            \\  }}
+            \\}}
+            \\
+        , .{clientName(k)});
+    }
     var esc: std.ArrayList(u8) = .empty;
     try json.escapeInto(arena, &esc, command);
     // Zed's agent_servers entries require "type": "custom"; the other
@@ -569,6 +667,26 @@ fn renderClientSnippet(arena: std.mem.Allocator, k: ClientKind, command: []const
         \\}}
         \\
     , .{ clientName(k), section, section, type_line, esc.items });
+}
+
+/// The paste-ready fragment for an existing ~/.config/mcacp/mcacp.json that
+/// lacks the tau entry — the bridge half of every MCP-client wiring.
+fn renderMcacpSnippet(arena: std.mem.Allocator, command: []const u8) ![]u8 {
+    var esc: std.ArrayList(u8) = .empty;
+    try json.escapeInto(arena, &esc, command);
+    return std.fmt.allocPrint(arena,
+        \\// tau ACP agent for the mcacp bridge — merge into mcacp.json.
+        \\// If a top-level "agent_servers" object already exists, add just the
+        \\// inner "tau" entry to it; otherwise add the whole block.
+        \\"agent_servers": {{
+        \\  "tau": {{
+        \\    "command": "{s}",
+        \\    "args": ["acp", "serve"],
+        \\    "env": {{}}
+        \\  }}
+        \\}}
+        \\
+    , .{esc.items});
 }
 
 /// The ready-to-paste Lua for Neovim ACP plugins (avante.nvim and
@@ -632,22 +750,33 @@ fn renderNvimSnippet(arena: std.mem.Allocator, command: []const u8) ![]u8 {
     , .{ command, command });
 }
 
-/// Whether existing settings text already carries a "tau" entry in the
-/// client's agent section. Returns null when the file can't be parsed —
-/// setup then reports the client as "manual" instead of guessing. JSONC
-/// comments are stripped first; trailing commas still fail the parse.
-fn hasTauEntry(arena: std.mem.Allocator, k: ClientKind, bytes: []const u8) ?bool {
+/// Whether existing settings text carries `entry` inside the object at
+/// `section_key`. Returns null when the file can't be parsed — callers then
+/// report "manual" instead of guessing. JSONC comments are stripped first;
+/// trailing commas still fail the parse.
+fn sectionHasEntry(arena: std.mem.Allocator, section_key: []const u8, entry: []const u8, bytes: []const u8) ?bool {
     const stripped = configfile.stripComments(arena, bytes) catch return null;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch return null;
     const section = switch (parsed) {
-        .object => |o| o.get(clientSectionKey(k)) orelse return false,
+        .object => |o| o.get(section_key) orelse return false,
         else => return false,
     };
     const agents = switch (section) {
         .object => |o| o,
         else => return false,
     };
-    return agents.get("tau") != null;
+    return agents.get(entry) != null;
+}
+
+/// Whether existing settings text already carries a "tau" entry in the
+/// client's agent section ("mcacp" in mcpServers for bridge clients).
+fn hasTauEntry(arena: std.mem.Allocator, k: ClientKind, bytes: []const u8) ?bool {
+    return sectionHasEntry(arena, clientSectionKey(k), clientEntryName(k), bytes);
+}
+
+/// Whether existing mcacp.json text already wires tau into the bridge.
+fn bridgeHasTau(arena: std.mem.Allocator, bytes: []const u8) ?bool {
+    return sectionHasEntry(arena, "agent_servers", "tau", bytes);
 }
 
 /// How one client's `tau acp serve` wiring looks to `tau doctor`. nvim
@@ -714,7 +843,7 @@ pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u
         if (parsed != .object) break :blk null;
         const section = parsed.object.get(clientSectionKey(k)) orelse break :blk null;
         if (section != .object) break :blk null;
-        const e = section.object.get("tau") orelse break :blk null;
+        const e = section.object.get(clientEntryName(k)) orelse break :blk null;
         break :blk switch (e) {
             .object => |o| o,
             else => null,
@@ -722,24 +851,21 @@ pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u
     };
     const e = entry orelse return .{ .state = .no_entry, .path = path };
 
-    const cmd = e.get("command");
-    if (cmd == null or cmd.? != .string)
-        return .{ .state = .stale, .path = path, .reason = "the \"tau\" entry has no \"command\" string" };
-    const command = cmd.?.string;
-    // A wired command that names a filesystem path must resolve — a moved or
-    // reinstalled binary is the classic stale wiring. Other stat failures are
-    // undeterminable offline, so they don't warn.
-    if (std.mem.indexOfScalar(u8, command, '/') != null) {
-        if (std.Io.Dir.cwd().statFile(io, command, .{})) |st| {
-            if (st.kind == .directory)
-                return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "wired command is a directory: {s}", .{command}) };
-        } else |err| switch (err) {
-            error.FileNotFound => return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "wired command does not exist: {s}", .{command}) },
-            else => {},
-        }
+    if (clientUsesBridge(k)) {
+        // The client-side entry launches the bridge, not tau — a command
+        // string plus an args array is the whole contract. Keep it loose:
+        // `npx`, a global `mcacp` binary, and containerized runs all work.
+        const bcmd = e.get("command");
+        if (bcmd == null or bcmd.? != .string)
+            return .{ .state = .stale, .path = path, .reason = "the \"mcacp\" entry has no \"command\" string" };
+        const barg = e.get("args");
+        if (barg == null or barg.? != .array)
+            return .{ .state = .stale, .path = path, .reason = "the \"mcacp\" entry has no \"args\" array" };
+        return inspectBridgeWiring(io, arena, home, path);
     }
-    if (!acpServeArgs(e))
-        return .{ .state = .stale, .path = path, .reason = "the \"tau\" entry args are not [\"acp\", \"serve\"]" };
+
+    if (try tauEntryStaleReason(io, arena, e)) |reason|
+        return .{ .state = .stale, .path = path, .reason = reason };
     if (k == .zed) {
         const t = e.get("type");
         if (t == null or t.? != .string or !std.mem.eql(u8, t.?.string, "custom"))
@@ -748,30 +874,196 @@ pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u
     return .{ .state = .ok, .path = path };
 }
 
+/// Staleness checks every wired tau entry must pass — shared by direct
+/// client settings entries and the mcacp bridge's agent_servers.tau. A wired
+/// command that names a filesystem path must resolve (a moved or reinstalled
+/// binary is the classic stale wiring; other stat failures are
+/// undeterminable offline so they don't warn), and args must be exactly
+/// ["acp","serve"]. A bare "tau" command can't be disproved offline. Returns
+/// the stale reason, or null when the entry looks sane.
+fn tauEntryStaleReason(io: std.Io, arena: std.mem.Allocator, e: std.json.ObjectMap) !?[]const u8 {
+    const cmd = e.get("command");
+    if (cmd == null or cmd.? != .string)
+        return "the \"tau\" entry has no \"command\" string";
+    const command = cmd.?.string;
+    if (std.mem.indexOfScalar(u8, command, '/') != null) {
+        if (std.Io.Dir.cwd().statFile(io, command, .{})) |st| {
+            if (st.kind == .directory)
+                return try std.fmt.allocPrint(arena, "wired command is a directory: {s}", .{command});
+        } else |err| switch (err) {
+            error.FileNotFound => return try std.fmt.allocPrint(arena, "wired command does not exist: {s}", .{command}),
+            else => {},
+        }
+    }
+    if (!acpServeArgs(e))
+        return "the \"tau\" entry args are not [\"acp\", \"serve\"]";
+    return null;
+}
+
+/// The bridge half of an MCP client's wiring: ~/.config/mcacp/mcacp.json
+/// must exist, parse, and carry a sane agent_servers.tau entry. The client
+/// file was already classified — any bridge-side defect reports .stale
+/// against the client's settings path, and the reason names the bridge file.
+fn inspectBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, path: []const u8) !ClientWiring {
+    const bpath = try mcacpConfigPath(arena, home);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, bpath, arena, .unlimited) catch |err| {
+        const detail = if (err == error.FileNotFound)
+            try std.fmt.allocPrint(arena, "mcacp bridge config missing: {s}", .{bpath})
+        else
+            try std.fmt.allocPrint(arena, "could not read mcacp bridge config {s}: {s}", .{ bpath, @errorName(err) });
+        return .{ .state = .stale, .path = path, .reason = detail };
+    };
+    const stripped = configfile.stripComments(arena, bytes) catch
+        return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "mcacp bridge config is not valid JSON/JSONC: {s}", .{bpath}) };
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch
+        return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "mcacp bridge config is not valid JSON/JSONC: {s}", .{bpath}) };
+    const entry: ?std.json.ObjectMap = blk: {
+        if (parsed != .object) break :blk null;
+        const section = parsed.object.get("agent_servers") orelse break :blk null;
+        if (section != .object) break :blk null;
+        const e = section.object.get("tau") orelse break :blk null;
+        break :blk switch (e) {
+            .object => |o| o,
+            else => null,
+        };
+    };
+    const e = entry orelse
+        return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "mcacp bridge config has no \"tau\" entry: {s}", .{bpath}) };
+    if (try tauEntryStaleReason(io, arena, e)) |reason|
+        return .{ .state = .stale, .path = path, .reason = try std.fmt.allocPrint(arena, "mcacp bridge config: {s}", .{reason}) };
+    return .{ .state = .ok, .path = path };
+}
+
 /// The `tau doctor --fix` remediation for one client. Mirrors `tau setup
 /// --client`: a missing settings file gets a fresh minimal one (the wiring
 /// is actually repaired); anything else gets the paste-ready snippet under
 /// ~/.config/tau/snippets/ — existing settings files are never rewritten.
-/// Returns the report detail; errors surface as a failed fix outcome.
+/// Bridge clients also repair the mcacp side in the same pass. Returns the
+/// report detail; errors surface as a failed fix outcome.
 pub fn remedyClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind, command: []const u8) ![]const u8 {
     const w = try inspectClientWiring(io, arena, home, k);
     switch (w.state) {
         .missing_file => {
             const path = w.path.?;
             _ = try writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), false);
+            if (clientUsesBridge(k)) {
+                const det = try ensureBridgeWiring(io, arena, home, command, false);
+                return std.fmt.allocPrint(arena, "wrote minimal settings file: {s}; {s}", .{ path, det.detail });
+            }
             return std.fmt.allocPrint(arena, "wrote minimal settings file: {s}", .{path});
         },
         .unreadable, .unparseable, .no_entry, .stale => {
             const snip = try snippetPath(arena, home, k);
             const wrote = try writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), false);
-            return switch (wrote) {
-                .unchanged => std.fmt.allocPrint(arena, "snippet already up to date: {s} — merge the \"tau\" block into {s} by hand", .{ snip, w.path.? }),
-                else => std.fmt.allocPrint(arena, "wrote paste-ready snippet: {s} — merge the \"tau\" block into {s} by hand", .{ snip, w.path.? }),
+            const base: []const u8 = switch (wrote) {
+                .unchanged => try std.fmt.allocPrint(arena, "snippet already up to date: {s} — merge the \"{s}\" block into {s} by hand", .{ snip, clientEntryName(k), w.path.? }),
+                else => try std.fmt.allocPrint(arena, "wrote paste-ready snippet: {s} — merge the \"{s}\" block into {s} by hand", .{ snip, clientEntryName(k), w.path.? }),
             };
+            if (clientUsesBridge(k)) {
+                const det = try ensureBridgeWiring(io, arena, home, command, false);
+                return std.fmt.allocPrint(arena, "{s}; {s}", .{ base, det.detail });
+            }
+            return base;
         },
         .ok => return "already wired — nothing to do",
         .not_detected, .manual_only => return error.NothingToFix,
     }
+}
+
+const BridgeDetail = struct {
+    /// Short human detail for the step/fix report.
+    detail: []const u8,
+    /// JSON status word for the step entry ("installed", "would_install",
+    /// "already_installed", "manual").
+    status: []const u8,
+    /// The bridge config path (always ~/.config/mcacp/mcacp.json).
+    path: []const u8,
+    /// Set when a snippet was (or would be) written instead of the real file.
+    snippet_path: ?[]const u8 = null,
+    /// How the bridge write ended — drives the client outcome.
+    outcome: ClientOutcome,
+};
+
+/// Write the bridge half of an MCP-client wiring — ~/.config/mcacp/mcacp.json
+/// gets a fresh agent_servers.tau file when absent (the bridge's own config
+/// lives under our config dir, so writing it is safe), a paste-ready snippet
+/// when it exists but can't be touched or lacks the tau entry.
+fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, command: []const u8, dry: bool) !BridgeDetail {
+    const bpath = try mcacpConfigPath(arena, home);
+    var cur: ?[]const u8 = null;
+    var unreadable = false;
+    if (std.Io.Dir.cwd().readFileAlloc(io, bpath, arena, .unlimited)) |b| {
+        cur = b;
+    } else |err| {
+        unreadable = err != error.FileNotFound;
+    }
+
+    if (cur == null and !unreadable) {
+        const wrote = try writeIfChanged(io, arena, bpath, try renderMcacpJson(arena, command), dry);
+        return .{
+            .detail = try std.fmt.allocPrint(arena, "wrote mcacp bridge config: {s}", .{bpath}),
+            .status = if (dry) "would_install" else "installed",
+            .path = bpath,
+            .outcome = switch (wrote) {
+                .would_write => .would_install,
+                .unchanged => .already_installed,
+                else => .installed,
+            },
+        };
+    }
+
+    if (cur != null and (bridgeHasTau(arena, cur.?) orelse false)) {
+        return .{
+            .detail = "mcacp bridge config already wired",
+            .status = "already_installed",
+            .path = bpath,
+            .outcome = .already_installed,
+        };
+    }
+
+    // Exists but unreadable, unparseable, or missing the tau entry — never
+    // rewrite; drop a paste-ready snippet instead.
+    const snip = try mcacpSnippetPath(arena, home);
+    _ = try writeIfChanged(io, arena, snip, try renderMcacpSnippet(arena, command), dry);
+    return .{
+        .detail = try std.fmt.allocPrint(arena, "wrote mcacp paste-ready snippet: {s} — merge the \"tau\" block into {s} by hand", .{ snip, bpath }),
+        .status = "manual",
+        .path = bpath,
+        .snippet_path = snip,
+        .outcome = .manual,
+    };
+}
+
+/// Close a client entry in the step's JSON array. Bridge clients append
+/// bridge_path/bridge_status fields for the mcacp side first; a bridge-side
+/// "manual" or "failed" downgrades the client outcome (the wiring is only
+/// half done). Every other client just closes the object.
+fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, command: []const u8, dry: bool, oc: ClientOutcome) !ClientOutcome {
+    if (!clientUsesBridge(k)) {
+        try entries.append(arena, '}');
+        return oc;
+    }
+    const det = ensureBridgeWiring(io, arena, home, command, dry) catch |err| {
+        try entries.appendSlice(arena, ",\"bridge_status\":\"failed\",\"bridge_message\":");
+        try js(arena, entries, @errorName(err));
+        try entries.append(arena, '}');
+        return .failed;
+    };
+    try entries.appendSlice(arena, ",\"bridge_path\":");
+    try js(arena, entries, det.path);
+    try entries.appendSlice(arena, ",\"bridge_status\":");
+    try js(arena, entries, det.status);
+    if (det.snippet_path) |s| {
+        try entries.appendSlice(arena, ",\"bridge_snippet_path\":");
+        try js(arena, entries, s);
+    }
+    try entries.append(arena, '}');
+    return switch (det.outcome) {
+        .failed => .failed,
+        .manual => .manual,
+        .would_install => if (oc == .failed) .failed else .would_install,
+        else => oc,
+    };
 }
 
 /// The clients setup should configure: explicit --client (validated
@@ -781,7 +1073,7 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     var list: std.ArrayList(ClientKind) = .empty;
     if (cfg.setup_client) |s| {
         if (std.mem.eql(u8, s, "all")) {
-            try list.appendSlice(arena, &.{ .zed, .nvim, .vscode, .jetbrains });
+            try list.appendSlice(arena, &.{ .zed, .nvim, .vscode, .jetbrains, .windsurf, .gemini, .claude_desktop });
         } else if (parseClientName(s)) |k| {
             try list.append(arena, k);
         }
@@ -830,8 +1122,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         try entries.appendSlice(arena, if (dirExists(io, try clientConfigDir(arena, home, k))) "true" else "false");
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
-        try entries.append(arena, '}');
-        return .manual;
+        return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
     }
 
     const path = (try clientSettingsPath(arena, home, k)).?;
@@ -862,20 +1153,18 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         try js(arena, entries, command);
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
-        try entries.append(arena, '}');
-        return switch (wrote) {
+        return closeClientEntry(io, arena, entries, home, k, command, dry, switch (wrote) {
             .would_write => .would_install,
             .written => .installed,
             .unchanged => .already_installed,
-        };
+        });
     }
 
     if (cur) |b| {
         if (hasTauEntry(arena, k, b) orelse false) {
             try entries.appendSlice(arena, ",\"status\":\"already_installed\",\"next\":");
             try js(arena, entries, clientNextStep(k));
-            try entries.append(arena, '}');
-            return .already_installed;
+            return closeClientEntry(io, arena, entries, home, k, command, dry, .already_installed);
         }
     }
 
@@ -899,8 +1188,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
     try js(arena, entries, reason);
     try entries.appendSlice(arena, ",\"next\":");
     try js(arena, entries, "merge the snippet into your settings file by hand");
-    try entries.append(arena, '}');
-    return .manual;
+    return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
 }
 
 /// Configure editor ACP clients for `tau acp serve`. Without --client the
@@ -925,7 +1213,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
     if (clients.len == 0) {
         try buf.appendSlice(arena, "{\"step\":\"clients\",\"status\":\"skipped\",\"detected\":[");
         var first = true;
-        for ([_]ClientKind{ .zed, .nvim, .vscode, .jetbrains }) |k| {
+        for (all_clients) |k| {
             if (dirExists(io, try clientConfigDir(arena, home, k))) {
                 if (!first) try buf.append(arena, ',');
                 first = false;
@@ -933,7 +1221,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
             }
         }
         try buf.appendSlice(arena, "],\"hint\":");
-        try js(arena, &buf, "re-run with --client zed|nvim|vscode|jetbrains|all to write editor ACP config");
+        try js(arena, &buf, "re-run with --client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config");
         try buf.appendSlice(arena, "}");
         emit(&buf);
         return true;
@@ -1174,6 +1462,11 @@ test "parseClientName accepts supported clients and the code alias" {
     try testing.expectEqual(ClientKind.vscode, parseClientName("vscode").?);
     try testing.expectEqual(ClientKind.vscode, parseClientName("code").?);
     try testing.expectEqual(ClientKind.jetbrains, parseClientName("jetbrains").?);
+    try testing.expectEqual(ClientKind.windsurf, parseClientName("windsurf").?);
+    try testing.expectEqual(ClientKind.gemini, parseClientName("gemini").?);
+    try testing.expectEqual(ClientKind.gemini, parseClientName("gemini-cli").?);
+    try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude-desktop").?);
+    try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude").?);
     try testing.expect(parseClientName("emacs") == null);
     try testing.expect(parseClientName("") == null);
 }
@@ -1195,6 +1488,18 @@ test "clientSettingsPath matches the docs/acp.md targets (nvim has none)" {
         "/h/.jetbrains/acp.json",
         (try clientSettingsPath(a, "/h", .jetbrains)).?,
     );
+    try testing.expectEqualStrings(
+        "/h/.codeium/windsurf/mcp_config.json",
+        (try clientSettingsPath(a, "/h", .windsurf)).?,
+    );
+    try testing.expectEqualStrings(
+        "/h/.gemini/settings.json",
+        (try clientSettingsPath(a, "/h", .gemini)).?,
+    );
+    try testing.expectEqualStrings(
+        "/h/.config/Claude/claude_desktop_config.json",
+        (try clientSettingsPath(a, "/h", .claude_desktop)).?,
+    );
     try testing.expect((try clientSettingsPath(a, "/h", .nvim)) == null);
 }
 
@@ -1210,7 +1515,7 @@ test "resolveClients: --client picks one, 'all' expands, null is empty" {
     try testing.expectEqual(ClientKind.zed, one[0]);
 
     const all = try resolveClients(a, .{ .setup_client = "all" });
-    try testing.expectEqual(@as(usize, 4), all.len);
+    try testing.expectEqual(@as(usize, all_clients.len), all.len);
 }
 
 test "renderClientJson emits a parseable minimal file with the tau entry" {
@@ -1224,6 +1529,16 @@ test "renderClientJson emits a parseable minimal file with the tau entry" {
         try testing.expectEqual(@as(?bool, true), hasTauEntry(a, k, body));
         try testing.expect(std.mem.indexOf(u8, body, "\"/abs/path/tau\"") != null);
         try testing.expect(std.mem.indexOf(u8, body, "[\"acp\", \"serve\"]") != null);
+    }
+
+    // MCP-bridge clients write an mcpServers.mcacp entry — the file launches
+    // the bridge and never mentions the tau command path.
+    for ([_]ClientKind{ .windsurf, .gemini, .claude_desktop }) |k| {
+        const body = try renderClientJson(a, k, "/abs/path/tau");
+        try testing.expectEqual(@as(?bool, true), hasTauEntry(a, k, body));
+        try testing.expect(std.mem.indexOf(u8, body, "\"mcpServers\"") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "\"/abs/path/tau\"") == null);
+        try testing.expect(std.mem.indexOf(u8, body, "[\"acp\", \"serve\"]") == null);
     }
 
     const zed = try renderClientJson(a, .zed, "tau");
@@ -1252,6 +1567,20 @@ test "hasTauEntry finds the tau key through JSONC comments" {
 
     const without_tau = "{ \"agent_servers\": { \"other\": {} } }";
     try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .zed, without_tau));
+
+    // Bridge clients key on "mcacp" inside mcpServers, not "tau".
+    const bridged =
+        \\{
+        \\  "mcpServers": {
+        \\    "mcacp": { "command": "npx", "args": ["-y", "mcacp"] }
+        \\  }
+        \\}
+    ;
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .windsurf, bridged));
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .gemini, bridged));
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .claude_desktop, bridged));
+    try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .windsurf, with_tau));
+    try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .zed, bridged));
 
     try testing.expect(hasTauEntry(a, .zed, "not json at all") == null);
     try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .zed, "[1,2]"));
@@ -1498,6 +1827,121 @@ test "remedyClientWiring: missing file gets a minimal one; no-entry gets a snipp
     try testing.expect(std.mem.indexOf(u8, d3, "already up to date") != null);
 }
 
+test "configureClient windsurf writes the mcp entry and the mcacp bridge config" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false);
+    try testing.expectEqual(ClientOutcome.installed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"installed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_path\":") != null);
+
+    // The client file launches the bridge, not tau.
+    const mcp = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        try std.fmt.allocPrint(a, "{s}/.codeium/windsurf/mcp_config.json", .{home}),
+        a,
+        .unlimited,
+    );
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .windsurf, mcp));
+
+    // The bridge config carries the real tau agent entry.
+    const mcacp = try std.Io.Dir.cwd().readFileAlloc(
+        io,
+        try std.fmt.allocPrint(a, "{s}/.config/mcacp/mcacp.json", .{home}),
+        a,
+        .unlimited,
+    );
+    try testing.expectEqual(@as(?bool, true), bridgeHasTau(a, mcacp));
+    try testing.expect(std.mem.indexOf(u8, mcacp, "/abs/tau") != null);
+
+    // Second run is fully idempotent.
+    entries.clearRetainingCapacity();
+    const oc2 = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false);
+    try testing.expectEqual(ClientOutcome.already_installed, oc2);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"already_installed\"") != null);
+}
+
+test "configureClient bridge in dry-run previews both files without writing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", true);
+    try testing.expectEqual(ClientOutcome.would_install, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"would_install\"") != null);
+    try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/.gemini", .{home})));
+    try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/.config/mcacp", .{home})));
+}
+
+test "inspectClientWiring bridge: client entry plus mcacp.json both classify" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const exe = try std.process.executablePathAlloc(io, a);
+
+    const gdir = try std.fmt.allocPrint(a, "{s}/.gemini", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, gdir);
+    const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{gdir});
+
+    // Client entry present but the bridge config is missing -> stale.
+    _ = try writeIfChanged(io, a, sp, "{\"mcpServers\": {\"mcacp\": {\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}}}", false);
+    const half = try inspectClientWiring(io, a, home, .gemini);
+    try testing.expectEqual(WiringState.stale, half.state);
+    try testing.expect(std.mem.indexOf(u8, half.reason.?, "mcacp") != null);
+
+    // Bridge config present and sane -> ok.
+    const bpath = try mcacpConfigPath(a, home);
+    var esc: std.ArrayList(u8) = .empty;
+    try json.escapeInto(a, &esc, exe);
+    _ = try writeIfChanged(io, a, bpath, try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{esc.items}), false);
+    try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .gemini)).state);
+
+    // A bridge config without the tau entry -> stale naming the bridge file.
+    _ = try writeIfChanged(io, a, bpath, "{\"agent_servers\": {}}", false);
+    const no_tau = try inspectClientWiring(io, a, home, .gemini);
+    try testing.expectEqual(WiringState.stale, no_tau.state);
+    try testing.expect(std.mem.indexOf(u8, no_tau.reason.?, "no \"tau\" entry") != null);
+}
+
+test "remedyClientWiring bridge repairs both halves" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const exe = try std.process.executablePathAlloc(io, a);
+
+    const cdir = try std.fmt.allocPrint(a, "{s}/.config/Claude", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, cdir);
+
+    const d = try remedyClientWiring(io, a, home, .claude_desktop, exe);
+    try testing.expect(std.mem.indexOf(u8, d, "minimal settings file") != null);
+    try testing.expect(std.mem.indexOf(u8, d, "mcacp bridge config") != null);
+    try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .claude_desktop)).state);
+}
+
 test "docs/compatibility.md generated matrix mirrors the client registry" {
     const gpa = testing.allocator;
     const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/compatibility.md", gpa, .unlimited);
@@ -1507,9 +1951,9 @@ test "docs/compatibility.md generated matrix mirrors the client registry" {
     try testing.expect(std.mem.indexOf(u8, doc, "scripts/gen-compat-doc.py") != null);
     // The "code" alias must be listed.
     try testing.expect(std.mem.indexOf(u8, doc, "alias `code`") != null);
-    inline for (.{ .zed, .nvim, .vscode, .jetbrains }) |k| {
+    inline for (all_clients) |k| {
         var buf: [160]u8 = undefined;
-        const row = std.fmt.bufPrint(&buf, "| `{s}` |", .{clientName(k)}) catch unreachable;
+        const row = std.fmt.bufPrint(&buf, "| `{s}`", .{clientName(k)}) catch unreachable;
         if (std.mem.indexOf(u8, doc, row) == null) {
             std.debug.print("docs/compatibility.md missing client row '{s}'\n", .{row});
             return error.TestUnexpectedResult;

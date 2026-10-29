@@ -1,6 +1,7 @@
 # tau Troubleshooting FAQ
 
-Every error tau can print, what it means, and how to fix it.
+Every failure tau — or its installer — can hit, what it means, and how to fix
+it. Match your symptom in the table below, or jump straight to the exit code.
 
 tau reports failures on **stderr** as a single-line JSON envelope — even in
 `--mode text`:
@@ -22,6 +23,26 @@ tau reports failures on **stderr** as a single-line JSON envelope — even in
 - `catalog` links to [errors.md](errors.md), the generated catalog of every
   error code. `explain` and `catalog` are always the last fields in the
   envelope.
+
+## Start here — match your symptom
+
+| You see … | It means | Go to |
+|-----------|----------|-------|
+| `command not found: tau` after installing | The install dir isn't on `PATH` | [Install & upgrade failures](#install--upgrade-failures) |
+| `install.sh: checksum verification failed` / `not listed in SHA256SUMS.txt` / `no sha256sum` | Fail-closed verification aborted the install | [Install & upgrade failures](#install--upgrade-failures) |
+| `install.sh: unsupported OS` / `unsupported architecture` | No prebuilt binary for that platform | [Install & upgrade failures](#install--upgrade-failures) |
+| `tau doctor` prints `"status":"fail"` rows | Diagnosable setup problem — some auto-fixable | [Setup & config problems](#setup--config-problems--tau-doctor) |
+| `{"warn":{"message":"config file has invalid JSON …"}}` | Config doesn't parse; tau runs on defaults | [Setup & config problems](#setup--config-problems--tau-doctor) |
+| `{"err":{"code":106,…}}` — or a silent exit 106 | Missing or rejected API key | [Authentication failures](#authentication-failures-exit-106) |
+| `{"err":{"code":105,…}}` | Request timed out | [Timeouts](#timeouts-exit-105) |
+| `{"err":{"code":110,…}}`, or a run dies mid tool-loop | HTTP/tool/internal failure | [Internal errors](#internal-errors-exit-110) |
+| `{"err":{"code":80,…}}` | Bad flag, value, or subcommand | [Invalid arguments](#invalid-arguments-exit-80) |
+| `{"err":{"code":82,…}}`, or bare `tau` exits 82 | Required input missing | [Missing required fields](#missing-required-fields-exit-82) |
+| `{"err":{"code":1,…}}` / `… not found` | Named resource missing | [Not found](#not-found-exit-1) |
+| `… unsupported on this platform` (exit 111) | Feature not implemented here | [Unimplemented](#unimplemented-exit-111) |
+| `{"warn":{…}}` line, run continues | Non-fatal problem | [Warnings](#warnings-run-continues) |
+| The model calls wrong tools or loops | Tool-loop problem — usually self-corrects | [Tool-loop problems](#tool-loop-problems-model-side-recoverable) |
+| Something looks off but nothing failed | Often intended behavior | [Looks broken but isn't](#looks-broken-but-isnt) |
 
 ## Stable error catalog
 
@@ -69,6 +90,98 @@ run continues.
 | `106`     | `AuthFailed`           | Missing or rejected API key            | Key resolution order (below) |
 | `110`     | `internal_error`, `HTTPRequestFailed`, `Timeout`-adjacent | Request/tool/internal failure | Re-run with `--debug` |
 | `111`     | —                      | Not implemented on this platform       | The `message` names the workaround |
+
+---
+
+## Install & upgrade failures
+
+Installer failures print `install.sh: <message>` (or `install.ps1:
+<message>`) on **stderr** and exit non-zero — they do *not* use the
+`{"err"}` envelope, because tau itself never ran. The same messages surface
+when `tau upgrade` fails: it downloads `install.sh` from the release tag and
+runs it in place, relaying the installer log to stderr while stdout stays a
+single JSON result (`{"status":"failed","detail":…}`, exit 1).
+
+| Installer message | Cause | Fix |
+|-------------------|-------|-----|
+| `unsupported OS '<os>'` | No prebuilt binary — install.sh ships linux and macos only | Build from source (README "Build & Install"); on Windows use `install.ps1` |
+| `unsupported architecture '<arch>'` | No asset for that CPU (x86_64/aarch64 on POSIX; x86_64 only on Windows) | Build from source, or override detection via `TAU_ARCH` only if a matching asset actually exists |
+| `invalid --version '<v>'` | Not a dotted triple | Pass e.g. `--version 0.5.0` (or `TAU_VERSION`) |
+| `curl not found on PATH` / `tar not found on PATH` | Prerequisite missing | Install curl/tar — both ship with macOS — or build from source |
+| `download failed — check that release … ships <asset>` | Asset missing from the release, or network/proxy blocked | Check `TAU_BASE_URL` isn't pointing at an incomplete mirror; retry; pick another `--version` |
+| `could not download SHA256SUMS.txt` | The checksum manifest isn't on the release — verification fails closed by design | Don't bypass lightly; on a trusted mirror `TAU_SKIP_CHECKSUM=1` skips verification (a warning is printed) |
+| `<asset> is not listed in SHA256SUMS.txt` | Manifest/asset mismatch — partial or tampered mirror | Prefer fixing the mirror over `TAU_SKIP_CHECKSUM=1` |
+| `checksum verification failed for <asset>` | Download corrupted or tampered — aborts by design | Re-download; if it persists, distrust the network path |
+| `no sha256sum/shasum on PATH` | No checksum tool to verify with | Install coreutils, or `TAU_SKIP_CHECKSUM=1` on a trusted source |
+| `cannot create install dir <d>` / `cannot write <d>/tau` | Destination not writable | Pick a writable `--dir`/`TAU_INSTALL_DIR`, or fix ownership |
+| `note: <dir> is not on your PATH` (install itself succeeded) | Shell can't find the binary | Add the printed `export PATH="<dir>:$PATH"` line to your shell rc |
+
+`tau upgrade` adds two failure modes of its own: `"installer download
+failed"` (the `install.sh` fetched from the release tag — or `TAU_INSTALL_URL`
+— didn't arrive) and exit **111** on Windows, where self-update is
+unsupported — re-run `install.ps1` instead. A successful `upgrade` prints
+`{"status":"upgraded",…}`; `"skipped"` when already current — both exit 0.
+
+After install, `tau setup --yes` runs the whole onboarding chain unattended
+(init → completions → editor ACP client config → `doctor` health report) as
+one NDJSON transcript and exits 1 if any step fails — the verdict names the
+failing step.
+
+---
+
+## Setup & config problems — `tau doctor`
+
+`tau doctor` runs the setup health checks and prints one JSON report on
+stdout; exit 0 when nothing failed, 1 otherwise. `--json` streams one
+NDJSON `{"check":{...}}` event per check plus a terminal `done:true` verdict
+for CI/support tooling; `--offline` skips every check that would touch the
+network. Rows:
+
+| Check | Fails or warns when |
+|-------|---------------------|
+| `config_file` | `~/.config/tau/config.json` doesn't parse (**fail**), or names an unregistered provider (**warn**). Missing file is ok — config is optional |
+| `config_permissions` | Config dir/file is readable by group/other (POSIX only — the file can hold API keys) |
+| `shell_completions` | Completion scripts are missing or stale for the detected shells |
+| `provider_resolution` | The configured/`--provider` provider isn't registered |
+| `api_key` | No key resolves at any level of the precedence chain |
+| `curl` | `curl` is missing or `curl --version` fails — all LLM HTTP needs it |
+| `endpoint_reachable` | The provider endpoint doesn't answer (skipped under `--offline`) |
+| `auth_probe` (`--deep` only) | A one-token authenticated completion fails — the resolved key is rejected |
+| `update_available` | A newer release exists (warn only; opt out via `TAU_NO_UPDATE_CHECK=1`) |
+| `provider_probes` (`--probe` only) | Per-provider sweep: connectivity + credential pass/fail rows for *every* registered provider — reports key sources, never key material |
+| `selftest` (`--selftest` only) | Credential-free end-to-end run against a loopback stub provider fails — proves the installed binary works without real credentials or network |
+
+### `tau doctor --fix` — automatic remediation
+
+Four outcomes are auto-fixable. `--fix` plans them in check order (deduped —
+several rows can share one fix) and applies each only after confirmation:
+
+- `--yes` approves everything — the script/CI path;
+- on an interactive TTY each fix gets a
+  `doctor --fix: <description> — apply? [y/N]` prompt on stderr (only `y`/`yes`
+  approves);
+- piped/non-TTY without `--yes` reports each fix as
+  `"status":"skipped","detail":"not confirmed — pass --yes to apply non-interactively"`.
+
+| Fix id | Triggered by | What it does |
+|--------|--------------|--------------|
+| `scaffold_config` | `config_file` — no config exists | Writes the `tau init` starter config, creating `~/.config/tau` (0700/0600 on POSIX) |
+| `restore_config` | `config_file` — invalid JSON | Moves the broken file to `config.json.bak`, then scaffolds a fresh one |
+| `chmod_config` | `config_permissions` (or an unreadable `config_file`) | `chmod 0700` on `~/.config/tau`, `0600` on `config.json` |
+| `install_completions` | `shell_completions` | Installs/refreshes completion scripts (+ rc hooks where needed) |
+
+Each fix reports
+`{"fix":{"id":…,"check":…,"status":"applied|declined|skipped|failed","detail":…}}`
+— as an NDJSON event under `--json`, in the report's `"fixes"` array, and as
+a `## Fixes` table under `--report`. When anything applied, the checks re-run
+so the verdict and exit code reflect the post-fix state.
+
+For config *content* problems rather than syntax: `tau config validate`
+prints a `{"path","ok","errors":[{key,message}]}` report on stdout and exits
+1 on failure (with did-you-mean suggestions for misspelled keys) — usable as
+a pre-commit/CI gate. `tau config set|get|unset` make schema-checked,
+comment-preserving edits from scripts, and `tau config edit` opens the file
+in `$EDITOR` (`TAU_EDITOR` > `VISUAL` > `EDITOR`) and validates on save.
 
 ---
 
@@ -226,8 +339,11 @@ goal, and nothing to continue — give it a prompt or resume a goal session.
 ### `{"warn":{"message":"config file has invalid JSON and was ignored: <path> — fix the JSON syntax or delete the file"}}`
 
 `~/.config/tau/config.json` exists but doesn't parse. tau falls back to
-defaults — flags and env vars still work. Fix the syntax or delete the file.
-Trailing commas and comments are **not** allowed — it must be strict JSON.
+defaults — flags and env vars still work. Fix the syntax or delete the file,
+or run `tau doctor --fix` — it moves the broken file to `config.json.bak`
+and scaffolds a fresh one. `tau config validate` pinpoints the error with a
+line/column. The file is JSONC: `//` and `/* */` comments are allowed (the
+`tau init` scaffold is commented), but trailing commas are not.
 
 ### `failed to save session <name>: <err>` (stderr, non-fatal)
 
@@ -276,11 +392,17 @@ any of them.
 | `tau --dry-run --tools bash,read "<prompt>"` | See planned tool calls, execute none |
 | `tau --thinking "<prompt>"` | Show model reasoning chunks |
 | `tau models` | List providers + default models (JSON) |
+| `tau doctor` | One-shot setup health report on stdout (config, provider, key, completions, curl, endpoint) — exit 1 on any `fail` row; `--offline` skips network checks |
+| `tau doctor --fix` | Auto-remediate fixable rows — scaffold/restore config, tighten permissions, install completions (confirms per fix; `--yes` for unattended) |
+| `tau doctor --json` | Same diagnostics as NDJSON check events + `done:true` verdict — for CI/support tooling |
 | `tau doctor --report` | Redacted Markdown diagnostics bundle (build metadata, checks, sanitized config) — paste straight into a bug report |
-| `tau doctor --fix [--yes]` | Auto-remediate fixable checks: missing/invalid config, loose permissions, missing completions, and missing or stale editor client wiring (`client_zed`/`client_vscode`/`client_jetbrains` rows — a dead `command` path or wrong `args` counts as stale; an existing settings file is never rewritten — you get a paste-ready snippet in `~/.config/tau/snippets/` instead) |
+| `tau doctor --fix [--yes]` | Auto-remediate fixable checks: missing/invalid config, loose permissions, missing completions, and missing or stale editor client wiring (`client_zed`/`client_vscode`/`client_jetbrains`/`client_windsurf`/`client_gemini`/`client_claude_desktop` rows — a dead `command` path or wrong `args` counts as stale; an existing settings file is never rewritten — you get a paste-ready snippet in `~/.config/tau/snippets/` instead) |
 | `tau doctor --probe` | Live-verify every provider: per-provider connectivity + credential pass/fail rows (key sources only, never key material) |
 | `tau doctor --selftest` | Credential-free end-to-end check: spawns tau against a loopback stub provider (throwaway HOME, stub key) — verifies the installed binary works without real credentials or network; runs under `--offline` |
 | `tau version --check` | Non-blocking update check against the latest release (always exits 0; `TAU_NO_UPDATE_CHECK=1` opts out — also silences the `update_available` doctor warning) |
+| `tau upgrade` | Self-update in place via the same fail-closed SHA256-verified install.sh (`--yes` skips the confirmation prompt; POSIX only) |
+| `tau setup --yes` | Unattended onboarding: init + completions + ACP client config + doctor as one NDJSON transcript — exit 1 on any failed step |
+| `tau config validate [path]` | Offline config-file validation (`{"ok","errors":[…]}` on stdout, exit 1 on failure) — CI/pre-commit gate |
 | `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |

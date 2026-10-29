@@ -3,7 +3,8 @@
 `tau acp serve` speaks the [Agent Client Protocol](https://agentclientprotocol.com)
 over stdio, so ACP-compatible editors can drive tau as a coding agent. The
 fastest way to wire one up is `tau setup --client <editor>`; this guide walks
-through exactly what that command does for **Zed**, **VS Code**, and **Neovim**,
+through exactly what that command does for **Zed**, **VS Code**, **Neovim**,
+and the MCP clients (**Windsurf**, **Gemini CLI**, **Claude Desktop**),
 what its output means, and how to finish or undo each step by hand.
 
 For JetBrains IDEs, Emacs (agent-shell), Toad, socket mode, and a description of
@@ -16,7 +17,8 @@ tau setup                      # detect editors, write nothing
 tau setup --client zed         # configure one editor
 tau setup --client vscode      # (or the alias: --client code)
 tau setup --client nvim        # writes a paste-ready Lua snippet
-tau setup --client all         # zed + nvim + vscode + jetbrains
+tau setup --client windsurf    # MCP client — also writes mcacp.json
+tau setup --client all         # every supported client at once
 tau setup --client all --dry-run  # preview every write, change nothing
 ```
 
@@ -28,7 +30,7 @@ touch before letting it.
 Anything else is rejected before setup runs:
 
 ```json
-{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|vscode|jetbrains|all)","recoverable":false}}
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all)","recoverable":false}}
 ```
 
 Setup emits one NDJSON object per step. The `clients` step is the one this
@@ -38,7 +40,7 @@ guide covers:
   installed (their config directories exist) — detection alone never writes:
 
 ```json
-{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|vscode|jetbrains|all to write editor ACP config"}
+{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config"}
 ```
 
 - **With `--client`** each requested editor gets a `clients[]` entry carrying
@@ -202,12 +204,58 @@ Neovim config and restart:
 
 The full snippet and per-plugin notes live in [docs/acp.md](acp.md).
 
+## MCP clients: Windsurf, Gemini CLI, Claude Desktop
+
+These clients speak MCP, not ACP — they can't spawn `tau acp serve`
+directly. Setup wires them through the
+[mcacp](https://github.com/Oortonaut/mcacp) MCP→ACP bridge and writes **two**
+files in one pass:
+
+```bash
+tau setup --client windsurf        # or gemini, claude-desktop
+```
+
+1. The client's `mcpServers` entry launches the bridge — at
+   `~/.codeium/windsurf/mcp_config.json`, `~/.gemini/settings.json`, or
+   `~/.config/Claude/claude_desktop_config.json`:
+
+   ```json
+   {
+     "mcpServers": {
+       "mcacp": {
+         "command": "npx",
+         "args": ["-y", "mcacp"]
+       }
+     }
+   }
+   ```
+
+2. The shared bridge config `~/.config/mcacp/mcacp.json` carries the real
+   `agent_servers.tau` entry (the direct-ACP shape with the absolute
+   `command` path). One file serves every MCP client at once.
+
+The step entry reports both halves — `"path"`/`"status"` for the client file
+and `"bridge_path"`/`"bridge_status"` for mcacp.json (with
+`"bridge_snippet_path"` when the existing bridge config needed a manual
+merge):
+
+```json
+{"client":"gemini","path":"/home/you/.gemini/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+```
+
+`--client all` writes the client entry for each bridge client but only
+creates `mcacp.json` once — the later clients report
+`"bridge_status":"already_installed"`.
+
 ## Removing the integration
 
 Setup is additive and never deletes:
 
 - **Zed / VS Code:** delete the `"tau"` entry from your settings file (or the
   whole file if setup created a minimal one just for tau).
+- **Windsurf / Gemini CLI / Claude Desktop:** delete the `"mcacp"` entry from
+  the client's `mcpServers` section; delete `~/.config/mcacp/mcacp.json` when
+  no other MCP client still uses it.
 - **Neovim:** remove the pasted block from your config.
 - Generated snippets under `~/.config/tau/snippets/` are inert leftovers —
   delete them freely.
