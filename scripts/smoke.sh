@@ -72,6 +72,7 @@ ALL_TEST_GROUPS=(
   "config-schema:test_group_config_schema"
   "init:test_group_init"
   "setup:test_group_setup"
+  "client-examples:test_group_client_examples"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -2258,6 +2259,83 @@ test_group_setup() {
   ok "setup --dry-run --yes --non-interactive exits 0" "$s24_rc" 0
   contains "dry+unattended verdict has all markers" "$s24_out" '"non_interactive":true,"yes":true,"dry_run":true'
   [ ! -e "$mock_home21/.config/tau/config.json" ]; ok "dry+yes wrote nothing" "$?" 0
+}
+
+# Group: runnable client-config examples under examples/clients/ —
+# the shipped files must equal what `tau setup --client --yes` writes.
+test_group_client_examples() {
+  local out rc h ex
+  ex="$ROOT/examples/clients"
+
+  note "client-config examples match what tau setup --client writes"
+
+  h="$(mktemp -d)"; register_temp_dir "$h"
+
+  # tau setup --client all --yes writes real settings into a scratch HOME.
+  capture ce env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client all --yes
+  ok "setup --client all --yes exits 0" "$ce_rc" 0
+  contains "clients step reports installed" "$ce_out" '"step":"clients","status":"installed"'
+
+  # The tau config setup wrote passes `tau config validate`.
+  out=$("$BIN" config validate "$h/.config/tau/config.json"); rc=$?
+  ok "config validate on the setup-written config exits 0" "$rc" 0
+  contains "setup-written config reports ok:true" "$out" '"ok":true'
+
+  # Normalize the embedded absolute command path to "tau" and diff each
+  # generated settings file byte-for-byte against the shipped example.
+  local spec want
+  for spec in zed vscode jetbrains; do
+    case "$spec" in
+      zed)       want="$h/.config/zed/settings.json" ;;
+      vscode)    want="$h/.config/Code/User/settings.json" ;;
+      jetbrains) want="$h/.jetbrains/acp.json" ;;
+    esac
+    sed 's|"command": "[^"]*"|"command": "tau"|' "$want" > "$h/norm-$spec.json"
+    cmp -s "$h/norm-$spec.json" "$ex/$spec.json"
+    ok "$spec.json matches setup --client output" "$?" 0
+  done
+
+  # Every shipped example parses as JSON.
+  local f
+  for f in "$ex"/*.json; do
+    python3 -c 'import sys,json;json.load(open(sys.argv[1]))' "$f" 2>/dev/null
+    ok "$(basename "$f") parses as JSON" "$?" 0
+  done
+
+  # Cursor reuses the VS Code acp.agents shape — its tau entry must be
+  # identical to the one in vscode.json.
+  python3 -c 'import json,sys
+v = json.load(open(sys.argv[1]))["acp.agents"]["tau"]
+c = json.load(open(sys.argv[2]))["acp.agents"]["tau"]
+sys.exit(0 if v == c else 1)' "$ex/vscode.json" "$ex/cursor.json" 2>/dev/null
+  ok "cursor.json carries the same tau entry as vscode.json" "$?" 0
+
+  # Every tau agent entry across the examples speaks the ACP contract:
+  # args is exactly ["acp","serve"], nothing else.
+  python3 -c 'import glob,json,sys
+want = ["acp", "serve"]; found = 0
+for p in glob.glob(sys.argv[1] + "/*.json"):
+    d = json.load(open(p))
+    for section in ("agent_servers", "acp.agents"):
+        entry = d.get(section, {}).get("tau")
+        if entry is not None:
+            found += 1
+            if entry.get("args") != want:
+                sys.exit(1)
+sys.exit(0 if found >= 3 else 1)' "$ex" 2>/dev/null
+  ok "every shipped tau entry uses args [acp serve]" "$?" 0
+
+  # Claude Desktop goes through the mcacp MCP->ACP bridge — both halves of
+  # the wiring must be present and point at `tau acp serve`.
+  python3 -c 'import json,sys
+cd = json.load(open(sys.argv[1]))
+mc = json.load(open(sys.argv[2]))
+ok1 = "mcacp" in cd.get("mcpServers", {})
+tau = mc.get("agent_servers", {}).get("tau", {})
+sys.exit(0 if ok1 and tau.get("args") == ["acp", "serve"] else 1)' \
+    "$ex/claude-desktop.json" "$ex/mcacp.json" 2>/dev/null
+  ok "claude-desktop.json + mcacp.json wire the bridge to tau" "$?" 0
 }
 
 # Group: Issue #17 goal mode subcommands offline

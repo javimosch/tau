@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mcacp": {
+      "command": "npx",
+      "args": ["-y", "mcacp"]
+    }
+  }
+}
