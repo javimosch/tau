@@ -1,0 +1,12 @@
+[
+  {
+    "tag_name": "v0.4.0",
+    "name": "v0.4.0 — JSON Schema + AGENTS.md/Skills Autodiscovery",
+    "body": "## v0.4.0\n\n### JSON Schema Structured Output (--schema)\n- New `--schema <json|@file>` flag constrains model output to a JSON Schema\n- Uses OpenAI-compatible `response_format` with `json_schema` type\n- Inline: `--schema '{\"type\":\"object\",...}'`\n- File: `--schema @path/to/schema.json`\n- Fleet coordinator uses schema automatically when set (skips `extractCoordinatorJson`)\n\n### AGENTS.md Scanning\n- `--scan-agents`: walks CWD for AGENTS.md files, returns JSON (path + first_line + size)\n- `--load-agents-md <path>`: inject AGENTS.md content into system prompt\n- `--auto-agents-md`: auto-load cwd/AGENTS.md on startup\n\n### Skills Autodiscovery (~/.agents/skills/)\n- `tau skills list`: scan skills directory, parse YAML frontmatter, return JSON\n- `tau skills search <query>`: find skills by keyword\n- `tau skills load <name>`: load skill SKILL.md content\n\n### Breaking Changes\n- None. All additions are opt-in flags and subcommands.\n\n### Full Changelog\n- Closes #26 (JSON Schema structured output)\n- Closes #27 (AGENTS.md scanning + skills autodiscovery)\n",
+    "published_at": "2026-06-12T11:41:45Z",
+    "draft": false,
+    "prerelease": false,
+    "html_url": "https://github.com/javimosch/tau/releases/tag/v0.4.0",
+    "target_commitish": "master"
+  }
+]

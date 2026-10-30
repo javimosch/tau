@@ -167,6 +167,19 @@ jobs:
         shell: bash
         run: python3 scripts/check-stability-doc.py
 
+      - name: Changelog drift check
+        # The tagged-release sections of CHANGELOG.md are generated from
+        # this repo's GitHub release notes by scripts/gen-changelog.py —
+        # this proves what users audit before `tau upgrade` matches the
+        # notes each release actually ships (the changelog smoke group
+        # replays the same check offline against a recorded API snapshot).
+        # If this fails after editing a release's notes, regenerate:
+        #   python3 scripts/gen-changelog.py
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/gen-changelog.py --check
+
       - name: Offline smoke groups
         shell: bash
         run: ./scripts/smoke.sh
