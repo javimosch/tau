@@ -16,6 +16,16 @@ are backward compatible.
 
 ### Added
 
+- **`tau doctor` secret-hygiene checks** — two new report rows keep
+  credentials off shared filesystems: `plaintext_secrets` warns when the
+  config file stores `api_key`/`keys.<provider>` values or a client settings
+  file embeds an `env` block (the MCP convention for passing keys to server
+  entries) — it reports key names and counts only, never values, and is
+  deliberately not auto-fixable since deleting a credential is destructive
+  (the hint names `tau config unset` and env vars); `client_permissions`
+  (POSIX) warns when a detected client settings file or `mcacp.json` grants
+  group/other access and is remediated by the new `chmod_client_files` fix
+  (`chmod 0600` per file) under `tau doctor --fix` (#297)
 - **`tau explain --json`** — the stable-contract spelling for the error
   catalog's JSON output, completing the `--json` scripting surface promised
   in docs/stability.md (`doctor`, `config show|validate`, `version`, and now

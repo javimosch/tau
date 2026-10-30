@@ -142,20 +142,22 @@ network. Rows:
 |-------|---------------------|
 | `config_file` | `~/.config/tau/config.json` doesn't parse (**fail**), or names an unregistered provider (**warn**). Missing file is ok — config is optional |
 | `config_permissions` | Config dir/file is readable by group/other (POSIX only — the file can hold API keys) |
+| `plaintext_secrets` | Credentials sit on disk as plaintext — `api_key`/`keys.*` values in the config file, or `env` blocks inside client settings files. Warn only; reports key names/counts, never values. Not auto-fixable — the hint names `tau config unset` + env vars |
 | `shell_completions` | Completion scripts are missing or stale for the detected shells |
 | `provider_resolution` | The configured/`--provider` provider isn't registered |
 | `api_key` | No key resolves at any level of the precedence chain |
 | `curl` | `curl` is missing or `curl --version` fails — all LLM HTTP needs it |
 | `endpoint_reachable` | The provider endpoint doesn't answer (skipped under `--offline`) |
 | `auth_probe` (`--deep` only) | A one-token authenticated completion fails — the resolved key is rejected |
+| `client_permissions` | A detected client settings file (or the mcacp bridge config) grants group/other access — env blocks inside it can hold API keys (POSIX only) |
 | `update_available` | A newer release exists (warn only; opt out via `TAU_NO_UPDATE_CHECK=1`) |
 | `provider_probes` (`--probe` only) | Per-provider sweep: connectivity + credential pass/fail rows for *every* registered provider — reports key sources, never key material |
 | `selftest` (`--selftest` only) | Credential-free end-to-end run against a loopback stub provider fails — proves the installed binary works without real credentials or network |
 
 ### `tau doctor --fix` — automatic remediation
 
-Four outcomes are auto-fixable. `--fix` plans them in check order (deduped —
-several rows can share one fix) and applies each only after confirmation:
+Fixable outcomes are remediated by `--fix`, planned in check order (deduped —
+several rows can share one fix) and applied each only after confirmation:
 
 - `--yes` approves everything — the script/CI path;
 - on an interactive TTY each fix gets a
@@ -170,6 +172,7 @@ several rows can share one fix) and applies each only after confirmation:
 | `restore_config` | `config_file` — invalid JSON | Moves the broken file to `config.json.bak`, then scaffolds a fresh one |
 | `chmod_config` | `config_permissions` (or an unreadable `config_file`) | `chmod 0700` on `~/.config/tau`, `0600` on `config.json` |
 | `install_completions` | `shell_completions` | Installs/refreshes completion scripts (+ rc hooks where needed) |
+| `chmod_client_files` | `client_permissions` | `chmod 0600` on every detected client settings file (and `mcacp.json`) — their `env` blocks can hold API keys |
 
 Each fix reports
 `{"fix":{"id":…,"check":…,"status":"applied|declined|skipped|failed","detail":…}}`
@@ -397,7 +400,7 @@ any of them.
 | `tau doctor --fix` | Auto-remediate fixable rows — scaffold/restore config, tighten permissions, install completions (confirms per fix; `--yes` for unattended) |
 | `tau doctor --json` | Same diagnostics as NDJSON check events + `done:true` verdict — for CI/support tooling |
 | `tau doctor --report` | Redacted Markdown diagnostics bundle (build metadata, checks, sanitized config) — paste straight into a bug report |
-| `tau doctor --fix [--yes]` | Auto-remediate fixable checks: missing/invalid config, loose permissions, missing completions, and missing or stale editor client wiring (`client_zed`/`client_vscode`/`client_jetbrains`/`client_windsurf`/`client_gemini`/`client_claude_desktop` rows — a dead `command` path or wrong `args` counts as stale; an existing settings file is never rewritten — you get a paste-ready snippet in `~/.config/tau/snippets/` instead) |
+| `tau doctor --fix [--yes]` | Auto-remediate fixable checks: missing/invalid config, loose config and client-file permissions, missing completions, and missing or stale editor client wiring (`client_zed`/`client_vscode`/`client_jetbrains`/`client_windsurf`/`client_gemini`/`client_claude_desktop` rows — a dead `command` path or wrong `args` counts as stale; an existing settings file is never rewritten — you get a paste-ready snippet in `~/.config/tau/snippets/` instead) |
 | `tau doctor --probe` | Live-verify every provider: per-provider connectivity + credential pass/fail rows (key sources only, never key material) |
 | `tau doctor --selftest` | Credential-free end-to-end check: spawns tau against a loopback stub provider (throwaway HOME, stub key) — verifies the installed binary works without real credentials or network; runs under `--offline` |
 | `tau version --check` | Non-blocking update check against the latest release (always exits 0; `TAU_NO_UPDATE_CHECK=1` opts out — also silences the `update_available` doctor warning) |

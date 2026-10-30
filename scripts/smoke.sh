@@ -1302,6 +1302,40 @@ test_group_doctor() {
   "$BIN" doctor --shell tcsh >/dev/null 2>&1; ok "doctor --shell tcsh -> exit 80" "$?" 80
   "$BIN" doctor --fix --shell >/dev/null 2>&1; ok "doctor --shell missing value -> exit 80" "$?" 80
 
+  # 14b. Secret-hygiene checks: plaintext credentials in the config file and
+  #     env blocks inside client settings warn (never fail), key material is
+  #     never printed, and loose client files are --fix-remediated to 0600.
+  mkdir -p "$mock_home/.config/zed"
+  printf '{"api_key":"sk-plain-doc","keys":{"openai":"sk-plain-doc2"}}' > "$mock_config/config.json"
+  printf '{"agent_servers":{"tau":{"type":"custom","command":"tau","args":["acp","serve"],"env":{"TAU_API_KEY":"sk-env-doc"}}}}' > "$mock_home/.config/zed/settings.json"
+  chmod 644 "$mock_home/.config/zed/settings.json"
+  capture doc_secrets env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-env HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline
+  ok "plaintext secrets warn keeps exit 0" "$doc_secrets_rc" 0
+  contains "plaintext_secrets warns" "$doc_secrets_out" '"name":"plaintext_secrets","status":"warn"'
+  contains "secrets check names the config keys" "$doc_secrets_out" 'api_key'
+  contains "secrets check names keys.<provider>" "$doc_secrets_out" 'keys.openai'
+  contains "secrets check counts client env values" "$doc_secrets_out" 'env value'
+  contains "secrets hint points at config unset" "$doc_secrets_out" 'config unset'
+  if printf '%s' "$doc_secrets_out" | grep -qE 'sk-plain-doc|sk-env-doc'; then
+    ok "secret values never printed" 1 0
+  else
+    ok "secret values never printed" 0 0
+  fi
+  contains "client_permissions warns on loose file" "$doc_secrets_out" '"name":"client_permissions","status":"warn"'
+  contains "client_permissions names the mode" "$doc_secrets_out" 'mode 644'
+  capture doc_chmod env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-env HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
+  ok "chmod fix run exits 0" "$doc_chmod_rc" 0
+  contains "chmod_client_files applied" "$doc_chmod_out" '"id":"chmod_client_files","check":"client_permissions","status":"applied"'
+  contains "post-fix client_permissions ok" "$doc_chmod_out" '"name":"client_permissions","status":"ok"'
+  if [ "$(stat -c %a "$mock_home/.config/zed/settings.json" 2>/dev/null)" = "600" ]; then
+    ok "client settings restricted to 0600" 0 0
+  else
+    ok "client settings restricted to 0600" 1 0
+  fi
+  rm -rf "$mock_home/.config/zed"; rm -f "$mock_config/config.json"
+
   # 15. Live probe paths against a local stub HTTP server: endpoint_reachable
   #     treats ANY HTTP response as reachable, and --deep maps the auth probe's
   #     HTTP status to ok/fail/warn. Requires python3 + curl.
