@@ -19,6 +19,16 @@ are backward compatible.
 
 ### Added
 
+- **`tau upgrade` pre-upgrade summary** — an available update now fetches
+  the release tag's `CHANGELOG.md` and shows the sections between the
+  installed and target versions before anything is applied: rendered as a
+  `changes in tau <from> -> <to>:` block on stderr ahead of the `[y/N]`
+  prompt and installer log, and carried in the JSON report's new
+  `"changelog":[{"version","notes"}]` field so `--dry-run` and scripts can
+  audit the pending changes without scraping markdown. The fetch reuses
+  the update-check transport and overrides via `TAU_CHANGELOG_URL`
+  (mirrors, `file://` stubs); it is advisory — a fetch or parse miss drops
+  only the summary, never the upgrade (#300)
 - **CI-maintained release changelog** — the tagged-release sections of this
   file (between the `BEGIN/END GENERATED RELEASES` markers) are now
   generated from the repo's GitHub release notes by

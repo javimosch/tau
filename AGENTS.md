@@ -412,17 +412,20 @@ tau upgrade                      # Check latest release, [y/N] prompt on a TTY, 
 tau upgrade --yes                # Non-interactive (env TAU_YES=1)
 tau upgrade --dir /opt/bin       # Override destination (default: the running
                                  # binary's directory; env TAU_INSTALL_DIR)
-tau upgrade --dry-run            # Print the resolved plan; install nothing
+tau upgrade --dry-run            # Print the resolved plan + release notes; install nothing
 # → {"name":"tau","version":"0.4.0","checked":true,"latest":"0.5.0","tag":"v0.5.0",
 #    "update_available":true,"status":"upgraded","detail":"installed tau 0.5.0 -> /opt/bin/tau",
-#    "release_url":"...","install_dir":"/opt/bin"}
+#    "release_url":"...","install_dir":"/opt/bin","changelog":[{"version":"0.5.0","notes":"..."}]}
 # status: up_to_date|upgraded|declined|skipped|failed|dry_run — exit 0 for
 # up_to_date/upgraded/declined/dry_run, 1 for skipped/failed. Downloads and
 # execs the release tag's own install.sh, so upgrades get the same fail-closed
 # SHA256 verification as fresh installs (TAU_BASE_URL/TAU_SKIP_CHECKSUM/
 # TAU_VERIFY_SIGSTORE flow through). TAU_INSTALL_URL overrides the installer
-# script URL (file:// stubs in tests). POSIX-only; Windows exits 111 and
-# points at install.ps1.
+# script URL (file:// stubs in tests). When an update exists the tag's
+# CHANGELOG.md is fetched too (TAU_CHANGELOG_URL overrides): sections in
+# (installed, latest] render as a pre-upgrade summary on stderr and as the
+# report's "changelog" field — best-effort, a fetch miss drops only the
+# summary. POSIX-only; Windows exits 111 and points at install.ps1.
 ```
 
 #### 22. Color Policy

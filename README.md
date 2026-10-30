@@ -61,13 +61,14 @@ version tags — and before publish, each archive is smoke-tested on its
 matching OS/arch runner by installing it through `install.sh`/`install.ps1`
 and running `tau --version`/`--help`.
 
-**Updating:** `tau upgrade` checks the latest release, asks before changing
-anything (a `[y/N]` prompt on a terminal, `--yes` for scripts), then re-runs
-this same verified installer over the running binary — no separate update
-channel to trust. `tau upgrade --dry-run` prints the plan first; `tau version
---check` is the read-only form. Audit what changed between releases in
-[CHANGELOG.md](CHANGELOG.md) — its tagged-release sections are generated
-from the release notes themselves.
+**Updating:** `tau upgrade` checks the latest release, shows the release
+notes since your version before changing anything (a `[y/N]` prompt on a
+terminal, `--yes` for scripts), then re-runs this same verified installer
+over the running binary — no separate update channel to trust. `tau
+upgrade --dry-run` prints the plan plus the pending changelog entries;
+`tau version --check` is the read-only form. Audit what changed between
+releases in [CHANGELOG.md](CHANGELOG.md) — its tagged-release sections are
+generated from the release notes themselves.
 
 **Windows (PowerShell — installs `tau-windows-x86_64.zip` to
 `%LOCALAPPDATA%\Programs\tau`):**
@@ -226,7 +227,7 @@ tau gives agents what they need:
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
 - **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, editor ACP client wiring (`client_<name>` rows flag missing or stale `tau acp serve` entries for detected Zed/VS Code/JetBrains/Neovim installs, plus the mcacp bridge config for Windsurf/Gemini CLI/Claude Desktop), curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); secret-hygiene rows warn on plaintext credentials on disk (`plaintext_secrets` — `api_key`/`keys.*` config values and `env` blocks in client settings, reporting key names never values) and on client files readable by group/other (`client_permissions`); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling (stream contract + JSON Schema: [docs/doctor-json.md](docs/doctor-json.md)); `--fix` remediates common issues (missing config, loose config and client-file permissions, missing completions, missing/stale client wiring) behind per-fix confirmation, and `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network; an `update_available` check warns when a newer release exists (`tau version --check` is the standalone form; opt out via `TAU_NO_UPDATE_CHECK=1`)
 - **Update check** — `tau version --check` compares the running binary against the latest GitHub release and prints `update_available` + the release URL; non-blocking (always exits 0, short timeout) and opt-out via `TAU_NO_UPDATE_CHECK`. `tau version --json` prints the stable `{"name","version"}` object for scripts
-- **Self-update** — `tau upgrade` reuses that check, confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan
+- **Self-update** — `tau upgrade` reuses that check, shows a pre-upgrade summary of the release notes since your version (the tag's `CHANGELOG.md`, overridable via `TAU_CHANGELOG_URL`), confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan + pending changes
 - **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all` — MCP clients are wired through the mcacp bridge), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI, and `--dry-run` previews every write step (`would_*` statuses + `"dry_run":true`) without touching the filesystem
 - **Bug reports** — `tau bug` builds a pre-filled GitHub issue URL carrying the redacted `doctor --report` diagnostics bundle (`--open` launches the system browser, `--out` also writes the bundle to a file, `--no-report` omits diagnostics)
 - **Offline error catalog** — `tau explain <code|type>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md))
