@@ -76,6 +76,25 @@ contains() {
   return 0
 }
 
+# lacks <name> <haystack> <needle> — pass when the needle is ABSENT.
+lacks() {
+  local name="$1"
+  local haystack="$2"
+  local needle="$3"
+  case "$haystack" in
+    *"$needle"*)
+      printf 'not ok %d - %s (found %q)\n' $((pass + fail + skip + 1)) "$name" "$needle"
+      fail=$((fail + 1))
+      [ "$SMOKE_DEBUG" = "1" ] && diag "unexpected substring '$needle' present in output (length ${#haystack} chars)"
+      ;;
+    *)
+      printf 'ok  %d - %s\n' $((pass + fail + skip + 1)) "$name"
+      pass=$((pass + 1))
+      ;;
+  esac
+  return 0
+}
+
 # skip_test <name> [reason]
 skip_test() {
   local name="$1"

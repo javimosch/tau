@@ -370,6 +370,24 @@ test_group_upgrade() {
   printf '{"tag_name":"v99.9.9","name":"newer"}' > "$SMOKE_TEMP/ug-rel-newer.json"
   printf '{"tag_name":"v0.4.0"}' > "$SMOKE_TEMP/ug-rel-same.json"
 
+  # Changelog stub for the pre-upgrade summary: a 99.9.9 section inside the
+  # (0.4.0, 99.9.9] window plus an already-installed section that must be
+  # filtered out. TAU_CHANGELOG_URL points at it wherever update_available.
+  cat > "$SMOKE_TEMP/ug-changelog.md" <<'EOF'
+# Changelog
+
+## [99.9.9] - 2027-01-01
+
+### Added
+- smoke-stub feature
+- second bullet
+
+## [0.4.0] - 2026-06-12
+
+### Added
+- already installed
+EOF
+
   # 1. Arg validation: unknown flag, positional and missing --dir value all
   #    exit 80 with an invalid_argument envelope on stderr.
   capture ug_bogus "$BIN" upgrade --bogus
@@ -391,13 +409,18 @@ test_group_upgrade() {
 
   # 3. Newer release but no --yes on a non-TTY stdin -> skipped, exit 1,
   #    detail points at --yes. stdin is pinned to /dev/null so the check is
-  #    deterministic even when the harness itself runs interactively.
+  #    deterministic even when the harness itself runs interactively. The
+  #    pre-upgrade summary still renders on stderr and in the report.
   capture ug_skip env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/ug-changelog.md" \
     sh -c '"$0" upgrade < /dev/null' "$BIN"
   ok "upgrade unconfirmed exit 1" "$ug_skip_rc" 1
   contains "unconfirmed status skipped" "$ug_skip_out" '"status":"skipped"'
   contains "unconfirmed detail names --yes" "$ug_skip_out" 'pass --yes'
   contains "unconfirmed carries release_url" "$ug_skip_out" '"release_url":"https://github.com/javimosch/tau/releases/tag/v99.9.9"'
+  contains "unconfirmed carries changelog entries" "$ug_skip_out" '"changelog":[{"version":"99.9.9"'
+  contains "unconfirmed summary on stderr" "$ug_skip_err" 'changes in tau 0.4.0 -> 99.9.9:'
+  contains "unconfirmed summary lifts the notes" "$ug_skip_err" 'smoke-stub feature'
 
   # 4. Opt-out: TAU_NO_UPDATE_CHECK short-circuits the check — checked:false,
   #    status skipped, reason names the var, exit 1.
@@ -413,20 +436,38 @@ test_group_upgrade() {
   contains "lookup-failure checked:false" "$ug_miss_out" '"checked":false'
   contains "lookup-failure status failed" "$ug_miss_out" '"status":"failed"'
 
-  # 6. --dry-run resolves the plan (installer URL + install dir) without
-  #    touching anything — status dry_run, exit 0.
-  capture ug_dry env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" TAU_INSTALL_DIR="$SMOKE_TEMP/ug-dry-dest" "$BIN" upgrade --dry-run
+  # 6. --dry-run resolves the plan (installer URL + install dir + release
+  #    notes) without touching anything — status dry_run, exit 0.
+  capture ug_dry env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/ug-changelog.md" \
+    TAU_INSTALL_DIR="$SMOKE_TEMP/ug-dry-dest" "$BIN" upgrade --dry-run
   ok "upgrade --dry-run exit 0" "$ug_dry_rc" 0
   contains "dry-run status" "$ug_dry_out" '"status":"dry_run"'
   contains "dry-run names the installer" "$ug_dry_out" 'install.sh'
   contains "dry-run resolves install_dir" "$ug_dry_out" "\"install_dir\":\"$SMOKE_TEMP/ug-dry-dest\""
+  contains "dry-run carries changelog entries" "$ug_dry_out" '"changelog":[{"version":"99.9.9","notes":"### Added\n- smoke-stub feature\n- second bullet"}]'
+  contains "dry-run summary on stderr" "$ug_dry_err" 'changes in tau 0.4.0 -> 99.9.9:'
   [ ! -e "$SMOKE_TEMP/ug-dry-dest" ]; ok "dry-run created nothing" "$?" 0
 
-  # 7. Installer download failure -> status failed, exit 1.
-  capture ug_noinst env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" TAU_INSTALL_URL="file://$SMOKE_TEMP/ug-no-such-install.sh" "$BIN" upgrade --yes
+  # 6b. A missing changelog drops the summary, never the plan — the report
+  #     simply carries no changelog field.
+  capture ug_drync env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/ug-no-changelog.md" \
+    "$BIN" upgrade --dry-run
+  ok "dry-run missing-changelog exit 0" "$ug_drync_rc" 0
+  contains "missing-changelog still dry_run" "$ug_drync_out" '"status":"dry_run"'
+  lacks "missing-changelog omits the field" "$ug_drync_out" '"changelog"'
+
+  # 7. Installer download failure -> status failed, exit 1 — the summary
+  #    still precedes the installer log on stderr.
+  capture ug_noinst env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/ug-changelog.md" \
+    TAU_INSTALL_URL="file://$SMOKE_TEMP/ug-no-such-install.sh" "$BIN" upgrade --yes
   ok "upgrade missing-installer exit 1" "$ug_noinst_rc" 1
   contains "missing-installer status failed" "$ug_noinst_out" '"status":"failed"'
   contains "missing-installer detail" "$ug_noinst_out" 'installer download failed'
+  contains "missing-installer keeps changelog" "$ug_noinst_out" '"changelog":[{"version":"99.9.9"'
+  contains "missing-installer summary on stderr" "$ug_noinst_err" 'changes in tau 0.4.0 -> 99.9.9:'
 
   # 8. Full staged e2e: newer release + staged installer + staged release
   #    tree -> --yes runs install.sh end to end (checksum verified on
@@ -456,15 +497,19 @@ test_group_upgrade() {
     (cd "$e2e/srv/download/v99.9.9" && \
       { sha256sum "$asset" 2>/dev/null || shasum -a 256 "$asset"; } > SHA256SUMS.txt)
     cp "$ROOT/install.sh" "$e2e/install.sh"
+    cp "$SMOKE_TEMP/ug-changelog.md" "$e2e/changelog.md"
 
     capture ug_yes env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
       TAU_INSTALL_URL="file://$e2e/install.sh" \
+      TAU_CHANGELOG_URL="file://$e2e/changelog.md" \
       TAU_BASE_URL="file://$e2e/srv" \
       TAU_INSTALL_DIR="$e2e/bin" \
       "$BIN" upgrade --yes
     ok "upgrade --yes e2e exit 0" "$ug_yes_rc" 0
     contains "e2e status upgraded" "$ug_yes_out" '"status":"upgraded"'
     contains "e2e detail reports dest" "$ug_yes_out" "installed tau 99.9.9 -> $e2e/bin/tau"
+    contains "e2e carries changelog entries" "$ug_yes_out" '"changelog":[{"version":"99.9.9"'
+    contains "e2e summary precedes installer log" "$ug_yes_err" 'changes in tau 0.4.0 -> 99.9.9:'
     contains "e2e installer verified checksum" "$ug_yes_err" 'checksum verified'
     [ -x "$e2e/bin/tau" ]; ok "e2e installed binary is executable" "$?" 0
     contains "e2e installed binary runs" "$("$e2e/bin/tau")" 'tau 99.9.9'
@@ -473,12 +518,14 @@ test_group_upgrade() {
     rm -f "$e2e/bin/tau"
     capture ug_envyes env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
       TAU_INSTALL_URL="file://$e2e/install.sh" \
+      TAU_CHANGELOG_URL="file://$e2e/changelog.md" \
       TAU_BASE_URL="file://$e2e/srv" \
       TAU_INSTALL_DIR="$e2e/bin" \
       TAU_YES=1 \
       "$BIN" upgrade
     ok "upgrade TAU_YES e2e exit 0" "$ug_envyes_rc" 0
     contains "TAU_YES e2e status upgraded" "$ug_envyes_out" '"status":"upgraded"'
+    contains "TAU_YES e2e carries changelog" "$ug_envyes_out" '"changelog":[{"version":"99.9.9"'
     [ -x "$e2e/bin/tau" ]; ok "TAU_YES e2e installed binary" "$?" 0
   else
     note "upgrade: skipping e2e install (unsupported host platform)"
@@ -2898,7 +2945,8 @@ _golden_env() {
   env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY \
       -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
       -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
-      -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u BROWSER \
+      -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u TAU_CHANGELOG_URL \
+      -u BROWSER \
       HOME="$_GOLDEN_HOME" "$@"
 }
 
@@ -3051,7 +3099,7 @@ PY
 _COLOR_SCRUB_U="-u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY \
 -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
 -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
--u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u BROWSER \
+-u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u TAU_CHANGELOG_URL -u BROWSER \
 -u NO_COLOR -u CLICOLOR -u CLICOLOR_FORCE"
 
 # The sweep calls below use `env $_COLOR_SCRUB_U` too — same scrub as
@@ -3081,6 +3129,14 @@ test_group_golden_color() {
   local mock_home="$SMOKE_TEMP/color-home"
   mkdir -p "$mock_home"
   printf '{"tag_name":"v99.9.9","name":"newer"}' > "$SMOKE_TEMP/color-rel-newer.json"
+  cat > "$SMOKE_TEMP/color-changelog.md" <<'EOF'
+# Changelog
+
+## [99.9.9] - 2027-01-01
+
+### Added
+- smoke-stub feature
+EOF
 
   local of ef cf
   of="$(mktemp)"; ef="$(mktemp)"; cf="$(mktemp)"
@@ -3104,6 +3160,7 @@ test_group_golden_color() {
   _color_sweep "config show"   env HOME="$mock_home" "$BIN" config show
   _color_sweep "setup --dry-run" env HOME="$mock_home" "$BIN" setup --dry-run
   _color_sweep "upgrade non-TTY" env TAU_UPDATE_URL="file://$SMOKE_TEMP/color-rel-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/color-changelog.md" \
     sh -c '"$0" upgrade < /dev/null' "$BIN"
 
   # ── Interactive [y/N] prompts on a real pty ──
@@ -3116,42 +3173,45 @@ test_group_golden_color() {
   local PTY="$ROOT/scripts/pty-run.py" pty_out="$SMOKE_TEMP/color-pty.bin"
   local errf="$SMOKE_TEMP/color-err.txt" feed=$'n\nn\nn\n'
   local rel="file://$SMOKE_TEMP/color-rel-newer.json"
+  local clog="file://$SMOKE_TEMP/color-changelog.md"
 
   # Positive control: a TTY stderr styles the prompt bold — proves the
-  # negative assertions below are not vacuous.
+  # negative assertions below are not vacuous. The pre-upgrade summary
+  # stays plain (informational, not a prompt) even on a styled TTY.
   python3 "$PTY" "$pty_out" "$feed" \
     env $_COLOR_SCRUB_U TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
-      "$BIN" upgrade || true
+      TAU_CHANGELOG_URL="$clog" "$BIN" upgrade || true
   _has_bold "upgrade prompt styled on a TTY" "$pty_out"
   contains "upgrade JSON still emitted" "$(cat "$pty_out")" '"status":"declined"'
+  contains "pre-upgrade summary emitted" "$(cat "$pty_out")" 'changes in tau 0.4.0 -> 99.9.9:'
 
   # Each documented opt-out keeps the TTY prompt plain.
   python3 "$PTY" "$pty_out" "$feed" \
     env $_COLOR_SCRUB_U NO_COLOR=1 TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
-      "$BIN" upgrade || true
+      TAU_CHANGELOG_URL="$clog" "$BIN" upgrade || true
   _no_esc "upgrade prompt plain under NO_COLOR" "$pty_out"
   contains "upgrade prompt text still emitted" "$(cat "$pty_out")" "install the update? [y/N]"
 
   python3 "$PTY" "$pty_out" "$feed" \
     env $_COLOR_SCRUB_U CLICOLOR=0 TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
-      "$BIN" upgrade || true
+      TAU_CHANGELOG_URL="$clog" "$BIN" upgrade || true
   _no_esc "upgrade prompt plain under CLICOLOR=0" "$pty_out"
 
   python3 "$PTY" "$pty_out" "$feed" \
     env $_COLOR_SCRUB_U TERM=dumb HOME="$mock_home" TAU_UPDATE_URL="$rel" \
-      "$BIN" upgrade || true
+      TAU_CHANGELOG_URL="$clog" "$BIN" upgrade || true
   _no_esc "upgrade prompt plain under TERM=dumb" "$pty_out"
 
   # stderr redirected to a file is non-TTY: force styles it (golden),
-  # default leaves it plain (golden).
+  # default leaves it plain (golden). Both pin summary + prompt bytes.
   python3 "$PTY" "$pty_out" "$feed" \
     env $_COLOR_SCRUB_U CLICOLOR_FORCE=1 TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
-      sh -c '"$0" upgrade 2>"$1"' "$BIN" "$errf" || true
+      TAU_CHANGELOG_URL="$clog" sh -c '"$0" upgrade 2>"$1"' "$BIN" "$errf" || true
   _golden_stream color-upgrade-force.stderr "$errf"
 
   python3 "$PTY" "$pty_out" "$feed" \
     env $_COLOR_SCRUB_U TERM=xterm-256color HOME="$mock_home" TAU_UPDATE_URL="$rel" \
-      sh -c '"$0" upgrade 2>"$1"' "$BIN" "$errf" || true
+      TAU_CHANGELOG_URL="$clog" sh -c '"$0" upgrade 2>"$1"' "$BIN" "$errf" || true
   _golden_stream color-upgrade-plain.stderr "$errf"
 
   # doctor --fix prompts (fresh HOME -> scaffold + completions fixes).
@@ -3435,6 +3495,20 @@ test_group_golden_maintenance() {
   printf '{"tag_name":"v99.9.9","name":"newer"}' > "$stubs/newer.json"
   printf '{"tag_name":"v0.4.0"}' > "$stubs/same.json"
   printf 'not json' > "$stubs/bad.json"
+  cat > "$stubs/changelog.md" <<'EOF'
+# Changelog
+
+## [99.9.9] - 2027-01-01
+
+### Added
+- smoke-stub feature
+- second bullet
+
+## [0.4.0] - 2026-06-12
+
+### Added
+- already installed
+EOF
 
   golden_check   vc-opt-out        0 env TAU_NO_UPDATE_CHECK=1 "$BIN" version --check
   golden_check   vc-newer          0 env TAU_UPDATE_URL="file://$stubs/newer.json" "$BIN" version --check
@@ -3459,11 +3533,17 @@ test_group_golden_maintenance() {
   golden_check   ug-up-to-date       0 env TAU_UPDATE_URL="file://$stubs/same.json" "$BIN" upgrade
   golden_check_n ug-lookup-failed    1 env TAU_UPDATE_URL="file://$stubs/missing.json" "$BIN" upgrade --yes
   golden_check_n ug-unconfirmed      1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_CHANGELOG_URL="file://$stubs/changelog.md" \
     TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" \
     sh -c '"$0" upgrade < /dev/null' "$BIN"
   golden_check_n ug-dry-run          0 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_CHANGELOG_URL="file://$stubs/changelog.md" \
+    TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --dry-run
+  golden_check_n ug-dry-no-changelog 0 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
     TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --dry-run
   golden_check_n ug-installer-failed 1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_CHANGELOG_URL="file://$stubs/changelog.md" \
     TAU_INSTALL_URL="file://$stubs/no-such-install.sh" \
     TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
 }

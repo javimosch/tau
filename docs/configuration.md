@@ -254,6 +254,7 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 | `TAU_NO_UPDATE_CHECK` | Any non-empty, non-`0` value disables the update check everywhere — `tau version --check`, `tau upgrade`, and the `tau doctor` `update_available` warning. |
 | `TAU_UPDATE_URL` | Overrides the release lookup URL used by the update check (default: the GitHub latest-release API). Useful for mirrors/proxies and `file://` stubs in tests. |
 | `TAU_INSTALL_URL` | Overrides the installer script `tau upgrade` downloads and runs (default: the `install.sh` shipped at the release tag). Useful for mirrors and `file://` stubs in tests. |
+| `TAU_CHANGELOG_URL` | Overrides the changelog `tau upgrade` fetches for its pre-upgrade summary (default: the `CHANGELOG.md` shipped at the release tag). Useful for mirrors and `file://` stubs in tests; a fetch miss simply drops the summary, never the upgrade. |
 | `TAU_INSTALL_DIR` | `tau upgrade` install destination when `--dir` is absent (default: the running binary's own directory, else the installer's `~/.local/bin`). Also honored by `install.sh` itself. |
 | `XIAOMI_API_KEY`, `PIZIG_API_KEY` | API keys for the `xiaomi` provider (tried in that order). |
 | `OPENAI_API_KEY` | API key for the `openai` provider. |

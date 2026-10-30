@@ -167,14 +167,16 @@ Version:
                               object even without --verbose
                               (schema/tau-version.schema.json)
   tau upgrade                 Self-update in place: check the latest
-                              release, confirm, then run the release's
-                              own verified install.sh (SHA256-checked,
-                              fail-closed). POSIX-only.
+                              release, show the release notes since
+                              your version, confirm, then run the
+                              release's own verified install.sh
+                              (SHA256-checked, fail-closed). POSIX-only.
       --yes, -y               Upgrade without prompting (env TAU_YES=1);
                               a TTY gets a [y/N] prompt instead
       --dir <path>            Install destination (default: the running
                               binary's directory; env TAU_INSTALL_DIR)
-      --dry-run               Print the resolved plan; install nothing
+      --dry-run               Print the resolved plan + release notes;
+                              install nothing
 
 Models:
   tau models                    List available providers and models

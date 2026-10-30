@@ -98,7 +98,7 @@ added; existing fields keep their names, types, and meaning):
 | `tau version [--json]` / `--verbose` / `--check` | `{"name","version"}` (+ build fields under `--verbose`, check fields under `--check`) | [schema/tau-version.schema.json](../schema/tau-version.schema.json) |
 | `tau setup` | one NDJSON object per step + terminal verdict (`"dry_run":true` under `--dry-run`, `"yes"`/`"non_interactive"` markers) | this file |
 | `tau bug` | `{"title","labels","url","body","report","url_truncated","out","opened","done":true}`; always exit 0 | this file |
-| `tau upgrade` | JSON step/verdict output; POSIX-only (exit 111 elsewhere) | this file |
+| `tau upgrade` | JSON step/verdict output; `changelog` entries appear when the release notes fetch succeeds; POSIX-only (exit 111 elsewhere) | this file |
 | `tau fleet` | manifests + status as pretty-printed JSON on stdout | this file |
 
 Two cross-cutting conventions are part of the contract:
@@ -155,7 +155,9 @@ checks validate against it ([docs/acp.md](acp.md),
   filename so `latest/download/` URLs are permanent.
 - `tau upgrade` reuses the same verified installer path (env contract:
   `TAU_BASE_URL`, `TAU_INSTALL_DIR`, `TAU_INSTALL_URL`,
-  `TAU_SKIP_CHECKSUM`, `TAU_VERIFY_SIGSTORE` flow through to it).
+  `TAU_SKIP_CHECKSUM`, `TAU_VERIFY_SIGSTORE` flow through to it) and
+  fetches the release tag's `CHANGELOG.md` for its pre-upgrade summary
+  (`TAU_CHANGELOG_URL` overrides; a fetch miss drops only the summary).
 
 ## Informational surfaces
 

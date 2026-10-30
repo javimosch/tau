@@ -122,6 +122,10 @@ failed"` (the `install.sh` fetched from the release tag — or `TAU_INSTALL_URL`
 — didn't arrive) and exit **111** on Windows, where self-update is
 unsupported — re-run `install.ps1` instead. A successful `upgrade` prints
 `{"status":"upgraded",…}`; `"skipped"` when already current — both exit 0.
+The release-notes preview (`changes in tau …` on stderr plus the report's
+`"changelog"` field) is advisory only: when the tag's `CHANGELOG.md` can't
+be fetched (`TAU_CHANGELOG_URL` overrides the source, e.g. for mirrors)
+the summary is silently dropped and the upgrade proceeds.
 
 After install, `tau setup --yes` runs the whole onboarding chain unattended
 (init → completions → editor ACP client config → `doctor` health report) as

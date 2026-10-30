@@ -8,7 +8,12 @@
 // checksum gating for free (plus its TAU_BASE_URL/TAU_SKIP_CHECKSUM/
 // TAU_VERIFY_SIGSTORE env contract, which flows through the child env).
 // TAU_INSTALL_URL overrides the installer script URL (file:// stubs in
-// tests, mirrors behind proxies). The install destination resolves as
+// tests, mirrors behind proxies). When an update exists the tag's own
+// CHANGELOG.md is fetched too (TAU_CHANGELOG_URL overrides): the sections
+// between the installed and target versions render as a pre-upgrade
+// summary on stderr before the prompt/install and ride along as the
+// report's "changelog" field — best-effort, a fetch/parse miss drops the
+// summary, never the upgrade. The install destination resolves as
 // --dir > TAU_INSTALL_DIR > the running binary's directory > the
 // installer's own default. POSIX-only — Windows is told to re-run
 // install.ps1 (exit 111, unimplemented).
@@ -42,6 +47,13 @@ pub const Status = enum {
     dry_run,
 };
 
+/// One release-notes section lifted from the tag's CHANGELOG.md — the
+/// `## [x.y.z]` heading version plus the section body verbatim.
+pub const ChangelogEntry = struct {
+    version: []const u8,
+    notes: []const u8,
+};
+
 /// One upgrade result — serialized as a single JSON object on stdout.
 pub const Report = struct {
     checked: bool,
@@ -52,6 +64,9 @@ pub const Report = struct {
     detail: []const u8,
     release_url: ?[]const u8 = null,
     install_dir: ?[]const u8 = null,
+    /// CHANGELOG sections between the installed and target versions;
+    /// present only when the fetch produced at least one matching section.
+    changelog: ?[]const ChangelogEntry = null,
 };
 
 /// Format the report as one JSON object. Dynamic strings (detail, paths)
@@ -92,6 +107,18 @@ pub fn formatReport(arena: std.mem.Allocator, r: Report) ![]u8 {
         try json.escapeInto(arena, &buf, d);
         try buf.appendSlice(arena, "\"");
     }
+    if (r.changelog) |entries| {
+        try buf.appendSlice(arena, ",\"changelog\":[");
+        for (entries, 0..) |e, i| {
+            if (i > 0) try buf.appendSlice(arena, ",");
+            try buf.appendSlice(arena, "{\"version\":\"");
+            try json.escapeInto(arena, &buf, e.version);
+            try buf.appendSlice(arena, "\",\"notes\":\"");
+            try json.escapeInto(arena, &buf, e.notes);
+            try buf.appendSlice(arena, "\"}");
+        }
+        try buf.appendSlice(arena, "]");
+    }
     try buf.appendSlice(arena, "}");
     return buf.items;
 }
@@ -123,6 +150,110 @@ pub fn resolveInstallDir(io: std.Io, arena: std.mem.Allocator, cfg: Config, env:
     }
     const exe = std.process.executablePathAlloc(io, arena) catch return null;
     return std.fs.path.dirname(exe);
+}
+
+/// Changelog URL: TAU_CHANGELOG_URL override, else the CHANGELOG.md
+/// shipped at the release tag being installed — the file CI regenerates
+/// from the release notes users audit before upgrading.
+pub fn changelogUrl(arena: std.mem.Allocator, env: *std.process.Environ.Map, tag: []const u8) ![]u8 {
+    if (env.get("TAU_CHANGELOG_URL")) |u| {
+        if (u.len > 0) return arena.dupe(u8, u);
+    }
+    return std.fmt.allocPrint(arena, "https://raw.githubusercontent.com/javimosch/tau/{s}/CHANGELOG.md", .{tag});
+}
+
+/// Version from a `## [x.y.z] - date` heading, or null for any other
+/// heading shape (`## [Unreleased]`, `## Notes`). The brackets keep this
+/// from matching plain-text `##` headings.
+fn headingVersion(line: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, "## [")) return null;
+    const close = std.mem.indexOfScalarPos(u8, line, 4, ']') orelse return null;
+    const v = line[4..close];
+    return if (v.len > 0) v else null;
+}
+
+/// true when `v` parses and falls in (current, latest] — the window a
+/// pre-upgrade summary covers. Unparseable versions never match.
+fn versionInRange(current: []const u8, v: []const u8, latest: []const u8) bool {
+    const lo = update.compareVersions(current, v) orelse return false;
+    const hi = update.compareVersions(v, latest) orelse return false;
+    return lo == .lt and hi != .gt;
+}
+
+/// Lift the `## [x.y.z]` sections of a Keep-a-Changelog file whose version
+/// falls in (current, latest], newest-first in file order. A section's
+/// body runs to the next `## ` heading, a `[x.y.z]: url` link definition,
+/// or EOF; `[Unreleased]` and unparseable headings never match the range.
+pub fn changelogEntries(arena: std.mem.Allocator, text: []const u8, current: []const u8, latest: []const u8) ![]ChangelogEntry {
+    var list: std.ArrayList(ChangelogEntry) = .empty;
+    var sec_ver: []const u8 = "";
+    var sec_start: usize = 0;
+    var open = false;
+    var pos: usize = 0;
+    while (pos <= text.len) {
+        const nl = std.mem.indexOfScalarPos(u8, text, pos, '\n') orelse text.len;
+        const line = text[pos..nl];
+        const is_head = std.mem.startsWith(u8, line, "## ");
+        const is_linkdef = line.len > 2 and line[0] == '[' and
+            std.mem.indexOf(u8, line, "]:") != null;
+        if (is_head or is_linkdef) {
+            if (open) {
+                open = false;
+                const body = std.mem.trim(u8, text[sec_start..pos], " \t\r\n");
+                // Dupe into the arena: callers may free the source text
+                // (the fetched changelog body) once parsing returns.
+                if (body.len > 0 and versionInRange(current, sec_ver, latest))
+                    try list.append(arena, .{
+                        .version = try arena.dupe(u8, sec_ver),
+                        .notes = try arena.dupe(u8, body),
+                    });
+            }
+            if (is_head) {
+                sec_ver = headingVersion(line) orelse "";
+                sec_start = nl + 1;
+                open = true;
+            }
+        }
+        pos = nl + 1;
+    }
+    if (open) {
+        // A trailing `## ` heading with no following line leaves
+        // sec_start == text.len + 1 — clamp so the empty body is skipped.
+        const body = std.mem.trim(u8, text[@min(sec_start, text.len)..text.len], " \t\r\n");
+        if (body.len > 0 and versionInRange(current, sec_ver, latest))
+            try list.append(arena, .{
+                .version = try arena.dupe(u8, sec_ver),
+                .notes = try arena.dupe(u8, body),
+            });
+    }
+    return list.items;
+}
+
+/// Human-readable "what's new" preview for stderr — runs ahead of the
+/// [y/N] prompt and the installer log so an upgrade is never a blind jump.
+/// Plain text, never styled: the summary is informational, not a prompt.
+pub fn formatChangelogSummary(arena: std.mem.Allocator, entries: []const ChangelogEntry, current: []const u8, latest: []const u8) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "changes in tau {s} -> {s}:\n", .{ current, latest }));
+    for (entries) |e| {
+        try buf.appendSlice(arena, "[");
+        try buf.appendSlice(arena, e.version);
+        try buf.appendSlice(arena, "]\n");
+        try buf.appendSlice(arena, e.notes);
+        try buf.appendSlice(arena, "\n\n");
+    }
+    return buf.items;
+}
+
+/// Best-effort fetch of the tag's CHANGELOG.md and extraction of the
+/// sections in (installed, latest]. Null when the fetch fails or no
+/// section matches — the summary is advisory and never blocks the upgrade.
+fn fetchChangelog(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, tag: []const u8, latest: []const u8) ?[]ChangelogEntry {
+    const url = changelogUrl(arena, env, tag) catch return null;
+    const body = update.fetchLatest(io, gpa, arena, url) orelse return null;
+    defer gpa.free(body);
+    const entries = changelogEntries(arena, body, ver.version, latest) catch return null;
+    return if (entries.len == 0) null else entries;
 }
 
 /// Create a fresh $TMPDIR/tau-upgrade-<ts> staging dir; the caller removes
@@ -256,6 +387,15 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     const dir = resolveInstallDir(io, arena, cfg, env);
     const url = try installerUrl(arena, env, tag);
 
+    // Pre-upgrade summary: the tag's CHANGELOG.md sections in (installed,
+    // latest] — rendered on stderr for humans and carried in the report
+    // for scripts. Best-effort; a fetch/parse miss changes nothing else.
+    const changelog = fetchChangelog(io, gpa, arena, env, tag, latest);
+    if (changelog) |entries| {
+        const summary = formatChangelogSummary(arena, entries, ver.version, latest) catch null;
+        if (summary) |s| term.err(s);
+    }
+
     if (cfg.upgrade_dry_run) {
         emit(arena, .{
             .checked = true,
@@ -266,6 +406,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
             .detail = std.fmt.allocPrint(arena, "would install tau {s} via {s} into {s}", .{ latest, url, dir orelse "the installer default (~/.local/bin)" }) catch "would install",
             .release_url = release_url,
             .install_dir = dir,
+            .changelog = changelog,
         });
         return 0;
     }
@@ -287,6 +428,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
             .detail = if (interactive) "declined at prompt" else "not confirmed — pass --yes to upgrade non-interactively",
             .release_url = release_url,
             .install_dir = dir,
+            .changelog = changelog,
         });
         return if (interactive) 0 else 1;
     }
@@ -296,6 +438,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     rep.tag = tag;
     rep.update_available = true;
     rep.release_url = release_url;
+    rep.changelog = changelog;
     emit(arena, rep);
     return switch (rep.status) {
         .upgraded => 0,
@@ -401,4 +544,133 @@ test "formatReport: pinned JSON shape for each outcome" {
     });
     try testing.expect(std.mem.indexOf(u8, esc, "\\\"c:\\\\dir\\\"") != null);
     try testing.expect(std.mem.indexOf(u8, esc, "not found\\n") != null);
+}
+
+test "formatReport: changelog entries serialize as {version,notes} objects" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const entries = [_]ChangelogEntry{
+        .{ .version = "0.5.0", .notes = "### Added\n- new thing" },
+        .{ .version = "0.4.1", .notes = "### Fixed\n- a \"quoted\" bug" },
+    };
+    const rep = try formatReport(a, .{
+        .checked = true,
+        .latest = "0.5.0",
+        .tag = "v0.5.0",
+        .update_available = true,
+        .status = .dry_run,
+        .detail = "would install",
+        .changelog = &entries,
+    });
+    try testing.expect(std.mem.indexOf(u8, rep, "\"changelog\":[{\"version\":\"0.5.0\",\"notes\":\"### Added\\n- new thing\"},{\"version\":\"0.4.1\",\"notes\":\"### Fixed\\n- a \\\"quoted\\\" bug\"}]}") != null);
+
+    // Absent field when no summary was produced.
+    const none = try formatReport(a, .{
+        .checked = true,
+        .latest = "0.5.0",
+        .tag = "v0.5.0",
+        .update_available = true,
+        .status = .dry_run,
+        .detail = "would install",
+    });
+    try testing.expect(std.mem.indexOf(u8, none, "changelog") == null);
+}
+
+test "changelogUrl: TAU_CHANGELOG_URL overrides; default tracks the tag" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+
+    const def = try changelogUrl(a, &env, "v9.9.9");
+    try testing.expectEqualStrings("https://raw.githubusercontent.com/javimosch/tau/v9.9.9/CHANGELOG.md", def);
+
+    try env.put("TAU_CHANGELOG_URL", "file:///tmp/CHANGELOG.md");
+    try testing.expectEqualStrings("file:///tmp/CHANGELOG.md", try changelogUrl(a, &env, "v9.9.9"));
+
+    try env.put("TAU_CHANGELOG_URL", "");
+    try testing.expectEqualStrings(def, try changelogUrl(a, &env, "v9.9.9"));
+}
+
+test "changelogEntries: lifts in-range sections, newest first" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const text =
+        \\# Changelog
+        \\
+        \\## [Unreleased]
+        \\
+        \\### Added
+        \\- work in progress
+        \\
+        \\## [99.9.9] - 2027-01-01
+        \\
+        \\### Added
+        \\- shiny feature
+        \\- another one
+        \\
+        \\## [0.5.0] - 2026-12-01
+        \\
+        \\### Fixed
+        \\- mid-range fix
+        \\
+        \\[99.9.9]: https://example.com/rel/99.9.9
+        \\[0.5.0]: https://example.com/rel/0.5.0
+        \\## [0.4.0] - 2026-06-12
+        \\
+        \\### Added
+        \\- already installed
+        \\
+    ;
+
+    const entries = try changelogEntries(a, text, "0.4.0", "99.9.9");
+    try testing.expectEqual(@as(usize, 2), entries.len);
+    try testing.expectEqualStrings("99.9.9", entries[0].version);
+    try testing.expectEqualStrings("### Added\n- shiny feature\n- another one", entries[0].notes);
+    try testing.expectEqualStrings("0.5.0", entries[1].version);
+    try testing.expectEqualStrings("### Fixed\n- mid-range fix", entries[1].notes);
+
+    // A single-step range picks just the target section.
+    const step = try changelogEntries(a, text, "0.5.0", "99.9.9");
+    try testing.expectEqual(@as(usize, 1), step.len);
+    try testing.expectEqualStrings("99.9.9", step[0].version);
+
+    // Nothing in range -> empty (the report omits the field).
+    const none = try changelogEntries(a, text, "0.4.0", "0.4.0");
+    try testing.expectEqual(@as(usize, 0), none.len);
+}
+
+test "changelogEntries: heading edge cases and missing trailing newline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Last section ends at EOF without a newline; a plain `## ` heading
+    // closes a section but never matches the range itself.
+    const entries = try changelogEntries(a, "## [0.5.0] - 2026-01-01\n- item\n## Notes\n## [0.4.0]\n- old", "0.3.0", "0.5.0");
+    try testing.expectEqual(@as(usize, 2), entries.len);
+    try testing.expectEqualStrings("0.5.0", entries[0].version);
+    try testing.expectEqualStrings("- item", entries[0].notes);
+    try testing.expectEqualStrings("0.4.0", entries[1].version);
+
+    // A dangling heading at EOF is just skipped.
+    const dangle = try changelogEntries(a, "## [0.5.0]", "0.3.0", "0.5.0");
+    try testing.expectEqual(@as(usize, 0), dangle.len);
+}
+
+test "formatChangelogSummary: header + per-version labeled notes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const entries = [_]ChangelogEntry{
+        .{ .version = "0.5.0", .notes = "### Added\n- x" },
+    };
+    const s = try formatChangelogSummary(a, &entries, "0.4.0", "0.5.0");
+    try testing.expectEqualStrings("changes in tau 0.4.0 -> 0.5.0:\n[0.5.0]\n### Added\n- x\n\n", s);
 }
