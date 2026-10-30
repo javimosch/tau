@@ -12,12 +12,20 @@
 //
 // `--fix` remediates fixable outcomes: scaffold a missing config (init),
 // restore an unparseable one (moved to config.json.bak first), tighten POSIX
-// permission bits (0700 dir / 0600 file), install shell completions, and
-// wire `tau acp serve` into detected editor clients (a fresh settings file,
-// or a paste-ready snippet when the file can't be touched). Fixes apply
-// per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
+// permission bits (0700 dir / 0600 file), install shell completions, wire
+// `tau acp serve` into detected editor clients (a fresh settings file, or a
+// paste-ready snippet when the file can't be touched), and restrict client
+// settings files to 0600 (they can embed API keys in env blocks). Fixes
+// apply per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
 // non-interactive runs report them as skipped. The emitted report reflects
 // the post-fix state when anything was applied.
+//
+// Two advisory checks watch secret hygiene: `plaintext_secrets` warns when
+// credentials sit on disk as plaintext (config `api_key`/`keys.*` values or
+// env blocks inside client settings files) — not auto-fixable, since
+// deleting a credential is destructive; the hint names the remediation —
+// and `client_permissions` warns (fixable) when client files grant
+// group/other access.
 //
 // `--report` renders the same run as a Markdown diagnostics bundle for
 // pasting into a GitHub issue: verdict, build metadata, the checks table,
@@ -71,6 +79,9 @@ pub const FixKind = enum {
     wire_client_gemini,
     /// Same for Claude Desktop (`mcpServers` in claude_desktop_config.json via mcacp).
     wire_client_claude_desktop,
+    /// chmod 0600 on detected client settings files (+ mcacp.json) — env
+    /// blocks inside them can carry API keys.
+    chmod_client_files,
 };
 
 pub const Check = struct {
@@ -463,6 +474,169 @@ fn checkConfigPermissions(io: std.Io, arena: std.mem.Allocator, env: *std.proces
 fn tryFmt(msg: *std.ArrayList(u8), arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) void {
     const s = std.fmt.allocPrint(arena, fmt, args) catch return;
     msg.appendSlice(arena, s) catch {};
+}
+
+/// Every client-side file that can hold credentials: all JSON client
+/// settings paths (nvim has none — its config is Lua) plus the mcacp bridge
+/// config shared by the MCP-bridge clients. Existence is a caller concern;
+/// this is just "where secrets could live".
+fn clientSecretPaths(arena: std.mem.Allocator, home: []const u8) ![][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    for (setup.all_clients) |k| {
+        if (try setup.clientSettingsPath(arena, home, k)) |p|
+            try list.append(arena, p);
+    }
+    try list.append(arena, try setup.mcacpConfigPath(arena, home));
+    return list.toOwnedSlice(arena);
+}
+
+/// Read + JSONC-parse a file, or null when it doesn't exist / can't be
+/// read / can't be parsed — none of those are this check's problem (other
+/// rows report them).
+fn readJsonFile(io: std.Io, arena: std.mem.Allocator, path: []const u8) ?std.json.Value {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch return null;
+    const stripped = configfile.stripComments(arena, bytes) catch return null;
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch null;
+}
+
+/// Credential-shaped values in a client settings file: every "env" object
+/// (the MCP convention for passing secrets to a server entry) contributes
+/// its non-empty string values. Only the count leaves this function —
+/// values are secrets and key names alone are reported.
+fn countEnvSecrets(v: std.json.Value) usize {
+    var n: usize = 0;
+    switch (v) {
+        .object => |o| {
+            var it = o.iterator();
+            while (it.next()) |e| {
+                if (std.mem.eql(u8, e.key_ptr.*, "env") and e.value_ptr.* == .object) {
+                    var eit = e.value_ptr.object.iterator();
+                    while (eit.next()) |ev| {
+                        if (ev.value_ptr.* == .string and ev.value_ptr.string.len > 0) n += 1;
+                    }
+                } else {
+                    n += countEnvSecrets(e.value_ptr.*);
+                }
+            }
+        },
+        .array => |arr| for (arr.items) |item| {
+            n += countEnvSecrets(item);
+        },
+        else => {},
+    }
+    return n;
+}
+
+/// Check: plaintext credentials sitting on disk. Scans the tau config file
+/// (the `api_key` and `keys.<provider>` fields tau reads as credentials) and
+/// every existing client settings file (env blocks in agent/server entries
+/// are the documented way to pass API keys to MCP servers). Warns — stored
+/// plaintext is a hygiene risk, not a breakage — and is deliberately not
+/// auto-fixable: deleting someone's only credential is destructive. The
+/// hint names the remediation (`tau config unset`, env vars) and points
+/// the permissions angle at --fix. Values are never printed — key names
+/// and counts only.
+fn checkPlaintextSecrets(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const home = env.get("HOME") orelse
+        return .{ .name = "plaintext_secrets", .status = .skip, .message = "skipped (HOME is not set)" };
+    var findings: std.ArrayList(u8) = .empty;
+    var inspected: usize = 0;
+
+    // The tau config: api_key plus every non-empty keys.<provider> string.
+    if (configfile.path(arena, env)) |p| {
+        if (readJsonFile(io, arena, p)) |parsed| {
+            inspected += 1;
+            if (parsed == .object) {
+                var names: std.ArrayList(u8) = .empty;
+                if (parsed.object.get("api_key")) |v| {
+                    if (v == .string and v.string.len > 0) names.appendSlice(arena, "api_key") catch {};
+                }
+                if (parsed.object.get("keys")) |v| {
+                    if (v == .object) {
+                        var it = v.object.iterator();
+                        while (it.next()) |e| {
+                            if (e.value_ptr.* == .string and e.value_ptr.string.len > 0) {
+                                if (names.items.len > 0) names.appendSlice(arena, ", ") catch {};
+                                tryFmt(&names, arena, "keys.{s}", .{e.key_ptr.*});
+                            }
+                        }
+                    }
+                }
+                if (names.items.len > 0)
+                    tryFmt(&findings, arena, "{s}: {s}", .{ p, names.items });
+            }
+        }
+    }
+
+    // Client files: env blocks carry credentials to MCP/ACP server entries.
+    for (clientSecretPaths(arena, home) catch return .{
+        .name = "plaintext_secrets",
+        .status = .skip,
+        .message = "skipped (could not resolve client settings paths)",
+    }) |p| {
+        const parsed = readJsonFile(io, arena, p) orelse continue;
+        inspected += 1;
+        const n = countEnvSecrets(parsed);
+        if (n > 0) {
+            if (findings.items.len > 0) findings.appendSlice(arena, "; ") catch {};
+            tryFmt(&findings, arena, "{s}: {d} env value{s}", .{ p, n, if (n == 1) "" else "s" });
+        }
+    }
+
+    if (inspected == 0)
+        return .{ .name = "plaintext_secrets", .status = .skip, .message = "skipped (no config or client settings files found)" };
+    if (findings.items.len == 0)
+        return .{ .name = "plaintext_secrets", .status = .ok, .message = "no plaintext credentials in config/client files" };
+    return .{
+        .name = "plaintext_secrets",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "plaintext credentials on disk — {s}", .{findings.items}) catch "plaintext credentials on disk",
+        .hint = "prefer env vars for credentials — 'tau config unset api_key|keys.<provider>' removes config keys; keep secret-bearing files at 0600 ('tau doctor --fix' restricts client files)",
+    };
+}
+
+/// Check (POSIX only): client settings files (and the mcacp bridge config)
+/// don't grant group/other access — env blocks inside them can hold API
+/// keys. Missing files are silently skipped (other checks own that);
+/// nothing to inspect -> skip row. Loose files warn and are auto-fixable
+/// to 0600 via chmod_client_files.
+fn checkClientPermissions(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .name = "client_permissions", .status = .skip, .message = "skipped (POSIX permission bits do not apply on Windows)" };
+    }
+    const home = env.get("HOME") orelse
+        return .{ .name = "client_permissions", .status = .skip, .message = "skipped (HOME is not set)" };
+    var loose: std.ArrayList(u8) = .empty;
+    var inspected: usize = 0;
+    for (clientSecretPaths(arena, home) catch return .{
+        .name = "client_permissions",
+        .status = .skip,
+        .message = "skipped (could not resolve client settings paths)",
+    }) |p| {
+        const st = std.Io.Dir.cwd().statFile(io, p, .{}) catch continue;
+        if (st.kind == .directory) continue;
+        inspected += 1;
+        const mode = st.permissions.toMode() & 0o777;
+        if ((mode & 0o077) != 0) {
+            if (loose.items.len > 0) loose.appendSlice(arena, "; ") catch {};
+            tryFmt(&loose, arena, "{s} mode {o:0>3}", .{ p, mode });
+        }
+    }
+    if (inspected == 0)
+        return .{ .name = "client_permissions", .status = .skip, .message = "skipped (no client settings files found)" };
+    if (loose.items.len == 0)
+        return .{
+            .name = "client_permissions",
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "client settings files are restrictive ({d} inspected)", .{inspected}) catch "client settings files are restrictive",
+        };
+    return .{
+        .name = "client_permissions",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "client files grant group/other access: {s}", .{loose.items}) catch "client files grant group/other access",
+        .hint = "run 'tau doctor --fix' to restrict them to 0600 — env blocks can hold API keys",
+        .fix = .chmod_client_files,
+    };
 }
 
 /// Check: the detected (or --shell-selected) shells' completion scripts are
@@ -1220,11 +1394,13 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     var checks: std.ArrayList(Check) = .empty;
     try addCheck(arena, &checks, checkConfigFile(io, arena, env), cfg);
     try addCheck(arena, &checks, checkConfigPermissions(io, arena, env), cfg);
+    try addCheck(arena, &checks, checkPlaintextSecrets(io, arena, env), cfg);
     try addCheck(arena, &checks, checkProvider(arena, cfg), cfg);
     const rk = cfgmod.resolveApiKeyInfo(cfg, env);
     try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
     for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
+    try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try addCheck(arena, &checks, curl_check, cfg);
@@ -1306,6 +1482,7 @@ fn fixDescription(k: FixKind) []const u8 {
         .wire_client_windsurf => "wire tau into Windsurf via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_gemini => "wire tau into Gemini CLI via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_claude_desktop => "wire tau into Claude Desktop via the mcacp bridge (minimal file, or paste-ready snippet)",
+        .chmod_client_files => "restrict detected client settings files to 0600 (env blocks can hold API keys)",
     };
 }
 
@@ -1406,6 +1583,21 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             // of this binary so the editor's spawn env can't miss it.
             const command: []const u8 = std.process.executablePathAlloc(io, arena) catch "tau";
             break :blk setup.remedyClientWiring(io, arena, home, ck, command);
+        },
+        .chmod_client_files => blk: {
+            if (comptime builtin.os.tag == .windows) break :blk error.UnsupportedPlatform;
+            const home = env.get("HOME") orelse break :blk error.HomeUnset;
+            var did: std.ArrayList(u8) = .empty;
+            for (clientSecretPaths(arena, home) catch break :blk error.OutOfMemory) |p| {
+                const st = std.Io.Dir.cwd().statFile(io, p, .{}) catch continue;
+                if (st.kind == .directory) continue;
+                if ((st.permissions.toMode() & 0o077) == 0) continue;
+                std.Io.Dir.cwd().setFilePermissions(io, p, .fromMode(0o600), .{}) catch |err| break :blk err;
+                if (did.items.len > 0) did.appendSlice(arena, ", ") catch {};
+                did.appendSlice(arena, p) catch {};
+            }
+            if (did.items.len == 0) break :blk "nothing to restrict — all client files already 0600";
+            break :blk std.fmt.allocPrint(arena, "restricted client files to 0600: {s}", .{did.items}) catch "restricted client files";
         },
     } catch |err| {
         return .{
@@ -2146,6 +2338,107 @@ test "checkConfigPermissions: loose file warns fixable, chmod fix tightens" {
     try testing.expectEqual(@as(std.posix.mode_t, 0o600), fstat.permissions.toMode() & 0o777);
     const dstat = try std.Io.Dir.cwd().statFile(testing.io, dir_path, .{});
     try testing.expectEqual(@as(std.posix.mode_t, 0o700), dstat.permissions.toMode() & 0o777);
+}
+
+test "checkPlaintextSecrets: config api_key/keys warn, names keys not values" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> skip.
+    var env_no_home = std.process.Environ.Map.init(a);
+    const c_nohome = checkPlaintextSecrets(testing.io, a, &env_no_home);
+    try testing.expectEqual(CheckStatus.skip, c_nohome.status);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // Nothing on disk -> skip (nothing inspected).
+    const c_skip = checkPlaintextSecrets(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_skip.status);
+
+    // Clean config -> ok.
+    try home.writeConfig(a, "{\"provider\":\"openai\"}");
+    const c_ok = checkPlaintextSecrets(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+
+    // api_key + keys.* values -> warn naming the keys, never the values,
+    // and never auto-fixable (removing a credential is destructive).
+    try home.writeConfig(a, "{\"api_key\":\"sk-plain-111\",\"keys\":{\"openai\":\"sk-plain-222\",\"empty\":\"\"}}");
+    const c_warn = checkPlaintextSecrets(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_warn.status);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "api_key") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "keys.openai") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "keys.empty") == null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "sk-plain") == null);
+    try testing.expect(c_warn.fix == null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.hint.?, "config unset") != null);
+}
+
+test "checkPlaintextSecrets: client settings env blocks count as credentials" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const claude = try std.fmt.allocPrint(a, "{s}/.config/Claude/claude_desktop_config.json", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, std.fs.path.dirname(claude).?);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = claude,
+        .data = "{\"mcpServers\":{\"svc\":{\"command\":\"npx\",\"env\":{\"API_KEY\":\"sk-env-999\",\"EMPTY\":\"\"},\"other\":{\"env\":{\"TOKEN\":\"t-1\"}}}}}",
+    });
+
+    const c = checkPlaintextSecrets(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "claude_desktop_config.json") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "2 env values") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "sk-env-999") == null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "t-1") == null);
+}
+
+test "countEnvSecrets: nested objects and arrays, only non-empty strings" {
+    const src =
+        \\{"a":{"env":{"K":"v","E":"","N":5}},"b":[{"env":{"T":"x"}}],"c":{"env":"not-an-object"},"d":{"env":{}}}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), src, .{});
+    try testing.expectEqual(@as(usize, 2), countEnvSecrets(parsed));
+}
+
+test "checkClientPermissions + chmod_client_files fix round-trips" {
+    if (comptime builtin.os.tag == .windows) return;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // No client files -> skip.
+    const c_skip = checkClientPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_skip.status);
+
+    // A loose client settings file -> warn, fixable.
+    const zed = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, std.fs.path.dirname(zed).?);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = zed, .data = "{}" });
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, zed, .fromMode(0o644), .{});
+    const c_warn = checkClientPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_warn.status);
+    try testing.expectEqual(FixKind.chmod_client_files, c_warn.fix.?);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "settings.json") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "644") != null);
+
+    // Apply -> 0600, check goes ok.
+    const out = applyFix(testing.io, a, .{}, &home.env, .{ .kind = .chmod_client_files, .check = "client_permissions", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    try testing.expect(std.mem.indexOf(u8, out.detail, "settings.json") != null);
+    const st = try std.Io.Dir.cwd().statFile(testing.io, zed, .{});
+    try testing.expectEqual(@as(std.posix.mode_t, 0o600), st.permissions.toMode() & 0o777);
+    const c_ok = checkClientPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
 }
 
 test "collectChecks: fixable outcomes are attached to the right checks" {
