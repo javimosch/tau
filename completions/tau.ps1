@@ -32,7 +32,7 @@ $TauArgumentCompleter = {
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run')
     # Exit codes mirror the stable catalog in src/errors.zig.
-    $explainArgs = @('1', '80', '82', '105', '106', '110', '111', '--human')
+    $explainArgs = @('1', '80', '82', '105', '106', '110', '111', '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'vscode', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'all')
     $globalFlags = @(

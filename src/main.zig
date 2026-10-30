@@ -266,6 +266,7 @@ const help_text =
     \\Error catalog (offline — no API key needed):
     \\  tau explain                   List the stable error catalog as JSON
     \\  tau explain <code|type>       Print an error's cause + remediation hint
+    \\      --json                    ...pin the schema-checked JSON form (default)
     \\      --human                   ...as prose (e.g. `tau explain --human 106`)
     \\
     \\Guide (embedded operator manual — read once, drive with no external docs):
@@ -496,7 +497,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau config schema", .b = "emit the JSON Schema (draft 2020-12) for the config file — also published at schema/tau-config.schema.json for editor autocomplete/validation." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
-    .{ .a = "tau explain [<code|type>]", .b = "offline error-catalog lookup — cause + remediation (JSON; --human for prose)." },
+    .{ .a = "tau explain [<code|type>]", .b = "offline error-catalog lookup — cause + remediation (JSON; --json pins the schema, --human for prose)." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
 };

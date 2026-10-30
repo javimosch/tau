@@ -148,13 +148,13 @@ pub const Config = struct {
     /// prints update_available plus the release URL when newer. Opt out
     /// everywhere (including the `tau doctor` warning) via TAU_NO_UPDATE_CHECK.
     version_check: bool = false,
-    /// `--json` on `tau version`, `tau config show`, and `tau config
-    /// validate` — emit the stable JSON object form on stdout (the shape
-    /// pinned by the checked-in schema/tau-*.schema.json files). For
+    /// `--json` on `tau version`, `tau config show`, `tau config validate`,
+    /// and `tau explain` — emit the stable JSON object form on stdout (the
+    /// shape pinned by the checked-in schema/tau-*.schema.json files). For
     /// `version` this upgrades the bare "tau X.Y.Z" line to a JSON object;
-    /// `config show`/`validate` already emit JSON under --mode json, so the
-    /// flag pins the contract explicitly. Mutually exclusive with
-    /// `--mode text` on the same command line.
+    /// `config show`/`validate`/`explain` already emit JSON, so the flag
+    /// pins the contract explicitly. Mutually exclusive with the command's
+    /// non-JSON spelling (`--mode text`, `--human`).
     cli_json: bool = false,
 
     // --- Upgrade (src/upgrade.zig) ---

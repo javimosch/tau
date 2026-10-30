@@ -240,6 +240,7 @@ complete -c tau -n $upgrade -f -l dry-run -d 'print the resolved plan; install n
 set -l explain '__tau_using_subcommand explain'
 # Exit codes mirror the stable catalog in src/errors.zig.
 complete -c tau -n $explain -f -a '1 80 82 105 106 110 111' -d 'error code or type'
+complete -c tau -n $explain -f -l json -d 'emit the stable schema-checked JSON form'
 complete -c tau -n $explain -f -l human -d 'render the entry as prose instead of JSON'
 
 # `tau models` takes no further arguments.

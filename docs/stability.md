@@ -91,7 +91,7 @@ added; existing fields keep their names, types, and meaning):
 | `tau config schema` | JSON Schema (draft 2020-12) | [schema/tau-config.schema.json](../schema/tau-config.schema.json) + [docs/config.md](config.md) |
 | `tau config show [--json]` | resolved effective config, secrets masked | [schema/tau-config-show.schema.json](../schema/tau-config-show.schema.json) + [docs/configuration.md](configuration.md) |
 | `tau config validate [--json]` | `{"path","ok","errors":[{key,message}]}` on stdout; exit 0/1/80 | [schema/tau-config-validate.schema.json](../schema/tau-config-validate.schema.json) |
-| `tau explain` | `{"errors":[{code,type,recoverable,cause,hint,docs}]}` or one entry | [docs/errors.md](errors.md) |
+| `tau explain [--json]` | `{code,type,recoverable,cause,hint,docs}` entry, or `{"errors":[…]}` catalog | [schema/tau-explain.schema.json](../schema/tau-explain.schema.json) + [docs/errors.md](errors.md) |
 | `--help-json` | `{"version","name","description","flags","goal_commands","output_modes","defaults","exit_codes"}` | this file |
 | `tau models` | `{"providers":[{name,default_model,...}]}` | this file |
 | `tau skills list` / `search` | `{"skills":[{name,description}]}` | this file |

@@ -16,6 +16,21 @@ are backward compatible.
 
 ### Added
 
+- **`tau explain --json`** — the stable-contract spelling for the error
+  catalog's JSON output, completing the `--json` scripting surface promised
+  in docs/stability.md (`doctor`, `config show|validate`, `version`, and now
+  `explain` all share the spelling). Output is unchanged — `explain` already
+  emits the stable shape — but the flag lets scripts request the
+  schema-pinned form explicitly; it is mutually exclusive with `--human`
+  in either order (exit 80). The checked-in
+  `schema/tau-explain.schema.json` (draft 2020-12) describes both output
+  shapes — the single-entry object and the `{"errors":[…]}` catalog — and is
+  drift-checked three ways: the `explain` smoke group validates real binary
+  output against it, the `cli-schemas` group pins its existence/format, and
+  a dedicated ci.yml step re-validates on every leg. `docs/stability.md`'s
+  contract table names the schema; help text, `docs/errors.md`, all four
+  shell completions, and the explain golden snapshots cover the new flag
+  (#294)
 - **`tau setup --client` support for MCP clients: Windsurf, Gemini CLI, and
   Claude Desktop** — these clients speak MCP, not ACP, so setup wires them
   through the [mcacp](https://github.com/Oortonaut/mcacp) MCP→ACP bridge and
