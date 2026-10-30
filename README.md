@@ -65,7 +65,9 @@ and running `tau --version`/`--help`.
 anything (a `[y/N]` prompt on a terminal, `--yes` for scripts), then re-runs
 this same verified installer over the running binary — no separate update
 channel to trust. `tau upgrade --dry-run` prints the plan first; `tau version
---check` is the read-only form.
+--check` is the read-only form. Audit what changed between releases in
+[CHANGELOG.md](CHANGELOG.md) — its tagged-release sections are generated
+from the release notes themselves.
 
 **Windows (PowerShell — installs `tau-windows-x86_64.zip` to
 `%LOCALAPPDATA%\Programs\tau`):**

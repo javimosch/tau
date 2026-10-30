@@ -24,6 +24,11 @@ name: release
 # Homebrew: the homebrew job regenerates Formula/tau.rb from the published
 # checksums and pushes it to javimosch/homebrew-tap on stable tags, so
 # `brew install javimosch/tap/tau` / `brew upgrade` work without install.sh.
+#
+# Changelog: after the release's notes are edited into final shape, run
+# `python3 scripts/gen-changelog.py` on master — it splices the notes into
+# CHANGELOG.md's generated region, which CI drift-checks against the live
+# release notes.
 
 on:
   push:
