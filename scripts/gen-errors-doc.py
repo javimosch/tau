@@ -151,6 +151,7 @@ def render(entries, order):
     a("tau explain              # every catalog entry (JSON)")
     a("tau explain 106          # one entry by exit code")
     a("tau explain AuthFailed   # one entry by `type` tag")
+    a("tau explain --json 106   # pin the schema-checked JSON form")
     a("tau explain --human 80   # prose instead of JSON")
     a("```")
     a("")

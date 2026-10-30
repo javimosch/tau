@@ -610,7 +610,7 @@ per-shell install instructions.
 
 ## 🔧 Troubleshooting
 
-Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**, or readable offline via `tau explain <code|type>` (e.g. `tau explain 106`; `--human` for prose, no argument to list all). Building automation on tau? **[docs/stability.md](docs/stability.md)** is the public stability and deprecation contract — which exit codes, `--json` schemas, config keys, env vars, and wire formats scripts may rely on, and how breaking changes are announced and phased out.
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**, or readable offline via `tau explain <code|type>` (e.g. `tau explain 106`; `--json` pins the schema-checked JSON form, `--human` for prose, no argument to list all). Building automation on tau? **[docs/stability.md](docs/stability.md)** is the public stability and deprecation contract — which exit codes, `--json` schemas, config keys, env vars, and wire formats scripts may rely on, and how breaking changes are announced and phased out.
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|

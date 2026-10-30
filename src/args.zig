@@ -370,16 +370,24 @@ pub fn parse(
         return .{ .action = .guide, .config = gcfg };
     }
 
-    // `tau explain [<code|type>] [--human]` — offline error-catalog lookup
-    // (the same Spec registry that generates docs/errors.md). Command, not a
-    // prompt: `explain` is always consumed as the subcommand word.
+    // `tau explain [<code|type>] [--json|--human]` — offline error-catalog
+    // lookup (the same Spec registry that generates docs/errors.md). The
+    // output is JSON by default; --json is the stable-contract spelling that
+    // pins the schema-checked form (schema/tau-explain.schema.json), --human
+    // renders prose — the two are mutually exclusive. Command, not a prompt:
+    // `explain` is always consumed as the subcommand word.
     if (argv.len > 0 and eq(argv[0], "explain")) {
         var ecfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
             const a = argv[j];
             if (eq(a, "--human")) {
+                if (ecfg.cli_json) return errResult(arena, "--json and --human are mutually exclusive", .{});
                 ecfg.explain_human = true;
+            } else if (eq(a, "--json")) {
+                if (ecfg.explain_human) return errResult(arena, "--json and --human are mutually exclusive", .{});
+                ecfg.cli_json = true;
+                ecfg.mode = .json;
             } else if (a.len > 0 and a[0] != '-') {
                 if (ecfg.explain_arg != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 ecfg.explain_arg = a;
@@ -1435,6 +1443,21 @@ test "parse: explain subcommand" {
     const tagged = try parseArgv(a, &.{ "tau", "explain", "--human", "AuthFailed" }, .{});
     try std.testing.expectEqualStrings("AuthFailed", tagged.config.explain_arg.?);
     try std.testing.expect(tagged.config.explain_human);
+
+    // --json pins the schema-checked contract spelling (JSON is the default).
+    const pinned = try parseArgv(a, &.{ "tau", "explain", "--json", "80" }, .{});
+    try std.testing.expectEqualStrings("80", pinned.config.explain_arg.?);
+    try std.testing.expect(pinned.config.cli_json);
+    try std.testing.expect(!pinned.config.explain_human);
+
+    // --json and --human are mutually exclusive in either order.
+    const mutex_a = try parseArgv(a, &.{ "tau", "explain", "--json", "--human" }, .{});
+    try std.testing.expectEqual(Action.err, mutex_a.action);
+    try std.testing.expectEqualStrings("--json and --human are mutually exclusive", mutex_a.err_msg.?);
+
+    const mutex_b = try parseArgv(a, &.{ "tau", "explain", "--human", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, mutex_b.action);
+    try std.testing.expectEqualStrings("--json and --human are mutually exclusive", mutex_b.err_msg.?);
 
     const bad_flag = try parseArgv(a, &.{ "tau", "explain", "--nope" }, .{});
     try std.testing.expectEqual(Action.err, bad_flag.action);

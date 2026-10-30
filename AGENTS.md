@@ -315,6 +315,7 @@ tau config edit ./ci.json              # Explicit path
 tau explain                       # List the stable error catalog (JSON)
 tau explain 106                   # One entry by exit code: cause + hint + docs
 tau explain AuthFailed            # Same, by wire `type` tag
+tau explain --json 106            # Pin the schema-checked JSON form (default)
 tau explain --human 80            # Prose instead of JSON
 ```
 

@@ -70,8 +70,9 @@ Some emitters override `type` with the underlying Zig error name (e.g.
 per-code causes and the silent-exit paths) rendered from the registry in
 `src/errors.zig` — CI fails if it drifts. The same registry is readable
 offline from the CLI: `tau explain <code|type>` prints one entry's cause,
-hint, and docs link (JSON by default, `--human` for prose), and bare
-`tau explain` lists the whole catalog.
+hint, and docs link (JSON by default — `--json` pins the schema-checked
+form, `--human` renders prose), and bare `tau explain` lists the whole
+catalog.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
 run continues.

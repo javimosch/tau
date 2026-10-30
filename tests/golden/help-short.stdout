@@ -182,6 +182,7 @@ Models:
 Error catalog (offline — no API key needed):
   tau explain                   List the stable error catalog as JSON
   tau explain <code|type>       Print an error's cause + remediation hint
+      --json                    ...pin the schema-checked JSON form (default)
       --human                   ...as prose (e.g. `tau explain --human 106`)
 
 Guide (embedded operator manual — read once, drive with no external docs):

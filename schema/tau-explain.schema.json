@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-explain.schema.json",
+  "title": "tau explain --json output",
+  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type> query the output is a single catalog-entry object; with no query it is a catalog object {\"errors\":[entry, ...]} holding every entry. Entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. New keys may be added (additive); existing keys keep their names and types.",
+  "oneOf": [
+    { "$ref": "#/$defs/entry" },
+    { "$ref": "#/$defs/catalog" }
+  ],
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["code", "type", "recoverable", "cause", "hint", "docs"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "integer", "minimum": 1, "maximum": 255, "description": "Exit code this entry documents; also the process exit status when the error is raised." },
+        "type": { "type": "string", "minLength": 1, "description": "Wire tag used in the err envelope's \"type\" field (e.g. \"AuthFailed\")." },
+        "recoverable": { "type": "boolean", "description": "Whether retrying the operation can succeed." },
+        "cause": { "type": "string", "minLength": 1, "description": "One line naming when this error is raised; informational, may be reworded." },
+        "hint": { "type": "string", "minLength": 1, "description": "Remediation hint; informational, may be reworded." },
+        "docs": { "type": "string", "minLength": 1, "description": "Guide link for this error class." }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "required": ["errors"],
+      "additionalProperties": false,
+      "properties": {
+        "errors": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/entry" },
+          "description": "Every entry in the stable error catalog, ordered by exit code."
+        }
+      }
+    }
+  },
+  "examples": [
+    { "code": 106, "type": "AuthFailed", "recoverable": false, "cause": "the provider rejected the API key, or no key was found anywhere in the resolution chain", "hint": "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY", "docs": "https://github.com/javimosch/tau/blob/master/docs/providers.md" },
+    { "errors": [
+      { "code": 1, "type": "not_found", "recoverable": false, "cause": "a named resource is missing — the message identifies the file, skill, or session", "hint": "the message names what was not found — check the name/path and retry", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md" }
+    ] }
+  ]
+}

@@ -158,7 +158,7 @@ _tau_complete() {
 
         explain)
             # Exit codes mirror the stable catalog in src/errors.zig.
-            COMPREPLY=($(compgen -W "1 80 82 105 106 110 111 --human" -- "$cur"))
+            COMPREPLY=($(compgen -W "1 80 82 105 106 110 111 --human --json" -- "$cur"))
             ;;
 
         *)

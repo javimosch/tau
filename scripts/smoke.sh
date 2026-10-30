@@ -3386,11 +3386,13 @@ test_group_golden_maintenance() {
   golden_check ex-catalog          0 "$BIN" explain
   golden_check ex-code             0 "$BIN" explain 106
   golden_check ex-type-tag         0 "$BIN" explain authfailed
+  golden_check ex-json             0 "$BIN" explain --json 106
   golden_check ex-human            0 "$BIN" explain --human 105
   golden_check ex-uncataloged      0 "$BIN" explain 42
   golden_check ex-unknown-name     1 "$BIN" explain bogus
   golden_check ex-code-zero        1 "$BIN" explain 0
   golden_check ex-bad-flag        80 "$BIN" explain --nope
+  golden_check ex-json-human-mutex 80 "$BIN" explain --json --human 80
 
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
@@ -3653,14 +3655,15 @@ test_group_cli_schemas() {
   local show_schema="$ROOT/schema/tau-config-show.schema.json"
   local val_schema="$ROOT/schema/tau-config-validate.schema.json"
   local ver_schema="$ROOT/schema/tau-version.schema.json"
+  local exp_schema="$ROOT/schema/tau-explain.schema.json"
 
-  note "stable --json stdout schemas (config show|validate, version)"
+  note "stable --json stdout schemas (config show|validate, version, explain)"
 
   scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
   mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
 
   # The checked-in schemas exist and are draft 2020-12 documents.
-  for s in "$show_schema" "$val_schema" "$ver_schema"; do
+  for s in "$show_schema" "$val_schema" "$ver_schema" "$exp_schema"; do
     if [ -f "$s" ]; then
       ok "cli-schemas: $(basename "$s") exists" 0 0
       contains "cli-schemas: $(basename "$s") is draft 2020-12" "$(cat "$s")" 'draft/2020-12/schema'
@@ -3950,6 +3953,58 @@ test_group_explain() {
   capture r8 "$BIN" explain --nope
   ok "explain: bad flag exits 80" "$r8_rc" 80
   contains "explain: bad flag envelope on stderr" "$r8_err" '"type":"invalid_argument"'
+
+  # --json is the stable-contract spelling: same output, schema-checked.
+  capture r9 "$BIN" explain --json 106
+  ok "explain: --json exits 0" "$r9_rc" 0
+  contains "explain: --json emits the entry" "$r9_out" '"code":106'
+
+  capture r10 "$BIN" explain --json
+  ok "explain: --json catalog exits 0" "$r10_rc" 0
+  contains "explain: --json catalog envelope" "$r10_out" '"errors":['
+
+  # --json and --human are mutually exclusive in either order.
+  capture r11 "$BIN" explain --json --human 80
+  ok "explain: --json --human exits 80" "$r11_rc" 80
+  contains "explain: mutex envelope on stderr" "$r11_err" '"type":"invalid_argument"'
+  contains "explain: mutex names both flags" "$r11_err" '--json and --human are mutually exclusive'
+  capture r12 "$BIN" explain --human --json 80
+  ok "explain: --human --json exits 80" "$r12_rc" 80
+  contains "explain: reverse-order mutex" "$r12_err" '--json and --human are mutually exclusive'
+
+  # Both --json surfaces validate against the checked-in schema.
+  local ex_schema="$ROOT/schema/tau-explain.schema.json"
+  if [ -f "$ex_schema" ]; then
+    ok "explain: tau-explain.schema.json exists" 0 0
+    contains "explain: schema is draft 2020-12" "$(cat "$ex_schema")" 'draft/2020-12/schema'
+  else
+    ok "explain: tau-explain.schema.json exists" 1 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    if printf '%s' "$r9_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: --json entry validates against schema" 0 0
+    else
+      ok "explain: --json entry validates against schema" 1 0
+    fi
+    if printf '%s' "$r10_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: --json catalog validates against schema" 0 0
+    else
+      ok "explain: --json catalog validates against schema" 1 0
+    fi
+    # Bare (no-flag) output is the same stable shape — validate it too.
+    if printf '%s' "$r1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: bare entry validates against schema" 0 0
+    else
+      ok "explain: bare entry validates against schema" 1 0
+    fi
+    if printf '%s' "$r3_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: bare catalog validates against schema" 0 0
+    else
+      ok "explain: bare catalog validates against schema" 1 0
+    fi
+  else
+    skip_test "explain: schema validation" "python3 not on PATH"
+  fi
 }
 
 # Group: --bench regression guard

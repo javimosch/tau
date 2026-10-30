@@ -36,7 +36,7 @@ PowerShell.
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--check`, `--mode` |
 | `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run` |
-| `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + `--human` |
+| `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + `--json`, `--human` |
 
 ---
 

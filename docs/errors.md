@@ -60,6 +60,7 @@ API key needed:
 tau explain              # every catalog entry (JSON)
 tau explain 106          # one entry by exit code
 tau explain AuthFailed   # one entry by `type` tag
+tau explain --json 106   # pin the schema-checked JSON form
 tau explain --human 80   # prose instead of JSON
 ```
 

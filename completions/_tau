@@ -292,6 +292,7 @@ _tau() {
                     )
                     _arguments \
                         '1: :_describe "error code or type" err_codes' \
+                        '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]'
                     ;;
             esac

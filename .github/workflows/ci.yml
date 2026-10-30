@@ -138,10 +138,11 @@ jobs:
 
       - name: CLI --json schema drift check
         # schema/tau-config-show.schema.json, schema/tau-config-validate.
-        # schema.json, and schema/tau-version.schema.json pin the single-
-        # object stdout contracts — validate real shipped-binary output
-        # against them (the cli-schemas smoke group pins the same
-        # invariants). TAU_NO_UPDATE_CHECK keeps the --check leg offline.
+        # schema.json, schema/tau-version.schema.json, and
+        # schema/tau-explain.schema.json pin the single-object stdout
+        # contracts — validate real shipped-binary output against them (the
+        # cli-schemas and explain smoke groups pin the same invariants).
+        # TAU_NO_UPDATE_CHECK keeps the --check leg offline.
         shell: bash
         run: |
           tmp="$(mktemp -d)"
@@ -156,6 +157,8 @@ jobs:
           "$TAU_BIN" config validate --json <(printf '{"provider":"nope"}') > "$tmp/bad.json" || rc=$?
           [ "$rc" -eq 1 ] || { echo "config validate on a bad file exited $rc (want 1)"; exit 1; }
           python3 scripts/check-cli-schema.py --schema schema/tau-config-validate.schema.json "$tmp/bad.json"
+          "$TAU_BIN" explain --json 106 | python3 scripts/check-cli-schema.py --schema schema/tau-explain.schema.json -
+          "$TAU_BIN" explain --json | python3 scripts/check-cli-schema.py --schema schema/tau-explain.schema.json -
 
       - name: Stability contract drift check
         # docs/stability.md is hand-written policy — this proves it still
