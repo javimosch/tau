@@ -11,7 +11,10 @@
 Which editors can drive `tau` as an ACP agent, where each one's config
 lives, what shape the config takes, and which tau version each
 integration path needs. Step-by-step guides:
-[docs/editors.md](editors.md) and [docs/acp.md](acp.md).
+[docs/editors.md](editors.md) and [docs/acp.md](acp.md), plus a
+dedicated per-client guide for each MCP-bridge client:
+[Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+[Claude Desktop](clients/claude-desktop.md).
 
 ## Supported editor clients
 

@@ -1972,3 +1972,71 @@ test "docs/compatibility.md generated matrix mirrors the client registry" {
         }
     }
 }
+
+test "docs/clients per-client guides mirror the client renderers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    // Guide file per MCP-bridge client (gemini's file is named gemini-cli.md).
+    const Guide = struct { file: []const u8, kind: ClientKind };
+    const guides = [_]Guide{
+        .{ .file = "docs/clients/windsurf.md", .kind = .windsurf },
+        .{ .file = "docs/clients/gemini-cli.md", .kind = .gemini },
+        .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
+    };
+    // Marker -> renderer output it must equal ("tau" stands in for the
+    // absolute command path, like the smoke group's normalization).
+    const Slot = struct {
+        marker: []const u8,
+        want: *const fn (std.mem.Allocator, ClientKind) anyerror![]u8,
+    };
+    const slots = [_]Slot{
+        .{ .marker = "client-file", .want = struct {
+            fn f(al: std.mem.Allocator, k: ClientKind) ![]u8 {
+                return renderClientJson(al, k, "tau");
+            }
+        }.f },
+        .{ .marker = "bridge-file", .want = struct {
+            fn f(al: std.mem.Allocator, k: ClientKind) ![]u8 {
+                _ = k;
+                return renderMcacpJson(al, "tau");
+            }
+        }.f },
+        .{ .marker = "client-snippet", .want = struct {
+            fn f(al: std.mem.Allocator, k: ClientKind) ![]u8 {
+                return renderClientSnippet(al, k, "tau");
+            }
+        }.f },
+        .{ .marker = "bridge-snippet", .want = struct {
+            fn f(al: std.mem.Allocator, k: ClientKind) ![]u8 {
+                _ = k;
+                return renderMcacpSnippet(al, "tau");
+            }
+        }.f },
+    };
+
+    for (guides) |g| {
+        const doc = try std.Io.Dir.cwd().readFileAlloc(io, g.file, a, .unlimited);
+        for (slots) |s| {
+            const marker = try std.fmt.allocPrint(a, "<!-- setup-verify: {s} -->", .{s.marker});
+            const mpos = std.mem.indexOf(u8, doc, marker) orelse {
+                std.debug.print("{s} missing marker '{s}'\n", .{ g.file, marker });
+                return error.TestUnexpectedResult;
+            };
+            const fence = std.mem.indexOfPos(u8, doc, mpos, "```") orelse
+                return error.TestUnexpectedResult;
+            const body_start = (std.mem.indexOfPos(u8, doc, fence, "\n") orelse
+                return error.TestUnexpectedResult) + 1;
+            const body_end = std.mem.indexOfPos(u8, doc, body_start, "```") orelse
+                return error.TestUnexpectedResult;
+            const body = doc[body_start..body_end];
+            const want = try s.want(a, g.kind);
+            if (!std.mem.eql(u8, body, want)) {
+                std.debug.print("{s}: '{s}' block drifted from the renderer —\n--- guide ---\n{s}--- want ---\n{s}", .{ g.file, s.marker, body, want });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}

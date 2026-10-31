@@ -73,6 +73,7 @@ ALL_TEST_GROUPS=(
   "init:test_group_init"
   "setup:test_group_setup"
   "client-examples:test_group_client_examples"
+  "client-guides:test_group_client_guides"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -2478,6 +2479,18 @@ tau = mc.get("agent_servers", {}).get("tau", {})
 sys.exit(0 if ok and tau.get("args") == ["acp", "serve"] else 1)' \
     "$ex/claude-desktop.json" "$ex/windsurf.json" "$ex/gemini.json" "$ex/mcacp.json" 2>/dev/null
   ok "claude-desktop/windsurf/gemini + mcacp.json wire the bridge to tau" "$?" 0
+}
+
+# Group: per-client setup guides drift check — docs/clients/*.md embed
+# setup-verify-marked fenced blocks that check-client-guides.py diffs
+# byte-for-byte against real `tau setup --client` output (fresh files and
+# the snippet fallback for existing files) in a scratch HOME.
+test_group_client_guides() {
+  note "per-client setup guides match tau setup --client output"
+
+  python3 "$ROOT/scripts/check-client-guides.py" --tau "$BIN" \
+    --docs "$ROOT/docs/clients"
+  ok "client guides verified against setup --client output" "$?" 0
 }
 
 # Group: Issue #17 goal mode subcommands offline

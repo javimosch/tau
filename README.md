@@ -150,7 +150,8 @@ Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
 installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
 to override), can write ACP client config for your editor
 (`--client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all` — step-by-step guide in
-[docs/editors.md](docs/editors.md), all clients in [docs/acp.md](docs/acp.md)),
+[docs/editors.md](docs/editors.md), all clients in [docs/acp.md](docs/acp.md),
+per-client MCP guides in [docs/clients/](docs/clients/windsurf.md)),
 and finishes with the `tau doctor` health report:
 
 ```bash

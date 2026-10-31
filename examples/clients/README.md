@@ -81,5 +81,9 @@ work the same way — only the agent-declaration file differs.
 
 - [docs/acp.md](../../docs/acp.md) — the full ACP guide: every supported
   client, what the editor sees, troubleshooting.
+- Per-MCP-client setup guides (drift-checked against `tau setup --client`
+  output): [Windsurf](../../docs/clients/windsurf.md),
+  [Gemini CLI](../../docs/clients/gemini-cli.md),
+  [Claude Desktop](../../docs/clients/claude-desktop.md).
 - [docs/configuration.md](../../docs/configuration.md) — provider, model, and
   API-key resolution for the spawned `tau` process.

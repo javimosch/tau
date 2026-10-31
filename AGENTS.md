@@ -486,6 +486,7 @@ tau upgrade --dry-run            # Print the resolved plan + release notes; inst
 | `schema/tau-doctor.schema.json` | `tau doctor --json` NDJSON event schema (+ `scripts/check-doctor-schema.py` validator, `scripts/gen-doctor-doc.py` → docs/doctor-json.md) | Changing doctor event shapes |
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
 | `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
+| `docs/clients/*.md` | Per-MCP-client setup guides — `setup-verify` fenced snippets mirror `src/setup.zig` renderers (unit test) and `scripts/check-client-guides.py` diffs them against `tau setup --client` (client-guides smoke group) | Client wiring/snippet changes |
 | `src/bug.zig` | `tau bug` pre-filled GitHub issue (URL + report bundle) | `tau bug` flags/output, issue-URL shape |
 | `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |

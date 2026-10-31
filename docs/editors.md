@@ -247,6 +247,13 @@ merge):
 creates `mcacp.json` once — the later clients report
 `"bridge_status":"already_installed"`.
 
+Dedicated per-client guides — each with the exact file contents
+`tau setup --client` writes (drift-checked in CI against the real output):
+
+- [Windsurf](clients/windsurf.md)
+- [Gemini CLI](clients/gemini-cli.md)
+- [Claude Desktop](clients/claude-desktop.md)
+
 ## Removing the integration
 
 Setup is additive and never deletes:
