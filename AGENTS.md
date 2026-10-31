@@ -326,7 +326,9 @@ tau config schema > tau-config.schema.json # Export for editor wiring
 # Generated from FileConfig (can't drift); canonical copy checked in at
 # schema/tau-config.schema.json — regenerate after key changes with the
 # redirect above. `tau init` writes a "$schema" key pointing at the
-# published URL so editors autocomplete out of the box.
+# published URL so editors autocomplete out of the box; `config schema`
+# also prints a `note:` hint on stderr. The SchemaStore catalog entry
+# submitted upstream lives at schema/schemastore-catalog-entry.json.
 ```
 
 ```bash

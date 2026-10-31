@@ -151,6 +151,15 @@ To get autocomplete, hover docs, and validation in an editor:
 
 - **Offline / pinned** — emit a local copy (`tau config schema >
   tau-config.schema.json`) and point `$schema` or `fileMatch` at the file.
+  The command also prints a one-line `note:` hint on stderr reminding you
+  to wire the `$schema` key — stdout stays a pure JSON Schema for piping.
+
+- **SchemaStore** — the catalog entry submitted to
+  [schemastore.org](https://www.schemastore.org/) is checked in at
+  [`schema/schemastore-catalog-entry.json`](../schema/schemastore-catalog-entry.json).
+  Once it lands upstream, SchemaStore-backed editors (VS Code, Zed,
+  Neovim's jsonls, …) match `~/.config/tau/config.json` by path, so
+  autocomplete works with no `$schema` key at all.
 
 Editors using the standard JSON language service honor `$schema` even in
 JSONC files, so a commented `tau init` config still gets completions.

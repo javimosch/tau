@@ -1032,6 +1032,11 @@ pub fn main(init: std.process.Init) !void {
                     std.process.exit(@intFromEnum(ExitCode.internal_error));
                 };
                 term.out(doc);
+                // Human-facing "$schema" pointer on stderr — stdout stays a
+                // pure JSON Schema for `> file` / editor wiring.
+                if (cschema.schemaHint(arena)) |h| {
+                    term.err(h);
+                } else |_| {}
                 return;
             }
             if (std.mem.eql(u8, parsed.config.config_sub orelse "show", "validate")) {
