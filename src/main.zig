@@ -126,7 +126,7 @@ const help_text =
     \\      --auto-agents-md         Auto-load cwd/AGENTS.md on startup
     \\      --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
     \\      --help-json              Machine-readable help as JSON
-    \\  -h, --help                   Show this help
+    \\  -h, --help                   Show this help (per-subcommand: tau <sub> --help)
     \\  -v, --version                Show version
     \\
     \\Setup:
@@ -286,7 +286,13 @@ const help_text =
     \\
 ;
 
-fn printHelp() void {
+fn printHelp(sub: ?[]const u8) void {
+    if (sub) |s| {
+        if (@import("subhelp.zig").lookup(s)) |t| {
+            writeOut(t);
+            return;
+        }
+    }
     writeOut(help_text);
 }
 
@@ -526,6 +532,7 @@ const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
     "tau explain <code|type> (offline error catalog — cause + remediation hint)",
     "tau --help (human help)",
+    "tau <subcommand> --help (per-subcommand usage + runnable examples)",
     "README.md (ships with the source)",
     "docs/troubleshooting.md — " ++ doc_url ++ " (error-message → fix FAQ)",
     "docs/providers.md — " ++ providers_doc_url ++ " (per-provider credential setup + auth troubleshooting)",
@@ -853,7 +860,7 @@ pub fn main(init: std.process.Init) !void {
 
     switch (parsed.action) {
         .help => {
-            printHelp();
+            printHelp(parsed.config.help_sub);
             return;
         },
         .version => {
@@ -1249,6 +1256,7 @@ test {
     _ = @import("version.zig");
     _ = @import("update.zig");
     _ = @import("upgrade.zig");
+    _ = @import("subhelp.zig");
 }
 
 test "flag_specs appear in help_text" {

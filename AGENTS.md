@@ -56,7 +56,7 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `--max-iterations <n>` | int | 100 | Tool-loop runaway backstop |
 | `--goal-max-iterations <n>` | int | 50 | Per-run cap in goal mode |
 | `--help-json` | — | — | Machine-readable help as JSON |
-| `-h, --help` | — | — | Show help text |
+| `-h, --help` | — | — | Show help text (per-subcommand: `tau <sub> --help`) |
 | `-v, --version` | — | — | Show version |
 
 ### Output Formats
@@ -474,6 +474,7 @@ tau upgrade --dry-run            # Print the resolved plan + release notes; inst
 | File | What It Does | When to Edit |
 |------|-------------|-------------|
 | `src/main.zig` | CLI dispatch, `help_text`, `flag_specs` | Adding CLI flags, subcommands |
+| `src/subhelp.zig` | Per-subcommand help pages (`tau <sub> --help`) — usage + runnable `Examples:` | Editing subcommand help output |
 | `src/args.zig` | Argv parser, `Action` enum | Adding new subcommands |
 | `src/agent.zig` | Single-turn agentic tool loop | Modifying agent behavior |
 | `src/goal.zig` | Goal directive parsing + sentinels | Changing goal mode logic |

@@ -170,6 +170,11 @@ pub const Config = struct {
     /// install plan without prompting, downloading, or installing anything.
     upgrade_dry_run: bool = false,
 
+    // --- Per-subcommand help ---
+    /// `tau <sub> -h|--help` — names the subcommand whose dedicated help text
+    /// (usage + runnable Examples:) to print. Null means the global help.
+    help_sub: ?[]const u8 = null,
+
     // --- Skills autodiscovery ---
     /// `tau skills <list|search|load>` subcommand selector. Null means no skills subcommand.
     skills_sub: ?[]const u8 = null,

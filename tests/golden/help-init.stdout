@@ -1,0 +1,15 @@
+tau init - write a commented starter ~/.config/tau/config.json
+
+Usage:
+  tau init [--force] [--stdout] [--provider <name>]
+
+Options:
+      --force            Overwrite an existing config file
+      --stdout           Print the starter config without writing it
+      --provider <name>  Scaffold for a specific provider
+
+Examples:
+  tau init
+  tau init --provider openai
+  tau init --stdout
+  tau init --force

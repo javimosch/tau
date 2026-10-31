@@ -42,7 +42,7 @@ Options:
       --auto-agents-md         Auto-load cwd/AGENTS.md on startup
       --goal-max-iterations <n>  Per-run loop cap in goal mode (default: 50)
       --help-json              Machine-readable help as JSON
-  -h, --help                   Show this help
+  -h, --help                   Show this help (per-subcommand: tau <sub> --help)
   -v, --version                Show version
 
 Setup:

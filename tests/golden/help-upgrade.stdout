@@ -1,0 +1,20 @@
+tau upgrade - self-update in place from the latest release
+
+Usage:
+  tau upgrade [--yes|-y] [--dir <path>] [--dry-run]
+
+Options:
+  -y, --yes        Upgrade without prompting (env TAU_YES=1); a TTY
+                   gets a [y/N] prompt instead
+      --dir <path> Install destination (default: the running binary's
+                   directory; env TAU_INSTALL_DIR)
+      --dry-run    Print the resolved plan + release notes; install
+                   nothing
+
+The release notes between your version and the target print before
+any install. POSIX-only; on Windows re-run install.ps1.
+
+Examples:
+  tau upgrade --dry-run
+  tau upgrade --yes
+  tau upgrade --dir ~/.local/bin

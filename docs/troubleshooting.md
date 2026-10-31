@@ -302,7 +302,7 @@ All of these carry `"type":"invalid_argument"` and print the offending value.
 | `skills subcommand required: list \| search \| load` | Bare `tau skills` | Pick a subcommand |
 | `invalid skills subcommand (want list\|search\|load): <v>` | Bad subcommand | `list`, `search`, or `load` |
 | `fleet subcommand required: run \| status \| list \| logs \| cancel` | Bare `tau fleet` | Pick a subcommand |
-| `unknown fleet argument: <v>` / `unknown fleet subcommand` | Flag/subcommand not in the fleet grammar | See the Fleet section of `tau --help` |
+| `unknown fleet argument: <v>` / `unknown fleet subcommand` | Flag/subcommand not in the fleet grammar | `tau fleet --help` lists the grammar + runnable examples |
 | `unknown acp argument: <v>` | Flag passed after `tau acp` | `tau acp serve\|start\|stop\|status` only |
 | `cannot read schema file: <path>` | `--schema @file` unreadable | Check the path; or pass the schema inline |
 | `/goal subcommands require --session <name>` | `/goal status\|pause\|resume\|clear\|complete` without a session | Add `--session <name>` |
@@ -413,6 +413,7 @@ any of them.
 | `tau config validate [path]` | Offline config-file validation (`{"ok","errors":[…]}` on stdout, exit 1 on failure) — CI/pre-commit gate |
 | `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
 | `tau --help-json` | Machine-readable flag catalog |
+| `tau <sub> --help` | Per-subcommand usage + runnable examples (`tau fleet --help`, `tau doctor --help`, …) |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |
 | `tau acp status` | Is the ACP daemon running? |
 | `echo $?` after a failure | Semantic exit code for scripting |
