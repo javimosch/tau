@@ -77,6 +77,14 @@ environment variables, CLI-flag equivalents, and precedence rules — see
   [schema/tau-config.schema.json](../schema/tau-config.schema.json);
   `tau init` writes its URL as the `$schema` key so autocomplete works
   out of the box — per-editor setup: [docs/editors.md](editors.md).
+  It also prints a one-line `note:` hint on stderr reminding you to
+  add the `$schema` key (stdout stays a pure JSON Schema for piping).
+- **SchemaStore** — the catalog entry submitted to
+  [schemastore.org](https://www.schemastore.org/) is checked in at
+  [schema/schemastore-catalog-entry.json](../schema/schemastore-catalog-entry.json);
+  once it lands upstream, SchemaStore-backed editors match
+  `~/.config/tau/config.json` by path — autocomplete with no `$schema`
+  key or editor setting at all.
 
 ## Regenerating
 

@@ -239,6 +239,11 @@ Special rules:
   `scripts/check-doctor-schema.py`; the single-object stdout contracts
   (`tau-config-show`, `tau-config-validate`, `tau-version`) are validated
   against real binary output by `scripts/check-cli-schema.py`.
+- `schema/schemastore-catalog-entry.json` is the SchemaStore catalog
+  submission for the config schema — pinned to the canonical `$id` and
+  fileMatch by a `configschema.zig` unit test and the `config-schema`
+  smoke group. `tau config schema` also emits a human `note:` hint on
+  stderr; it is informational, not part of the JSON contract.
 - `scripts/check-stability-doc.py` keeps this document aligned with the
   shipped catalog, schemas, and docs; the `stability-doc` smoke group
   runs it in CI.

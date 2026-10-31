@@ -330,7 +330,17 @@ instead:
 
 - **Offline / pinned** — `tau config schema` prints the document itself;
   save it (`tau config schema > tau-config.schema.json`) and point
-  `$schema`/`url` at the local file.
+  `$schema`/`url` at the local file. It also prints a one-line `note:`
+  hint on stderr reminding you to wire the `$schema` key — stdout stays a
+  pure JSON Schema for piping.
+
+- **SchemaStore (path-matched, zero-config)** — the catalog entry
+  submitted to [schemastore.org](https://www.schemastore.org/) is checked
+  in at
+  [schema/schemastore-catalog-entry.json](../schema/schemastore-catalog-entry.json).
+  Once it lands upstream, SchemaStore-backed editors match
+  `~/.config/tau/config.json` by path, so autocomplete works with no
+  `$schema` key or `json.schemas` setting at all.
 
 The schema is generated from the same `FileConfig` struct the loader and
 `tau config validate` use, so it cannot drift from the keys tau accepts —

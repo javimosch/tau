@@ -236,6 +236,16 @@ pub fn schemaJson(arena: std.mem.Allocator) ![]u8 {
     return b.toOwnedSlice(arena);
 }
 
+/// One-line stderr hint pointing users at the "$schema" key. `tau config
+/// schema` emits it after the document so piping stdout stays a pure JSON
+/// Schema; human-facing notes ride stderr (same convention as `tau
+/// upgrade`'s release-notes summary).
+pub fn schemaHint(arena: std.mem.Allocator) ![]u8 {
+    return std.fmt.allocPrint(arena,
+        "note: add \"$schema\": \"{s}\" to ~/.config/tau/config.json for editor autocomplete — `tau init` writes it for you.\n",
+        .{schema_url});
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -320,6 +330,41 @@ test "schema: constraints mirror config validate ranges" {
 
     const mode = props.get("mode").?.object;
     try testing.expectEqual(@as(usize, 2), mode.get("enum").?.array.items.len);
+}
+
+test "schema: stderr hint points users at the $schema key" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const h = try schemaHint(a);
+    try testing.expect(std.mem.endsWith(u8, h, "\n"));
+    try testing.expect(std.mem.indexOf(u8, h, "\"$schema\"") != null);
+    try testing.expect(std.mem.indexOf(u8, h, schema_url) != null);
+    // Single line — it rides stderr next to the JSON document on stdout.
+    try testing.expect(std.mem.indexOfScalarPos(u8, h, 0, '\n').? == h.len - 1);
+}
+
+test "schema: SchemaStore catalog entry tracks the published $id" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // zig build test runs with cwd = repo root. The catalog entry is what we
+    // submit upstream to schemastore.org — its url must stay the canonical
+    // published URL or editors would resolve a stale schema.
+    const on_disk = std.Io.Dir.cwd().readFileAlloc(testing.io, "schema/schemastore-catalog-entry.json", a, .unlimited) catch {
+        std.debug.print("schema/schemastore-catalog-entry.json missing\n", .{});
+        return error.TestFailed;
+    };
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, on_disk, .{});
+    try testing.expectEqualStrings(schema_url, v.object.get("url").?.string);
+    const fm = v.object.get("fileMatch").?.array;
+    try testing.expect(fm.items.len > 0);
+    // The match must pin the tau config path — never a bare config.json.
+    for (fm.items) |pat| {
+        try testing.expect(std.mem.indexOf(u8, pat.string, ".config/tau/config.json") != null);
+    }
 }
 
 test "schema: checked-in schema file matches the emitted document" {

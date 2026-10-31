@@ -1936,6 +1936,29 @@ test_group_config_schema() {
   ok "config schema --mode text -> exit 0" "$rc" 0
   contains "text mode still emits the schema" "$out" '"additionalProperties": false'
 
+  # A "$schema" wiring hint rides stderr (stdout stays pure JSON Schema).
+  "$BIN" config schema >"$tmpdir/schema.out" 2>"$tmpdir/schema.err"; rc=$?
+  ok "config schema with hint -> exit 0" "$rc" 0
+  contains "stderr carries the \$schema hint" "$(cat "$tmpdir/schema.err")" '"$schema"'
+  contains "hint names the published URL" "$(cat "$tmpdir/schema.err")" 'raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json'
+  lacks "stdout stays pure — no hint line" "$(cat "$tmpdir/schema.out")" 'note: add'
+
+  # The SchemaStore catalog entry we submit upstream must keep pointing at
+  # the canonical $id and pin the tau config path (never bare config.json).
+  if "$BIN" config schema 2>/dev/null | python3 -c '
+import sys, json
+doc = json.load(sys.stdin)
+entry = json.load(open(sys.argv[1], encoding="utf-8"))
+ok = (entry.get("url") == doc.get("$id") and entry.get("name") == "tau"
+      and all(".config/tau/config.json" in p for p in entry.get("fileMatch", []))
+      and len(entry.get("fileMatch", [])) > 0)
+sys.exit(0 if ok else 1)
+' "$SCRIPT_DIR/../schema/schemastore-catalog-entry.json" 2>/dev/null; then
+    ok "schemastore catalog entry matches the schema \$id" 0 0
+  else
+    ok "schemastore catalog entry matches the schema \$id" 1 0
+  fi
+
   # The checked-in published copy is byte-identical to what tau emits.
   if "$BIN" config schema | diff -q - "$SCRIPT_DIR/../schema/tau-config.schema.json" >/dev/null 2>&1; then
     ok "schema/tau-config.schema.json is in sync" 0 0
