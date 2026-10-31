@@ -229,6 +229,20 @@ test_group_help() {
   else
     ok "--help-json is not valid JSON" 1 0
   fi
+
+  # Per-subcommand help: `tau <sub> --help` prints a dedicated page with a
+  # Usage section and a runnable Examples: section (golden-locked in the
+  # golden-help group). -h is the short spelling; help wins over missing
+  # subcommand-grammar args (e.g. `tau skills --help`, not an error).
+  local sub
+  for sub in acp bug config doctor explain fleet guide init models setup skills upgrade version; do
+    out=$("$BIN" "$sub" --help); ok "$sub --help exit" "$?" 0
+    contains "$sub --help has Usage" "$out" "Usage:"
+    contains "$sub --help has Examples" "$out" "Examples:"
+    contains "$sub --help names the subcommand" "$out" "tau $sub"
+  done
+  out=$("$BIN" doctor -h); ok "doctor -h exit" "$?" 0
+  contains "doctor -h equals --help" "$out" "validate your setup"
 }
 
 # version subcommand + build metadata surfaced across version --verbose,
@@ -3481,6 +3495,22 @@ test_group_golden_help() {
   GOLDEN_DIR="$ROOT/tests/golden"
   golden_check help        0 "$BIN" --help
   golden_check help-short  0 "$BIN" -h
+
+  # Per-subcommand help pages (task #309) — each byte-locks a focused
+  # usage/options page with a runnable Examples: section.
+  golden_check help-acp      0 "$BIN" acp --help
+  golden_check help-bug      0 "$BIN" bug --help
+  golden_check help-config   0 "$BIN" config --help
+  golden_check help-doctor   0 "$BIN" doctor --help
+  golden_check help-explain  0 "$BIN" explain --help
+  golden_check help-fleet    0 "$BIN" fleet --help
+  golden_check help-guide    0 "$BIN" guide --help
+  golden_check help-init     0 "$BIN" init --help
+  golden_check help-models   0 "$BIN" models --help
+  golden_check help-setup    0 "$BIN" setup --help
+  golden_check help-skills   0 "$BIN" skills --help
+  golden_check help-upgrade  0 "$BIN" upgrade --help
+  golden_check help-version  0 "$BIN" version --help
 
   local of ef rc
   of="$(mktemp)"; ef="$(mktemp)"

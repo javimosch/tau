@@ -1,0 +1,19 @@
+tau explain - offline error catalog lookup (no API key needed)
+
+Usage:
+  tau explain [<code|type>] [--json|--human]
+
+Arguments:
+  <code|type>   Exit code (e.g. 106) or error type (e.g. authfailed);
+                omit to list the whole catalog
+
+Options:
+      --json   Stable schema-checked JSON form (default;
+               schema/tau-explain.schema.json)
+      --human  Render as prose
+
+Examples:
+  tau explain
+  tau explain 106
+  tau explain authfailed
+  tau explain --human 105

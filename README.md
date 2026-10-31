@@ -310,6 +310,7 @@ tau --session s "/goal obj"     # Goal mode with persistence
 tau --session s "/goal status"  # Check progress
 tau --role critic "review X"    # Adversarial review (read-only)
 tau fleet run --goal "ship X"   # Multi-agent dispatch
+tau fleet --help                # Per-subcommand usage + runnable examples
 ```
 
 ---

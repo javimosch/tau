@@ -106,6 +106,27 @@ fn resolveProviderAndModel(
     return null;
 }
 
+/// `tau <sub> -h|--help` — every subcommand accepts the help flags anywhere
+/// in its own argv (help wins over other errors, the conventional CLI
+/// contract). Detected here so each subcommand block can bail out before
+/// validating its own grammar (e.g. `tau skills --help` never trips the
+/// "subcommand required" error).
+fn wantsHelp(args: []const []const u8) bool {
+    for (args) |a| {
+        if (eq(a, "-h") or eq(a, "--help")) return true;
+    }
+    return false;
+}
+
+/// The .help result for `tau <name> --help` — config.help_sub names the
+/// subcommand so main.zig prints its dedicated page (with runnable
+/// Examples:) from subhelp.zig instead of the global help_text.
+fn subHelp(name: []const u8, base: Config) Parsed {
+    var cfg = base;
+    cfg.help_sub = name;
+    return .{ .action = .help, .config = cfg, .help_requested = true };
+}
+
 /// Parse argv into an Action + Config. `argv` is the full argument vector
 /// (argv[0] included, skipped here). All retained strings are allocated in
 /// `arena` (freed automatically at process exit, so no leak bookkeeping). `io`
@@ -128,6 +149,7 @@ pub fn parse(
     // `tau acp <start|stop|status|serve> [--acp-socket PATH]` — handled before
     // the generic flag/prompt parsing (acp is a command, not a prompt).
     if (argv.len > 0 and eq(argv[0], "acp")) {
+        if (wantsHelp(argv[1..])) return subHelp("acp", base);
         var acfg: Config = base;
         acfg.acp_sub = .serve;
         // ACP loop: the turn ends naturally when the model stops calling tools
@@ -154,6 +176,7 @@ pub fn parse(
 
     // `tau models` — list available providers and their models.
     if (argv.len > 0 and eq(argv[0], "models")) {
+        if (wantsHelp(argv[1..])) return subHelp("models", base);
         return .{ .action = .models, .config = base };
     }
 
@@ -167,6 +190,7 @@ pub fn parse(
     // latest GitHub release; it always exits 0 and reports checked:false
     // rather than failing when the lookup cannot run.
     if (argv.len > 0 and eq(argv[0], "version")) {
+        if (wantsHelp(argv[1..])) return subHelp("version", base);
         var vcfg: Config = base;
         var saw_text_mode = false;
         var j: usize = 1;
@@ -205,6 +229,7 @@ pub fn parse(
     // appears on a TTY; automation passes --yes (env TAU_YES=1). POSIX-only —
     // Windows re-runs install.ps1.
     if (argv.len > 0 and eq(argv[0], "upgrade")) {
+        if (wantsHelp(argv[1..])) return subHelp("upgrade", base);
         var ucfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
@@ -236,6 +261,7 @@ pub fn parse(
     // report; --report renders a redacted Markdown bundle for bug reports
     // (--json and --report are mutually exclusive).
     if (argv.len > 0 and eq(argv[0], "doctor")) {
+        if (wantsHelp(argv[1..])) return subHelp("doctor", base);
         var dcfg: Config = base;
         var provider_opt: ?[]const u8 = null;
         var model_opt: ?[]const u8 = null;
@@ -299,6 +325,7 @@ pub fn parse(
     // for malformed arguments). --out and --no-report conflict: there is no
     // bundle to write.
     if (argv.len > 0 and eq(argv[0], "bug")) {
+        if (wantsHelp(argv[1..])) return subHelp("bug", base);
         var bcfg: Config = base;
         var provider_opt: ?[]const u8 = null;
         var model_opt: ?[]const u8 = null;
@@ -362,6 +389,7 @@ pub fn parse(
     // `tau guide [--human]` — embedded operator manual (cli-guide-spec, https://cli-specs.intrane.fr/).
     // JSON to stdout by default; `--human` renders the same content as markdown. Command, not a prompt.
     if (argv.len > 0 and eq(argv[0], "guide")) {
+        if (wantsHelp(argv[1..])) return subHelp("guide", base);
         var gcfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
@@ -377,6 +405,7 @@ pub fn parse(
     // renders prose — the two are mutually exclusive. Command, not a prompt:
     // `explain` is always consumed as the subcommand word.
     if (argv.len > 0 and eq(argv[0], "explain")) {
+        if (wantsHelp(argv[1..])) return subHelp("explain", base);
         var ecfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
@@ -400,6 +429,7 @@ pub fn parse(
 
     // `tau skills <list|search|load> [args]` — parallel to `tau acp` / `tau fleet`.
     if (argv.len > 0 and eq(argv[0], "skills")) {
+        if (wantsHelp(argv[1..])) return subHelp("skills", base);
         var scfg: Config = base;
         if (argv.len < 2) return errResult(arena, "skills subcommand required: list | search | load", .{});
         scfg.skills_sub = argv[1];
@@ -413,6 +443,7 @@ pub fn parse(
     // `tau init [--force] [--stdout] [--provider <name>]` — write a commented
     // starter ~/.config/tau/config.json seeded from detected provider env keys.
     if (argv.len > 0 and eq(argv[0], "init")) {
+        if (wantsHelp(argv[1..])) return subHelp("init", base);
         var icfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
@@ -445,6 +476,7 @@ pub fn parse(
     // TAU_SETUP_SHELL / TAU_SETUP_CLIENT are env equivalents (flag > env >
     // detect). CI is NOT auto-detected: scripts opt in, no surprise behavior.
     if (argv.len > 0 and eq(argv[0], "setup")) {
+        if (wantsHelp(argv[1..])) return subHelp("setup", base);
         var scfg: Config = base;
         var provider_opt: ?[]const u8 = null;
         var model_opt: ?[]const u8 = null;
@@ -523,6 +555,7 @@ pub fn parse(
 
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
     if (argv.len > 0 and eq(argv[0], "fleet")) {
+        if (wantsHelp(argv[1..])) return subHelp("fleet", base);
         var fcfg: Config = base;
         var provider_opt: ?[]const u8 = null;
         var model_opt: ?[]const u8 = null;
@@ -614,6 +647,7 @@ pub fn parse(
     // the file in $EDITOR and validates on save.
     var config_show = false;
     if (argv.len > 0 and eq(argv[0], "config")) {
+        if (wantsHelp(argv[1..])) return subHelp("config", base);
         if (argv.len < 2) return errResult(arena, "config subcommand required: show | validate | set | get | unset | edit | schema", .{});
         if (eq(argv[1], "validate")) {
             var vcfg: Config = base;
@@ -1425,6 +1459,43 @@ test "parse: models subcommand" {
 
     const p = try parseArgv(a, &.{ "tau", "models" }, .{});
     try std.testing.expectEqual(Action.models, p.action);
+}
+
+test "parse: <sub> --help routes to per-subcommand help" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Every registered subcommand accepts -h/--help anywhere in its argv;
+    // help wins over missing subcommand-grammar args (skills/fleet/config
+    // would otherwise error before a help flag was ever seen).
+    const subs = [_][]const u8{ "acp", "models", "version", "upgrade", "doctor", "bug", "guide", "explain", "skills", "init", "setup", "fleet", "config" };
+    for (subs) |s| {
+        const p = try parseArgv(a, &.{ "tau", s, "--help" }, .{});
+        try std.testing.expectEqual(Action.help, p.action);
+        try std.testing.expectEqualStrings(s, p.config.help_sub.?);
+        const h = try parseArgv(a, &.{ "tau", s, "-h" }, .{});
+        try std.testing.expectEqual(Action.help, h.action);
+        try std.testing.expectEqualStrings(s, h.config.help_sub.?);
+    }
+
+    // Help wins mid-argv too, and over otherwise-invalid grammar.
+    const mid = try parseArgv(a, &.{ "tau", "fleet", "run", "--goal", "x", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, mid.action);
+    try std.testing.expectEqualStrings("fleet", mid.config.help_sub.?);
+    const bad = try parseArgv(a, &.{ "tau", "skills", "--bogus", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, bad.action);
+
+    // Nested sub-words still reach the top-level page.
+    const nested = try parseArgv(a, &.{ "tau", "config", "validate", "--help" }, .{});
+    try std.testing.expectEqualStrings("config", nested.config.help_sub.?);
+    const show = try parseArgv(a, &.{ "tau", "config", "show", "-h" }, .{});
+    try std.testing.expectEqualStrings("config", show.config.help_sub.?);
+
+    // The global --help keeps help_sub null (prints help_text).
+    const global = try parseArgv(a, &.{ "tau", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, global.action);
+    try std.testing.expect(global.config.help_sub == null);
 }
 
 test "parse: explain subcommand" {

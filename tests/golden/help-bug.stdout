@@ -1,0 +1,23 @@
+tau bug - file a pre-filled GitHub issue with redacted diagnostics
+
+Usage:
+  tau bug [options]
+
+Options:
+      --title <text>     Issue title (default "Bug report")
+      --body <text>      Description placed above the bundle
+      --labels <csv>     Issue labels (default "bug"; "" = none)
+      --open             Open the issue URL in the system browser
+      --out <path>       Also write the diagnostics bundle to a file
+      --no-report        Omit the diagnostics bundle
+      --offline/--deep   Passed through to the diagnostic sweep
+      --provider <name>  Diagnose an override provider
+      --model <id>       Diagnose an override model
+      --api-key <key>    Diagnose an override API key
+      --shell <name>     Completions shell: bash|zsh|fish|pwsh|all
+
+Examples:
+  tau bug
+  tau bug --title "crash on startup" --open
+  tau bug --no-report --labels bug,crash
+  tau bug --out report.md

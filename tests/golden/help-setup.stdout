@@ -1,0 +1,28 @@
+tau setup - one-shot onboarding (init + completions + clients + doctor)
+
+Usage:
+  tau setup [options]
+
+Options:
+      --shell <name>     Shell completions to install:
+                         bash|zsh|fish|pwsh|all
+                         (default: detect $SHELL; env TAU_SETUP_SHELL)
+      --client <name>    Editor/ACP client config to write:
+                         zed|nvim|vscode|jetbrains|windsurf|gemini|
+                         claude-desktop|all (env TAU_SETUP_CLIENT)
+      --provider <name>  Seed the config scaffold for a provider
+      --model <id>       Passed through to the doctor step
+      --api-key <key>    Passed through to the doctor step
+      --offline          Passed to the doctor step (skip network)
+      --deep             Passed to the doctor step (auth'd probe)
+  -y, --yes              Approve all write steps (env TAU_YES=1)
+      --non-interactive  Unattended contract for scripts/CI: never
+                         prompts, never reads stdin
+                         (env TAU_NONINTERACTIVE=1)
+      --dry-run          Preview every write step; change nothing
+
+Examples:
+  tau setup
+  tau setup --dry-run
+  tau setup --yes --client zed
+  tau setup --shell bash --client claude-desktop --yes

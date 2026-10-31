@@ -1,0 +1,35 @@
+tau fleet - orchestrate parallel tau workers toward a goal
+
+Usage:
+  tau fleet run --goal <text> [options]
+  tau fleet status <id>
+  tau fleet list
+  tau fleet logs <id>
+  tau fleet cancel <id>
+
+Commands:
+  run            Decompose the goal and dispatch workers
+  status <id>    Show the fleet manifest (spec + per-item status)
+  list           List active fleet ids
+  logs <id>      Show per-worker session hints
+  cancel <id>    Cancel a running fleet
+
+Options (run):
+      --goal <text>              Objective to decompose (required)
+      --items <json>             Pre-supplied items (skip coordinator)
+      --schema <json|@file>      JSON Schema for the coordinator reply
+      --coordinator-model <id>   Override the coordinator's model
+      --worker-model <id>        Override the workers' model
+      --provider <name>          Provider override
+      --model <id>               Model override
+      --api-key <key>            API key override
+      --sequential               Run workers one at a time
+      --parallel                 Run workers in parallel (default)
+
+Examples:
+  tau fleet run --goal "ship the redesign"
+  tau fleet run --goal "add tests" --sequential
+  tau fleet run --goal "x" --items '{"items":[{"title":"t","prompt":"p"}]}'
+  tau fleet list
+  tau fleet status fleet-2026-10-31
+  tau fleet cancel fleet-2026-10-31
