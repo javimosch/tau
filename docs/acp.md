@@ -20,7 +20,10 @@ full agentic tool loop and streams back `session/update` notifications
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
 > without `--client` to see which editors were detected.
 > [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
-> VS Code, Neovim, and the MCP clients, step by step.
+> VS Code, Neovim, and the MCP clients, step by step — and
+> [docs/clients/](clients/windsurf.md) has a dedicated guide per MCP client
+> ([Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+> [Claude Desktop](clients/claude-desktop.md)).
 
 ## Quick start: tau in Zed
 
@@ -318,7 +321,8 @@ Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp ser
    session/prompt tools spawn `tau acp serve` and stream the exchange.
 
 Both files ship as [`examples/clients/claude-desktop.json`](../examples/clients/claude-desktop.json)
-and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json).
+and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json); the full
+walkthrough is [docs/clients/claude-desktop.md](clients/claude-desktop.md).
 
 ## Other ACP clients
 
