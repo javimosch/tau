@@ -272,7 +272,7 @@ See [API key resolution](#api-key-resolution) for the full precedence order.
 | `TAU_YES` | `1`/`true`/`yes`/`on` enables `tau setup --yes` (approve all write steps) and `tau upgrade --yes` (self-update without prompting). Any other value, including `0`, is off. |
 | `TAU_NONINTERACTIVE` | Same truthiness rules; enables `tau setup --non-interactive` (unattended contract for scripts/CI). |
 | `TAU_SETUP_SHELL` | `tau setup` shell override when `--shell` is absent (`bash|zsh|fish|pwsh|all`); invalid values fail with exit 80. |
-| `TAU_SETUP_CLIENT` | `tau setup` editor client when `--client` is absent (`zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all`); invalid values fail with exit 80. |
+| `TAU_SETUP_CLIENT` | `tau setup` editor client when `--client` is absent (`zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all`); invalid values fail with exit 80. |
 | `HOME` | Root of all tau state: `~/.config/tau/` and `~/.agents/skills/`. If unset, config file, sessions, fleets, skills, and the ACP daemon are all disabled. |
 | `TAU_EDITOR`, `VISUAL`, `EDITOR` | Editor for `tau config edit`, tried in that order (fallback: `vi` / `notepad`). May include arguments, e.g. `TAU_EDITOR="code --wait"`. |
 | `NO_COLOR` | Any non-empty value disables ANSI styling. See [color policy](#color-policy). |

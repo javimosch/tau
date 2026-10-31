@@ -12,7 +12,8 @@ Which editors can drive `tau` as an ACP agent, where each one's config
 lives, what shape the config takes, and which tau version each
 integration path needs. Step-by-step guides:
 [docs/editors.md](editors.md) and [docs/acp.md](acp.md), plus a
-dedicated per-client guide for each MCP-bridge client:
+dedicated per-client guide for each client with verified snippets:
+[VS Code](clients/vscode.md), [Cursor](clients/cursor.md),
 [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
 [Claude Desktop](clients/claude-desktop.md).
 
@@ -23,6 +24,7 @@ dedicated per-client guide for each MCP-bridge client:
 | `zed` | `zed` | `~/.config/zed` | `~/.config/zed/settings.json` | `agent_servers` | `"type": "custom"` | `~/.config/tau/snippets/zed.jsonc` | `client_zed` / `wire_client_zed` |
 | `nvim` | `nvim` | `~/.config/nvim` | — (Lua plugin config) | — | — | `~/.config/tau/snippets/nvim.lua` | `client_nvim` (manual only — Lua config) |
 | `vscode` | `vscode` (alias `code`) | `~/.config/Code` | `~/.config/Code/User/settings.json` | `acp.agents` | none | `~/.config/tau/snippets/vscode.jsonc` | `client_vscode` / `wire_client_vscode` |
+| `cursor` | `cursor` | `~/.config/Cursor` | `~/.config/Cursor/User/settings.json` | `acp.agents` | none | `~/.config/tau/snippets/cursor.jsonc` | `client_cursor` / `wire_client_cursor` |
 | `jetbrains` | `jetbrains` | `~/.jetbrains` | `~/.jetbrains/acp.json` | `agent_servers` | none | `~/.config/tau/snippets/jetbrains.jsonc` | `client_jetbrains` / `wire_client_jetbrains` |
 | `windsurf` (mcacp) | `windsurf` | `~/.codeium/windsurf` | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | none | `~/.config/tau/snippets/windsurf.jsonc` | `client_windsurf` / `wire_client_windsurf` |
 | `gemini` (mcacp) | `gemini` (alias `gemini-cli`) | `~/.gemini` | `~/.gemini/settings.json` | `mcpServers` | none | `~/.config/tau/snippets/gemini.jsonc` | `client_gemini` / `wire_client_gemini` |
@@ -96,6 +98,7 @@ After tau writes (or previews) the config, one in-editor step remains:
 | `zed` | open the Agent Panel, click +, and pick tau |
 | `nvim` | pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider) |
 | `vscode` | install the ACP Client extension, run 'ACP: Connect to Agent', pick tau |
+| `cursor` | install the ACP Client extension (Open VSX), run 'ACP: Connect to Agent', pick tau |
 | `jetbrains` | open the AI Chat tool window and pick tau in the agent selector |
 | `windsurf` | install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers |
 | `gemini` | install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools |

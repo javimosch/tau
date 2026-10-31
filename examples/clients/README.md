@@ -6,8 +6,8 @@ client's settings path, adjust `"command"` if `tau` is not on the `PATH` the
 client sees, and restart the client.
 
 `tau setup --client` writes these same files for you (`zed`, `vscode`,
-`jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `all`; `nvim` gets a
-paste-ready Lua snippet instead). MCP-only clients also get the shared
+`cursor`, `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `all`; `nvim`
+gets a paste-ready Lua snippet instead). MCP-only clients also get the shared
 bridge config `~/.config/mcacp/mcacp.json` written in the same pass:
 
 ```bash

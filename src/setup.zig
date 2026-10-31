@@ -423,17 +423,18 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 // --- Step 3: editor ACP clients --------------------------------------------
 
 /// Editor clients setup can configure to spawn `tau acp serve`.
-pub const ClientKind = enum { zed, nvim, vscode, jetbrains, windsurf, gemini, claude_desktop };
+pub const ClientKind = enum { zed, nvim, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop };
 
 /// Every ClientKind, in the order `--client all` expands and detection
 /// iterates: direct ACP clients first, then the MCP-bridge clients.
-pub const all_clients = [_]ClientKind{ .zed, .nvim, .vscode, .jetbrains, .windsurf, .gemini, .claude_desktop };
+pub const all_clients = [_]ClientKind{ .zed, .nvim, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop };
 
 pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
         .zed => "zed",
         .nvim => "nvim",
         .vscode => "vscode",
+        .cursor => "cursor",
         .jetbrains => "jetbrains",
         .windsurf => "windsurf",
         .gemini => "gemini",
@@ -447,6 +448,7 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "zed")) return .zed;
     if (std.mem.eql(u8, name, "nvim")) return .nvim;
     if (std.mem.eql(u8, name, "vscode") or std.mem.eql(u8, name, "code")) return .vscode;
+    if (std.mem.eql(u8, name, "cursor")) return .cursor;
     if (std.mem.eql(u8, name, "jetbrains")) return .jetbrains;
     if (std.mem.eql(u8, name, "windsurf")) return .windsurf;
     if (std.mem.eql(u8, name, "gemini") or std.mem.eql(u8, name, "gemini-cli")) return .gemini;
@@ -478,6 +480,7 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
     return switch (k) {
         .zed => try std.fmt.allocPrint(arena, "{s}/.config/zed/settings.json", .{home}),
         .vscode => try std.fmt.allocPrint(arena, "{s}/.config/Code/User/settings.json", .{home}),
+        .cursor => try std.fmt.allocPrint(arena, "{s}/.config/Cursor/User/settings.json", .{home}),
         .jetbrains => try std.fmt.allocPrint(arena, "{s}/.jetbrains/acp.json", .{home}),
         .windsurf => try std.fmt.allocPrint(arena, "{s}/.codeium/windsurf/mcp_config.json", .{home}),
         .gemini => try std.fmt.allocPrint(arena, "{s}/.gemini/settings.json", .{home}),
@@ -492,6 +495,7 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
     return switch (k) {
         .zed => std.fmt.allocPrint(arena, "{s}/.config/zed", .{home}),
         .vscode => std.fmt.allocPrint(arena, "{s}/.config/Code", .{home}),
+        .cursor => std.fmt.allocPrint(arena, "{s}/.config/Cursor", .{home}),
         .jetbrains => std.fmt.allocPrint(arena, "{s}/.jetbrains", .{home}),
         .windsurf => std.fmt.allocPrint(arena, "{s}/.codeium/windsurf", .{home}),
         .gemini => std.fmt.allocPrint(arena, "{s}/.gemini", .{home}),
@@ -506,7 +510,7 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
 fn clientSectionKey(k: ClientKind) []const u8 {
     return switch (k) {
         .zed, .jetbrains => "agent_servers",
-        .vscode => "acp.agents",
+        .vscode, .cursor => "acp.agents",
         .windsurf, .gemini, .claude_desktop => "mcpServers",
         .nvim => unreachable,
     };
@@ -518,6 +522,7 @@ fn clientNextStep(k: ClientKind) []const u8 {
     return switch (k) {
         .zed => "open the Agent Panel, click +, and pick tau",
         .vscode => "install the ACP Client extension, run 'ACP: Connect to Agent', pick tau",
+        .cursor => "install the ACP Client extension (Open VSX), run 'ACP: Connect to Agent', pick tau",
         .jetbrains => "open the AI Chat tool window and pick tau in the agent selector",
         .windsurf => "install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers",
         .gemini => "install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools",
@@ -570,7 +575,9 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
             \\}}
             \\
         , .{cmd}),
-        .vscode => std.fmt.allocPrint(arena,
+        // Cursor is VS Code-compatible — the same acp.agents shape, in
+        // Cursor's own User settings.json.
+        .vscode, .cursor => std.fmt.allocPrint(arena,
             \\{{
             \\  "acp.agents": {{
             \\    "tau": {{
@@ -1073,7 +1080,7 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     var list: std.ArrayList(ClientKind) = .empty;
     if (cfg.setup_client) |s| {
         if (std.mem.eql(u8, s, "all")) {
-            try list.appendSlice(arena, &.{ .zed, .nvim, .vscode, .jetbrains, .windsurf, .gemini, .claude_desktop });
+            try list.appendSlice(arena, &.{ .zed, .nvim, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop });
         } else if (parseClientName(s)) |k| {
             try list.append(arena, k);
         }
@@ -1221,7 +1228,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
             }
         }
         try buf.appendSlice(arena, "],\"hint\":");
-        try js(arena, &buf, "re-run with --client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config");
+        try js(arena, &buf, "re-run with --client zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config");
         try buf.appendSlice(arena, "}");
         emit(&buf);
         return true;
@@ -1461,6 +1468,7 @@ test "parseClientName accepts supported clients and the code alias" {
     try testing.expectEqual(ClientKind.nvim, parseClientName("nvim").?);
     try testing.expectEqual(ClientKind.vscode, parseClientName("vscode").?);
     try testing.expectEqual(ClientKind.vscode, parseClientName("code").?);
+    try testing.expectEqual(ClientKind.cursor, parseClientName("cursor").?);
     try testing.expectEqual(ClientKind.jetbrains, parseClientName("jetbrains").?);
     try testing.expectEqual(ClientKind.windsurf, parseClientName("windsurf").?);
     try testing.expectEqual(ClientKind.gemini, parseClientName("gemini").?);
@@ -1483,6 +1491,10 @@ test "clientSettingsPath matches the docs/acp.md targets (nvim has none)" {
     try testing.expectEqualStrings(
         "/h/.config/Code/User/settings.json",
         (try clientSettingsPath(a, "/h", .vscode)).?,
+    );
+    try testing.expectEqualStrings(
+        "/h/.config/Cursor/User/settings.json",
+        (try clientSettingsPath(a, "/h", .cursor)).?,
     );
     try testing.expectEqualStrings(
         "/h/.jetbrains/acp.json",
@@ -1523,7 +1535,7 @@ test "renderClientJson emits a parseable minimal file with the tau entry" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    for ([_]ClientKind{ .zed, .vscode, .jetbrains }) |k| {
+    for ([_]ClientKind{ .zed, .vscode, .cursor, .jetbrains }) |k| {
         const body = try renderClientJson(a, k, "/abs/path/tau");
         // Must parse as JSON and already satisfy hasTauEntry.
         try testing.expectEqual(@as(?bool, true), hasTauEntry(a, k, body));

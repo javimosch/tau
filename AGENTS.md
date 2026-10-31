@@ -359,7 +359,7 @@ tau init --provider openai               # Scaffold for a specific provider
 ```bash
 tau setup                      # init + install completions ($SHELL-detected) + doctor summary
 tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
-tau setup --client zed         # Write editor ACP config: zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all
+tau setup --client zed         # Write editor ACP config: zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all
 tau setup --offline            # Skip network checks in the doctor step
 tau setup -y --non-interactive # Unattended contract (verdict records non_interactive/yes)
 tau setup --dry-run            # Preview all writes (would_* statuses); change nothing

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Verify the per-client setup guides match `tau setup --client` output.
 
-docs/clients/{windsurf,gemini-cli,claude-desktop}.md embed the config
-snippets tau writes. Each verified block is marked with an HTML comment
-directly above the fenced code block:
+docs/clients/*.md embed the config snippets tau writes. Each verified block
+is marked with an HTML comment directly above the fenced code block:
 
     <!-- setup-verify: client-file -->
     ```json
@@ -13,12 +12,17 @@ directly above the fenced code block:
 Slots:
   client-file     the client's settings file when setup writes it fresh
   bridge-file     ~/.config/mcacp/mcacp.json (the shared MCP->ACP bridge
-                  config; its absolute "command" path is normalized to
-                  "tau" before comparison)
+                  config; bridge clients only)
   client-snippet  the paste-ready ~/.config/tau/snippets/<client>.jsonc
                   setup drops when the settings file already exists
   bridge-snippet  ~/.config/tau/snippets/mcacp.jsonc for an existing
-                  mcacp.json (normalized like bridge-file)
+                  mcacp.json (bridge clients only)
+
+Direct ACP clients (vscode, cursor) verify the two client slots; MCP-bridge
+clients (windsurf, gemini, claude-desktop) verify all four. Blocks whose
+bytes embed the absolute path of the tau binary — client-file/client-snippet
+for direct clients, bridge-file/bridge-snippet — get their "command" value
+normalized to "tau" before comparison.
 
 The check runs `tau setup --client <name> --yes` twice per client: once in
 a clean HOME (fresh files) and once with pre-seeded settings files
@@ -41,12 +45,24 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 GUIDES = {
+    "vscode.md": "vscode",
+    "cursor.md": "cursor",
     "windsurf.md": "windsurf",
     "gemini-cli.md": "gemini",
     "claude-desktop.md": "claude-desktop",
 }
 
-SLOTS = ("client-file", "bridge-file", "client-snippet", "bridge-snippet")
+# MCP-bridge clients wire two files — the client's mcpServers entry plus the
+# shared ~/.config/mcacp/mcacp.json — so their guides carry four verified
+# blocks. Direct ACP clients carry two (their own file + snippet only).
+BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop"))
+
+DIRECT_SLOTS = ("client-file", "client-snippet")
+BRIDGE_SLOTS = ("client-file", "bridge-file", "client-snippet", "bridge-snippet")
+
+
+def slots_for(client):
+    return BRIDGE_SLOTS if client in BRIDGE_CLIENTS else DIRECT_SLOTS
 
 MARKER = re.compile(
     r"<!--\s*setup-verify:\s*(client-file|bridge-file|client-snippet|bridge-snippet)\s*-->"
@@ -94,7 +110,8 @@ def collect(tau):
     """{client: {slot: bytes-written}} from real `tau setup` runs."""
     out = {}
 
-    # Pass 1 — clean HOME: fresh settings files + the shared bridge config.
+    # Pass 1 — clean HOME: fresh settings files (+ the shared bridge config
+    # for MCP clients).
     with tempfile.TemporaryDirectory() as home:
         for client in GUIDES.values():
             step = run_setup(tau, client, home)
@@ -105,21 +122,30 @@ def collect(tau):
             if entry.get("status") != "installed":
                 fail(f"{client}: expected status installed, got "
                      f"{entry.get('status')} — {json.dumps(entry)}")
-            if entry.get("bridge_status") not in ("installed",
-                                                  "already_installed"):
-                fail(f"{client}: unexpected bridge_status "
-                     f"{entry.get('bridge_status')}")
             slots = out.setdefault(client, {})
             with open(entry["path"], encoding="utf-8") as f:
-                slots["client-file"] = f.read()
-            with open(entry["bridge_path"], encoding="utf-8") as f:
-                slots["bridge-file"] = norm_command(f.read())
+                body = f.read()
+            # Direct clients embed the absolute tau path in "command";
+            # bridge client files launch `npx mcacp` and stay literal.
+            slots["client-file"] = (norm_command(body)
+                                    if client not in BRIDGE_CLIENTS else body)
+            if client in BRIDGE_CLIENTS:
+                if entry.get("bridge_status") not in ("installed",
+                                                      "already_installed"):
+                    fail(f"{client}: unexpected bridge_status "
+                         f"{entry.get('bridge_status')}")
+                with open(entry["bridge_path"], encoding="utf-8") as f:
+                    slots["bridge-file"] = norm_command(f.read())
 
     # Pass 2 — every settings file already exists (foreign entries only):
     # setup must not touch them, so paste-ready snippets land under
     # ~/.config/tau/snippets/ instead.
     with tempfile.TemporaryDirectory() as home:
         seeds = {
+            ".config/Code/User/settings.json":
+                '{"acp.agents":{"other":{"command":"x"}}}',
+            ".config/Cursor/User/settings.json":
+                '{"acp.agents":{"other":{"command":"x"}}}',
             ".codeium/windsurf/mcp_config.json":
                 '{"mcpServers":{"other":{"command":"x"}}}',
             ".gemini/settings.json":
@@ -143,11 +169,16 @@ def collect(tau):
                      f"{json.dumps(entry)}")
             slots = out[client]
             with open(entry["snippet_path"], encoding="utf-8") as f:
-                slots["client-snippet"] = f.read()
-            if "bridge_snippet_path" not in entry:
-                fail(f"{client}: no bridge_snippet_path on seeded run")
-            with open(entry["bridge_snippet_path"], encoding="utf-8") as f:
-                slots["bridge-snippet"] = norm_command(f.read())
+                body = f.read()
+            slots["client-snippet"] = (norm_command(body)
+                                       if client not in BRIDGE_CLIENTS
+                                       else body)
+            if client in BRIDGE_CLIENTS:
+                if "bridge_snippet_path" not in entry:
+                    fail(f"{client}: no bridge_snippet_path on seeded run")
+                with open(entry["bridge_snippet_path"],
+                          encoding="utf-8") as f:
+                    slots["bridge-snippet"] = norm_command(f.read())
 
     return out
 
@@ -177,7 +208,7 @@ def main():
             problems.append(f"{guide}: missing (expected for --client {client})")
             continue
         blocks = extract_blocks(path)
-        for slot in SLOTS:
+        for slot in slots_for(client):
             if slot not in blocks:
                 problems.append(f"{guide}: no <!-- setup-verify: {slot} --> block")
                 continue

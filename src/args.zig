@@ -42,9 +42,9 @@ fn validSetupShell(s: []const u8) bool {
 /// `tau setup --client` / `TAU_SETUP_CLIENT` accepted values.
 fn validSetupClient(s: []const u8) bool {
     return eq(s, "zed") or eq(s, "nvim") or eq(s, "vscode") or
-        eq(s, "jetbrains") or eq(s, "code") or eq(s, "windsurf") or
-        eq(s, "gemini") or eq(s, "gemini-cli") or eq(s, "claude-desktop") or
-        eq(s, "claude") or eq(s, "all");
+        eq(s, "cursor") or eq(s, "jetbrains") or eq(s, "code") or
+        eq(s, "windsurf") or eq(s, "gemini") or eq(s, "gemini-cli") or
+        eq(s, "claude-desktop") or eq(s, "claude") or eq(s, "all");
 }
 
 /// Interpret an env var as a boolean: "1", "true", "yes", "on"
@@ -463,7 +463,7 @@ pub fn parse(
     }
 
     // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
-    // [--api-key K] [--offline] [--deep] [--client <zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all>]
+    // [--api-key K] [--offline] [--deep] [--client <zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all>]
     // [--yes|-y] [--non-interactive] [--dry-run]`
     // — one-shot onboarding: scaffold the config (init), install shell
     // completions, write/detect editor ACP client config, embed a doctor
@@ -495,7 +495,7 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 const c = argv[j];
                 if (!validSetupClient(c))
-                    return errResult(arena, "invalid --client: {s} (want zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all)", .{c});
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)", .{c});
                 scfg.setup_client = c;
             } else if (eq(a, "--provider")) {
                 j += 1;
@@ -537,7 +537,7 @@ pub fn parse(
             if (env.get("TAU_SETUP_CLIENT")) |c| {
                 if (c.len > 0) {
                     if (!validSetupClient(c))
-                        return errResult(arena, "invalid TAU_SETUP_CLIENT: {s} (want zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all)", .{c});
+                        return errResult(arena, "invalid TAU_SETUP_CLIENT: {s} (want zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)", .{c});
                     scfg.setup_client = c;
                 }
             }
@@ -2400,7 +2400,7 @@ test "parse: setup invalid TAU_SETUP_* env values fail like a bad flag" {
         .{ "TAU_SETUP_CLIENT", "emacs" },
     }, .{});
     try std.testing.expectEqual(Action.err, c.action);
-    try std.testing.expectEqualStrings("invalid TAU_SETUP_CLIENT: emacs (want zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all)", c.err_msg.?);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_CLIENT: emacs (want zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)", c.err_msg.?);
 
     // An explicit flag shadows a bad env value — flag > env.
     const okp = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "bash" }, &.{

@@ -3,8 +3,8 @@
 `tau acp serve` speaks the [Agent Client Protocol](https://agentclientprotocol.com)
 over stdio, so ACP-compatible editors can drive tau as a coding agent. The
 fastest way to wire one up is `tau setup --client <editor>`; this guide walks
-through exactly what that command does for **Zed**, **VS Code**, **Neovim**,
-and the MCP clients (**Windsurf**, **Gemini CLI**, **Claude Desktop**),
+through exactly what that command does for **Zed**, **VS Code**, **Cursor**,
+**Neovim**, and the MCP clients (**Windsurf**, **Gemini CLI**, **Claude Desktop**),
 what its output means, and how to finish or undo each step by hand.
 
 For JetBrains IDEs, Emacs (agent-shell), Toad, socket mode, and a description of
@@ -16,6 +16,7 @@ what the editor sees once connected, see [docs/acp.md](acp.md).
 tau setup                      # detect editors, write nothing
 tau setup --client zed         # configure one editor
 tau setup --client vscode      # (or the alias: --client code)
+tau setup --client cursor      # same acp.agents shape, Cursor's settings dir
 tau setup --client nvim        # writes a paste-ready Lua snippet
 tau setup --client windsurf    # MCP client — also writes mcacp.json
 tau setup --client all         # every supported client at once
@@ -30,7 +31,7 @@ touch before letting it.
 Anything else is rejected before setup runs:
 
 ```json
-{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all)","recoverable":false}}
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)","recoverable":false}}
 ```
 
 Setup emits one NDJSON object per step. The `clients` step is the one this
@@ -40,7 +41,7 @@ guide covers:
   installed (their config directories exist) — detection alone never writes:
 
 ```json
-{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config"}
+{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config"}
 ```
 
 - **With `--client`** each requested editor gets a `clients[]` entry carrying
@@ -176,6 +177,21 @@ The extension spawns tau itself, so the absolute `command` path matters more
 than your interactive shell's `PATH`. If you launch VS Code from a shell where
 `tau` resolves, a bare `"command": "tau"` also works.
 
+## Cursor
+
+```bash
+tau setup --client cursor
+```
+
+Cursor is VS Code-compatible — the same `acp.agents` shape, in Cursor's own
+settings file at `~/.config/Cursor/User/settings.json` (`~/Library/Application
+Support/Cursor/User/settings.json` on macOS,
+`%APPDATA%\Cursor\User\settings.json` on Windows). Everything from the VS Code
+section applies; the only differences are the file path and the extension
+source — Cursor pulls the ACP Client extension from the
+[Open VSX](https://open-vsx.org/extension/formulahendry/acp-client) registry.
+The step-by-step guide is [docs/clients/cursor.md](clients/cursor.md).
+
 ## Neovim
 
 ```bash
@@ -250,6 +266,8 @@ creates `mcacp.json` once — the later clients report
 Dedicated per-client guides — each with the exact file contents
 `tau setup --client` writes (drift-checked in CI against the real output):
 
+- [VS Code](clients/vscode.md)
+- [Cursor](clients/cursor.md)
 - [Windsurf](clients/windsurf.md)
 - [Gemini CLI](clients/gemini-cli.md)
 - [Claude Desktop](clients/claude-desktop.md)
@@ -258,8 +276,8 @@ Dedicated per-client guides — each with the exact file contents
 
 Setup is additive and never deletes:
 
-- **Zed / VS Code:** delete the `"tau"` entry from your settings file (or the
-  whole file if setup created a minimal one just for tau).
+- **Zed / VS Code / Cursor:** delete the `"tau"` entry from your settings
+  file (or the whole file if setup created a minimal one just for tau).
 - **Windsurf / Gemini CLI / Claude Desktop:** delete the `"mcacp"` entry from
   the client's `mcpServers` section; delete `~/.config/mcacp/mcacp.json` when
   no other MCP client still uses it.
