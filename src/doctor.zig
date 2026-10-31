@@ -71,6 +71,8 @@ pub const FixKind = enum {
     wire_client_zed,
     /// Same for VS Code (`acp.agents` in User settings.json).
     wire_client_vscode,
+    /// Same for Cursor (`acp.agents` in User settings.json — Code fork).
+    wire_client_cursor,
     /// Same for JetBrains IDEs (`agent_servers` in acp.json).
     wire_client_jetbrains,
     /// Same for Windsurf (`mcpServers` in mcp_config.json via the mcacp bridge).
@@ -703,6 +705,7 @@ fn clientFixKind(k: setup.ClientKind) ?FixKind {
     return switch (k) {
         .zed => .wire_client_zed,
         .vscode => .wire_client_vscode,
+        .cursor => .wire_client_cursor,
         .jetbrains => .wire_client_jetbrains,
         .windsurf => .wire_client_windsurf,
         .gemini => .wire_client_gemini,
@@ -796,7 +799,7 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
             .name = "client_wiring",
             .status = .skip,
             .message = "no supported editor config dirs detected",
-            .hint = "run 'tau setup --client zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all' to wire 'tau acp serve' into an installed editor",
+            .hint = "run 'tau setup --client zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all' to wire 'tau acp serve' into an installed editor",
         });
     return list.toOwnedSlice(arena);
 }
@@ -1478,6 +1481,7 @@ fn fixDescription(k: FixKind) []const u8 {
         .install_completions => "install/refresh shell completion scripts",
         .wire_client_zed => "wire tau into Zed settings (minimal file, or paste-ready snippet)",
         .wire_client_vscode => "wire tau into VS Code settings (minimal file, or paste-ready snippet)",
+        .wire_client_cursor => "wire tau into Cursor settings (minimal file, or paste-ready snippet)",
         .wire_client_jetbrains => "wire tau into JetBrains acp.json (minimal file, or paste-ready snippet)",
         .wire_client_windsurf => "wire tau into Windsurf via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_gemini => "wire tau into Gemini CLI via the mcacp bridge (minimal file, or paste-ready snippet)",
@@ -1568,11 +1572,12 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             }
             break :blk std.fmt.allocPrint(arena, "installed completions for {s}", .{names.items}) catch "installed completions";
         },
-        .wire_client_zed, .wire_client_vscode, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop => blk: {
+        .wire_client_zed, .wire_client_vscode, .wire_client_cursor, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop => blk: {
             const home = env.get("HOME") orelse break :blk error.HomeUnset;
             const ck: setup.ClientKind = switch (pf.kind) {
                 .wire_client_zed => .zed,
                 .wire_client_vscode => .vscode,
+                .wire_client_cursor => .cursor,
                 .wire_client_jetbrains => .jetbrains,
                 .wire_client_windsurf => .windsurf,
                 .wire_client_gemini => .gemini,

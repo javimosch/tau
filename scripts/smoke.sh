@@ -1770,6 +1770,19 @@ PYEOF
     ok "corrected snippet written" 1 0
   fi
   grep -q '/nonexistent/tau' "$wire_home/.config/Code/User/settings.json" && ok "user settings file untouched by snippet fix" 0 0 || ok "user settings file untouched by snippet fix" 1 0
+
+  # Cursor shares the vscode wiring path: detected dir, missing settings
+  # file -> warn + wire_client_cursor fix writes the minimal acp.agents file.
+  mkdir -p "$wire_home/.config/Cursor"
+  capture doc_wire_cursor env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$wire_home" "$BIN" doctor --offline --fix --yes
+  contains "cursor detected but unwired -> warn+fix" "$doc_wire_cursor_out" '"id":"wire_client_cursor","check":"client_cursor","status":"applied"'
+  contains "cursor re-diagnosed ok" "$doc_wire_cursor_out" '"name":"client_cursor","status":"ok"'
+  if [ -f "$wire_home/.config/Cursor/User/settings.json" ] && grep -q '"acp.agents"' "$wire_home/.config/Cursor/User/settings.json"; then
+    ok "cursor settings file written with acp.agents" 0 0
+  else
+    ok "cursor settings file written with acp.agents" 1 0
+  fi
 }
 
 # Group: tau bug — pre-filled GitHub issue carrying the redacted doctor bundle
@@ -2225,12 +2238,15 @@ test_group_setup() {
   contains "--client all covers zed" "$s12_out" '"client":"zed"'
   contains "--client all covers nvim" "$s12_out" '"client":"nvim"'
   contains "--client all covers vscode" "$s12_out" '"client":"vscode"'
+  contains "--client all covers cursor" "$s12_out" '"client":"cursor"'
   contains "--client all covers jetbrains" "$s12_out" '"client":"jetbrains"'
   contains "--client all covers windsurf" "$s12_out" '"client":"windsurf"'
   contains "--client all covers gemini" "$s12_out" '"client":"gemini"'
   contains "--client all covers claude-desktop" "$s12_out" '"client":"claude-desktop"'
   [ -f "$mock_home10/.config/Code/User/settings.json" ]; ok "vscode settings written" "$?" 0
   grep -q '"acp.agents"' "$mock_home10/.config/Code/User/settings.json"; ok "vscode uses acp.agents key" "$?" 0
+  [ -f "$mock_home10/.config/Cursor/User/settings.json" ]; ok "cursor settings written" "$?" 0
+  grep -q '"acp.agents"' "$mock_home10/.config/Cursor/User/settings.json"; ok "cursor uses acp.agents key" "$?" 0
   [ -f "$mock_home10/.jetbrains/acp.json" ]; ok "jetbrains acp.json written" "$?" 0
   [ -f "$mock_home10/.codeium/windsurf/mcp_config.json" ]; ok "windsurf mcp_config.json written" "$?" 0
   [ -f "$mock_home10/.gemini/settings.json" ]; ok "gemini settings.json written" "$?" 0
@@ -2426,10 +2442,11 @@ test_group_client_examples() {
   # Normalize the embedded absolute command path to "tau" and diff each
   # generated settings file byte-for-byte against the shipped example.
   local spec want
-  for spec in zed vscode jetbrains mcacp; do
+  for spec in zed vscode cursor jetbrains mcacp; do
     case "$spec" in
       zed)       want="$h/.config/zed/settings.json" ;;
       vscode)    want="$h/.config/Code/User/settings.json" ;;
+      cursor)    want="$h/.config/Cursor/User/settings.json" ;;
       jetbrains) want="$h/.jetbrains/acp.json" ;;
       mcacp)     want="$h/.config/mcacp/mcacp.json" ;;
     esac
@@ -3436,6 +3453,10 @@ test_group_golden_onboarding() {
     else
       ok "existing zed settings were modified" 1 0
     fi
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-cursor 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client cursor
+    golden_file    ob-setup-cursor.json "$_GOLDEN_HOME/.config/Cursor/User/settings.json"
 
     _golden_fresh_home
     golden_check_n ob-setup-client-nvim 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client nvim

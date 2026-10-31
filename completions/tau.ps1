@@ -34,7 +34,7 @@ $TauArgumentCompleter = {
     # Exit codes mirror the stable catalog in src/errors.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111', '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
-    $clients     = @('zed', 'nvim', 'vscode', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'all')
+    $clients     = @('zed', 'nvim', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
         '--print', '-p',
@@ -125,7 +125,7 @@ $TauArgumentCompleter = {
         '--force'             = 'overwrite an existing config file'
         '--stdout'            = 'print the starter config without writing it'
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
-        '--client'            = 'editor ACP client (zed|nvim|vscode|jetbrains|windsurf|gemini|claude-desktop|all)'
+        '--client'            = 'editor ACP client (zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
         '--probe'             = 'live-verify connectivity and credentials for every provider'

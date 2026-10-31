@@ -11,8 +11,9 @@ full agentic tool loop and streams back `session/update` notifications
 (`tool_call` → `tool_call_update` → `agent_message_chunk`), ending with a
 `session/prompt` response carrying a `stopReason`.
 
-> **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `jetbrains`,
-> `windsurf`, `gemini`, `claude-desktop`, `all`) writes these configs for you
+> **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `cursor`,
+> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `all`) writes these
+> configs for you
 > during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
@@ -20,9 +21,10 @@ full agentic tool loop and streams back `session/update` notifications
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
 > without `--client` to see which editors were detected.
 > [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
-> VS Code, Neovim, and the MCP clients, step by step — and
-> [docs/clients/](clients/windsurf.md) has a dedicated guide per MCP client
-> ([Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+> VS Code, Cursor, Neovim, and the MCP clients, step by step — and
+> [docs/clients/](clients/vscode.md) has a dedicated guide per client
+> ([VS Code](clients/vscode.md), [Cursor](clients/cursor.md),
+> [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
 > [Claude Desktop](clients/claude-desktop.md)).
 
 ## Quick start: tau in Zed
@@ -273,7 +275,8 @@ identical to VS Code's (`acp.agents`). Merge the `tau` entry into Cursor's
 }
 ```
 
-`tau setup --client` doesn't target Cursor directly yet — the entry above is
+`tau setup --client cursor` writes this file directly — the step-by-step
+guide is [docs/clients/cursor.md](clients/cursor.md), and the entry above is
 [`examples/clients/cursor.json`](../examples/clients/cursor.json).
 
 ### Claude Desktop (via an MCP↔ACP bridge)

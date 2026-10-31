@@ -259,8 +259,8 @@ const setup_help =
     \\                         bash|zsh|fish|pwsh|all
     \\                         (default: detect $SHELL; env TAU_SETUP_SHELL)
     \\      --client <name>    Editor/ACP client config to write:
-    \\                         zed|nvim|vscode|jetbrains|windsurf|gemini|
-    \\                         claude-desktop|all (env TAU_SETUP_CLIENT)
+    \\                         zed|nvim|vscode|cursor|jetbrains|windsurf|
+    \\                         gemini|claude-desktop|all (env TAU_SETUP_CLIENT)
     \\      --provider <name>  Seed the config scaffold for a provider
     \\      --model <id>       Passed through to the doctor step
     \\      --api-key <key>    Passed through to the doctor step
