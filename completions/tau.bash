@@ -125,7 +125,7 @@ _tau_complete() {
             ;;
 
         init)
-            COMPREPLY=($(compgen -W "--force --stdout --provider" -- "$cur"))
+            COMPREPLY=($(compgen -W "--force --stdout --provider --json" -- "$cur"))
             ;;
 
         doctor)
@@ -133,11 +133,11 @@ _tau_complete() {
             ;;
 
         bug)
-            COMPREPLY=($(compgen -W "--title --body --labels --open --out --no-report --offline --deep --shell --provider --model --api-key" -- "$cur"))
+            COMPREPLY=($(compgen -W "--title --body --labels --open --out --no-report --offline --deep --shell --provider --model --api-key --json" -- "$cur"))
             ;;
 
         setup)
-            COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive --dry-run" -- "$cur"))
+            COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive --dry-run --json" -- "$cur"))
             ;;
 
         guide)
@@ -153,7 +153,7 @@ _tau_complete() {
             ;;
 
         upgrade)
-            COMPREPLY=($(compgen -W "--yes -y --dir --dry-run" -- "$cur"))
+            COMPREPLY=($(compgen -W "--yes -y --dir --dry-run --json" -- "$cur"))
             ;;
 
         explain)

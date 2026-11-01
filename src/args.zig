@@ -222,11 +222,13 @@ pub fn parse(
         return .{ .action = .version, .config = vcfg };
     }
 
-    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run]` — self-update in
-    // place: run the same release lookup as `tau version --check`, confirm,
+    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--json]` — self-update
+    // in place: run the same release lookup as `tau version --check`, confirm,
     // then fetch and exec the release tag's own install.sh so the fail-closed
     // SHA256-verified install path is reused verbatim. The prompt only
-    // appears on a TTY; automation passes --yes (env TAU_YES=1). POSIX-only —
+    // appears on a TTY; automation passes --yes (env TAU_YES=1). The stdout
+    // report is already a single JSON object; --json is the stable-contract
+    // spelling that pins it (schema/tau-upgrade.schema.json). POSIX-only —
     // Windows re-runs install.ps1.
     if (argv.len > 0 and eq(argv[0], "upgrade")) {
         if (wantsHelp(argv[1..])) return subHelp("upgrade", base);
@@ -242,6 +244,9 @@ pub fn parse(
                 ucfg.upgrade_dir = argv[j];
             } else if (eq(a, "--dry-run")) {
                 ucfg.upgrade_dry_run = true;
+            } else if (eq(a, "--json")) {
+                ucfg.cli_json = true;
+                ucfg.mode = .json;
             } else return errResult(arena, "unknown upgrade argument: {s}", .{a});
         }
         if (envTruthy(env.get("TAU_YES"))) ucfg.upgrade_yes = true;
@@ -318,12 +323,13 @@ pub fn parse(
 
     // `tau bug [--title T] [--body TEXT] [--labels CSV] [--open] [--out PATH]
     // [--no-report] [--offline] [--deep] [--provider P] [--model M]
-    // [--api-key K] [--shell sh]` — build a pre-filled GitHub issue carrying
-    // the redacted `tau doctor --report` bundle; a command, not a prompt.
-    // The diagnostic sweep honors the same overrides as `tau doctor`, so an
-    // unknown provider rides into the report as a failed check (exit-80 only
-    // for malformed arguments). --out and --no-report conflict: there is no
-    // bundle to write.
+    // [--api-key K] [--shell sh] [--json]` — build a pre-filled GitHub issue
+    // carrying the redacted `tau doctor --report` bundle; a command, not a
+    // prompt. The diagnostic sweep honors the same overrides as `tau doctor`,
+    // so an unknown provider rides into the report as a failed check (exit-80
+    // only for malformed arguments). --out and --no-report conflict: there is
+    // no bundle to write. The stdout object is already JSON; --json is the
+    // stable-contract spelling that pins it (schema/tau-bug.schema.json).
     if (argv.len > 0 and eq(argv[0], "bug")) {
         if (wantsHelp(argv[1..])) return subHelp("bug", base);
         var bcfg: Config = base;
@@ -368,6 +374,9 @@ pub fn parse(
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
                 bcfg.api_key = argv[j];
+            } else if (eq(a, "--json")) {
+                bcfg.cli_json = true;
+                bcfg.mode = .json;
             } else if (eq(a, "--shell")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -440,8 +449,12 @@ pub fn parse(
         return .{ .action = .skills, .config = scfg };
     }
 
-    // `tau init [--force] [--stdout] [--provider <name>]` — write a commented
-    // starter ~/.config/tau/config.json seeded from detected provider env keys.
+    // `tau init [--force] [--stdout] [--provider <name>] [--json]` — write a
+    // commented starter ~/.config/tau/config.json seeded from detected provider
+    // env keys. The write-path stdout result is already a JSON object; --json
+    // is the stable-contract spelling that pins it
+    // (schema/tau-init.schema.json). --stdout prints the JSONC scaffold
+    // itself, not the result object, so it is mutually exclusive with --json.
     if (argv.len > 0 and eq(argv[0], "init")) {
         if (wantsHelp(argv[1..])) return subHelp("init", base);
         var icfg: Config = base;
@@ -451,7 +464,12 @@ pub fn parse(
             if (eq(a, "--force")) {
                 icfg.init_force = true;
             } else if (eq(a, "--stdout")) {
+                if (icfg.cli_json) return errResult(arena, "--json and --stdout are mutually exclusive", .{});
                 icfg.init_stdout = true;
+            } else if (eq(a, "--json")) {
+                if (icfg.init_stdout) return errResult(arena, "--json and --stdout are mutually exclusive", .{});
+                icfg.cli_json = true;
+                icfg.mode = .json;
             } else if (eq(a, "--provider")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -464,10 +482,11 @@ pub fn parse(
 
     // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
     // [--api-key K] [--offline] [--deep] [--client <zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all>]
-    // [--yes|-y] [--non-interactive] [--dry-run]`
+    // [--yes|-y] [--non-interactive] [--dry-run] [--json]`
     // — one-shot onboarding: scaffold the config (init), install shell
     // completions, write/detect editor ACP client config, embed a doctor
-    // health report.
+    // health report. The stdout stream is already NDJSON; --json is the
+    // stable-contract spelling that pins it (schema/tau-setup.schema.json).
     // A command, not a prompt; an unknown provider rides into the doctor step
     // as a failed check (same convention as `tau doctor`).
     // Unattended use (devcontainers, dotfiles scripts, CI): --yes and
@@ -519,6 +538,9 @@ pub fn parse(
                 scfg.setup_non_interactive = true;
             } else if (eq(a, "--dry-run")) {
                 scfg.setup_dry_run = true;
+            } else if (eq(a, "--json")) {
+                scfg.cli_json = true;
+                scfg.mode = .json;
             } else return errResult(arena, "unknown setup argument: {s}", .{a});
         }
         // Env equivalents so dotfiles/devcontainers configure setup without
@@ -1589,6 +1611,67 @@ test "parse: init subcommand and validation" {
     const missingv = try parseArgv(a, &.{ "tau", "init", "--provider" }, .{});
     try std.testing.expectEqual(Action.err, missingv.action);
     try std.testing.expectEqualStrings("missing value for --provider", missingv.err_msg.?);
+}
+
+test "parse: init --json pins the stable result object; --stdout mutex" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "init", "--json" }, .{});
+    try std.testing.expectEqual(Action.init, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // --stdout prints the JSONC scaffold, not the pinned result object —
+    // the two spellings conflict in either order.
+    const fwd = try parseArgv(a, &.{ "tau", "init", "--json", "--stdout" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --stdout are mutually exclusive", fwd.err_msg.?);
+
+    const rev = try parseArgv(a, &.{ "tau", "init", "--stdout", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --stdout are mutually exclusive", rev.err_msg.?);
+}
+
+test "parse: setup --json pins the stable NDJSON stream contract" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "setup", "--json" }, .{});
+    try std.testing.expectEqual(Action.setup, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // --json composes with the rest of the setup surface.
+    const q = try parseArgv(a, &.{ "tau", "setup", "--json", "--dry-run", "--yes" }, .{});
+    try std.testing.expectEqual(Action.setup, q.action);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expect(q.config.setup_dry_run);
+    try std.testing.expect(q.config.setup_yes);
+}
+
+test "parse: upgrade --json pins the stable report object" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade", "--json" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+}
+
+test "parse: bug --json pins the stable issue object" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--json" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
 }
 
 test "parse: fleet run resolves provider and captures goal" {

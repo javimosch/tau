@@ -15,6 +15,9 @@ Options:
       --model <id>       Diagnose an override model
       --api-key <key>    Diagnose an override API key
       --shell <name>     Completions shell: bash|zsh|fish|pwsh|all
+      --json             Pin the stable schema-checked JSON form
+                         (schema/tau-bug.schema.json; output is
+                         already JSON)
 
 Examples:
   tau bug

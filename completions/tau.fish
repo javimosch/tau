@@ -184,6 +184,7 @@ set -l init '__tau_using_subcommand init'
 complete -c tau -n $init -f -l force -d 'overwrite an existing config file'
 complete -c tau -n $init -f -l stdout -d 'print the starter config without writing it'
 complete -c tau -n $init -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'scaffold for a specific provider'
+complete -c tau -n $init -f -l json -d 'emit the stable schema-checked result object'
 
 set -l doctor '__tau_using_subcommand doctor'
 complete -c tau -n $doctor -f -l offline -d 'skip network checks'
@@ -211,6 +212,7 @@ complete -c tau -n $setup -f -l dry-run -d 'preview write steps; change nothing'
 complete -c tau -n $setup -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'seed scaffold + diagnose provider'
 complete -c tau -n $setup -f -l model -x -d 'diagnose an override model'
 complete -c tau -n $setup -f -l api-key -x -d 'diagnose an override API key'
+complete -c tau -n $setup -f -l json -d 'emit the stable schema-checked NDJSON stream'
 
 set -l bug '__tau_using_subcommand bug'
 complete -c tau -n $bug -f -l title -x -d 'issue title (default "Bug report")'
@@ -225,6 +227,7 @@ complete -c tau -n $bug -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completio
 complete -c tau -n $bug -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'diagnose an override provider'
 complete -c tau -n $bug -f -l model -x -d 'diagnose an override model'
 complete -c tau -n $bug -f -l api-key -x -d 'diagnose an override API key'
+complete -c tau -n $bug -f -l json -d 'emit the stable schema-checked JSON form'
 
 set -l version '__tau_using_subcommand version'
 complete -c tau -n $version -f -l verbose -d 'include build metadata (commit, target, build date, zig version)'
@@ -236,6 +239,7 @@ set -l upgrade '__tau_using_subcommand upgrade'
 complete -c tau -n $upgrade -f -s y -l yes -d 'upgrade without prompting'
 complete -c tau -n $upgrade -f -l dir -x -d 'install destination (default: the running binary dir)'
 complete -c tau -n $upgrade -f -l dry-run -d 'print the resolved plan; install nothing'
+complete -c tau -n $upgrade -f -l json -d 'emit the stable schema-checked report object'
 
 set -l explain '__tau_using_subcommand explain'
 # Exit codes mirror the stable catalog in src/errors.zig.

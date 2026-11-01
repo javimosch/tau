@@ -29,13 +29,13 @@ PowerShell.
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
 | `tau config` | `show validate set get unset edit schema` + `--mode`, `--raw` (+ global flags for `show`, zsh) |
-| `tau init` | `--force`, `--stdout`, `--provider` |
+| `tau init` | `--force`, `--stdout`, `--provider`, `--json` |
 | `tau doctor` | `--offline`, `--deep`, `--probe`, `--selftest`, `--fix`, `--yes`/`-y`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
-| `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive` |
-| `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key` |
+| `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive`, `--dry-run`, `--json` |
+| `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
 | `tau guide` | `--human` |
-| `tau version` | `--verbose`, `--check`, `--mode` |
-| `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run` |
+| `tau version` | `--verbose`, `--check`, `--json`, `--mode` |
+| `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run`, `--json` |
 | `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + `--json`, `--human` |
 
 ---

@@ -135,6 +135,9 @@ const help_text =
     \\      --force                 Overwrite an existing config file
     \\      --provider <name>       Scaffold for a specific provider
     \\      --stdout                Print the starter config without writing it
+    \\                              (mutex with --json)
+    \\      --json                  Pin the stable schema-checked result object
+    \\                              (schema/tau-init.schema.json)
     \\  tau setup                   One-shot onboarding: init + install shell
     \\                              completions + editor ACP config + doctor
     \\                              health summary (NDJSON)
@@ -153,6 +156,8 @@ const help_text =
     \\                              TAU_NONINTERACTIVE=1)
     \\      --dry-run               Preview every write step (would_* statuses
     \\                              + "dry_run":true); change nothing
+    \\      --json                  Pin the stable schema-checked NDJSON stream
+    \\                              (schema/tau-setup.schema.json)
     \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
@@ -219,6 +224,8 @@ const help_text =
     \\      --out <path>            Also write the bundle to a file
     \\      --no-report             Omit the diagnostics bundle
     \\      --offline/--deep        Passed through to the diagnostic sweep
+    \\      --json                  Pin the stable schema-checked JSON form
+    \\                              (schema/tau-bug.schema.json)
     \\
     \\Config:
     \\  tau config show [flags]       Print the resolved effective config as JSON
@@ -261,6 +268,8 @@ const help_text =
     \\                              binary's directory; env TAU_INSTALL_DIR)
     \\      --dry-run               Print the resolved plan + release notes;
     \\                              install nothing
+    \\      --json                  Pin the stable schema-checked report object
+    \\                              (schema/tau-upgrade.schema.json)
     \\
     \\Models:
     \\  tau models                    List available providers and models

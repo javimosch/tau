@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-setup.schema.json",
+  "title": "tau setup --json NDJSON event",
+  "description": "Schema for one line of `tau setup [--json]` output. Setup streams newline-delimited JSON: one event per step — init (config scaffold), completions (shell completion installs), clients (editor ACP wiring), doctor (embedded health report) — plus exactly one terminal verdict_event (always the last line, always \"done\":true). Step order is fixed: init, completions, clients, doctor, verdict. The event types are mutually exclusive — validate each NDJSON line against this schema individually. The process exit code mirrors the verdict's ok (0 when true, 1 when false).",
+  "oneOf": [
+    { "$ref": "#/$defs/init_event" },
+    { "$ref": "#/$defs/completions_event" },
+    { "$ref": "#/$defs/clients_event" },
+    { "$ref": "#/$defs/doctor_event" },
+    { "$ref": "#/$defs/verdict_event" }
+  ],
+  "$defs": {
+    "init_event": {
+      "type": "object",
+      "description": "First event: the config scaffold step. status is \"created\" on a fresh write, \"exists\" when a config was already present, \"would_create\" under --dry-run, \"failed\" when the path could not be resolved or written.",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "init" },
+        "status": { "type": "string", "enum": ["created", "exists", "would_create", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "config_path": { "type": "string", "description": "Path of the config file; absent on failure." },
+        "provider": { "type": "string", "description": "Provider the scaffold was seeded for; absent on failure." },
+        "detected_env_keys": {
+          "type": "array",
+          "description": "Provider API-key env var names found set (names only, never values); absent on failure.",
+          "items": { "type": "string" }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
+    "completions_event": {
+      "type": "object",
+      "description": "Second event: shell completion installs. status is \"installed\" (covers already-current installs), \"would_install\" under --dry-run, \"skipped\" when no shell could be detected, or \"failed\" when an install errored.",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "completions" },
+        "status": { "type": "string", "enum": ["installed", "would_install", "skipped", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "reason": { "type": "string", "description": "Why the step was skipped (e.g. could not detect shell from $SHELL)." },
+        "hint": { "type": "string", "description": "Remediation hint on skipped steps (re-run with --shell ...)." },
+        "shells": {
+          "type": "array",
+          "description": "One entry per resolved shell, in resolution order; absent on skipped/failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["shell", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "shell": { "type": "string", "enum": ["bash", "zsh", "fish", "pwsh"] },
+              "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "failed"] },
+              "path": { "type": "string", "description": "Installed completion script path; absent on failure." },
+              "rc": { "type": "string", "description": "Rc/profile file the autoload hook was appended to (zsh/pwsh only)." },
+              "rc_status": { "type": "string", "enum": ["appended", "present", "would_append", "failed"], "description": "Outcome of the rc-hook append (zsh/pwsh only)." },
+              "note": { "type": "string", "description": "Shell-specific note (e.g. bash-completion requirement)." },
+              "message": { "type": "string", "description": "Failure detail for this shell." }
+            }
+          }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
+    "clients_event": {
+      "type": "object",
+      "description": "Third event: editor ACP client wiring. Without --client the step is \"skipped\" and reports detected editor config dirs. status is \"installed\", \"would_install\" under --dry-run, \"manual\" when every client needed a paste-ready snippet, \"skipped\", or \"failed\".",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "clients" },
+        "status": { "type": "string", "enum": ["installed", "would_install", "manual", "skipped", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "hint": { "type": "string", "description": "Remediation hint on skipped steps (re-run with --client ...)." },
+        "detected": {
+          "type": "array",
+          "description": "Editor config dirs that appear installed; emitted on the skipped (no --client) outcome.",
+          "items": { "type": "string" }
+        },
+        "clients": {
+          "type": "array",
+          "description": "One entry per resolved client, in resolution order; absent on skipped/failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["client", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "type": "string", "enum": ["zed", "nvim", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude_desktop"] },
+              "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"] },
+              "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
+              "command": { "type": "string", "description": "Absolute tau path written into the client config." },
+              "next": { "type": "string", "description": "The in-editor action that finishes the integration." },
+              "snippet_path": { "type": "string", "description": "Paste-ready fragment path; emitted on manual outcomes." },
+              "reason": { "type": "string", "description": "Why the outcome is manual (existing settings file unparsed or missing the tau entry)." },
+              "editor_detected": { "type": "boolean", "description": "Whether the editor's config dir exists; emitted on nvim's always-manual entry." },
+              "message": { "type": "string", "description": "Failure detail for this client." },
+              "bridge_path": { "type": "string", "description": "mcacp bridge config path (~/.config/mcacp/mcacp.json); MCP-bridge clients only." },
+              "bridge_status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"], "description": "Outcome of the bridge-side wiring; MCP-bridge clients only." },
+              "bridge_snippet_path": { "type": "string", "description": "Paste-ready bridge fragment when the existing mcacp.json could not be spliced." },
+              "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side write." }
+            }
+          }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
+    "doctor_event": {
+      "type": "object",
+      "description": "Fourth event: the embedded `tau doctor` health report — the same single-object shape `tau doctor` prints without --json (see docs/doctor-json.md).",
+      "required": ["step", "report"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "doctor" },
+        "report": { "type": "object", "description": "The doctor single-object report {\"ok\",\"version\",\"build\",\"checks\",\"summary\"}." }
+      }
+    },
+    "verdict_event": {
+      "type": "object",
+      "description": "Terminal verdict — always the last NDJSON line, always \"done\":true. ok mirrors the process exit code (0 when true, 1 when false): any failed step or a failing doctor report flips it.",
+      "required": ["step", "ok", "version", "done"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "setup" },
+        "ok": { "type": "boolean", "description": "true when every step passed (skipped/manual outcomes still pass)." },
+        "version": { "type": "string", "description": "tau version that produced the stream, e.g. \"0.4.0\"." },
+        "non_interactive": { "const": true, "description": "Present when the run was declared unattended (--yes/--non-interactive or env equivalents)." },
+        "yes": { "const": true, "description": "Present when --yes approved all write steps." },
+        "dry_run": { "const": true, "description": "Present under --dry-run." },
+        "done": { "const": true, "description": "End-of-stream marker — true on the verdict line only; the same convention `tau doctor --json` uses." }
+      }
+    }
+  }
+}
