@@ -110,6 +110,26 @@ normalized to `<HOME>` / `<TAU>` / `<VER>` before comparing. Regenerate with:
 GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-onboarding
 ```
 
+### README + cookbook snippets
+
+The `doc-snippets` group executes documentation, not just reads it:
+`scripts/extract-doc-snippets.py` pulls every `tau ...` command printed in
+README.md's fenced bash blocks and the harness runs each verbatim in a
+scratch `HOME` — sessions, goal mode, `--role`, and `tau fleet` included —
+then runs every `examples/[0-9]*.sh` cookbook recipe to completion. Provider
+HTTP is stubbed by `scripts/lib/fake-curl`, a `curl` shim placed earlier on
+`PATH`, so nothing touches the network and no real API key is needed. If a
+documented command stops working, this group fails. POSIX-only (the shim is
+an extensionless script); the Windows CI leg skips it.
+
+```bash
+./scripts/smoke.sh --group doc-snippets
+```
+
+When adding a `tau` command to the README, keep it runnable in that
+environment: placeholders like `fleet status <id>` bind to the newest fleet
+manifest the run created, but other angle-bracket placeholders will fail.
+
 ### Resource benchmark
 
 ```bash

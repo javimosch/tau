@@ -74,6 +74,7 @@ ALL_TEST_GROUPS=(
   "setup:test_group_setup"
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
+  "doc-snippets:test_group_doc_snippets"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -2522,6 +2523,94 @@ test_group_client_guides() {
   python3 "$ROOT/scripts/check-client-guides.py" --tau "$BIN" \
     --docs "$ROOT/docs/clients"
   ok "client guides verified against setup --client output" "$?" 0
+}
+
+# Group: README + cookbook command snippets run end-to-end in a clean env.
+#
+# scripts/extract-doc-snippets.py pulls every `tau ...` line printed in
+# README.md's fenced bash blocks; each one is executed verbatim (continuations
+# joined, `<id>` placeholders bound to the newest fleet manifest the run
+# created) under a scratch HOME with every credential source scrubbed and a
+# dummy key per provider so has_key gates all run. Provider HTTP is stubbed
+# by scripts/lib/fake-curl — a `curl` shim earlier on PATH — so the real
+# agent loop, sessions, goal mode, roles, and fleet dispatch all execute with
+# no network. Then every shipped cookbook recipe (examples/[0-9]*.sh) runs to
+# completion in the same environment.
+#
+# POSIX-only: the extensionless curl shim needs a shebang exec, which a
+# native Windows binary cannot spawn.
+test_group_doc_snippets() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      skip_test "doc snippets" "curl shim is an extensionless script (POSIX exec only)"
+      return
+      ;;
+  esac
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "doc snippets" "extractor + fake-curl stub need python3"
+    return
+  fi
+
+  note "README + cookbook command snippets (clean env, stubbed provider)"
+
+  local stub_bin="$SMOKE_TEMP/doc-snippets-bin"
+  local home="$SMOKE_TEMP/doc-snippets-home"
+  mkdir -p "$stub_bin" "$home"
+  cp "$SCRIPT_DIR/lib/fake-curl" "$stub_bin/curl"
+  chmod +x "$stub_bin/curl"
+
+  # Clean env: every provider key resolves to a dummy, $HOME is scratch, the
+  # update check is pinned off, and the stub curl answers all provider HTTP.
+  local -a envp=(
+    env
+    XIAOMI_API_KEY=fake-ci PIZIG_API_KEY=fake-ci OPENAI_API_KEY=fake-ci
+    DEEPSEEK_API_KEY=fake-ci OPENCODE_API_KEY=fake-ci TAU_API_KEY=fake-ci
+    HOME="$home" SHELL=/bin/bash TAU_NO_UPDATE_CHECK=1 TAU_BIN="$BIN"
+    PATH="$stub_bin:$PATH"
+  )
+
+  local list="$SMOKE_TEMP/doc-snippets.list"
+  python3 "$ROOT/scripts/extract-doc-snippets.py" "$ROOT/README.md" > "$list"
+  ok "extract README command snippets" "$?" 0
+
+  local count
+  count=$(wc -l < "$list" | tr -d ' ')
+  [ "$count" -ge 50 ]
+  ok "README yields >=50 runnable tau commands ($count found)" "$?" 0
+
+  # Run every snippet in README order — the sequence mirrors a reader
+  # following the doc (init -> setup -> first run -> tools -> sessions ->
+  # roles -> fleet -> config edits), so state built by earlier lines is
+  # available to later ones.
+  local loc cmd run fleet_id="" newest snip_rc
+  while IFS=$'\t' read -r loc cmd; do
+    [ -z "$cmd" ] && continue
+    newest=$(ls -t "$home"/.config/tau/fleets/*.json 2>/dev/null | head -n 1)
+    [ -n "$newest" ] && fleet_id=$(basename "$newest" .json)
+    run="${cmd//<id>/${fleet_id:-missing-fleet}}"
+    capture snip "${envp[@]}" bash -c "$run"
+    ok "README $loc: ${cmd:0:64}" "$snip_rc" 0
+    if [ "$snip_rc" != "0" ]; then
+      diag "command: $run"
+      diag "stdout: $(printf '%s' "$snip_out" | head -c 400)"
+      diag "stderr: $(printf '%s' "$snip_err" | head -c 400)"
+    fi
+  done < "$list"
+
+  # Cookbook: every shipped examples/[0-9]*.sh recipe runs to completion in
+  # the same clean env. New recipes are picked up automatically.
+  local ex ran=0
+  for ex in "$ROOT"/examples/[0-9]*.sh; do
+    [ -f "$ex" ] || continue
+    ran=$((ran + 1))
+    capture ex_run "${envp[@]}" bash "$ex"
+    ok "cookbook $(basename "$ex") exits 0" "$ex_run_rc" 0
+    if [ "$ex_run_rc" != "0" ]; then
+      diag "stderr: $(printf '%s' "$ex_run_err" | head -c 400)"
+    fi
+  done
+  [ "$ran" -ge 3 ]
+  ok "cookbook recipes discovered ($ran)" "$?" 0
 }
 
 # Group: Issue #17 goal mode subcommands offline
