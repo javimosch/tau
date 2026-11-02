@@ -185,18 +185,19 @@ def parse_setup(src):
                 continue
             clients.setdefault(k, {})[key] = home_path(v) if (v and pathify) else v
 
-    # snippetPath: ext rule + path template.
+    # snippetPath: per-member ext switch arms + path template.
     raw, _ = fn_body(src, clean, "snippetPath", "src/setup.zig")
-    m = re.search(r'if \(k == \.(\w+)\) "(\w+)" else "(\w+)"', raw)
-    if not m:
+    exts = dict(re.findall(r"\.(\w+)\s*=>\s*\"(\w+)\"", raw))
+    m = re.search(r'else\s*=>\s*"(\w+)"', raw)
+    if not m or not exts:
         fail("could not parse snippet extension rule in snippetPath")
-    odd, odd_ext, def_ext = m.group(1), m.group(2), m.group(3)
+    def_ext = m.group(1)
     m = re.search(r'allocPrint\(arena,\s*"((?:[^"\\]|\\.)*)"', raw)
     if not m:
         fail("could not find snippet path template in snippetPath")
     tmpl = m.group(1)  # "{s}/.config/tau/snippets/{s}.{s}"
     for k, c in clients.items():
-        ext = odd_ext if k == odd else def_ext
+        ext = exts.get(k, def_ext)
         c["snippet"] = tmpl.replace("{s}", "~", 1).replace(
             "{s}", c.get("display", k), 1).replace("{s}", ext, 1)
 
@@ -215,11 +216,12 @@ def parse_setup(src):
         rhs = arm.split("=>", 1)[1].strip()
         clients.setdefault(k, {})["bridge"] = rhs.startswith("true")
 
-    # inspectClientWiring: `if (k == .X) return .{ .state = .manual_only }`.
+    # inspectClientWiring: `if (k == .X [or .Y ...]) return .{ .state = .Z }`.
     raw, _ = fn_body(src, clean, "inspectClientWiring", "src/setup.zig")
-    for k, state in re.findall(
-            r"if \(k == \.(\w+)\) return \.\{ \.state = \.(\w+) \}", raw):
-        clients.setdefault(k, {})["doctor_state"] = state
+    for cond, state in re.findall(
+            r"if \(k == ([^)]*)\) return \.\{ \.state = \.(\w+) \}", raw):
+        for k in re.findall(r"\.(\w+)", cond):
+            clients.setdefault(k, {})["doctor_state"] = state
 
     # resolveClients 'all' expansion must cover every enum member.
     raw, _ = fn_body(src, clean, "resolveClients", "src/setup.zig")
@@ -240,8 +242,9 @@ def parse_doctor(src):
         fail("could not find clientCheckName in src/doctor.zig")
     raw, _ = fn_body(src, zig_stripped(src), "clientFixKind", "src/doctor.zig")
     fixes = {}
-    for k, v in re.findall(r"\.(\w+) => (\.?\w+|null)", raw):
-        fixes[k] = None if v == "null" else v.lstrip(".")
+    for lhs, v in re.findall(r"((?:\.\w+\s*(?:,\s*)?)+)=>\s*(\.?\w+|null)", raw):
+        for k in re.findall(r"\.(\w+)", lhs):
+            fixes[k] = None if v == "null" else v.lstrip(".")
     return fixes
 
 
@@ -288,7 +291,8 @@ def render(members, clients, fixes, version, acp_since):
     a("[docs/editors.md](editors.md) and [docs/acp.md](acp.md), plus a")
     a("dedicated per-client guide for each client with verified snippets:")
     a("[Zed](clients/zed.md), [VS Code](clients/vscode.md),")
-    a("[Cursor](clients/cursor.md), [Windsurf](clients/windsurf.md),")
+    a("[Cursor](clients/cursor.md), [JetBrains](clients/jetbrains.md),")
+    a("[Emacs](clients/emacs.md), [Windsurf](clients/windsurf.md),")
     a("[Gemini CLI](clients/gemini-cli.md),")
     a("[Claude Desktop](clients/claude-desktop.md).")
     a("")
@@ -300,7 +304,8 @@ def render(members, clients, fixes, version, acp_since):
         c = clients[k]
         cli = f"`{c['cli_names'][0]}`" + "".join(
             f" (alias `{n}`)" for n in c["cli_names"][1:])
-        settings = f"`{c['settings']}`" if c.get("settings") else "— (Lua plugin config)"
+        label = {"nvim": "Lua plugin", "emacs": "elisp"}.get(k, "manual")
+        settings = f"`{c['settings']}`" if c.get("settings") else f"— ({label} config)"
         section = f"`{c['section']}`" if c.get("section") else "—"
         if not c.get("settings"):
             extra = "—"
@@ -308,7 +313,7 @@ def render(members, clients, fixes, version, acp_since):
             extra = '`"type": "custom"`' if c.get("needs_type_custom") else "none"
         snippet = f"`{c['snippet']}`"
         if c.get("doctor_state") == "manual_only":
-            doctor = f"`client_{k}` (manual only — Lua config)"
+            doctor = f"`client_{k}` (manual only — {label} config)"
         else:
             fix = fixes.get(k)
             doctor = f"`client_{k}`" + (f" / `{fix}`" if fix else "")
@@ -361,7 +366,7 @@ def render(members, clients, fixes, version, acp_since):
     a("| Client settings files (matrix above) | JSONC — `//` and `/* */` comments are tolerated and preserved: existing files are never rewritten, setup emits a paste-ready snippet instead |")
     if bridge_clients:
         a("| `~/.config/mcacp/mcacp.json` | JSONC — the mcacp MCP→ACP bridge's `agent_servers.tau` entry, shared by every bridge client |")
-    a("| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim) |")
+    a("| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell |")
     a("| `~/.config/tau/config.json` | JSONC — see [docs/config.md](config.md) and `schema/tau-config.schema.json` |")
     a("")
     a("## Required tau versions")

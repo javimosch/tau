@@ -144,9 +144,9 @@ const help_text =
     \\      --shell <name>          Completions shell: bash|zsh|fish|pwsh|all
     \\                              (default: detect from $SHELL; env
     \\                              TAU_SETUP_SHELL)
-    \\      --client <name>         Editor ACP client: zed|nvim|vscode|
-    \\                              cursor|jetbrains|windsurf|gemini|
-    \\                              claude-desktop|all (default: detect
+    \\      --client <name>         Editor ACP client: zed|nvim|emacs|
+    \\                              vscode|cursor|jetbrains|windsurf|
+    \\                              gemini|claude-desktop|all (default: detect
     \\                              only; env TAU_SETUP_CLIENT)
     \\      --offline/--deep        Passed through to the doctor step
     \\  -y, --yes                   Unattended: approve all write steps

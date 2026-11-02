@@ -7,7 +7,8 @@ client sees, and restart the client.
 
 `tau setup --client` writes these same files for you (`zed`, `vscode`,
 `cursor`, `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `all`; `nvim`
-gets a paste-ready Lua snippet instead). MCP-only clients also get the shared
+gets a paste-ready Lua snippet and `emacs` a paste-ready elisp snippet
+instead). MCP-only clients also get the shared
 bridge config `~/.config/mcacp/mcacp.json` written in the same pass:
 
 ```bash
@@ -81,8 +82,13 @@ work the same way — only the agent-declaration file differs.
 
 - [docs/acp.md](../../docs/acp.md) — the full ACP guide: every supported
   client, what the editor sees, troubleshooting.
-- Per-MCP-client setup guides (drift-checked against `tau setup --client`
-  output): [Windsurf](../../docs/clients/windsurf.md),
+- Per-client setup guides (drift-checked against `tau setup --client`
+  output): [Zed](../../docs/clients/zed.md),
+  [VS Code](../../docs/clients/vscode.md),
+  [Cursor](../../docs/clients/cursor.md),
+  [JetBrains](../../docs/clients/jetbrains.md),
+  [Emacs](../../docs/clients/emacs.md),
+  [Windsurf](../../docs/clients/windsurf.md),
   [Gemini CLI](../../docs/clients/gemini-cli.md),
   [Claude Desktop](../../docs/clients/claude-desktop.md).
 - [docs/configuration.md](../../docs/configuration.md) — provider, model, and

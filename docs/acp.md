@@ -95,7 +95,10 @@ the spawned process's environment — the `args` list must only contain
 ### JetBrains IDEs
 
 AI Assistant ships with ACP support (no JetBrains AI subscription required).
-Open the AI Chat tool window, click the options button, and choose **Add
+The fastest path is `tau setup --client jetbrains`, which writes the file
+below — the step-by-step guide is
+[docs/clients/jetbrains.md](clients/jetbrains.md). By hand: open the AI Chat
+tool window, click the options button, and choose **Add
 Custom Agent** — this creates `~/.jetbrains/acp.json`. Fill it in:
 
 ```json
@@ -217,7 +220,10 @@ Then select the `tau` adapter in a chat buffer, or set
 
 [agent-shell](https://github.com/xenodium/agent-shell) (on MELPA, with its
 dependency [acp.el](https://github.com/xenodium/acp.el)) is a native Emacs
-client for ACP agents. Register tau as a custom agent:
+client for ACP agents. `tau setup --client emacs` writes a paste-ready
+snippet to `~/.config/tau/snippets/emacs.el` — the step-by-step guide is
+[docs/clients/emacs.md](clients/emacs.md). By hand, register tau as a
+custom agent:
 
 ```elisp
 (defun agent-shell-make-tau-config ()
@@ -230,7 +236,7 @@ client for ACP agents. Register tau as a custom agent:
    :shell-prompt-regexp "tau> "
    :needs-authentication nil
    :client-maker
-   (lambda ()
+   (lambda (_buffer)
      (acp-make-client
       :command "tau"
       :command-params '("acp" "serve")
@@ -239,9 +245,10 @@ client for ACP agents. Register tau as a custom agent:
 (add-to-list 'agent-shell-agent-configs (agent-shell-make-tau-config))
 ```
 
-`:environment-variables` takes `"VAR=value"` strings; omit it entirely if tau
-authenticates via `~/.config/tau/config.json`. Run `M-x agent-shell` and pick
-`tau`.
+agent-shell calls `:client-maker` with the shell buffer — the lambda must
+accept (and may ignore) that argument. `:environment-variables` takes
+`"VAR=value"` strings; omit it entirely if tau authenticates via
+`~/.config/tau/config.json`. Run `M-x agent-shell` and pick `tau`.
 
 ### Terminal — Toad
 

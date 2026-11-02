@@ -700,7 +700,8 @@ fn clientCheckName(arena: std.mem.Allocator, k: setup.ClientKind) []const u8 {
     return std.fmt.allocPrint(arena, "client_{s}", .{name[0..raw.len]}) catch "client_?";
 }
 
-/// The per-client FixKind, or null for nvim (Lua config — manual only).
+/// The per-client FixKind, or null for the snippet-only clients (nvim's Lua,
+/// Emacs's elisp — manual only).
 fn clientFixKind(k: setup.ClientKind) ?FixKind {
     return switch (k) {
         .zed => .wire_client_zed,
@@ -710,7 +711,7 @@ fn clientFixKind(k: setup.ClientKind) ?FixKind {
         .windsurf => .wire_client_windsurf,
         .gemini => .wire_client_gemini,
         .claude_desktop => .wire_client_claude_desktop,
-        .nvim => null,
+        .nvim, .emacs => null,
     };
 }
 
@@ -723,8 +724,14 @@ fn clientWiringRow(arena: std.mem.Allocator, k: setup.ClientKind, w: setup.Clien
         .manual_only => .{
             .name = name,
             .status = .skip,
-            .message = "Neovim ACP wiring lives in Lua — cannot verify automatically",
-            .hint = "run 'tau setup --client nvim' to (re)generate ~/.config/tau/snippets/nvim.lua",
+            .message = switch (k) {
+                .emacs => "Emacs agent-shell wiring lives in elisp — cannot verify automatically",
+                else => "Neovim ACP wiring lives in Lua — cannot verify automatically",
+            },
+            .hint = switch (k) {
+                .emacs => "run 'tau setup --client emacs' to (re)generate ~/.config/tau/snippets/emacs.el",
+                else => "run 'tau setup --client nvim' to (re)generate ~/.config/tau/snippets/nvim.lua",
+            },
         },
         .missing_file => .{
             .name = name,
@@ -799,7 +806,7 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
             .name = "client_wiring",
             .status = .skip,
             .message = "no supported editor config dirs detected",
-            .hint = "run 'tau setup --client zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all' to wire 'tau acp serve' into an installed editor",
+            .hint = "run 'tau setup --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all' to wire 'tau acp serve' into an installed editor",
         });
     return list.toOwnedSlice(arena);
 }

@@ -18,11 +18,13 @@ Slots:
   bridge-snippet  ~/.config/tau/snippets/mcacp.jsonc for an existing
                   mcacp.json (bridge clients only)
 
-Direct ACP clients (zed, vscode, cursor) verify the two client slots;
-MCP-bridge clients (windsurf, gemini, claude-desktop) verify all four.
-Blocks whose bytes embed the absolute path of the tau binary — client-file/client-snippet
-for direct clients, bridge-file/bridge-snippet — get their "command" value
-normalized to "tau" before comparison.
+Direct ACP clients (zed, vscode, cursor, jetbrains) verify the two client
+slots; MCP-bridge clients (windsurf, gemini, claude-desktop) verify all
+four. Snippet-only clients (emacs — agent-shell config is elisp, not JSON)
+verify just client-snippet. Blocks whose bytes embed the absolute path of
+the tau binary — client-file/client-snippet for direct clients,
+bridge-file/bridge-snippet — get their "command" value normalized to "tau"
+before comparison (`:command` for the elisp snippet).
 
 The check runs `tau setup --client <name> --yes` twice per client: once in
 a clean HOME (fresh files) and once with pre-seeded settings files
@@ -48,6 +50,8 @@ GUIDES = {
     "zed.md": "zed",
     "vscode.md": "vscode",
     "cursor.md": "cursor",
+    "jetbrains.md": "jetbrains",
+    "emacs.md": "emacs",
     "windsurf.md": "windsurf",
     "gemini-cli.md": "gemini",
     "claude-desktop.md": "claude-desktop",
@@ -58,16 +62,26 @@ GUIDES = {
 # blocks. Direct ACP clients carry two (their own file + snippet only).
 BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop"))
 
+# Snippet-only clients have no JSON settings file — setup always reports
+# "manual" and writes the paste-ready snippet (elisp for emacs, lua for
+# nvim which has no guide). Their guides carry one verified block.
+SNIPPET_ONLY = frozenset(("emacs",))
+
 DIRECT_SLOTS = ("client-file", "client-snippet")
 BRIDGE_SLOTS = ("client-file", "bridge-file", "client-snippet", "bridge-snippet")
+SNIPPET_SLOTS = ("client-snippet",)
 
 
 def slots_for(client):
-    return BRIDGE_SLOTS if client in BRIDGE_CLIENTS else DIRECT_SLOTS
+    if client in BRIDGE_CLIENTS:
+        return BRIDGE_SLOTS
+    if client in SNIPPET_ONLY:
+        return SNIPPET_SLOTS
+    return DIRECT_SLOTS
 
 MARKER = re.compile(
     r"<!--\s*setup-verify:\s*(client-file|bridge-file|client-snippet|bridge-snippet)\s*-->"
-    r"\s*```(?:json|jsonc)\n(.*?)```",
+    r"\s*```(?:json|jsonc|elisp|lua)\n(.*?)```",
     re.DOTALL,
 )
 
@@ -107,12 +121,18 @@ def norm_command(text):
     return re.sub(r'"command": "[^"]*"', '"command": "tau"', text)
 
 
+def norm_elisp_command(text):
+    """The elisp snippet embeds :command "<abs tau path>"."""
+    return re.sub(r':command "[^"]*"', ':command "tau"', text)
+
+
 def collect(tau):
     """{client: {slot: bytes-written}} from real `tau setup` runs."""
     out = {}
 
     # Pass 1 — clean HOME: fresh settings files (+ the shared bridge config
-    # for MCP clients).
+    # for MCP clients). Snippet-only clients report "manual" right away —
+    # there is no settings file to write.
     with tempfile.TemporaryDirectory() as home:
         for client in GUIDES.values():
             step = run_setup(tau, client, home)
@@ -120,10 +140,17 @@ def collect(tau):
                           if c.get("client") == client), None)
             if entry is None:
                 fail(f"clients step has no entry for {client}")
+            slots = out.setdefault(client, {})
+            if client in SNIPPET_ONLY:
+                if entry.get("status") != "manual":
+                    fail(f"{client}: expected status manual, got "
+                         f"{entry.get('status')} — {json.dumps(entry)}")
+                with open(entry["snippet_path"], encoding="utf-8") as f:
+                    slots["client-snippet"] = norm_elisp_command(f.read())
+                continue
             if entry.get("status") != "installed":
                 fail(f"{client}: expected status installed, got "
                      f"{entry.get('status')} — {json.dumps(entry)}")
-            slots = out.setdefault(client, {})
             with open(entry["path"], encoding="utf-8") as f:
                 body = f.read()
             # Direct clients embed the absolute tau path in "command";
@@ -140,7 +167,8 @@ def collect(tau):
 
     # Pass 2 — every settings file already exists (foreign entries only):
     # setup must not touch them, so paste-ready snippets land under
-    # ~/.config/tau/snippets/ instead.
+    # ~/.config/tau/snippets/ instead. Snippet-only clients are skipped —
+    # their pass-1 run already captured the only artifact they produce.
     with tempfile.TemporaryDirectory() as home:
         seeds = {
             ".config/zed/settings.json":
@@ -149,6 +177,8 @@ def collect(tau):
                 '{"acp.agents":{"other":{"command":"x"}}}',
             ".config/Cursor/User/settings.json":
                 '{"acp.agents":{"other":{"command":"x"}}}',
+            ".jetbrains/acp.json":
+                '{"agent_servers":{"other":{"command":"x"}}}',
             ".codeium/windsurf/mcp_config.json":
                 '{"mcpServers":{"other":{"command":"x"}}}',
             ".gemini/settings.json":
@@ -164,6 +194,8 @@ def collect(tau):
             with open(p, "w", encoding="utf-8") as f:
                 f.write(content)
         for client in GUIDES.values():
+            if client in SNIPPET_ONLY:
+                continue
             step = run_setup(tau, client, home)
             entry = next((c for c in step["clients"]
                           if c.get("client") == client), None)

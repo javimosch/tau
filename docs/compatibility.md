@@ -14,7 +14,8 @@ integration path needs. Step-by-step guides:
 [docs/editors.md](editors.md) and [docs/acp.md](acp.md), plus a
 dedicated per-client guide for each client with verified snippets:
 [Zed](clients/zed.md), [VS Code](clients/vscode.md),
-[Cursor](clients/cursor.md), [Windsurf](clients/windsurf.md),
+[Cursor](clients/cursor.md), [JetBrains](clients/jetbrains.md),
+[Emacs](clients/emacs.md), [Windsurf](clients/windsurf.md),
 [Gemini CLI](clients/gemini-cli.md),
 [Claude Desktop](clients/claude-desktop.md).
 
@@ -23,7 +24,8 @@ dedicated per-client guide for each client with verified snippets:
 | Client | `tau setup --client` | Config dir (detection) | Settings file | Agent-section key | Extra required field | Snippet fallback | `tau doctor` check / `--fix` |
 |--------|----------------------|------------------------|---------------|-------------------|----------------------|------------------|----------------------------|
 | `zed` | `zed` | `~/.config/zed` | `~/.config/zed/settings.json` | `agent_servers` | `"type": "custom"` | `~/.config/tau/snippets/zed.jsonc` | `client_zed` / `wire_client_zed` |
-| `nvim` | `nvim` | `~/.config/nvim` | — (Lua plugin config) | — | — | `~/.config/tau/snippets/nvim.lua` | `client_nvim` (manual only — Lua config) |
+| `nvim` | `nvim` | `~/.config/nvim` | — (Lua plugin config) | — | — | `~/.config/tau/snippets/nvim.lua` | `client_nvim` (manual only — Lua plugin config) |
+| `emacs` | `emacs` | `~/.emacs.d` | — (elisp config) | — | — | `~/.config/tau/snippets/emacs.el` | `client_emacs` (manual only — elisp config) |
 | `vscode` | `vscode` (alias `code`) | `~/.config/Code` | `~/.config/Code/User/settings.json` | `acp.agents` | none | `~/.config/tau/snippets/vscode.jsonc` | `client_vscode` / `wire_client_vscode` |
 | `cursor` | `cursor` | `~/.config/Cursor` | `~/.config/Cursor/User/settings.json` | `acp.agents` | none | `~/.config/tau/snippets/cursor.jsonc` | `client_cursor` / `wire_client_cursor` |
 | `jetbrains` | `jetbrains` | `~/.jetbrains` | `~/.jetbrains/acp.json` | `agent_servers` | none | `~/.config/tau/snippets/jetbrains.jsonc` | `client_jetbrains` / `wire_client_jetbrains` |
@@ -73,7 +75,7 @@ bridge client; `tau doctor` checks both halves).
 |------|--------|
 | Client settings files (matrix above) | JSONC — `//` and `/* */` comments are tolerated and preserved: existing files are never rewritten, setup emits a paste-ready snippet instead |
 | `~/.config/mcacp/mcacp.json` | JSONC — the mcacp MCP→ACP bridge's `agent_servers.tau` entry, shared by every bridge client |
-| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim) |
+| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell |
 | `~/.config/tau/config.json` | JSONC — see [docs/config.md](config.md) and `schema/tau-config.schema.json` |
 
 ## Required tau versions
@@ -98,6 +100,7 @@ After tau writes (or previews) the config, one in-editor step remains:
 |--------|-----------|
 | `zed` | open the Agent Panel, click +, and pick tau |
 | `nvim` | pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider) |
+| `emacs` | paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau |
 | `vscode` | install the ACP Client extension, run 'ACP: Connect to Agent', pick tau |
 | `cursor` | install the ACP Client extension (Open VSX), run 'ACP: Connect to Agent', pick tau |
 | `jetbrains` | open the AI Chat tool window and pick tau in the agent selector |
