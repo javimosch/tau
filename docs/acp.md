@@ -12,21 +12,25 @@ full agentic tool loop and streams back `session/update` notifications
 `session/prompt` response carrying a `stopReason`.
 
 > **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `cursor`,
-> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `all`) writes these
+> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`, `all`)
+> writes these
 > configs for you
 > during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
-> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop) also get the
+> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode)
+> also get the
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
 > without `--client` to see which editors were detected.
 > [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
 > VS Code, Cursor, Neovim, and the MCP clients, step by step — and
 > [docs/clients/](clients/zed.md) has a dedicated guide per client
 > ([Zed](clients/zed.md), [VS Code](clients/vscode.md),
-> [Cursor](clients/cursor.md), [Windsurf](clients/windsurf.md),
-> [Gemini CLI](clients/gemini-cli.md),
-> [Claude Desktop](clients/claude-desktop.md)).
+> [Cursor](clients/cursor.md), [JetBrains](clients/jetbrains.md),
+> [Neovim](clients/nvim.md), [Emacs](clients/emacs.md),
+> [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+> [Claude Desktop](clients/claude-desktop.md),
+> [OpenCode](clients/opencode.md)).
 
 ## Quick start: tau in Zed
 
@@ -334,6 +338,49 @@ Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp ser
 Both files ship as [`examples/clients/claude-desktop.json`](../examples/clients/claude-desktop.json)
 and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json); the full
 walkthrough is [docs/clients/claude-desktop.md](clients/claude-desktop.md).
+
+### OpenCode (via an MCP↔ACP bridge)
+
+OpenCode itself *serves* ACP (`opencode acp` makes it an agent for editors)
+but can't consume other ACP agents — what it consumes natively are MCP
+servers. `tau setup` therefore wires it through the same mcacp bridge as
+the other MCP clients:
+
+```
+OpenCode ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+```
+
+```bash
+tau setup --client opencode
+```
+
+1. The bridge lands in `~/.config/opencode/opencode.json` (or a
+   project-local `opencode.json`) under OpenCode's `mcp` section — a local
+   server whose `command` array is the whole spawn line:
+
+   ```json
+   {
+     "mcp": {
+       "mcacp": {
+         "type": "local",
+         "command": ["npx", "-y", "mcacp"],
+         "enabled": true
+       }
+     }
+   }
+   ```
+
+   (OpenCode v2 also accepts the nested `"mcp": {"servers": {…}}` layout —
+   see [docs/clients/opencode.md](clients/opencode.md).)
+
+2. `~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau`
+   entry, shared with every other MCP client.
+
+3. Restart OpenCode and run `opencode mcp list` — `mcacp` shows as
+   connected and tau's tools surface as `mcacp_<tool>`.
+
+Both files ship as [`examples/clients/opencode.json`](../examples/clients/opencode.json)
+and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json).
 
 ## Other ACP clients
 

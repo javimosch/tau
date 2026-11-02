@@ -424,11 +424,11 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 // --- Step 3: editor ACP clients --------------------------------------------
 
 /// Editor clients setup can configure to spawn `tau acp serve`.
-pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop };
+pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop, opencode };
 
 /// Every ClientKind, in the order `--client all` expands and detection
 /// iterates: direct ACP clients first, then the MCP-bridge clients.
-pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop };
+pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode };
 
 pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
@@ -441,6 +441,7 @@ pub fn clientName(k: ClientKind) []const u8 {
         .windsurf => "windsurf",
         .gemini => "gemini",
         .claude_desktop => "claude-desktop",
+        .opencode => "opencode",
     };
 }
 
@@ -456,6 +457,7 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "windsurf")) return .windsurf;
     if (std.mem.eql(u8, name, "gemini") or std.mem.eql(u8, name, "gemini-cli")) return .gemini;
     if (std.mem.eql(u8, name, "claude-desktop") or std.mem.eql(u8, name, "claude")) return .claude_desktop;
+    if (std.mem.eql(u8, name, "opencode")) return .opencode;
     return null;
 }
 
@@ -463,9 +465,11 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
 /// ACP — so setup wires them to the mcacp MCP→ACP bridge instead. Their
 /// settings entry launches the bridge (`npx mcacp`); the bridge's own
 /// config (~/.config/mcacp/mcacp.json) carries the real tau agent entry.
+/// (OpenCode *serves* ACP via `opencode acp` but consumes MCP servers —
+/// same bridge path as the other MCP-only clients.)
 pub fn clientUsesBridge(k: ClientKind) bool {
     return switch (k) {
-        .windsurf, .gemini, .claude_desktop => true,
+        .windsurf, .gemini, .claude_desktop, .opencode => true,
         else => false,
     };
 }
@@ -489,6 +493,7 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
         .windsurf => try std.fmt.allocPrint(arena, "{s}/.codeium/windsurf/mcp_config.json", .{home}),
         .gemini => try std.fmt.allocPrint(arena, "{s}/.gemini/settings.json", .{home}),
         .claude_desktop => try std.fmt.allocPrint(arena, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
+        .opencode => try std.fmt.allocPrint(arena, "{s}/.config/opencode/opencode.json", .{home}),
         .nvim, .emacs => null,
     };
 }
@@ -508,6 +513,7 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
         // The classic init dir — ~/.config/emacs (XDG) also exists but
         // ~/.emacs.d is what an agent-shell user almost always has.
         .emacs => std.fmt.allocPrint(arena, "{s}/.emacs.d", .{home}),
+        .opencode => std.fmt.allocPrint(arena, "{s}/.config/opencode", .{home}),
     };
 }
 
@@ -519,6 +525,9 @@ fn clientSectionKey(k: ClientKind) []const u8 {
         .zed, .jetbrains => "agent_servers",
         .vscode, .cursor => "acp.agents",
         .windsurf, .gemini, .claude_desktop => "mcpServers",
+        // OpenCode's MCP servers live under the top-level "mcp" object —
+        // mcp.<name> entries, not mcpServers.<name>.
+        .opencode => "mcp",
         .nvim, .emacs => unreachable,
     };
 }
@@ -534,6 +543,7 @@ fn clientNextStep(k: ClientKind) []const u8 {
         .windsurf => "install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers",
         .gemini => "install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools",
         .claude_desktop => "install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server",
+        .opencode => "install mcacp (npm i -g mcacp or npx), restart OpenCode, and check the mcacp server with 'opencode mcp list'",
         .nvim => "pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)",
         .emacs => "paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau",
     };
@@ -626,6 +636,20 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
             \\}}
             \\
         , .{}),
+        // OpenCode's MCP servers sit under "mcp" (not "mcpServers") and a
+        // local entry packs the whole spawn line into a "command" array.
+        .opencode => std.fmt.allocPrint(arena,
+            \\{{
+            \\  "mcp": {{
+            \\    "mcacp": {{
+            \\      "type": "local",
+            \\      "command": ["npx", "-y", "mcacp"],
+            \\      "enabled": true
+            \\    }}
+            \\  }}
+            \\}}
+            \\
+        , .{}),
         .nvim, .emacs => unreachable,
     };
 }
@@ -653,6 +677,22 @@ fn renderMcacpJson(arena: std.mem.Allocator, command: []const u8) ![]u8 {
 /// whole document — it splices into the top-level object by hand.
 fn renderClientSnippet(arena: std.mem.Allocator, k: ClientKind, command: []const u8) ![]u8 {
     if (clientUsesBridge(k)) {
+        if (k == .opencode) {
+            return std.fmt.allocPrint(arena,
+                \\// tau via the mcacp MCP->ACP bridge — merge into your {s} settings file.
+                \\// If a top-level "mcp" object already exists, add just the inner
+                \\// "mcacp" entry to it; otherwise add the whole block. The bridge
+                \\// itself is configured separately — see snippets/mcacp.jsonc.
+                \\"mcp": {{
+                \\  "mcacp": {{
+                \\    "type": "local",
+                \\    "command": ["npx", "-y", "mcacp"],
+                \\    "enabled": true
+                \\  }}
+                \\}}
+                \\
+            , .{clientName(k)});
+        }
         return std.fmt.allocPrint(arena,
             \\// tau via the mcacp MCP->ACP bridge — merge into your {s} settings file.
             \\// If a top-level "mcpServers" object already exists, add just the
@@ -906,6 +946,15 @@ pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u
     const e = entry orelse return .{ .state = .no_entry, .path = path };
 
     if (clientUsesBridge(k)) {
+        if (k == .opencode) {
+            // OpenCode local-MCP entries pack the spawn line into a
+            // "command" array (["npx","-y","mcacp"]) — there is no "args".
+            const bcmd = e.get("command");
+            if (bcmd == null or bcmd.? != .array or bcmd.?.array.items.len == 0 or
+                bcmd.?.array.items[0] != .string)
+                return .{ .state = .stale, .path = path, .reason = "the \"mcacp\" entry has no \"command\" array" };
+            return inspectBridgeWiring(io, arena, home, path);
+        }
         // The client-side entry launches the bridge, not tau — a command
         // string plus an args array is the whole contract. Keep it loose:
         // `npx`, a global `mcacp` binary, and containerized runs all work.
@@ -1127,7 +1176,7 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     var list: std.ArrayList(ClientKind) = .empty;
     if (cfg.setup_client) |s| {
         if (std.mem.eql(u8, s, "all")) {
-            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop });
+            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode });
         } else if (parseClientName(s)) |k| {
             try list.append(arena, k);
         }
@@ -1280,7 +1329,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
             }
         }
         try buf.appendSlice(arena, "],\"hint\":");
-        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config");
+        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all to write editor ACP config");
         try buf.appendSlice(arena, "}");
         emit(&buf);
         return true;
@@ -1530,6 +1579,7 @@ test "parseClientName accepts supported clients and the code alias" {
     try testing.expectEqual(ClientKind.gemini, parseClientName("gemini-cli").?);
     try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude-desktop").?);
     try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude").?);
+    try testing.expectEqual(ClientKind.opencode, parseClientName("opencode").?);
     try testing.expect(parseClientName("vim") == null);
     try testing.expect(parseClientName("") == null);
 }
@@ -1566,6 +1616,10 @@ test "clientSettingsPath matches the docs/acp.md targets (nvim has none)" {
     try testing.expectEqualStrings(
         "/h/.config/Claude/claude_desktop_config.json",
         (try clientSettingsPath(a, "/h", .claude_desktop)).?,
+    );
+    try testing.expectEqualStrings(
+        "/h/.config/opencode/opencode.json",
+        (try clientSettingsPath(a, "/h", .opencode)).?,
     );
     try testing.expect((try clientSettingsPath(a, "/h", .nvim)) == null);
     try testing.expect((try clientSettingsPath(a, "/h", .emacs)) == null);
@@ -1609,6 +1663,17 @@ test "renderClientJson emits a parseable minimal file with the tau entry" {
         try testing.expect(std.mem.indexOf(u8, body, "[\"acp\", \"serve\"]") == null);
     }
 
+    // OpenCode is a bridge client too, but its entry sits under "mcp" as a
+    // local server whose "command" is the whole spawn line (an array).
+    {
+        const body = try renderClientJson(a, .opencode, "/abs/path/tau");
+        try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .opencode, body));
+        try testing.expect(std.mem.indexOf(u8, body, "\"mcp\"") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "\"type\": \"local\"") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "[\"npx\", \"-y\", \"mcacp\"]") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "\"/abs/path/tau\"") == null);
+    }
+
     const zed = try renderClientJson(a, .zed, "tau");
     try testing.expect(std.mem.indexOf(u8, zed, "\"type\": \"custom\"") != null);
     const jb = try renderClientJson(a, .jetbrains, "tau");
@@ -1649,6 +1714,16 @@ test "hasTauEntry finds the tau key through JSONC comments" {
     try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .claude_desktop, bridged));
     try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .windsurf, with_tau));
     try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .zed, bridged));
+    // OpenCode keys on "mcacp" inside "mcp" (its own section shape).
+    const oc_bridged =
+        \\{
+        \\  "mcp": {
+        \\    "mcacp": { "type": "local", "command": ["npx", "-y", "mcacp"] }
+        \\  }
+        \\}
+    ;
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .opencode, oc_bridged));
+    try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .opencode, bridged));
 
     try testing.expect(hasTauEntry(a, .zed, "not json at all") == null);
     try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .zed, "[1,2]"));
@@ -1990,6 +2065,42 @@ test "inspectClientWiring bridge: client entry plus mcacp.json both classify" {
     try testing.expect(std.mem.indexOf(u8, no_tau.reason.?, "no \"tau\" entry") != null);
 }
 
+test "opencode bridge: mcp.local entry writes and classifies" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const exe = try std.process.executablePathAlloc(io, a);
+
+    const odir = try std.fmt.allocPrint(a, "{s}/.config/opencode", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, odir);
+    const sp = try std.fmt.allocPrint(a, "{s}/opencode.json", .{odir});
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .opencode, exe, false);
+    try testing.expectEqual(ClientOutcome.installed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"installed\"") != null);
+
+    // The settings file carries the OpenCode-shaped local MCP entry.
+    const body = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\": \"local\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"command\": [\"npx\", \"-y\", \"mcacp\"]") != null);
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .opencode, body));
+
+    // Client entry + real bridge config -> wiring ok.
+    try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .opencode)).state);
+
+    // A command string (the mcpServers shape) is stale for opencode.
+    _ = try writeIfChanged(io, a, sp, "{\"mcp\": {\"mcacp\": {\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}}}", false);
+    const wrong_shape = try inspectClientWiring(io, a, home, .opencode);
+    try testing.expectEqual(WiringState.stale, wrong_shape.state);
+    try testing.expect(std.mem.indexOf(u8, wrong_shape.reason.?, "command") != null);
+}
+
 test "remedyClientWiring bridge repairs both halves" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2058,9 +2169,11 @@ test "docs/clients per-client guides mirror the client renderers" {
         .{ .file = "docs/clients/cursor.md", .kind = .cursor, .direct = true },
         .{ .file = "docs/clients/jetbrains.md", .kind = .jetbrains, .direct = true },
         .{ .file = "docs/clients/emacs.md", .kind = .emacs, .snippet_only = true },
+        .{ .file = "docs/clients/nvim.md", .kind = .nvim, .snippet_only = true },
         .{ .file = "docs/clients/windsurf.md", .kind = .windsurf },
         .{ .file = "docs/clients/gemini-cli.md", .kind = .gemini },
         .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
+        .{ .file = "docs/clients/opencode.md", .kind = .opencode },
     };
     // Marker -> renderer output it must equal ("tau" stands in for the
     // absolute command path, like the smoke group's normalization).

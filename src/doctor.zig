@@ -81,6 +81,8 @@ pub const FixKind = enum {
     wire_client_gemini,
     /// Same for Claude Desktop (`mcpServers` in claude_desktop_config.json via mcacp).
     wire_client_claude_desktop,
+    /// Same for OpenCode (`mcp` local entry in opencode.json via mcacp).
+    wire_client_opencode,
     /// chmod 0600 on detected client settings files (+ mcacp.json) — env
     /// blocks inside them can carry API keys.
     chmod_client_files,
@@ -715,6 +717,7 @@ fn clientFixKind(k: setup.ClientKind) ?FixKind {
         .windsurf => .wire_client_windsurf,
         .gemini => .wire_client_gemini,
         .claude_desktop => .wire_client_claude_desktop,
+        .opencode => .wire_client_opencode,
         .nvim, .emacs => null,
     };
 }
@@ -810,7 +813,7 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
             .name = "client_wiring",
             .status = .skip,
             .message = "no supported editor config dirs detected",
-            .hint = "run 'tau setup --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all' to wire 'tau acp serve' into an installed editor",
+            .hint = "run 'tau setup --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all' to wire 'tau acp serve' into an installed editor",
         });
     return list.toOwnedSlice(arena);
 }
@@ -1497,6 +1500,7 @@ fn fixDescription(k: FixKind) []const u8 {
         .wire_client_windsurf => "wire tau into Windsurf via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_gemini => "wire tau into Gemini CLI via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_claude_desktop => "wire tau into Claude Desktop via the mcacp bridge (minimal file, or paste-ready snippet)",
+        .wire_client_opencode => "wire tau into OpenCode via the mcacp bridge (minimal file, or paste-ready snippet)",
         .chmod_client_files => "restrict detected client settings files to 0600 (env blocks can hold API keys)",
     };
 }
@@ -1583,7 +1587,7 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             }
             break :blk std.fmt.allocPrint(arena, "installed completions for {s}", .{names.items}) catch "installed completions";
         },
-        .wire_client_zed, .wire_client_vscode, .wire_client_cursor, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop => blk: {
+        .wire_client_zed, .wire_client_vscode, .wire_client_cursor, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop, .wire_client_opencode => blk: {
             const home = env.get("HOME") orelse break :blk error.HomeUnset;
             const ck: setup.ClientKind = switch (pf.kind) {
                 .wire_client_zed => .zed,
@@ -1593,6 +1597,7 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
                 .wire_client_windsurf => .windsurf,
                 .wire_client_gemini => .gemini,
                 .wire_client_claude_desktop => .claude_desktop,
+                .wire_client_opencode => .opencode,
                 else => unreachable,
             };
             // Same convention as `tau setup --client`: pin the absolute path

@@ -19,12 +19,13 @@ Slots:
                   mcacp.json (bridge clients only)
 
 Direct ACP clients (zed, vscode, cursor, jetbrains) verify the two client
-slots; MCP-bridge clients (windsurf, gemini, claude-desktop) verify all
-four. Snippet-only clients (emacs — agent-shell config is elisp, not JSON)
-verify just client-snippet. Blocks whose bytes embed the absolute path of
-the tau binary — client-file/client-snippet for direct clients,
-bridge-file/bridge-snippet — get their "command" value normalized to "tau"
-before comparison (`:command` for the elisp snippet).
+slots; MCP-bridge clients (windsurf, gemini, claude-desktop, opencode)
+verify all four. Snippet-only clients (nvim's Lua plugin config, emacs'
+agent-shell elisp) verify just client-snippet. Blocks whose bytes embed
+the absolute path of the tau binary — client-file/client-snippet for
+direct clients, bridge-file/bridge-snippet — get their "command" value
+normalized to "tau" before comparison (`:command` for the elisp snippet,
+absolute-path string literals for the lua snippet).
 
 The check runs `tau setup --client <name> --yes` twice per client: once in
 a clean HOME (fresh files) and once with pre-seeded settings files
@@ -52,20 +53,23 @@ GUIDES = {
     "cursor.md": "cursor",
     "jetbrains.md": "jetbrains",
     "emacs.md": "emacs",
+    "nvim.md": "nvim",
     "windsurf.md": "windsurf",
     "gemini-cli.md": "gemini",
     "claude-desktop.md": "claude-desktop",
+    "opencode.md": "opencode",
 }
 
 # MCP-bridge clients wire two files — the client's mcpServers entry plus the
 # shared ~/.config/mcacp/mcacp.json — so their guides carry four verified
 # blocks. Direct ACP clients carry two (their own file + snippet only).
-BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop"))
+BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop",
+                            "opencode"))
 
 # Snippet-only clients have no JSON settings file — setup always reports
 # "manual" and writes the paste-ready snippet (elisp for emacs, lua for
-# nvim which has no guide). Their guides carry one verified block.
-SNIPPET_ONLY = frozenset(("emacs",))
+# nvim). Their guides carry one verified block.
+SNIPPET_ONLY = frozenset(("emacs", "nvim"))
 
 DIRECT_SLOTS = ("client-file", "client-snippet")
 BRIDGE_SLOTS = ("client-file", "bridge-file", "client-snippet", "bridge-snippet")
@@ -126,6 +130,20 @@ def norm_elisp_command(text):
     return re.sub(r':command "[^"]*"', ':command "tau"', text)
 
 
+def norm_lua_command(text):
+    """The lua snippet embeds "<abs tau path>" twice: command = "<abs>"
+    (avante) and the CodeCompanion commands.default table's first entry."""
+    return re.sub(r'"(/[^"]+)"', '"tau"', text)
+
+
+def norm_snippet(client, text):
+    if client == "nvim":
+        return norm_lua_command(text)
+    if client == "emacs":
+        return norm_elisp_command(text)
+    return norm_command(text)
+
+
 def collect(tau):
     """{client: {slot: bytes-written}} from real `tau setup` runs."""
     out = {}
@@ -146,7 +164,7 @@ def collect(tau):
                     fail(f"{client}: expected status manual, got "
                          f"{entry.get('status')} — {json.dumps(entry)}")
                 with open(entry["snippet_path"], encoding="utf-8") as f:
-                    slots["client-snippet"] = norm_elisp_command(f.read())
+                    slots["client-snippet"] = norm_snippet(client, f.read())
                 continue
             if entry.get("status") != "installed":
                 fail(f"{client}: expected status installed, got "
@@ -185,6 +203,8 @@ def collect(tau):
                 '{"mcpServers":{"other":{"command":"x"}}}',
             ".config/Claude/claude_desktop_config.json":
                 '{"mcpServers":{"other":{"command":"x"}}}',
+            ".config/opencode/opencode.json":
+                '{"mcp":{"other":{"type":"local","command":["x"]}}}',
             ".config/mcacp/mcacp.json":
                 '{"agent_servers":{"other":{"command":"y","args":[]}}}',
         }

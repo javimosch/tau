@@ -22,6 +22,7 @@ tau setup --client jetbrains   # writes ~/.jetbrains/acp.json
 tau setup --client nvim        # writes a paste-ready Lua snippet
 tau setup --client emacs       # writes a paste-ready elisp snippet
 tau setup --client windsurf    # MCP client — also writes mcacp.json
+tau setup --client opencode    # MCP client — same bridge, opencode.json
 tau setup --client all         # every supported client at once
 tau setup --client all --dry-run  # preview every write, change nothing
 ```
@@ -34,7 +35,7 @@ touch before letting it.
 Anything else is rejected before setup runs:
 
 ```json
-{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)","recoverable":false}}
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all)","recoverable":false}}
 ```
 
 Setup emits one NDJSON object per step. The `clients` step is the one this
@@ -44,7 +45,7 @@ guide covers:
   installed (their config directories exist) — detection alone never writes:
 
 ```json
-{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config"}
+{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all to write editor ACP config"}
 ```
 
 - **With `--client`** each requested editor gets a `clients[]` entry carrying
@@ -266,20 +267,24 @@ init file (`~/.emacs.d/init.el` or `~/.config/emacs/init.el`), restart
 Emacs, and run `M-x agent-shell` to pick tau. The step-by-step guide is
 [docs/clients/emacs.md](clients/emacs.md).
 
-## MCP clients: Windsurf, Gemini CLI, Claude Desktop
+## MCP clients: Windsurf, Gemini CLI, Claude Desktop, OpenCode
 
 These clients speak MCP, not ACP — they can't spawn `tau acp serve`
-directly. Setup wires them through the
+directly (OpenCode *serves* ACP via `opencode acp` but consumes MCP
+servers). Setup wires them through the
 [mcacp](https://github.com/Oortonaut/mcacp) MCP→ACP bridge and writes **two**
 files in one pass:
 
 ```bash
-tau setup --client windsurf        # or gemini, claude-desktop
+tau setup --client windsurf        # or gemini, claude-desktop, opencode
 ```
 
 1. The client's `mcpServers` entry launches the bridge — at
    `~/.codeium/windsurf/mcp_config.json`, `~/.gemini/settings.json`, or
-   `~/.config/Claude/claude_desktop_config.json`:
+   `~/.config/Claude/claude_desktop_config.json`
+   (OpenCode keeps its servers under `"mcp"` with the local-server shape —
+   `{"type":"local","command":["npx","-y","mcacp"],"enabled":true}` — in
+   `~/.config/opencode/opencode.json`):
 
    ```json
    {
@@ -316,10 +321,12 @@ Dedicated per-client guides — each with the exact file contents
 - [VS Code](clients/vscode.md)
 - [Cursor](clients/cursor.md)
 - [JetBrains](clients/jetbrains.md)
+- [Neovim](clients/nvim.md)
 - [Emacs](clients/emacs.md)
 - [Windsurf](clients/windsurf.md)
 - [Gemini CLI](clients/gemini-cli.md)
 - [Claude Desktop](clients/claude-desktop.md)
+- [OpenCode](clients/opencode.md)
 
 ## Removing the integration
 

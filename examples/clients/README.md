@@ -6,7 +6,8 @@ client's settings path, adjust `"command"` if `tau` is not on the `PATH` the
 client sees, and restart the client.
 
 `tau setup --client` writes these same files for you (`zed`, `vscode`,
-`cursor`, `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `all`; `nvim`
+`cursor`, `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`,
+`all`; `nvim`
 gets a paste-ready Lua snippet and `emacs` a paste-ready elisp snippet
 instead). MCP-only clients also get the shared
 bridge config `~/.config/mcacp/mcacp.json` written in the same pass:
@@ -33,6 +34,7 @@ normalized to `tau`), validates the tau config that setup writes with
 | `windsurf.json` + `mcacp.json` | [Windsurf](https://windsurf.com) via the [mcacp](https://github.com/Oortonaut/mcacp) MCP↔ACP bridge | `~/.codeium/windsurf/mcp_config.json` + `~/.config/mcacp/mcacp.json` |
 | `gemini.json` + `mcacp.json` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) via the same mcacp bridge | `~/.gemini/settings.json` + `~/.config/mcacp/mcacp.json` |
 | `claude-desktop.json` + `mcacp.json` | Claude Desktop via the [mcacp](https://github.com/Oortonaut/mcacp) MCP↔ACP bridge | `claude_desktop_config.json` (`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows) + `~/.config/mcacp/mcacp.json` |
+| `opencode.json` + `mcacp.json` | [OpenCode](https://opencode.ai) via the same mcacp bridge | `~/.config/opencode/opencode.json` + `~/.config/mcacp/mcacp.json` |
 
 If the target file already exists, merge the `"tau"` entry into the existing
 section instead of replacing the file — `tau setup --client` never rewrites an
@@ -64,7 +66,7 @@ Windsurf / Gemini CLI / Claude Desktop ──MCP(stdio)──> mcacp ──ACP(s
 ```
 
 1. Merge the client's file into its settings path (`windsurf.json`,
-   `gemini.json`, or `claude-desktop.json`) — each adds the `mcacp` MCP
+   `gemini.json`, `claude-desktop.json`, or `opencode.json`) — each adds the `mcacp` MCP
    server, launched with `npx`.
 2. Copy `mcacp.json` to `~/.config/mcacp/mcacp.json` — this is where the
    bridge learns that `tau` means `tau acp serve`. The `agent_servers` shape
@@ -90,6 +92,7 @@ work the same way — only the agent-declaration file differs.
   [Emacs](../../docs/clients/emacs.md),
   [Windsurf](../../docs/clients/windsurf.md),
   [Gemini CLI](../../docs/clients/gemini-cli.md),
-  [Claude Desktop](../../docs/clients/claude-desktop.md).
+  [Claude Desktop](../../docs/clients/claude-desktop.md),
+  [OpenCode](../../docs/clients/opencode.md).
 - [docs/configuration.md](../../docs/configuration.md) — provider, model, and
   API-key resolution for the spawned `tau` process.
