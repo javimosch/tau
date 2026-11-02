@@ -96,9 +96,10 @@ added; existing fields keep their names, types, and meaning):
 | `tau models` | `{"providers":[{name,default_model,...}]}` | this file |
 | `tau skills list` / `search` | `{"skills":[{name,description}]}` | this file |
 | `tau version [--json]` / `--verbose` / `--check` | `{"name","version"}` (+ build fields under `--verbose`, check fields under `--check`) | [schema/tau-version.schema.json](../schema/tau-version.schema.json) |
-| `tau setup` | one NDJSON object per step + terminal verdict (`"dry_run":true` under `--dry-run`, `"yes"`/`"non_interactive"` markers) | this file |
-| `tau bug` | `{"title","labels","url","body","report","url_truncated","out","opened","done":true}`; always exit 0 | this file |
-| `tau upgrade` | JSON step/verdict output; `changelog` entries appear when the release notes fetch succeeds; POSIX-only (exit 111 elsewhere) | this file |
+| `tau init [--json]` | `{"config_path","provider","created","overwritten","detected_env_keys"}` result object (`--stdout` prints the JSONC scaffold instead and is mutex with `--json`) | [schema/tau-init.schema.json](../schema/tau-init.schema.json) |
+| `tau setup [--json]` | one NDJSON object per step + terminal `{"step":"setup",...,"done":true}` verdict (`"dry_run":true` under `--dry-run`, `"yes"`/`"non_interactive"` markers) | [schema/tau-setup.schema.json](../schema/tau-setup.schema.json) |
+| `tau bug [--json]` | `{"title","labels","url","body","report","url_truncated","out","opened","done":true}`; always exit 0 | [schema/tau-bug.schema.json](../schema/tau-bug.schema.json) |
+| `tau upgrade [--json]` | `{"name","version","checked","status","detail",...}` report object; `changelog` entries appear when the release notes fetch succeeds; POSIX-only (exit 111 elsewhere) | [schema/tau-upgrade.schema.json](../schema/tau-upgrade.schema.json) |
 | `tau fleet` | manifests + status as pretty-printed JSON on stdout | this file |
 
 Two cross-cutting conventions are part of the contract:
@@ -236,9 +237,11 @@ Special rules:
 - `schema/tau-config.schema.json` is byte-compared against
   `tau config schema` output in CI; `schema/tau-doctor.schema.json` is
   validated against real NDJSON streams by
-  `scripts/check-doctor-schema.py`; the single-object stdout contracts
-  (`tau-config-show`, `tau-config-validate`, `tau-version`) are validated
-  against real binary output by `scripts/check-cli-schema.py`.
+  `scripts/check-doctor-schema.py`; `schema/tau-setup.schema.json`
+  likewise by `scripts/check-setup-schema.py`; the single-object stdout
+  contracts (`tau-config-show`, `tau-config-validate`, `tau-version`,
+  `tau-init`, `tau-upgrade`, `tau-bug`) are validated against real
+  binary output by `scripts/check-cli-schema.py`.
 - `schema/schemastore-catalog-entry.json` is the SchemaStore catalog
   submission for the config schema — pinned to the canonical `$id` and
   fileMatch by a `configschema.zig` unit test and the `config-schema`

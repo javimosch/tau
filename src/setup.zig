@@ -1,7 +1,8 @@
 // `tau setup` — one-shot onboarding: scaffold ~/.config/tau/config.json
 // (init), install shell completions for the detected shell, configure editor
 // ACP clients (--client), then embed the `tau doctor` health report. Emits
-// one NDJSON object per step plus a final verdict line on stdout; exit 0
+// one NDJSON object per step plus a final verdict line on stdout (the
+// verdict carries "done":true — the stream's terminal marker); exit 0
 // when every step is ok/skipped, 1 otherwise. Idempotent: an existing config
 // is kept, already-installed completions and configured clients are
 // detected, and doctor is read-only. Key material is never printed.
@@ -1279,7 +1280,7 @@ pub fn unattended(cfg: Config) bool {
 }
 
 /// Run init + completions + clients + doctor, emitting one NDJSON object per step and a
-/// final `{"step":"setup","ok":...}` verdict. Exit 0 when all steps pass (a
+/// final `{"step":"setup","ok":...,"done":true}` verdict. Exit 0 when all steps pass (a
 /// detection skip on completions or clients, and manual client outcomes,
 /// still pass); 1 on any failure — including a doctor report with failed
 /// checks, since onboarding is not healthy yet. In unattended mode the
@@ -1307,7 +1308,9 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     if (unattended(cfg)) try buf.appendSlice(arena, ",\"non_interactive\":true");
     if (cfg.setup_yes) try buf.appendSlice(arena, ",\"yes\":true");
     if (cfg.setup_dry_run) try buf.appendSlice(arena, ",\"dry_run\":true");
-    try buf.appendSlice(arena, "}");
+    // The stream's terminal marker — the same done:true convention
+    // `tau doctor --json` and the chat stream use.
+    try buf.appendSlice(arena, ",\"done\":true}");
     emit(&buf);
     return if (ok) 0 else 1;
 }
@@ -1991,9 +1994,14 @@ test "docs/clients per-client guides mirror the client renderers" {
     const a = arena.allocator();
     const io = testing.io;
 
-    // Guide file per MCP-bridge client (gemini's file is named gemini-cli.md).
-    const Guide = struct { file: []const u8, kind: ClientKind };
+    // Guide file per client (gemini's file is named gemini-cli.md). Direct
+    // ACP clients verify the two client-* slots; MCP-bridge clients verify
+    // all four.
+    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false };
     const guides = [_]Guide{
+        .{ .file = "docs/clients/zed.md", .kind = .zed, .direct = true },
+        .{ .file = "docs/clients/vscode.md", .kind = .vscode, .direct = true },
+        .{ .file = "docs/clients/cursor.md", .kind = .cursor, .direct = true },
         .{ .file = "docs/clients/windsurf.md", .kind = .windsurf },
         .{ .file = "docs/clients/gemini-cli.md", .kind = .gemini },
         .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
@@ -2032,6 +2040,7 @@ test "docs/clients per-client guides mirror the client renderers" {
     for (guides) |g| {
         const doc = try std.Io.Dir.cwd().readFileAlloc(io, g.file, a, .unlimited);
         for (slots) |s| {
+            if (g.direct and std.mem.startsWith(u8, s.marker, "bridge")) continue;
             const marker = try std.fmt.allocPrint(a, "<!-- setup-verify: {s} -->", .{s.marker});
             const mpos = std.mem.indexOf(u8, doc, marker) orelse {
                 std.debug.print("{s} missing marker '{s}'\n", .{ g.file, marker });

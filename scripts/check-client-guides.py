@@ -18,9 +18,9 @@ Slots:
   bridge-snippet  ~/.config/tau/snippets/mcacp.jsonc for an existing
                   mcacp.json (bridge clients only)
 
-Direct ACP clients (vscode, cursor) verify the two client slots; MCP-bridge
-clients (windsurf, gemini, claude-desktop) verify all four. Blocks whose
-bytes embed the absolute path of the tau binary — client-file/client-snippet
+Direct ACP clients (zed, vscode, cursor) verify the two client slots;
+MCP-bridge clients (windsurf, gemini, claude-desktop) verify all four.
+Blocks whose bytes embed the absolute path of the tau binary — client-file/client-snippet
 for direct clients, bridge-file/bridge-snippet — get their "command" value
 normalized to "tau" before comparison.
 
@@ -45,6 +45,7 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 GUIDES = {
+    "zed.md": "zed",
     "vscode.md": "vscode",
     "cursor.md": "cursor",
     "windsurf.md": "windsurf",
@@ -142,6 +143,8 @@ def collect(tau):
     # ~/.config/tau/snippets/ instead.
     with tempfile.TemporaryDirectory() as home:
         seeds = {
+            ".config/zed/settings.json":
+                '{"agent_servers":{"other":{"command":"x"}}}',
             ".config/Code/User/settings.json":
                 '{"acp.agents":{"other":{"command":"x"}}}',
             ".config/Cursor/User/settings.json":

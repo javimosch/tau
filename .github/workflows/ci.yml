@@ -138,10 +138,13 @@ jobs:
 
       - name: CLI --json schema drift check
         # schema/tau-config-show.schema.json, schema/tau-config-validate.
-        # schema.json, schema/tau-version.schema.json, and
-        # schema/tau-explain.schema.json pin the single-object stdout
-        # contracts — validate real shipped-binary output against them (the
-        # cli-schemas and explain smoke groups pin the same invariants).
+        # schema.json, schema/tau-version.schema.json,
+        # schema/tau-explain.schema.json, schema/tau-init.schema.json,
+        # schema/tau-upgrade.schema.json, and schema/tau-bug.schema.json pin
+        # the single-object stdout contracts; schema/tau-setup.schema.json
+        # pins the setup NDJSON stream — validate real shipped-binary output
+        # against them (the cli-schemas smoke group pins the same
+        # invariants).
         # TAU_NO_UPDATE_CHECK keeps the --check leg offline.
         shell: bash
         run: |
@@ -159,6 +162,22 @@ jobs:
           python3 scripts/check-cli-schema.py --schema schema/tau-config-validate.schema.json "$tmp/bad.json"
           "$TAU_BIN" explain --json 106 | python3 scripts/check-cli-schema.py --schema schema/tau-explain.schema.json -
           "$TAU_BIN" explain --json | python3 scripts/check-cli-schema.py --schema schema/tau-explain.schema.json -
+          # init/setup/upgrade/bug emit JSON by default; --json pins the
+          # schema-checked contract spelling (issue #315).
+          mkdir -p "$tmp/init-home"
+          env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+            HOME="$tmp/init-home" "$TAU_BIN" init --json | python3 scripts/check-cli-schema.py --schema schema/tau-init.schema.json -
+          rc=0
+          TAU_NO_UPDATE_CHECK=1 "$TAU_BIN" upgrade --json > "$tmp/ug.json" || rc=$?
+          [ "$rc" -eq 1 ] || { echo "upgrade --json with the check disabled exited $rc (want 1)"; exit 1; }
+          python3 scripts/check-cli-schema.py --schema schema/tau-upgrade.schema.json "$tmp/ug.json"
+          "$TAU_BIN" bug --json --offline --no-report | python3 scripts/check-cli-schema.py --schema schema/tau-bug.schema.json -
+          mkdir -p "$tmp/setup-home"
+          rc=0
+          env -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+            HOME="$tmp/setup-home" SHELL=/bin/bash XIAOMI_API_KEY=sk-ci "$TAU_BIN" setup --json --offline > "$tmp/setup.ndjson" || rc=$?
+          [ "$rc" -eq 0 ] || { echo "setup --json exited $rc (want 0)"; exit 1; }
+          python3 scripts/check-setup-schema.py "$tmp/setup.ndjson"
 
       - name: Stability contract drift check
         # docs/stability.md is hand-written policy — this proves it still

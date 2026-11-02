@@ -20,6 +20,9 @@ Options:
                          prompts, never reads stdin
                          (env TAU_NONINTERACTIVE=1)
       --dry-run          Preview every write step; change nothing
+      --json             Pin the stable schema-checked NDJSON stream
+                         (schema/tau-setup.schema.json; output is
+                         already NDJSON)
 
 Examples:
   tau setup

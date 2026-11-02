@@ -24,13 +24,13 @@ $TauArgumentCompleter = {
     $configSubs  = @('show', 'validate', 'set', 'get', 'unset', 'edit', 'schema')
     $configFlags = @('--mode', '--raw', '--json')
     $guideFlags  = @('--human')
-    $initFlags   = @('--force', '--stdout', '--provider')
+    $initFlags   = @('--force', '--stdout', '--provider', '--json')
     $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '-y', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
-    $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive', '--dry-run')
+    $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive', '--dry-run', '--json')
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report',
-                     '--offline', '--deep', '--shell', '--provider', '--model', '--api-key')
+                     '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
-    $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run')
+    $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--json')
     # Exit codes mirror the stable catalog in src/errors.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111', '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')

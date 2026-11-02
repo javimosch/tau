@@ -62,6 +62,9 @@ const bug_help =
     \\      --model <id>       Diagnose an override model
     \\      --api-key <key>    Diagnose an override API key
     \\      --shell <name>     Completions shell: bash|zsh|fish|pwsh|all
+    \\      --json             Pin the stable schema-checked JSON form
+    \\                         (schema/tau-bug.schema.json; output is
+    \\                         already JSON)
     \\
     \\Examples:
     \\  tau bug
@@ -222,12 +225,15 @@ const init_help =
     \\tau init - write a commented starter ~/.config/tau/config.json
     \\
     \\Usage:
-    \\  tau init [--force] [--stdout] [--provider <name>]
+    \\  tau init [--force] [--stdout] [--provider <name>] [--json]
     \\
     \\Options:
     \\      --force            Overwrite an existing config file
     \\      --stdout           Print the starter config without writing it
+    \\                         (mutex with --json)
     \\      --provider <name>  Scaffold for a specific provider
+    \\      --json             Pin the stable schema-checked result object
+    \\                         (schema/tau-init.schema.json)
     \\
     \\Examples:
     \\  tau init
@@ -271,6 +277,9 @@ const setup_help =
     \\                         prompts, never reads stdin
     \\                         (env TAU_NONINTERACTIVE=1)
     \\      --dry-run          Preview every write step; change nothing
+    \\      --json             Pin the stable schema-checked NDJSON stream
+    \\                         (schema/tau-setup.schema.json; output is
+    \\                         already NDJSON)
     \\
     \\Examples:
     \\  tau setup
@@ -304,7 +313,7 @@ const upgrade_help =
     \\tau upgrade - self-update in place from the latest release
     \\
     \\Usage:
-    \\  tau upgrade [--yes|-y] [--dir <path>] [--dry-run]
+    \\  tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--json]
     \\
     \\Options:
     \\  -y, --yes        Upgrade without prompting (env TAU_YES=1); a TTY
@@ -313,6 +322,9 @@ const upgrade_help =
     \\                   directory; env TAU_INSTALL_DIR)
     \\      --dry-run    Print the resolved plan + release notes; install
     \\                   nothing
+    \\      --json       Pin the stable schema-checked report object
+    \\                   (schema/tau-upgrade.schema.json; output is
+    \\                   already JSON)
     \\
     \\The release notes between your version and the target print before
     \\any install. POSIX-only; on Windows re-run install.ps1.

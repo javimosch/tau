@@ -3493,6 +3493,12 @@ test_group_golden_onboarding() {
 
   golden_check_n ob-init-no-home    110 env -u HOME "$BIN" init
 
+  # --json pins the schema-checked result object; --stdout prints the JSONC
+  # scaffold instead, so the two spellings are mutually exclusive.
+  _golden_fresh_home
+  golden_check_n ob-init-json         0 "$BIN" init --json
+  golden_check_n ob-init-json-stdout-mutex 80 "$BIN" init --json --stdout
+
   # ── tau setup ──
   # Arg-validation failures never reach the doctor step — pin unconditionally.
   golden_check_n ob-setup-bad-client 80 "$BIN" setup --client emacs
@@ -3517,6 +3523,10 @@ test_group_golden_onboarding() {
     fi
     # Idempotent re-run: init reports exists, completions already_installed.
     golden_check_n ob-setup-rerun     0 env SHELL=/bin/zsh XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline
+
+    # --json is the contract-pinned spelling of the same NDJSON stream.
+    _golden_fresh_home
+    golden_check_n ob-setup-json      0 env SHELL=/bin/zsh XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --json --offline
 
     _golden_fresh_home
     golden_check_n ob-setup-keyless   1 env SHELL=/bin/bash "$BIN" setup --offline
@@ -3698,6 +3708,7 @@ EOF
   golden_check   bug-mutex             80 "$BIN" bug --out x.md --no-report
   golden_check   bug-missing-value     80 "$BIN" bug --title
   golden_check   bug-no-report          0 "$BIN" bug --offline --no-report
+  golden_check   bug-json-no-report     0 "$BIN" bug --json --offline --no-report
   golden_check   bug-no-report-custom   0 "$BIN" bug --offline --no-report \
     --title "crash on --deep" --labels "bug,triage" --body "it broke"
 
@@ -3706,6 +3717,7 @@ EOF
   golden_check   ug-positional      80 "$BIN" upgrade now
   golden_check   ug-dir-no-value    80 "$BIN" upgrade --dir
   golden_check   ug-opt-out          1 env TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --yes
+  golden_check   ug-json-opt-out     1 env TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --json
   golden_check   ug-up-to-date       0 env TAU_UPDATE_URL="file://$stubs/same.json" "$BIN" upgrade
   golden_check_n ug-lookup-failed    1 env TAU_UPDATE_URL="file://$stubs/missing.json" "$BIN" upgrade --yes
   golden_check_n ug-unconfirmed      1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
@@ -3715,6 +3727,9 @@ EOF
   golden_check_n ug-dry-run          0 env TAU_UPDATE_URL="file://$stubs/newer.json" \
     TAU_CHANGELOG_URL="file://$stubs/changelog.md" \
     TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --dry-run
+  golden_check_n ug-json-dry-run     0 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_CHANGELOG_URL="file://$stubs/changelog.md" \
+    TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --json --dry-run
   golden_check_n ug-dry-no-changelog 0 env TAU_UPDATE_URL="file://$stubs/newer.json" \
     TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
     TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --dry-run
@@ -3933,28 +3948,36 @@ test_group_doctor_schema() {
   fi
 }
 
-# Group: stable --json stdout schemas (issue #284)
-# `tau config show|validate --json` and `tau version [--verbose|--check]
-# --json` print single JSON objects on stdout whose shapes are pinned by
-# schema/tau-config-show.schema.json, schema/tau-config-validate.schema.json,
-# and schema/tau-version.schema.json. scripts/check-cli-schema.py validates
-# real binary output against them — this is the drift check CI runs. Fully
-# offline (the update check is disabled via TAU_NO_UPDATE_CHECK).
+# Group: stable --json stdout schemas (issue #284, extended in #315)
+# `tau config show|validate --json`, `tau version [--verbose|--check] --json`,
+# `tau explain --json`, `tau init --json`, `tau upgrade --json`, and
+# `tau bug --json` print single JSON objects on stdout whose shapes are
+# pinned by schema/tau-*.schema.json files; `tau setup --json` prints an
+# NDJSON stream pinned by schema/tau-setup.schema.json.
+# scripts/check-cli-schema.py validates real single-object output and
+# scripts/check-setup-schema.py validates the setup stream — this is the
+# drift check CI runs. Fully offline (the update check is disabled via
+# TAU_NO_UPDATE_CHECK).
 test_group_cli_schemas() {
   local scrub mock_home rc out
   local check="$ROOT/scripts/check-cli-schema.py"
+  local setup_check="$ROOT/scripts/check-setup-schema.py"
   local show_schema="$ROOT/schema/tau-config-show.schema.json"
   local val_schema="$ROOT/schema/tau-config-validate.schema.json"
   local ver_schema="$ROOT/schema/tau-version.schema.json"
   local exp_schema="$ROOT/schema/tau-explain.schema.json"
+  local init_schema="$ROOT/schema/tau-init.schema.json"
+  local setup_schema="$ROOT/schema/tau-setup.schema.json"
+  local ug_schema="$ROOT/schema/tau-upgrade.schema.json"
+  local bug_schema="$ROOT/schema/tau-bug.schema.json"
 
-  note "stable --json stdout schemas (config show|validate, version, explain)"
+  note "stable --json stdout schemas (config show|validate, version, explain, init, setup, upgrade, bug)"
 
   scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
   mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
 
   # The checked-in schemas exist and are draft 2020-12 documents.
-  for s in "$show_schema" "$val_schema" "$ver_schema" "$exp_schema"; do
+  for s in "$show_schema" "$val_schema" "$ver_schema" "$exp_schema" "$init_schema" "$setup_schema" "$ug_schema" "$bug_schema"; do
     if [ -f "$s" ]; then
       ok "cli-schemas: $(basename "$s") exists" 0 0
       contains "cli-schemas: $(basename "$s") is draft 2020-12" "$(cat "$s")" 'draft/2020-12/schema'
@@ -4072,6 +4095,76 @@ test_group_cli_schemas() {
     ok "cli-schemas: checker rejects unexpected key" 0 1
   else
     ok "cli-schemas: checker rejects unexpected key" 0 0
+  fi
+
+  # ── tau init --json ────────────────────────────────────────────────────
+  local init_home="$SMOKE_TEMP/init-home"
+  mkdir -p "$init_home"
+  out=$("${scrub[@]}" HOME="$init_home" "$BIN" init --json); rc=$?
+  ok "cli-schemas: init --json exit 0" "$rc" 0
+  contains "cli-schemas: init --json reports created" "$out" '"created":true'
+  contains "cli-schemas: init --json reports config_path" "$out" '"config_path":"'
+  if printf '%s' "$out" | python3 "$check" --schema "$init_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: init --json validates" 0 0
+  else
+    ok "cli-schemas: init --json validates" 1 0
+  fi
+
+  # --stdout prints the JSONC scaffold, not the result object: mutex, either order.
+  "$BIN" init --json --stdout >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: init --json --stdout -> exit 80" "$rc" 80
+  "$BIN" init --stdout --json >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: init --stdout --json -> exit 80" "$rc" 80
+
+  # ── tau upgrade --json ─────────────────────────────────────────────────
+  # Update check disabled: checked:false + status "skipped", exit 1.
+  out=$(TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --json); rc=$?
+  ok "cli-schemas: upgrade --json opt-out -> exit 1" "$rc" 1
+  contains "cli-schemas: upgrade --json reports skipped" "$out" '"status":"skipped"'
+  if printf '%s' "$out" | python3 "$check" --schema "$ug_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: upgrade --json validates" 0 0
+  else
+    ok "cli-schemas: upgrade --json validates" 1 0
+  fi
+
+  # ── tau bug --json ─────────────────────────────────────────────────────
+  # --offline --no-report is the deterministic surface (no diagnostics bundle).
+  out=$("${scrub[@]}" "$BIN" bug --json --offline --no-report); rc=$?
+  ok "cli-schemas: bug --json exit 0" "$rc" 0
+  contains "cli-schemas: bug --json terminates done:true" "$out" '"done":true'
+  if printf '%s' "$out" | python3 "$check" --schema "$bug_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: bug --json validates" 0 0
+  else
+    ok "cli-schemas: bug --json validates" 1 0
+  fi
+
+  # ── tau setup --json ───────────────────────────────────────────────────
+  # NDJSON stream: per-step events + done:true verdict, validated per line.
+  local setup_home="$SMOKE_TEMP/setup-home"
+  mkdir -p "$setup_home"
+  out=$("${scrub[@]}" HOME="$setup_home" SHELL=/bin/bash XIAOMI_API_KEY=smoke-schema-key "$BIN" setup --json --offline); rc=$?
+  ok "cli-schemas: setup --json exit 0" "$rc" 0
+  contains "cli-schemas: setup --json verdict terminates" "$out" '"step":"setup"'
+  contains "cli-schemas: setup --json verdict done:true" "$out" '"done":true'
+  if printf '%s' "$out" | python3 "$setup_check" - >/dev/null 2>&1; then
+    ok "cli-schemas: setup --json stream validates" 0 0
+  else
+    ok "cli-schemas: setup --json stream validates" 1 0
+  fi
+
+  # Non-vacuity: the stream checker must reject a mid-stream done:true and a
+  # line that matches no event shape.
+  { head -1 <<<"$out"; printf '{"step":"setup","ok":true,"version":"0.4.0","done":true}\n'; tail -n +2 <<<"$out"; } > "$SMOKE_TEMP/setup-mid.ndjson"
+  if python3 "$setup_check" "$SMOKE_TEMP/setup-mid.ndjson" >/dev/null 2>&1; then
+    ok "cli-schemas: setup checker rejects mid-stream done:true" 0 1
+  else
+    ok "cli-schemas: setup checker rejects mid-stream done:true" 0 0
+  fi
+  printf '{"step":"bogus"}\n' > "$SMOKE_TEMP/setup-bad.ndjson"
+  if python3 "$setup_check" "$SMOKE_TEMP/setup-bad.ndjson" >/dev/null 2>&1; then
+    ok "cli-schemas: setup checker rejects unknown step event" 0 1
+  else
+    ok "cli-schemas: setup checker rejects unknown step event" 0 0
   fi
 }
 

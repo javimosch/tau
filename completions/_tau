@@ -207,7 +207,8 @@ _tau() {
                     _arguments \
                         '--force[overwrite an existing config file]' \
                         '--stdout[print the starter config without writing it]' \
-                        '--provider=[scaffold for a specific provider]:provider:(xiaomi openai deepseek opencode-go)'
+                        '--provider=[scaffold for a specific provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--json[emit the stable schema-checked result object]'
                     ;;
 
                 setup)
@@ -221,7 +222,8 @@ _tau() {
                         '--dry-run[preview write steps; change nothing]' \
                         '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \
-                        '--api-key=[diagnose an override API key]:key:'
+                        '--api-key=[diagnose an override API key]:key:' \
+                        '--json[emit the stable schema-checked NDJSON stream]'
                     ;;
 
                 doctor)
@@ -253,7 +255,8 @@ _tau() {
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
                         '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \
-                        '--api-key=[diagnose an override API key]:key:'
+                        '--api-key=[diagnose an override API key]:key:' \
+                        '--json[emit the stable schema-checked JSON form]'
                     ;;
 
                 guide)
@@ -276,7 +279,8 @@ _tau() {
                     _arguments \
                         '(-y --yes)'{-y,--yes}'[upgrade without prompting]' \
                         '--dir=[install destination]:dir:_files -/' \
-                        '--dry-run[print the resolved plan; install nothing]'
+                        '--dry-run[print the resolved plan; install nothing]' \
+                        '--json[emit the stable schema-checked report object]'
                     ;;
 
                 explain)

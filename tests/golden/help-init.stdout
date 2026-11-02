@@ -1,12 +1,15 @@
 tau init - write a commented starter ~/.config/tau/config.json
 
 Usage:
-  tau init [--force] [--stdout] [--provider <name>]
+  tau init [--force] [--stdout] [--provider <name>] [--json]
 
 Options:
       --force            Overwrite an existing config file
       --stdout           Print the starter config without writing it
+                         (mutex with --json)
       --provider <name>  Scaffold for a specific provider
+      --json             Pin the stable schema-checked result object
+                         (schema/tau-init.schema.json)
 
 Examples:
   tau init

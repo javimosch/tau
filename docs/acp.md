@@ -22,9 +22,10 @@ full agentic tool loop and streams back `session/update` notifications
 > without `--client` to see which editors were detected.
 > [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
 > VS Code, Cursor, Neovim, and the MCP clients, step by step — and
-> [docs/clients/](clients/vscode.md) has a dedicated guide per client
-> ([VS Code](clients/vscode.md), [Cursor](clients/cursor.md),
-> [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+> [docs/clients/](clients/zed.md) has a dedicated guide per client
+> ([Zed](clients/zed.md), [VS Code](clients/vscode.md),
+> [Cursor](clients/cursor.md), [Windsurf](clients/windsurf.md),
+> [Gemini CLI](clients/gemini-cli.md),
 > [Claude Desktop](clients/claude-desktop.md)).
 
 ## Quick start: tau in Zed
