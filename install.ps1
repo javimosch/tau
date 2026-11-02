@@ -22,7 +22,7 @@
 #                     set to 1 to also verify the archive's keyless
 #                     Sigstore/cosign signature (<asset>.sigstore.json) —
 #                     requires cosign on PATH and fails closed; see
-#                     docs/verifying-releases.md
+#                     VERIFYING.md
 #
 # Release assets are produced by .github/workflows/release.yml and named
 # tau-windows-<arch>.zip alongside a SHA256SUMS.txt manifest. Verification is
@@ -61,7 +61,7 @@ Environment overrides:
   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (not recommended)
   TAU_VERIFY_SIGSTORE
                     set to 1 to also verify the cosign signature bundle
-                    (requires cosign on PATH; see docs/verifying-releases.md)
+                    (requires cosign on PATH; see VERIFYING.md)
 '@
 }
 
@@ -121,7 +121,7 @@ $Asset    = "tau-$Platform.zip"
 $Sums     = 'SHA256SUMS.txt'
 
 # Sigstore verification contract — must match the sign/self-verify steps in
-# .github/workflows/release.yml and the commands in docs/verifying-releases.md.
+# .github/workflows/release.yml and the commands in VERIFYING.md.
 $SigIssuer     = 'https://token.actions.githubusercontent.com'
 $SigIdentityRe = '^https://github\.com/javimosch/tau/\.github/workflows/release\.yml@refs/tags/v'
 
@@ -201,7 +201,7 @@ try {
     # all abort the install.
     if ($env:TAU_VERIFY_SIGSTORE -eq '1') {
         if (-not (Get-Command cosign -ErrorAction SilentlyContinue)) {
-            Fail 'TAU_VERIFY_SIGSTORE=1 requires cosign on PATH — install it per docs/verifying-releases.md (or unset TAU_VERIFY_SIGSTORE)'
+            Fail 'TAU_VERIFY_SIGSTORE=1 requires cosign on PATH — install it per VERIFYING.md (or unset TAU_VERIFY_SIGSTORE)'
         }
         $bundle = "$Asset.sigstore.json"
         try {

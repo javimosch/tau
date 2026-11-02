@@ -3,6 +3,12 @@
 Every `v*` GitHub release of tau ships a layered trust story. Pick the level
 you need — each layer is independent and strictly stronger than the last.
 
+Every command in this guide is drift-checked in CI:
+`scripts/check-verifying-doc.py` extracts the recipes below and pins them
+against the release workflow, both installers, and the SBOM generator —
+and the release pipeline runs it as a publish gate, so the commands here
+cannot silently go stale.
+
 | Layer | Asset(s) | Proves | Needs |
 |-------|----------|--------|-------|
 | Checksum | `SHA256SUMS.txt` | The download is intact — not corrupted, not swapped for another file on the release page | `sha256sum`/`shasum` (automatic in `install.sh`/`install.ps1`) |

@@ -27,7 +27,7 @@
 #                     set to 1 to also verify the archive's keyless
 #                     Sigstore/cosign signature (<asset>.sigstore.json) —
 #                     requires cosign on PATH and fails closed; see
-#                     docs/verifying-releases.md
+#                     VERIFYING.md
 #
 # Release assets are produced by .github/workflows/release.yml and named
 # tau-<os>-<arch>.tar.gz alongside a SHA256SUMS.txt manifest. Verification is
@@ -40,7 +40,7 @@ REPO="javimosch/tau"
 BASE="${TAU_BASE_URL:-https://github.com/$REPO/releases}"
 
 # Sigstore verification contract — must match the sign/self-verify steps in
-# .github/workflows/release.yml and the commands in docs/verifying-releases.md.
+# .github/workflows/release.yml and the commands in VERIFYING.md.
 SIG_ISSUER="https://token.actions.githubusercontent.com"
 SIG_IDENTITY_RE='^https://github\.com/javimosch/tau/\.github/workflows/release\.yml@refs/tags/v'
 
@@ -74,7 +74,7 @@ Environment overrides:
   TAU_SKIP_CHECKSUM set to 1 to skip SHA256 verification (not recommended)
   TAU_VERIFY_SIGSTORE
                     set to 1 to also verify the cosign signature bundle
-                    (requires cosign on PATH; see docs/verifying-releases.md)
+                    (requires cosign on PATH; see VERIFYING.md)
 EOF
 }
 
@@ -182,7 +182,7 @@ fi
 # bundle, or a failed verify all abort the install.
 if [ "${TAU_VERIFY_SIGSTORE:-0}" = "1" ]; then
   command -v cosign >/dev/null 2>&1 \
-    || fail "TAU_VERIFY_SIGSTORE=1 requires cosign on PATH — install it per docs/verifying-releases.md (or unset TAU_VERIFY_SIGSTORE)"
+    || fail "TAU_VERIFY_SIGSTORE=1 requires cosign on PATH — install it per VERIFYING.md (or unset TAU_VERIFY_SIGSTORE)"
   curl -fsSL "$ASSET_URL.sigstore.json" -o "$TMP/$ASSET.sigstore.json" \
     || fail "could not download $ASSET.sigstore.json for $RELEASE_DESC — refusing to install (unset TAU_VERIFY_SIGSTORE to skip signature verification)"
   cosign verify-blob \

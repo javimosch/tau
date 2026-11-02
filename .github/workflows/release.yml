@@ -31,7 +31,7 @@ name: release
 # `<asset>.sigstore.json` bundle, the release self-verifies every bundle
 # before publish, and the archives + SBOMs get a SLSA build-provenance
 # attestation (`gh attestation verify <asset> --repo javimosch/tau`).
-# Consumers verify manually per docs/verifying-releases.md, or set
+# Consumers verify manually per VERIFYING.md, or set
 # TAU_VERIFY_SIGSTORE=1 to make install.sh / install.ps1 run
 # `cosign verify-blob` themselves.
 #
@@ -306,9 +306,22 @@ jobs:
           tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
           tau --help | grep 'Usage:'
 
+  verify-docs:
+    # Drift-checks VERIFYING.md: every command in the verification guide is
+    # cross-checked against this workflow, both installers and
+    # generate-sbom.py, and the offline-safe recipes (checksum pipeline,
+    # SBOM regenerate + hash-match) are replayed on a staged fixture. A
+    # guide that no longer matches the pipeline gates the release — a stale
+    # verification recipe is worse than none.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Drift-check VERIFYING.md commands
+        run: python3 scripts/check-verifying-doc.py
+
   release:
     if: github.ref_type == 'tag'
-    needs: [build, smoke, smoke-windows, smoke-action]
+    needs: [build, smoke, smoke-windows, smoke-action, verify-docs]
     runs-on: ubuntu-latest
     permissions:
       contents: write        # gh release create
@@ -387,7 +400,7 @@ jobs:
         # Fail-closed gate: a release never publishes a signature that does
         # not verify against this repo's release workflow identity. The
         # identity regexp must match install.sh, install.ps1 and
-        # docs/verifying-releases.md — the smoke suite pins that contract.
+        # VERIFYING.md — the smoke suite pins that contract.
         run: |
           set -euo pipefail
           cd dist
@@ -451,7 +464,7 @@ jobs:
           Each archive also has a CycloneDX SBOM (`<asset>.sbom.json`),
           signed and attested the same way.
 
-          See docs/verifying-releases.md for the full verification guide.
+          See VERIFYING.md for the full verification guide.
           EOF
           gh release create "$TAG" \
             --title "tau $TAG" \

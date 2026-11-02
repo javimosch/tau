@@ -18,7 +18,7 @@
 #
 # The release workflow (release job) signs every .sbom.json with cosign,
 # attests it with actions/attest-build-provenance, and publishes it next to
-# the archive — see docs/verifying-releases.md.
+# the archive — see VERIFYING.md.
 #
 # Options:
 #   --dist DIR      directory holding the release archives (default: dist/)

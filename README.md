@@ -65,7 +65,7 @@ build-provenance attestation, and a CycloneDX SBOM (`<asset>.sbom.json`)
 listing the archive hash and every file inside it — set
 `TAU_VERIFY_SIGSTORE=1` to have the installers run `cosign verify-blob`
 too, or verify manually per
-[`docs/verifying-releases.md`](docs/verifying-releases.md).
+[`VERIFYING.md`](VERIFYING.md).
 
 **Windows (PowerShell — installs `tau-windows-x86_64.zip` to
 `%LOCALAPPDATA%\Programs\tau`):**
