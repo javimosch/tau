@@ -1037,6 +1037,27 @@ test_group_config_edit() {
   # get/unset of an absent key -> exit 1 not_found.
   HOME="$mock_home" "$BIN" config get model >/dev/null 2>&1;   ok "get unset key -> exit 1" "$?" 1
   HOME="$mock_home" "$BIN" config unset model >/dev/null 2>&1; ok "unset absent key -> exit 1" "$?" 1
+  # A correctly-spelled but absent key earns no did-you-mean noise.
+  out=$(HOME="$mock_home" "$BIN" config get model 2>&1)
+  lacks "absent valid key gets no hint" "$out" 'did you mean'
+
+  # Did-you-mean on key typos: CLI key -> schema field; file member -> the
+  # file's actual (typo'd) key; keys.<p> -> nearest provider/file member.
+  out=$(HOME="$mock_home" "$BIN" config set proivder x 2>&1)
+  contains "set key typo suggests field" "$out" 'did you mean \"provider\"?'
+  out=$(HOME="$mock_home" "$BIN" config set keys.opnai sk-x 2>&1)
+  contains "set keys typo suggests provider" "$out" 'did you mean \"openai\"?'
+  out=$(HOME="$mock_home" "$BIN" config set key.openai sk-x 2>&1)
+  contains "dotted-path typo suggests keys" "$out" 'did you mean \"keys.openai\"?'
+  out=$(HOME="$mock_home" "$BIN" config set provider opnai 2>&1)
+  contains "set provider value typo suggests" "$out" 'did you mean \"openai\"?'
+  printf '{"proivder":"openai","keys":{"opnai":"sk-x"}}' > "$cfg"
+  out=$(HOME="$mock_home" "$BIN" config get provider 2>&1); rc=$?
+  ok "get missing field exits 1" "$rc" 1
+  contains "get names the file's typo'd key" "$out" 'did you mean \"proivder\"?'
+  out=$(HOME="$mock_home" "$BIN" config get keys.openai 2>&1)
+  contains "get keys names the file's typo'd member" "$out" 'did you mean \"keys.opnai\"?'
+  printf '{\n  "provider": "openai"\n}\n' > "$cfg"
 
   # Schema checks reject bad values before writing (file unchanged).
   HOME="$mock_home" "$BIN" config set stream yes >/dev/null 2>&1;    ok "set wrong type -> exit 80" "$?" 80
@@ -1128,6 +1149,7 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?
   ok "set on broken JSON -> exit 1" "$rc" 1
   contains "broken JSON reported" "$out" 'invalid JSON'
+  contains "broken JSON reports position" "$out" 'at line 2, column'
 }
 
 # Group: `tau config edit` — interactive $EDITOR edit, schema-checked on save.
@@ -1244,6 +1266,7 @@ test_group_doctor() {
   ok "malformed config exit 1" "$doc_badcfg_rc" 1
   contains "config_file fails" "$doc_badcfg_out" '"name":"config_file","status":"fail"'
   contains "config_file message names path" "$doc_badcfg_out" '.config/tau/config.json'
+  contains "config_file message has line/column" "$doc_badcfg_out" 'at line 1, column'
   contains "api_key check still ran" "$doc_badcfg_out" '"name":"api_key"'
   contains "endpoint check still ran" "$doc_badcfg_out" '"name":"endpoint_reachable"'
 
@@ -3606,6 +3629,37 @@ test_group_golden_onboarding() {
   golden_file    ob-config-edit-editor-fails.config "$_GOLDEN_HOME/.config/tau/config.json"
 
   golden_check_n ob-config-edit-no-home 80 env -u HOME "$BIN" config edit
+
+  # ── tau config key typos + config-file parse errors ──
+  # Arg-validation failures never reach the file — a clean HOME keeps stderr
+  # to just the {"err"} envelope (no load warning).
+  _golden_fresh_home
+  golden_check_n ob-config-set-key-typo   80 "$BIN" config set proivder x
+  golden_check_n ob-config-set-keys-typo  80 "$BIN" config set keys.opnai sk-x
+  golden_check_n ob-config-set-path-typo  80 "$BIN" config set key.openai sk-x
+  golden_check_n ob-config-set-badprov    80 "$BIN" config set provider opnai
+
+  # A file carrying its own typos steers get/unset suggestions to the member
+  # actually on disk; the file parses (unknown keys are ignored) so no load
+  # warning precedes the error.
+  _golden_fresh_home
+  mkdir -p "$_GOLDEN_HOME/.config/tau"
+  printf '{\n  "proivder": "openai",\n  "keys": { "opnai": "sk-x" }\n}\n' > "$_GOLDEN_HOME/.config/tau/config.json"
+  golden_check_n ob-config-get-file-typo  1 "$BIN" config get provider
+  golden_check_n ob-config-get-keys-typo  1 "$BIN" config get keys.openai
+  golden_check_n ob-config-unset-typo     1 "$BIN" config unset provider
+
+  # Malformed config: every reader reports the same line/column — the load
+  # warning precedes the command's error envelope, and `config show` embeds
+  # the positioned warning in its config_file block.
+  _golden_fresh_home
+  mkdir -p "$_GOLDEN_HOME/.config/tau"
+  printf '{\n  "provider": "openai",\n  bad\n}\n' > "$_GOLDEN_HOME/.config/tau/config.json"
+  golden_check_n ob-config-get-badjson  1 "$BIN" config get provider
+  golden_check_n ob-config-show-badjson 0 "$BIN" config show
+  # Leave a clean HOME behind — later golden groups share _GOLDEN_HOME and a
+  # malformed config would leak a warn envelope into their stderr snapshots.
+  _golden_fresh_home
 }
 
 # Group: golden help/completions surface snapshots (Issue #236)

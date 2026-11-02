@@ -474,6 +474,11 @@ tau config set provider openai ./ci.json  # explicit path (like validate)
 - **git-config semantics**: `get`/`unset` of an absent key exit `1` with a
   `not_found` envelope; a missing or malformed file also exits `1`. CLI misuse
   (unknown key, bad value, stray args) exits `80`.
+- **Did-you-mean**: a misspelled key earns a `did you mean "…"?` hint — `set`
+  suggests the nearest schema key (or `keys.<provider>` for a `key.x` dotted
+  path), while `get`/`unset` name the closest key actually present in the
+  file, catching typos written there. A malformed file reports the syntax
+  error's line and column, matching `config validate`.
 - **Secrets**: `api_key` and `keys.*` values are masked (`***last4`) in all
   `set`/`get` output; `get --raw` prints the stored value verbatim.
 

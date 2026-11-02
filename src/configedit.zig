@@ -15,6 +15,7 @@ const builtin = @import("builtin");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const jsonmod = @import("json.zig");
+const suggest = @import("suggest.zig");
 
 pub const Sub = enum { set, get, unset };
 
@@ -35,6 +36,15 @@ pub const Outcome = union(enum) {
 // Comptime view of the persisted file schema (same struct the loader and the
 // validator derive from — single source of truth).
 const file_fields = @typeInfo(configfile.FileConfig).@"struct".fields;
+
+/// All valid top-level config key names — the candidate list for did-you-mean
+/// suggestions on misspelled keys (same derivation as configvalidate.zig).
+const field_names: []const []const u8 = blk: {
+    var names: [file_fields.len][]const u8 = undefined;
+    for (file_fields, 0..) |f, i| names[i] = f.name;
+    const frozen = names;
+    break :blk &frozen;
+};
 
 const Kind = enum { string, boolean, integer, number, any_json };
 
@@ -87,6 +97,18 @@ fn providerNames(arena: std.mem.Allocator) ![]const u8 {
     return b.toOwnedSlice(arena);
 }
 
+/// A `did you mean "<name>"?` fragment for a mistyped provider name, falling
+/// back to the full "valid providers: ..." list when nothing is close (same
+/// rule `config validate` uses for provider values).
+fn providerHint(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (cfgmod.providers) |p| try names.append(arena, p.name);
+    if (suggest.suggest(arena, name, names.items)) |s| {
+        return try std.fmt.allocPrint(arena, "did you mean \"{s}\"?", .{s});
+    }
+    return try std.fmt.allocPrint(arena, "valid providers: {s}", .{try providerNames(arena)});
+}
+
 /// Parse a user-supplied key path. `keys.<name>` addresses a per-provider API
 /// key; any other dotted path is rejected (the schema has no other objects).
 /// `strict_field` (set) additionally requires a known FileConfig key — for
@@ -97,8 +119,14 @@ fn parseKeyPath(arena: std.mem.Allocator, key: []const u8, strict_field: bool) u
     const dot = std.mem.indexOfScalar(u8, key, '.');
     if (dot == null) {
         if (strict_field and !isKnownField(key)) {
-            const names = knownFieldNames(arena) catch "see docs/configuration.md";
-            const msg = std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — valid keys: {s} (or keys.<provider>)", .{ key, names }) catch "unknown config key";
+            // Did-you-mean on misspelled keys (same rule `config validate`
+            // reports for file typos); the full list is the fallback.
+            const msg = if (suggest.suggest(arena, key, field_names)) |s|
+                std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — did you mean \"{s}\"?", .{ key, s }) catch "unknown config key"
+            else blk: {
+                const names = knownFieldNames(arena) catch "see docs/configuration.md";
+                break :blk std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — valid keys: {s} (or keys.<provider>)", .{ key, names }) catch "unknown config key";
+            };
             return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
         }
         return .{ .ok = .{ .field = key } };
@@ -106,7 +134,17 @@ fn parseKeyPath(arena: std.mem.Allocator, key: []const u8, strict_field: bool) u
     const parent = key[0..dot.?];
     const child = key[dot.? + 1 ..];
     if (!std.mem.eql(u8, parent, "keys") or child.len == 0 or std.mem.indexOfScalar(u8, child, '.') != null) {
-        const msg = std.fmt.allocPrint(arena, "unsupported config key path \"{s}\" — use a top-level key or keys.<provider>", .{key}) catch "unsupported config key path";
+        // A near-miss on the `keys` parent with a well-formed child almost
+        // always means keys.<provider> ("key.openai" -> "keys.openai").
+        const hint: []const u8 = blk: {
+            if (child.len > 0 and std.mem.indexOfScalar(u8, child, '.') == null) {
+                if (suggest.suggest(arena, parent, &.{"keys"})) |_| {
+                    break :blk std.fmt.allocPrint(arena, " — did you mean \"keys.{s}\"?", .{child}) catch "";
+                }
+            }
+            break :blk "";
+        };
+        const msg = std.fmt.allocPrint(arena, "unsupported config key path \"{s}\" — use a top-level key or keys.<provider>{s}", .{ key, hint }) catch "unsupported config key path";
         return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
     }
     return .{ .ok = .{ .keys_entry = child } };
@@ -402,7 +440,7 @@ fn coerceKeysMap(arena: std.mem.Allocator, raw: []const u8) !Coerced {
     var it = val.object.iterator();
     while (it.next()) |e| {
         if (cfgmod.findProvider(e.key_ptr.*) == null) {
-            return badValue(arena, "\"keys.{s}\" is not a known provider — valid providers: {s}", .{ e.key_ptr.*, try providerNames(arena) });
+            return badValue(arena, "\"keys.{s}\" is not a known provider — {s}", .{ e.key_ptr.*, try providerHint(arena, e.key_ptr.*) });
         }
         if (e.value_ptr.* != .string) {
             return badValue(arena, "\"keys.{s}\" must be a string", .{e.key_ptr.*});
@@ -420,7 +458,7 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
     switch (kp) {
         .keys_entry => |pname| {
             if (cfgmod.findProvider(pname) == null) {
-                return badValue(arena, "\"keys.{s}\" is not a known provider — valid providers: {s}", .{ pname, try providerNames(arena) });
+                return badValue(arena, "\"keys.{s}\" is not a known provider — {s}", .{ pname, try providerHint(arena, pname) });
             }
             if (raw.len == 0) {
                 return badValue(arena, "empty API key — use `tau config unset keys.{s}` to remove it", .{pname});
@@ -435,7 +473,7 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
                         .string => {
                             if (comptime std.mem.eql(u8, f.name, "provider")) {
                                 if (cfgmod.findProvider(raw) == null) {
-                                    return badValue(arena, "\"provider\" is not a known provider: \"{s}\" — valid providers: {s}", .{ raw, try providerNames(arena) });
+                                    return badValue(arena, "\"provider\" is not a known provider: \"{s}\" — {s}", .{ raw, try providerHint(arena, raw) });
                                 }
                             } else if (comptime std.mem.eql(u8, f.name, "mode")) {
                                 if (!std.mem.eql(u8, raw, "text") and !std.mem.eql(u8, raw, "json")) {
@@ -498,6 +536,9 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
 // File access
 // ---------------------------------------------------------------------------
 
+/// A file that passed both the structural scan and a strict JSON parse.
+const ParsedDoc = struct { bytes: []const u8, obj: Obj };
+
 /// Read + structurally scan the config file. `.missing` means the file does
 /// not exist; `.blank` carries a file with only whitespace/comments (set keeps
 /// them and appends a fresh object).
@@ -505,8 +546,61 @@ const Doc = union(enum) {
     missing,
     blank: []const u8,
     invalid: []const u8, // reason for the {"err"} message
-    parsed: struct { bytes: []const u8, obj: Obj },
+    parsed: ParsedDoc,
 };
+
+/// Suggestion suffix for a `get`/`unset` key that isn't in the file. The
+/// file's own member names are always candidates (a typo'd key in the file
+/// is the likely target). Schema field names / registered providers join in
+/// only when the queried name isn't already valid — a correctly-spelled but
+/// absent key must not suggest a sibling ("model" is absent, not a "mode"
+/// typo).
+fn notSetHint(arena: std.mem.Allocator, parsed: ?ParsedDoc, kp: KeyPath) ![]const u8 {
+    var cands: std.ArrayList([]const u8) = .empty;
+    var query: []const u8 = undefined;
+    var prefix: []const u8 = "";
+    switch (kp) {
+        .field => |name| {
+            query = name;
+            if (parsed) |p| for (p.obj.members) |m| try cands.append(arena, m.key);
+            if (!isKnownField(name)) try cands.appendSlice(arena, field_names);
+        },
+        .keys_entry => |pname| {
+            query = pname;
+            prefix = "keys.";
+            if (parsed) |p| {
+                if (findMember(p.obj, "keys")) |i| {
+                    const m = p.obj.members[i];
+                    if (m.value_start < p.bytes.len and p.bytes[m.value_start] == '{') {
+                        if (scanObj(arena, p.bytes, m.value_start) catch null) |inner| {
+                            for (inner.members) |mm| try cands.append(arena, mm.key);
+                        }
+                    }
+                }
+            }
+            if (cfgmod.findProvider(pname) == null) {
+                for (cfgmod.providers) |p| try cands.append(arena, p.name);
+            }
+        },
+    }
+    var filtered: std.ArrayList([]const u8) = .empty;
+    for (cands.items) |c| {
+        if (!std.mem.eql(u8, c, query)) try filtered.append(arena, c);
+    }
+    if (suggest.suggest(arena, query, filtered.items)) |s| {
+        return try std.fmt.allocPrint(arena, " — did you mean \"{s}{s}\"?", .{ prefix, s });
+    }
+    return "";
+}
+
+/// Reason string for an unparsable config file — carries the syntax error's
+/// line/column when one is known (same diagnostics `config validate` uses).
+fn invalidJsonReason(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    if (configfile.jsonErrorPos(arena, bytes)) |pos| {
+        return std.fmt.allocPrint(arena, "invalid JSON at line {d}, column {d} — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`", .{ pos.line, pos.col });
+    }
+    return "invalid JSON — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`";
+}
 
 fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
@@ -520,7 +614,7 @@ fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
     if (skipTrivia(bytes, 0) == bytes.len) return .{ .blank = bytes };
     const obj = scanDoc(arena, bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.InvalidJson => return .{ .invalid = "invalid JSON — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`" },
+        error.InvalidJson => return .{ .invalid = try invalidJsonReason(arena, bytes) },
     };
     // The scanner is structural only — confirm the document also parses as
     // strict JSON (comments stripped) so we never splice into a file that
@@ -528,7 +622,7 @@ fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
     const stripped = configfile.stripComments(arena, bytes) catch bytes;
     _ = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
-        return .{ .invalid = "invalid JSON — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`" };
+        return .{ .invalid = try invalidJsonReason(arena, bytes) };
     };
     return .{ .parsed = .{ .bytes = bytes, .obj = obj } };
 }
@@ -638,12 +732,12 @@ pub fn run(
         .get => {
             const parsed = switch (doc) {
                 .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
-                .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}", .{ key, path }) } },
+                .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
                 .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
                 .parsed => |p| p,
             };
             const slice = try lookupValue(arena, parsed, kp) orelse {
-                return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}", .{ key, path }) } };
+                return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, parsed, kp) }) } };
             };
             const val = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, slice) catch slice, .{}) catch {
                 return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "value of \"{s}\" in {s} is not valid JSON", .{ key, path }) } };
@@ -685,7 +779,7 @@ pub fn run(
         .unset => {
             const parsed = switch (doc) {
                 .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
-                .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}", .{ key, path }) } },
+                .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
                 .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
                 .parsed => |p| p,
             };
@@ -695,7 +789,7 @@ pub fn run(
                 }
                 return err;
             }) orelse {
-                return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}", .{ key, path }) } };
+                return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, parsed, kp) }) } };
             };
             try writeAtomic(io, arena, path, new_bytes);
             return .{ .ok = try renderUnset(arena, path, key, mode) };
@@ -1635,4 +1729,128 @@ test "property: random set/unset sequence keeps the file valid and consistent" {
             try expectFailCode(try th.sub(arena, .get, key, null, true), 1);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Did-you-mean + line/column error enrichment (task #322)
+// ---------------------------------------------------------------------------
+
+fn failMessage(outcome: Outcome) !Fail {
+    switch (outcome) {
+        .ok => |s| {
+            std.debug.print("expected fail, got ok: {s}\n", .{s});
+            return error.TestUnexpectedResult;
+        },
+        .fail => |f| return f,
+    }
+}
+
+test "parseKeyPath: misspelled field suggests the nearest config key" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    // Transposition (d=2) is inside the suggestion boundary.
+    const near = parseKeyPath(arena, "proivder", true).fail;
+    try testing.expectEqual(@as(u8, 80), near.code);
+    try testing.expect(std.mem.indexOf(u8, near.message, "did you mean \"provider\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, near.message, "valid keys:") == null);
+
+    // d=3 is outside the boundary — the full key list is the fallback.
+    const far = parseKeyPath(arena, "prvdr", true).fail;
+    try testing.expect(std.mem.indexOf(u8, far.message, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, far.message, "valid keys:") != null);
+
+    // A near-miss `keys` parent points at keys.<provider>.
+    const dotted = parseKeyPath(arena, "key.openai", true).fail;
+    try testing.expect(std.mem.indexOf(u8, dotted.message, "did you mean \"keys.openai\"?") != null);
+
+    // get/unset accept unknown top-level keys (they may exist in the file).
+    try testing.expect(parseKeyPath(arena, "proivder", false) == .ok);
+}
+
+test "coerceValue: provider typos suggest the nearest provider" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    const keys_entry = parseKeyPath(arena, "keys.opnai", true).ok;
+    const f1 = (try coerceValue(arena, keys_entry, "sk-x")).fail;
+    try testing.expect(std.mem.indexOf(u8, f1.message, "did you mean \"openai\"?") != null);
+
+    const provider_field = parseKeyPath(arena, "provider", true).ok;
+    const f2 = (try coerceValue(arena, provider_field, "opnai")).fail;
+    try testing.expect(std.mem.indexOf(u8, f2.message, "did you mean \"openai\"?") != null);
+
+    // Far-off names fall back to the full provider list.
+    const f3 = (try coerceValue(arena, provider_field, "zzzcorp")).fail;
+    try testing.expect(std.mem.indexOf(u8, f3.message, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, f3.message, "valid providers:") != null);
+}
+
+test "run: set/get/unset surface did-you-mean hints and line/column" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data =
+        \\{
+        \\  "proivder": "openai",
+        \\  "keys": { "opnai": "sk-x" }
+        \\}
+    });
+
+    // set on a misspelled key: did-you-mean the real field.
+    const set_typo = try failMessage(try th.sub(arena, .set, "proivder", "x", false));
+    try testing.expectEqual(@as(u8, 80), set_typo.code);
+    try testing.expect(std.mem.indexOf(u8, set_typo.message, "did you mean \"provider\"?") != null);
+
+    // get of a valid-but-absent key when the file holds the typo'd member:
+    // the suggestion names the file's actual key.
+    const get_file_typo = try failMessage(try th.sub(arena, .get, "provider", null, false));
+    try testing.expectEqual(@as(u8, 1), get_file_typo.code);
+    try testing.expect(std.mem.indexOf(u8, get_file_typo.message, "did you mean \"proivder\"?") != null);
+
+    // get of a typo'd key resolves the real member in the file.
+    _ = try expectOk(try th.sub(arena, .get, "proivder", null, false));
+
+    // get keys.<typo> suggests the member actually present under keys.
+    const get_keys = try failMessage(try th.sub(arena, .get, "keys.openai", null, false));
+    try testing.expect(std.mem.indexOf(u8, get_keys.message, "did you mean \"keys.opnai\"?") != null);
+
+    // A correctly-spelled but absent key earns no hint — neither a sibling
+    // field name nor a sibling provider is "what was meant".
+    const absent = try failMessage(try th.sub(arena, .get, "model", null, false));
+    try testing.expect(std.mem.indexOf(u8, absent.message, "did you mean") == null);
+    const absent_provider = try failMessage(try th.sub(arena, .get, "keys.deepseek", null, false));
+    try testing.expect(std.mem.indexOf(u8, absent_provider.message, "did you mean") == null);
+
+    // unset mirrors get.
+    const unset_typo = try failMessage(try th.sub(arena, .unset, "provider", null, false));
+    try testing.expect(std.mem.indexOf(u8, unset_typo.message, "did you mean \"proivder\"?") != null);
+}
+
+test "run: malformed config file reports line/column in the invalid_config error" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data = "{\n  \"provider\": \"openai\",\n  bad\n}" });
+
+    const f = try failMessage(try th.sub(arena, .get, "provider", null, false));
+    try testing.expectEqual(@as(u8, 1), f.code);
+    try testing.expectEqualStrings("invalid_config", f.type_name);
+    try testing.expect(std.mem.indexOf(u8, f.message, "invalid JSON at line 3, column") != null);
+
+    // set refuses to touch the broken file with the same positioned error.
+    const fs = try failMessage(try th.sub(arena, .set, "mode", "text", false));
+    try testing.expect(std.mem.indexOf(u8, fs.message, "invalid JSON at line 3, column") != null);
 }

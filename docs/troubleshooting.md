@@ -344,14 +344,17 @@ goal, and nothing to continue — give it a prompt or resume a goal session.
 
 ## Warnings (run continues)
 
-### `{"warn":{"message":"config file has invalid JSON and was ignored: <path> — fix the JSON syntax or delete the file"}}`
+### `{"warn":{"message":"config file has invalid JSON at line <L>, column <C> and was ignored: <path> — fix the JSON syntax or delete the file"}}`
 
 `~/.config/tau/config.json` exists but doesn't parse. tau falls back to
-defaults — flags and env vars still work. Fix the syntax or delete the file,
-or run `tau doctor --fix` — it moves the broken file to `config.json.bak`
-and scaffolds a fresh one. `tau config validate` pinpoints the error with a
-line/column. The file is JSONC: `//` and `/* */` comments are allowed (the
-`tau init` scaffold is commented), but trailing commas are not.
+defaults — flags and env vars still work. The message names the syntax
+error's line and column (the same position `tau config validate` reports —
+line numbers are exact even in a commented JSONC file; a block comment on the
+same line before the error can shift the column). Fix the syntax or delete
+the file, or run `tau doctor --fix` — it moves the broken file to
+`config.json.bak` and scaffolds a fresh one. The file is JSONC: `//` and
+`/* */` comments are allowed (the `tau init` scaffold is commented), but
+trailing commas are not.
 
 ### `failed to save session <name>: <err>` (stderr, non-fatal)
 

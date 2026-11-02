@@ -85,6 +85,28 @@ pub fn stripComments(arena: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out.toOwnedSlice(arena);
 }
 
+/// Position of a JSON syntax error (1-based, like std.json.Diagnostics).
+pub const JsonPos = struct { line: usize, col: usize };
+
+/// Line/column of the first JSON syntax error in `bytes`, or null when the
+/// document parses. The file is JSONC: comments are stripped before the
+/// strict scan — stripComments preserves newlines, so line numbers always
+/// match the original file (columns can differ only when a block comment
+/// precedes the error on the same line — the same caveat `config validate`
+/// reports under).
+pub fn jsonErrorPos(arena: std.mem.Allocator, bytes: []const u8) ?JsonPos {
+    const stripped = stripComments(arena, bytes) catch bytes;
+    var scanner = std.json.Scanner.initCompleteInput(arena, stripped);
+    defer scanner.deinit();
+    var diag: std.json.Diagnostics = .{};
+    scanner.enableDiagnostics(&diag);
+    _ = std.json.parseFromTokenSourceLeaky(std.json.Value, arena, &scanner, .{}) catch |err| {
+        if (err == error.OutOfMemory) return null;
+        return .{ .line = diag.getLine(), .col = diag.getColumn() };
+    };
+    return null;
+}
+
 /// Load ~/.config/tau/config.json into a base Config. Missing file / bad JSON /
 /// no HOME all degrade gracefully to defaults (never errors — config file is
 /// optional). JSONC-style comments (`//`, `/* */`) are stripped before parsing.
@@ -101,7 +123,10 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     const fc = std.json.parseFromSliceLeaky(FileConfig, arena, stripComments(arena, bytes) catch bytes, .{
         .ignore_unknown_fields = true,
     }) catch {
-        cfg.config_warning = std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s} — fix the JSON syntax or delete the file", .{p}) catch null;
+        cfg.config_warning = if (jsonErrorPos(arena, bytes)) |pos|
+            std.fmt.allocPrint(arena, "config file has invalid JSON at line {d}, column {d} and was ignored: {s} — fix the JSON syntax or delete the file", .{ pos.line, pos.col, p }) catch null
+        else
+            std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s} — fix the JSON syntax or delete the file", .{p}) catch null;
         return cfg;
     };
 
@@ -435,6 +460,40 @@ test "stripComments respects escaped chars and unterminated comments" {
 
     // An unterminated line comment at EOF just truncates.
     try testing.expectEqualStrings("{} ", try stripComments(arena, "{} // rest is gone"));
+}
+
+test "jsonErrorPos: reports line/column of the first syntax error" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // Clean document -> null.
+    try testing.expectEqual(@as(?JsonPos, null), jsonErrorPos(arena, "{ \"a\": 1 }"));
+
+    // Error on line 3.
+    const pos = jsonErrorPos(arena, "{\n  \"provider\": \"openai\",\n  bad\n}").?;
+    try testing.expectEqual(@as(usize, 3), pos.line);
+    try testing.expect(pos.col >= 1);
+
+    // Comments don't shift line numbers (newlines preserved by stripComments).
+    const pos2 = jsonErrorPos(arena, "// header\n{\n  /* block\n     comment */\n  \"a\":,\n}").?;
+    try testing.expectEqual(@as(usize, 5), pos2.line);
+}
+
+test "load: malformed JSON warning carries line/column context" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var th = try TestHome.init(arena);
+    defer th.deinit();
+    try th.writeConfig(arena, "{\n  \"provider\": \"openai\",\n  bad\n}");
+
+    const cfg = load(testing.io, arena, &th.env);
+    const w = cfg.config_warning.?;
+    try testing.expect(std.mem.indexOf(u8, w, "invalid JSON at line 3, column") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "was ignored") != null);
+    try testing.expect(std.mem.indexOf(u8, w, th.home) != null);
 }
 
 test "load: commented (JSONC) config file parses cleanly" {
