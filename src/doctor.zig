@@ -367,10 +367,14 @@ fn configBodyCheck(arena: std.mem.Allocator, path: []const u8, bytes: []const u8
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, bytes) catch bytes, .{
         .ignore_unknown_fields = true,
     }) catch {
+        const msg = if (configfile.jsonErrorPos(arena, bytes)) |pos|
+            std.fmt.allocPrint(arena, "config file has invalid JSON at line {d}, column {d} and was ignored: {s}", .{ pos.line, pos.col, path }) catch "config file has invalid JSON"
+        else
+            std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s}", .{path}) catch "config file has invalid JSON";
         return .{
             .name = "config_file",
             .status = .fail,
-            .message = std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s}", .{path}) catch "config file has invalid JSON",
+            .message = msg,
             .hint = "fix the JSON syntax, delete the file, or run 'tau doctor --fix' to move it aside and scaffold a fresh one",
             .fix = .restore_config,
         };
@@ -1762,13 +1766,18 @@ test "formatReportJson: ok=false with summary counts when a check fails" {
     try testing.expect(std.mem.indexOf(u8, got, "\"target\":\"") != null);
 }
 
-test "configBodyCheck: invalid JSON fails with the path and a fix hint" {
+test "configBodyCheck: invalid JSON fails with the path, position and a fix hint" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const c = configBodyCheck(arena.allocator(), "/tmp/x/config.json", "{ not json ");
     try testing.expectEqual(CheckStatus.fail, c.status);
     try testing.expect(std.mem.indexOf(u8, c.message, "/tmp/x/config.json") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "at line 1, column") != null);
     try testing.expect(c.hint != null);
+
+    // Later-line errors report their own line number.
+    const c2 = configBodyCheck(arena.allocator(), "/tmp/x/config.json", "{\n  \"a\": 1,\n  bad\n}");
+    try testing.expect(std.mem.indexOf(u8, c2.message, "at line 3, column") != null);
 }
 
 test "configBodyCheck: unknown provider key warns, valid file is ok" {
