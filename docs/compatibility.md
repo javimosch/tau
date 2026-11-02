@@ -15,9 +15,10 @@ integration path needs. Step-by-step guides:
 dedicated per-client guide for each client with verified snippets:
 [Zed](clients/zed.md), [VS Code](clients/vscode.md),
 [Cursor](clients/cursor.md), [JetBrains](clients/jetbrains.md),
-[Emacs](clients/emacs.md), [Windsurf](clients/windsurf.md),
-[Gemini CLI](clients/gemini-cli.md),
-[Claude Desktop](clients/claude-desktop.md).
+[Neovim](clients/nvim.md), [Emacs](clients/emacs.md),
+[Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+[Claude Desktop](clients/claude-desktop.md),
+[OpenCode](clients/opencode.md).
 
 ## Supported editor clients
 
@@ -32,6 +33,7 @@ dedicated per-client guide for each client with verified snippets:
 | `windsurf` (mcacp) | `windsurf` | `~/.codeium/windsurf` | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | none | `~/.config/tau/snippets/windsurf.jsonc` | `client_windsurf` / `wire_client_windsurf` |
 | `gemini` (mcacp) | `gemini` (alias `gemini-cli`) | `~/.gemini` | `~/.gemini/settings.json` | `mcpServers` | none | `~/.config/tau/snippets/gemini.jsonc` | `client_gemini` / `wire_client_gemini` |
 | `claude_desktop` (mcacp) | `claude-desktop` (alias `claude`) | `~/.config/Claude` | `~/.config/Claude/claude_desktop_config.json` | `mcpServers` | none | `~/.config/tau/snippets/claude-desktop.jsonc` | `client_claude_desktop` / `wire_client_claude_desktop` |
+| `opencode` (mcacp) | `opencode` | `~/.config/opencode` | `~/.config/opencode/opencode.json` | `mcp` | none | `~/.config/tau/snippets/opencode.jsonc` | `client_opencode` / `wire_client_opencode` |
 
 `tau setup --client all` expands to every row. Detection (setup with no
 `--client`, or `tau doctor`) only *reports* clients whose config dir
@@ -53,8 +55,8 @@ the editor runs `command` + `args`, and `args` must be exactly
 }
 ```
 
-MCP-bridge clients (`windsurf`, `gemini`, `claude_desktop`) speak MCP, not ACP — they can't
-spawn `tau acp serve` directly. Their `mcpServers` entry launches
+MCP-bridge clients (`windsurf`, `gemini`, `claude_desktop`, `opencode`) speak MCP, not ACP — they can't
+spawn `tau acp serve` directly. Their server entry launches
 the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:
 
 ```jsonc
@@ -62,6 +64,20 @@ the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:
   "mcacp": {
     "command": "npx",
     "args": ["-y", "mcacp"]
+  }
+}
+```
+
+OpenCode (`opencode`) keeps MCP servers under `mcp` (not
+`mcpServers`) and packs the whole spawn line into a `command`
+array — the same bridge, a different entry shape:
+
+```jsonc
+"mcp": {
+  "mcacp": {
+    "type": "local",
+    "command": ["npx", "-y", "mcacp"],
+    "enabled": true
   }
 }
 ```
@@ -107,3 +123,4 @@ After tau writes (or previews) the config, one in-editor step remains:
 | `windsurf` | install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers |
 | `gemini` | install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools |
 | `claude_desktop` | install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server |
+| `opencode` | install mcacp (npm i -g mcacp or npx), restart OpenCode, and check the mcacp server with 'opencode mcp list' |

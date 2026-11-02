@@ -1758,7 +1758,7 @@ PYEOF
   contains "no editors -> client_wiring skip row" "$doc_wire_none_out" '"name":"client_wiring","status":"skip"'
   contains "placeholder names the setup flag" "$doc_wire_none_out" 'tau setup --client'
 
-  mkdir -p "$wire_home/.config/zed" "$wire_home/.config/nvim" "$wire_home/.emacs.d"
+  mkdir -p "$wire_home/.config/zed" "$wire_home/.config/nvim" "$wire_home/.emacs.d" "$wire_home/.config/opencode"
   capture doc_wire_missing env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$wire_home" "$BIN" doctor --offline
   contains "zed detected but unwired -> warn" "$doc_wire_missing_out" '"name":"client_zed","status":"warn"'
@@ -1766,6 +1766,8 @@ PYEOF
   contains "nvim is a manual-only skip" "$doc_wire_missing_out" '"name":"client_nvim","status":"skip"'
   contains "emacs is a manual-only skip" "$doc_wire_missing_out" '"name":"client_emacs","status":"skip"'
   contains "emacs skip points at the elisp snippet" "$doc_wire_missing_out" 'snippets/emacs.el'
+  contains "opencode detected but unwired -> warn" "$doc_wire_missing_out" '"name":"client_opencode","status":"warn"'
+  contains "opencode warn names the settings file" "$doc_wire_missing_out" 'opencode.json'
   if printf '%s' "$doc_wire_missing_out" | grep -qF '"name":"client_vscode"'; then
     ok "undetected editors emit no row" 1 0
   else
@@ -2281,6 +2283,7 @@ test_group_setup() {
   contains "--client all covers windsurf" "$s12_out" '"client":"windsurf"'
   contains "--client all covers gemini" "$s12_out" '"client":"gemini"'
   contains "--client all covers claude-desktop" "$s12_out" '"client":"claude-desktop"'
+  contains "--client all covers opencode" "$s12_out" '"client":"opencode"'
   [ -f "$mock_home10/.config/Code/User/settings.json" ]; ok "vscode settings written" "$?" 0
   grep -q '"acp.agents"' "$mock_home10/.config/Code/User/settings.json"; ok "vscode uses acp.agents key" "$?" 0
   [ -f "$mock_home10/.config/Cursor/User/settings.json" ]; ok "cursor settings written" "$?" 0
@@ -2291,6 +2294,8 @@ test_group_setup() {
   [ -f "$mock_home10/.gemini/settings.json" ]; ok "gemini settings.json written" "$?" 0
   [ -f "$mock_home10/.config/Claude/claude_desktop_config.json" ]; ok "claude_desktop_config.json written" "$?" 0
   grep -q '"mcpServers"' "$mock_home10/.gemini/settings.json"; ok "gemini uses mcpServers key" "$?" 0
+  [ -f "$mock_home10/.config/opencode/opencode.json" ]; ok "opencode.json written" "$?" 0
+  grep -q '"type": "local"' "$mock_home10/.config/opencode/opencode.json"; ok "opencode uses mcp local-server shape" "$?" 0
   [ -f "$mock_home10/.config/mcacp/mcacp.json" ]; ok "shared mcacp bridge config written" "$?" 0
   grep -q '"acp", "serve"' "$mock_home10/.config/mcacp/mcacp.json"; ok "mcacp.json wires tau acp serve" "$?" 0
 
@@ -2496,11 +2501,12 @@ test_group_client_examples() {
 
   # MCP-bridge client files carry no tau path — they launch `npx mcacp` — so
   # they diff byte-for-byte with no normalization.
-  for spec in windsurf gemini claude-desktop; do
+  for spec in windsurf gemini claude-desktop opencode; do
     case "$spec" in
       windsurf)       want="$h/.codeium/windsurf/mcp_config.json" ;;
       gemini)         want="$h/.gemini/settings.json" ;;
       claude-desktop) want="$h/.config/Claude/claude_desktop_config.json" ;;
+      opencode)       want="$h/.config/opencode/opencode.json" ;;
     esac
     cmp -s "$want" "$ex/$spec.json"
     ok "$spec.json matches setup --client output" "$?" 0
@@ -2541,14 +2547,18 @@ sys.exit(0 if found >= 3 else 1)' "$ex" 2>/dev/null
   # `tau acp serve`.
   python3 -c 'import json,sys
 ok = True
-for p in sys.argv[1:-1]:
+for p in sys.argv[1:-2]:
     d = json.load(open(p))
     ok = ok and "mcacp" in d.get("mcpServers", {})
+# opencode keeps MCP servers under "mcp" (local-server shape), not mcpServers.
+oc = json.load(open(sys.argv[-2]))
+ok = ok and oc.get("mcp", {}).get("mcacp", {}).get("type") == "local"
 mc = json.load(open(sys.argv[-1]))
 tau = mc.get("agent_servers", {}).get("tau", {})
 sys.exit(0 if ok and tau.get("args") == ["acp", "serve"] else 1)' \
-    "$ex/claude-desktop.json" "$ex/windsurf.json" "$ex/gemini.json" "$ex/mcacp.json" 2>/dev/null
-  ok "claude-desktop/windsurf/gemini + mcacp.json wire the bridge to tau" "$?" 0
+    "$ex/claude-desktop.json" "$ex/windsurf.json" "$ex/gemini.json" \
+    "$ex/opencode.json" "$ex/mcacp.json" 2>/dev/null
+  ok "claude-desktop/windsurf/gemini/opencode + mcacp.json wire the bridge to tau" "$?" 0
 }
 
 # Group: per-client setup guides drift check — docs/clients/*.md embed
@@ -3606,6 +3616,11 @@ test_group_golden_onboarding() {
     _golden_fresh_home
     golden_check_n ob-setup-client-emacs 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client emacs
     golden_file    ob-setup-emacs.el  "$_GOLDEN_HOME/.config/tau/snippets/emacs.el"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-opencode 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client opencode
+    golden_file    ob-setup-opencode.json "$_GOLDEN_HOME/.config/opencode/opencode.json"
+    golden_file    ob-setup-opencode.mcacp "$_GOLDEN_HOME/.config/mcacp/mcacp.json"
   fi
 
   # ── tau config edit ──  (editor stubbed via TAU_EDITOR; VISUAL/EDITOR are

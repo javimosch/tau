@@ -165,5 +165,5 @@ them freely.
 - [docs/acp.md](../acp.md) — the full ACP guide and the bridge architecture.
 - [docs/editors.md](../editors.md) — every `tau setup --client` target.
 - [docs/compatibility.md](../compatibility.md) — generated client matrix.
-- [Windsurf](windsurf.md) · [Gemini CLI](gemini-cli.md) — the other
-  MCP-bridge clients.
+- [Windsurf](windsurf.md) · [Gemini CLI](gemini-cli.md) ·
+  [OpenCode](opencode.md) — the other MCP-bridge clients.
