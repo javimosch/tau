@@ -102,8 +102,10 @@ CLI flags always override the config file.
 ## Editor/desktop client configs — `clients/`
 
 Ready-to-paste settings files that wire an editor or desktop app to
-`tau acp serve` — Zed, VS Code, Cursor, JetBrains, and Claude Desktop (via an
-MCP↔ACP bridge). See [clients/README.md](clients/README.md) for the full
+`tau acp serve` — Zed, VS Code, Cursor, JetBrains, and the MCP clients
+(Windsurf, Gemini CLI, Claude Desktop, via an MCP↔ACP bridge); Emacs and
+Neovim get paste-ready snippets from `tau setup --client`. See
+[clients/README.md](clients/README.md) for the full
 guide, or let `tau setup --client` write them for you:
 
 ```bash

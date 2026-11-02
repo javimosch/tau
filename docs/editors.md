@@ -4,11 +4,12 @@
 over stdio, so ACP-compatible editors can drive tau as a coding agent. The
 fastest way to wire one up is `tau setup --client <editor>`; this guide walks
 through exactly what that command does for **Zed**, **VS Code**, **Cursor**,
-**Neovim**, and the MCP clients (**Windsurf**, **Gemini CLI**, **Claude Desktop**),
-what its output means, and how to finish or undo each step by hand.
+**JetBrains IDEs**, **Neovim**, **Emacs** (agent-shell), and the MCP clients
+(**Windsurf**, **Gemini CLI**, **Claude Desktop**), what its output means, and
+how to finish or undo each step by hand.
 
-For JetBrains IDEs, Emacs (agent-shell), Toad, socket mode, and a description of
-what the editor sees once connected, see [docs/acp.md](acp.md).
+For Toad, socket mode, and a description of what the editor sees once
+connected, see [docs/acp.md](acp.md).
 
 ## How `tau setup --client` works
 
@@ -17,7 +18,9 @@ tau setup                      # detect editors, write nothing
 tau setup --client zed         # configure one editor
 tau setup --client vscode      # (or the alias: --client code)
 tau setup --client cursor      # same acp.agents shape, Cursor's settings dir
+tau setup --client jetbrains   # writes ~/.jetbrains/acp.json
 tau setup --client nvim        # writes a paste-ready Lua snippet
+tau setup --client emacs       # writes a paste-ready elisp snippet
 tau setup --client windsurf    # MCP client — also writes mcacp.json
 tau setup --client all         # every supported client at once
 tau setup --client all --dry-run  # preview every write, change nothing
@@ -31,7 +34,7 @@ touch before letting it.
 Anything else is rejected before setup runs:
 
 ```json
-{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)","recoverable":false}}
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all)","recoverable":false}}
 ```
 
 Setup emits one NDJSON object per step. The `clients` step is the one this
@@ -41,7 +44,7 @@ guide covers:
   installed (their config directories exist) — detection alone never writes:
 
 ```json
-{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config"}
+{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config"}
 ```
 
 - **With `--client`** each requested editor gets a `clients[]` entry carrying
@@ -192,6 +195,28 @@ source — Cursor pulls the ACP Client extension from the
 [Open VSX](https://open-vsx.org/extension/formulahendry/acp-client) registry.
 The step-by-step guide is [docs/clients/cursor.md](clients/cursor.md).
 
+## JetBrains IDEs
+
+```bash
+tau setup --client jetbrains
+```
+
+JetBrains AI Assistant ships with ACP support (2025.1+, no JetBrains AI
+subscription required). Setup writes `~/.jetbrains/acp.json` — the file the
+AI Chat's **Add Custom Agent** action creates — with the `agent_servers.tau`
+entry:
+
+```json
+{"client":"jetbrains","path":"/home/you/.jetbrains/acp.json","status":"installed","command":"/abs/path/to/tau","next":"open the AI Chat tool window and pick tau in the agent selector"}
+```
+
+JetBrains entries use the same `agent_servers` shape as Zed but **without**
+the `"type": "custom"` field Zed requires, and the file may also carry an
+optional top-level `"default_mcp_settings"` object controlling MCP
+passthrough. Custom agents are not supported under WSL — use a native
+Windows or Linux/macOS install. The step-by-step guide is
+[docs/clients/jetbrains.md](clients/jetbrains.md).
+
 ## Neovim
 
 ```bash
@@ -219,6 +244,27 @@ Neovim config and restart:
   default chat adapter.
 
 The full snippet and per-plugin notes live in [docs/acp.md](acp.md).
+
+## Emacs (agent-shell)
+
+```bash
+tau setup --client emacs
+```
+
+Like Neovim, Emacs is always a `manual` outcome —
+[agent-shell](https://github.com/xenodium/agent-shell) is configured in
+elisp and splicing arbitrary init files isn't safe, so setup writes
+`~/.config/tau/snippets/emacs.el` and reports:
+
+```json
+{"client":"emacs","status":"manual","snippet_path":"/home/you/.config/tau/snippets/emacs.el","editor_detected":true,"next":"paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau"}
+```
+
+`editor_detected` tells you whether `~/.emacs.d` exists. The snippet
+registers tau via `agent-shell-make-agent-config` — paste it into your
+init file (`~/.emacs.d/init.el` or `~/.config/emacs/init.el`), restart
+Emacs, and run `M-x agent-shell` to pick tau. The step-by-step guide is
+[docs/clients/emacs.md](clients/emacs.md).
 
 ## MCP clients: Windsurf, Gemini CLI, Claude Desktop
 
@@ -269,6 +315,8 @@ Dedicated per-client guides — each with the exact file contents
 - [Zed](clients/zed.md)
 - [VS Code](clients/vscode.md)
 - [Cursor](clients/cursor.md)
+- [JetBrains](clients/jetbrains.md)
+- [Emacs](clients/emacs.md)
 - [Windsurf](clients/windsurf.md)
 - [Gemini CLI](clients/gemini-cli.md)
 - [Claude Desktop](clients/claude-desktop.md)
@@ -277,12 +325,13 @@ Dedicated per-client guides — each with the exact file contents
 
 Setup is additive and never deletes:
 
-- **Zed / VS Code / Cursor:** delete the `"tau"` entry from your settings
-  file (or the whole file if setup created a minimal one just for tau).
+- **Zed / VS Code / Cursor / JetBrains:** delete the `"tau"` entry from your
+  settings file (or the whole file if setup created a minimal one just for
+  tau).
 - **Windsurf / Gemini CLI / Claude Desktop:** delete the `"mcacp"` entry from
   the client's `mcpServers` section; delete `~/.config/mcacp/mcacp.json` when
   no other MCP client still uses it.
-- **Neovim:** remove the pasted block from your config.
+- **Neovim / Emacs:** remove the pasted block from your config.
 - Generated snippets under `~/.config/tau/snippets/` are inert leftovers —
   delete them freely.
 

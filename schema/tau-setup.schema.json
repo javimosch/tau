@@ -85,7 +85,7 @@
             "required": ["client", "status"],
             "additionalProperties": false,
             "properties": {
-              "client": { "type": "string", "enum": ["zed", "nvim", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude_desktop"] },
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop"] },
               "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"] },
               "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
               "command": { "type": "string", "description": "Absolute tau path written into the client config." },

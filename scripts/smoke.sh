@@ -1735,12 +1735,14 @@ PYEOF
   contains "no editors -> client_wiring skip row" "$doc_wire_none_out" '"name":"client_wiring","status":"skip"'
   contains "placeholder names the setup flag" "$doc_wire_none_out" 'tau setup --client'
 
-  mkdir -p "$wire_home/.config/zed" "$wire_home/.config/nvim"
+  mkdir -p "$wire_home/.config/zed" "$wire_home/.config/nvim" "$wire_home/.emacs.d"
   capture doc_wire_missing env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$wire_home" "$BIN" doctor --offline
   contains "zed detected but unwired -> warn" "$doc_wire_missing_out" '"name":"client_zed","status":"warn"'
   contains "zed warn explains the missing file" "$doc_wire_missing_out" 'no settings file'
   contains "nvim is a manual-only skip" "$doc_wire_missing_out" '"name":"client_nvim","status":"skip"'
+  contains "emacs is a manual-only skip" "$doc_wire_missing_out" '"name":"client_emacs","status":"skip"'
+  contains "emacs skip points at the elisp snippet" "$doc_wire_missing_out" 'snippets/emacs.el'
   if printf '%s' "$doc_wire_missing_out" | grep -qF '"name":"client_vscode"'; then
     ok "undetected editors emit no row" 1 0
   else
@@ -2231,6 +2233,17 @@ test_group_setup() {
   [ -f "$mock_home9/.config/tau/snippets/nvim.lua" ]; ok "nvim lua snippet written" "$?" 0
   grep -q 'acp_providers' "$mock_home9/.config/tau/snippets/nvim.lua"; ok "nvim snippet has avante block" "$?" 0
 
+  # --client emacs never writes into ~/.emacs.d — an elisp snippet is emitted.
+  local mock_home9b; mock_home9b="$(mktemp -d)"; register_temp_dir "$mock_home9b"
+  mkdir -p "$mock_home9b/.emacs.d"
+  capture s11b env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home9b" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client emacs
+  ok "setup --client emacs exits 0" "$s11b_rc" 0
+  contains "emacs step reports manual" "$s11b_out" '"step":"clients","status":"manual"'
+  contains "emacs entry reports editor_detected" "$s11b_out" '"editor_detected":true'
+  [ -f "$mock_home9b/.config/tau/snippets/emacs.el" ]; ok "emacs elisp snippet written" "$?" 0
+  grep -q 'agent-shell-make-agent-config' "$mock_home9b/.config/tau/snippets/emacs.el"; ok "emacs snippet registers the tau agent" "$?" 0
+
   # --client all covers every client.
   local mock_home10; mock_home10="$(mktemp -d)"; register_temp_dir "$mock_home10"
   capture s12 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
@@ -2238,6 +2251,7 @@ test_group_setup() {
   ok "setup --client all exits 0" "$s12_rc" 0
   contains "--client all covers zed" "$s12_out" '"client":"zed"'
   contains "--client all covers nvim" "$s12_out" '"client":"nvim"'
+  contains "--client all covers emacs" "$s12_out" '"client":"emacs"'
   contains "--client all covers vscode" "$s12_out" '"client":"vscode"'
   contains "--client all covers cursor" "$s12_out" '"client":"cursor"'
   contains "--client all covers jetbrains" "$s12_out" '"client":"jetbrains"'
@@ -2249,6 +2263,7 @@ test_group_setup() {
   [ -f "$mock_home10/.config/Cursor/User/settings.json" ]; ok "cursor settings written" "$?" 0
   grep -q '"acp.agents"' "$mock_home10/.config/Cursor/User/settings.json"; ok "cursor uses acp.agents key" "$?" 0
   [ -f "$mock_home10/.jetbrains/acp.json" ]; ok "jetbrains acp.json written" "$?" 0
+  [ -f "$mock_home10/.config/tau/snippets/emacs.el" ]; ok "emacs.el snippet written" "$?" 0
   [ -f "$mock_home10/.codeium/windsurf/mcp_config.json" ]; ok "windsurf mcp_config.json written" "$?" 0
   [ -f "$mock_home10/.gemini/settings.json" ]; ok "gemini settings.json written" "$?" 0
   [ -f "$mock_home10/.config/Claude/claude_desktop_config.json" ]; ok "claude_desktop_config.json written" "$?" 0
@@ -2342,14 +2357,14 @@ test_group_setup() {
   # Invalid env values fail like a bad flag (exit 80).
   TAU_SETUP_SHELL=tcsh "$BIN" setup --offline >/dev/null 2>&1
   ok "TAU_SETUP_SHELL=tcsh -> exit 80" "$?" 80
-  TAU_SETUP_CLIENT=emacs "$BIN" setup --offline >/dev/null 2>&1
-  ok "TAU_SETUP_CLIENT=emacs -> exit 80" "$?" 80
+  TAU_SETUP_CLIENT=vim "$BIN" setup --offline >/dev/null 2>&1
+  ok "TAU_SETUP_CLIENT=vim -> exit 80" "$?" 80
 
   # Bad arguments.
   "$BIN" setup --bogus >/dev/null 2>&1; ok "setup --bogus -> exit 80" "$?" 80
   "$BIN" setup --shell tcsh >/dev/null 2>&1; ok "setup --shell tcsh -> exit 80" "$?" 80
   "$BIN" setup --shell >/dev/null 2>&1; ok "setup --shell (missing value) -> exit 80" "$?" 80
-  "$BIN" setup --client emacs >/dev/null 2>&1; ok "setup --client emacs -> exit 80" "$?" 80
+  "$BIN" setup --client vim >/dev/null 2>&1; ok "setup --client vim -> exit 80" "$?" 80
   "$BIN" setup --client >/dev/null 2>&1; ok "setup --client (missing value) -> exit 80" "$?" 80
 
   # ── --dry-run: preview every write step, change nothing ─────────────────
@@ -3501,7 +3516,7 @@ test_group_golden_onboarding() {
 
   # ── tau setup ──
   # Arg-validation failures never reach the doctor step — pin unconditionally.
-  golden_check_n ob-setup-bad-client 80 "$BIN" setup --client emacs
+  golden_check_n ob-setup-bad-client 80 "$BIN" setup --client vim
   golden_check_n ob-setup-bad-shell  80 "$BIN" setup --shell tcsh
 
   # The doctor step embeds a report whose curl check text depends on the
@@ -3560,6 +3575,14 @@ test_group_golden_onboarding() {
     _golden_fresh_home
     golden_check_n ob-setup-client-nvim 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client nvim
     golden_file    ob-setup-nvim.lua  "$_GOLDEN_HOME/.config/tau/snippets/nvim.lua"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-jetbrains 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client jetbrains
+    golden_file    ob-setup-jetbrains.json "$_GOLDEN_HOME/.jetbrains/acp.json"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-emacs 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client emacs
+    golden_file    ob-setup-emacs.el  "$_GOLDEN_HOME/.config/tau/snippets/emacs.el"
   fi
 
   # ── tau config edit ──  (editor stubbed via TAU_EDITOR; VISUAL/EDITOR are

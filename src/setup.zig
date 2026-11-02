@@ -424,16 +424,17 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 // --- Step 3: editor ACP clients --------------------------------------------
 
 /// Editor clients setup can configure to spawn `tau acp serve`.
-pub const ClientKind = enum { zed, nvim, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop };
+pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop };
 
 /// Every ClientKind, in the order `--client all` expands and detection
 /// iterates: direct ACP clients first, then the MCP-bridge clients.
-pub const all_clients = [_]ClientKind{ .zed, .nvim, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop };
+pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop };
 
 pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
         .zed => "zed",
         .nvim => "nvim",
+        .emacs => "emacs",
         .vscode => "vscode",
         .cursor => "cursor",
         .jetbrains => "jetbrains",
@@ -448,6 +449,7 @@ pub fn clientName(k: ClientKind) []const u8 {
 pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "zed")) return .zed;
     if (std.mem.eql(u8, name, "nvim")) return .nvim;
+    if (std.mem.eql(u8, name, "emacs")) return .emacs;
     if (std.mem.eql(u8, name, "vscode") or std.mem.eql(u8, name, "code")) return .vscode;
     if (std.mem.eql(u8, name, "cursor")) return .cursor;
     if (std.mem.eql(u8, name, "jetbrains")) return .jetbrains;
@@ -475,7 +477,8 @@ fn clientEntryName(k: ClientKind) []const u8 {
 }
 
 /// The JSON/JSONC settings file that carries the client config, or null for
-/// nvim (its ACP plugins are configured in Lua — see renderNvimSnippet).
+/// the snippet-only clients — nvim's ACP plugins are configured in Lua (see
+/// renderNvimSnippet) and Emacs agent-shell in elisp (renderEmacsSnippet).
 /// Linux paths; docs/acp.md lists equivalents for other platforms.
 pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) !?[]u8 {
     return switch (k) {
@@ -486,7 +489,7 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
         .windsurf => try std.fmt.allocPrint(arena, "{s}/.codeium/windsurf/mcp_config.json", .{home}),
         .gemini => try std.fmt.allocPrint(arena, "{s}/.gemini/settings.json", .{home}),
         .claude_desktop => try std.fmt.allocPrint(arena, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
-        .nvim => null,
+        .nvim, .emacs => null,
     };
 }
 
@@ -502,6 +505,9 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
         .gemini => std.fmt.allocPrint(arena, "{s}/.gemini", .{home}),
         .claude_desktop => std.fmt.allocPrint(arena, "{s}/.config/Claude", .{home}),
         .nvim => std.fmt.allocPrint(arena, "{s}/.config/nvim", .{home}),
+        // The classic init dir — ~/.config/emacs (XDG) also exists but
+        // ~/.emacs.d is what an agent-shell user almost always has.
+        .emacs => std.fmt.allocPrint(arena, "{s}/.emacs.d", .{home}),
     };
 }
 
@@ -513,7 +519,7 @@ fn clientSectionKey(k: ClientKind) []const u8 {
         .zed, .jetbrains => "agent_servers",
         .vscode, .cursor => "acp.agents",
         .windsurf, .gemini, .claude_desktop => "mcpServers",
-        .nvim => unreachable,
+        .nvim, .emacs => unreachable,
     };
 }
 
@@ -529,6 +535,7 @@ fn clientNextStep(k: ClientKind) []const u8 {
         .gemini => "install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools",
         .claude_desktop => "install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server",
         .nvim => "pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)",
+        .emacs => "paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau",
     };
 }
 
@@ -541,7 +548,11 @@ pub fn mcacpConfigPath(arena: std.mem.Allocator, home: []const u8) ![]u8 {
 /// Where a paste-ready snippet goes when setup can't (or must not) edit the
 /// real settings file: ~/.config/tau/snippets/.
 fn snippetPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 {
-    const ext: []const u8 = if (k == .nvim) "lua" else "jsonc";
+    const ext: []const u8 = switch (k) {
+        .nvim => "lua",
+        .emacs => "el",
+        else => "jsonc",
+    };
     return std.fmt.allocPrint(arena, "{s}/.config/tau/snippets/{s}.{s}", .{ home, clientName(k), ext });
 }
 
@@ -615,7 +626,7 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
             \\}}
             \\
         , .{}),
-        .nvim => unreachable,
+        .nvim, .emacs => unreachable,
     };
 }
 
@@ -758,6 +769,41 @@ fn renderNvimSnippet(arena: std.mem.Allocator, command: []const u8) ![]u8 {
     , .{ command, command });
 }
 
+/// The ready-to-paste elisp for Emacs agent-shell, written to
+/// ~/.config/tau/snippets/emacs.el. agent-shell registers custom ACP agents
+/// via agent-shell-make-agent-config; the :client-maker lambda receives the
+/// shell buffer (unused — acp-make-client needs no context) and returns an
+/// acp.el client that spawns `tau acp serve` over stdio.
+fn renderEmacsSnippet(arena: std.mem.Allocator, command: []const u8) ![]u8 {
+    return std.fmt.allocPrint(arena,
+        \\;; tau ACP agent for agent-shell — generated by `tau setup --client emacs`.
+        \\;; Paste into your Emacs init file (~/.emacs.d/init.el or
+        \\;; ~/.config/emacs/init.el) and restart Emacs.
+        \\;; Requires agent-shell and acp.el from MELPA.
+        \\;; Full guide: https://github.com/javimosch/tau/blob/master/docs/clients/emacs.md
+        \\
+        \\;; Register tau as a custom agent-shell agent.
+        \\(defun agent-shell-make-tau-config ()
+        \\  "Create a tau agent configuration for `agent-shell'."
+        \\  (agent-shell-make-agent-config
+        \\   :identifier 'tau
+        \\   :mode-line-name "tau"
+        \\   :buffer-name "tau"
+        \\   :shell-prompt "tau> "
+        \\   :shell-prompt-regexp "tau> "
+        \\   :needs-authentication nil
+        \\   :client-maker
+        \\   (lambda (_buffer)
+        \\     (acp-make-client
+        \\      :command "{s}"
+        \\      :command-params '("acp" "serve")))))
+        \\
+        \\(add-to-list 'agent-shell-agent-configs (agent-shell-make-tau-config))
+        \\;; Run M-x agent-shell and pick tau.
+        \\
+    , .{command});
+}
+
 /// Whether existing settings text carries `entry` inside the object at
 /// `section_key`. Returns null when the file can't be parsed — callers then
 /// report "manual" instead of guessing. JSONC comments are stripped first;
@@ -837,7 +883,7 @@ fn acpServeArgs(e: std.json.ObjectMap) bool {
 /// command can't be disproved offline and stays ok.
 pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind) !ClientWiring {
     if (!dirExists(io, try clientConfigDir(arena, home, k))) return .{ .state = .not_detected };
-    if (k == .nvim) return .{ .state = .manual_only };
+    if (k == .nvim or k == .emacs) return .{ .state = .manual_only };
     const path = (try clientSettingsPath(arena, home, k)).?;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
         if (err == error.FileNotFound) return .{ .state = .missing_file, .path = path };
@@ -1081,7 +1127,7 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     var list: std.ArrayList(ClientKind) = .empty;
     if (cfg.setup_client) |s| {
         if (std.mem.eql(u8, s, "all")) {
-            try list.appendSlice(arena, &.{ .zed, .nvim, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop });
+            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop });
         } else if (parseClientName(s)) |k| {
             try list.append(arena, k);
         }
@@ -1116,11 +1162,16 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         }
     }.f;
 
-    if (k == .nvim) {
-        // Neovim ACP plugins are configured in Lua — splicing arbitrary user
-        // config is unsafe, so always emit a paste-ready snippet.
+    if (k == .nvim or k == .emacs) {
+        // Snippet-only clients — Neovim ACP plugins are configured in Lua
+        // and Emacs agent-shell in elisp; splicing arbitrary user config is
+        // unsafe, so always emit a paste-ready snippet.
+        const body = if (k == .nvim)
+            try renderNvimSnippet(arena, command)
+        else
+            try renderEmacsSnippet(arena, command);
         const snip = try snippetPath(arena, home, k);
-        _ = writeIfChanged(io, arena, snip, try renderNvimSnippet(arena, command), dry) catch |err| {
+        _ = writeIfChanged(io, arena, snip, body, dry) catch |err| {
             try fail(arena, entries, snip, err);
             return .failed;
         };
@@ -1229,7 +1280,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
             }
         }
         try buf.appendSlice(arena, "],\"hint\":");
-        try js(arena, &buf, "re-run with --client zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config");
+        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all to write editor ACP config");
         try buf.appendSlice(arena, "}");
         emit(&buf);
         return true;
@@ -1469,6 +1520,7 @@ test "ensureRcBlock appends the marker once and is idempotent" {
 test "parseClientName accepts supported clients and the code alias" {
     try testing.expectEqual(ClientKind.zed, parseClientName("zed").?);
     try testing.expectEqual(ClientKind.nvim, parseClientName("nvim").?);
+    try testing.expectEqual(ClientKind.emacs, parseClientName("emacs").?);
     try testing.expectEqual(ClientKind.vscode, parseClientName("vscode").?);
     try testing.expectEqual(ClientKind.vscode, parseClientName("code").?);
     try testing.expectEqual(ClientKind.cursor, parseClientName("cursor").?);
@@ -1478,7 +1530,7 @@ test "parseClientName accepts supported clients and the code alias" {
     try testing.expectEqual(ClientKind.gemini, parseClientName("gemini-cli").?);
     try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude-desktop").?);
     try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude").?);
-    try testing.expect(parseClientName("emacs") == null);
+    try testing.expect(parseClientName("vim") == null);
     try testing.expect(parseClientName("") == null);
 }
 
@@ -1516,6 +1568,7 @@ test "clientSettingsPath matches the docs/acp.md targets (nvim has none)" {
         (try clientSettingsPath(a, "/h", .claude_desktop)).?,
     );
     try testing.expect((try clientSettingsPath(a, "/h", .nvim)) == null);
+    try testing.expect((try clientSettingsPath(a, "/h", .emacs)) == null);
 }
 
 test "resolveClients: --client picks one, 'all' expands, null is empty" {
@@ -1996,12 +2049,15 @@ test "docs/clients per-client guides mirror the client renderers" {
 
     // Guide file per client (gemini's file is named gemini-cli.md). Direct
     // ACP clients verify the two client-* slots; MCP-bridge clients verify
-    // all four.
-    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false };
+    // all four; snippet-only clients (no JSON settings file) verify just
+    // their paste-ready snippet.
+    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false, snippet_only: bool = false };
     const guides = [_]Guide{
         .{ .file = "docs/clients/zed.md", .kind = .zed, .direct = true },
         .{ .file = "docs/clients/vscode.md", .kind = .vscode, .direct = true },
         .{ .file = "docs/clients/cursor.md", .kind = .cursor, .direct = true },
+        .{ .file = "docs/clients/jetbrains.md", .kind = .jetbrains, .direct = true },
+        .{ .file = "docs/clients/emacs.md", .kind = .emacs, .snippet_only = true },
         .{ .file = "docs/clients/windsurf.md", .kind = .windsurf },
         .{ .file = "docs/clients/gemini-cli.md", .kind = .gemini },
         .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
@@ -2026,7 +2082,11 @@ test "docs/clients per-client guides mirror the client renderers" {
         }.f },
         .{ .marker = "client-snippet", .want = struct {
             fn f(al: std.mem.Allocator, k: ClientKind) ![]u8 {
-                return renderClientSnippet(al, k, "tau");
+                return switch (k) {
+                    .nvim => renderNvimSnippet(al, "tau"),
+                    .emacs => renderEmacsSnippet(al, "tau"),
+                    else => renderClientSnippet(al, k, "tau"),
+                };
             }
         }.f },
         .{ .marker = "bridge-snippet", .want = struct {
@@ -2041,6 +2101,7 @@ test "docs/clients per-client guides mirror the client renderers" {
         const doc = try std.Io.Dir.cwd().readFileAlloc(io, g.file, a, .unlimited);
         for (slots) |s| {
             if (g.direct and std.mem.startsWith(u8, s.marker, "bridge")) continue;
+            if (g.snippet_only and !std.mem.eql(u8, s.marker, "client-snippet")) continue;
             const marker = try std.fmt.allocPrint(a, "<!-- setup-verify: {s} -->", .{s.marker});
             const mpos = std.mem.indexOf(u8, doc, marker) orelse {
                 std.debug.print("{s} missing marker '{s}'\n", .{ g.file, marker });
