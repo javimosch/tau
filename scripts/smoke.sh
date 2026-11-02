@@ -72,6 +72,7 @@ ALL_TEST_GROUPS=(
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
   "release:test_group_release"
+  "verify-doc:test_group_verify_doc"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -1259,7 +1260,9 @@ test_group_release() {
     # ── smoke job drift guards ──
     contains "workflow has a smoke job" "$(cat "$wf")" "  smoke:"
     contains "smoke job needs build" "$(cat "$wf")" "needs: build"
-    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-windows, smoke-action]"
+    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-windows, smoke-action, verify-docs]"
+    contains "workflow has a verify-docs job" "$(cat "$wf")" "  verify-docs:"
+    contains "verify-docs runs the doc drift checker" "$(cat "$wf")" "check-verifying-doc.py"
     contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
     contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
     contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
@@ -1332,7 +1335,7 @@ test_group_release() {
     contains "release attests the checksum manifest subjects" "$(cat "$wf")" "subject-checksums: dist/SHA256SUMS.txt"
     contains "release publishes signature bundles" "$(cat "$wf")" "dist/*.sigstore.json"
     contains "release notes mention verification" "$(cat "$wf")" "gh attestation verify"
-    contains "release notes link the verify doc" "$(cat "$wf")" "docs/verifying-releases.md"
+    contains "release notes link the verify doc" "$(cat "$wf")" "VERIFYING.md"
 
     # ── SBOM drift guards (task #272) ──
     contains "release job checks out the repo" "$(cat "$wf")" "actions/checkout"
@@ -1680,7 +1683,7 @@ PY
   contains "installer reports asset absent from manifest" "$(cat "$inst")" "not listed in \$SUMS"
 
   # ── opt-in sigstore verification contract (task #184) ──
-  # install.sh, install.ps1, release.yml and docs/verifying-releases.md all
+  # install.sh, install.ps1, release.yml and VERIFYING.md all
   # pin the same issuer + identity regexp — drift breaks real verification.
   contains "installer documents TAU_VERIFY_SIGSTORE" "$(cat "$inst")" "TAU_VERIFY_SIGSTORE"
   contains "installer fail-closes on missing cosign" "$(cat "$inst")" "requires cosign on PATH"
@@ -1693,9 +1696,9 @@ PY
   contains "install.ps1 pins the OIDC issuer" "$(cat "$ps1")" "token.actions.githubusercontent.com"
   contains "install.ps1 pins the workflow identity" "$(cat "$ps1")" 'workflows/release\.yml@refs/tags/v'
 
-  # ── docs/verifying-releases.md (task #184) ──
-  local vdoc="$ROOT/docs/verifying-releases.md"
-  [ -f "$vdoc" ]; ok "docs/verifying-releases.md exists" "$?" 0
+  # ── VERIFYING.md (task #184) ──
+  local vdoc="$ROOT/VERIFYING.md"
+  [ -f "$vdoc" ]; ok "VERIFYING.md exists" "$?" 0
   if [ -f "$vdoc" ]; then
     contains "verify doc covers cosign verify-blob" "$(cat "$vdoc")" "cosign verify-blob"
     contains "verify doc pins the OIDC issuer" "$(cat "$vdoc")" "token.actions.githubusercontent.com"
@@ -1705,7 +1708,7 @@ PY
     contains "verify doc covers the installer opt-in" "$(cat "$vdoc")" "TAU_VERIFY_SIGSTORE"
     contains "verify doc names the bundle files" "$(cat "$vdoc")" ".sigstore.json"
   fi
-  contains "README links the verifying doc" "$(cat "$ROOT/README.md")" "verifying-releases.md"
+  contains "README links the verifying doc" "$(cat "$ROOT/README.md")" "VERIFYING.md"
 
   # ── offline end-to-end install via file:// (needs a built binary) ──
   # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
@@ -1915,6 +1918,35 @@ PY
     rm -rf "$we2e"
   else
     note "release: skipping install.ps1 e2e (pwsh or python3 unavailable)"
+  fi
+}
+
+# Group: VERIFYING.md command drift check (task #318).
+# Runs scripts/check-verifying-doc.py, which extracts every command block
+# from VERIFYING.md and cross-checks it against release.yml, install.sh,
+# install.ps1 and generate-sbom.py — plus replaying the offline-safe
+# recipes (checksum pipeline, SBOM regenerate + hash-match) on a staged
+# fixture. Fully offline; the release workflow runs the same script as a
+# publish gate (verify-docs job).
+test_group_verify_doc() {
+  local out rc
+  local checker="$ROOT/scripts/check-verifying-doc.py"
+
+  note "verify-doc: VERIFYING.md command drift check"
+
+  [ -f "$checker" ];  ok "check-verifying-doc.py exists" "$?" 0
+  [ -x "$checker" ];  ok "check-verifying-doc.py is executable" "$?" 0
+  python3 -m py_compile "$checker" 2>/dev/null
+  ok "check-verifying-doc.py compiles under python3" "$?" 0
+
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(python3 "$checker" 2>&1); rc=$?
+    ok "VERIFYING.md drift check passes" "$rc" 0
+    contains "drift check reports a pass count" "$out" " passed, "
+    contains "drift check reports zero failures" "$out" " 0 failed"
+    [ "$rc" -ne 0 ] && [ "$SMOKE_DEBUG" = "1" ] && diag "checker output: $out"
+  else
+    skip_test "verify-doc drift check" "python3 unavailable"
   fi
 }
 

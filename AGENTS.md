@@ -290,7 +290,9 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `.github/workflows/release.yml` | Tag-triggered release build + smoke + publish + Homebrew tap update | Release process changes |
 | `scripts/generate-homebrew-formula.sh` | Renders `Formula/tau.rb` from a version + `SHA256SUMS.txt` | Formula field/asset changes |
 | `scripts/gen-man-pages.py` + `man/` | Generates `tau(1)`/`tau-config(5)` from `--help`/`--help-json` + `docs/configuration.md`; checked-in output is bundled into release assets | After changing help text, flags, or config docs — regenerate with `python3 scripts/gen-man-pages.py` |
-| `scripts/generate-sbom.py` | Emits a deterministic CycloneDX 1.6 `<asset>.sbom.json` per release archive (archive hash + hashed member listing + toolchain); the release job signs, attests, and publishes them | Release asset/packaging changes — also update `docs/verifying-releases.md` |
+| `scripts/generate-sbom.py` | Emits a deterministic CycloneDX 1.6 `<asset>.sbom.json` per release archive (archive hash + hashed member listing + toolchain); the release job signs, attests, and publishes them | Release asset/packaging changes — also update `VERIFYING.md` |
+| `VERIFYING.md` | Consumer guide to verifying releases: checksum → cosign signature → SLSA attestation → SBOM | Any change to `release.yml`, `install.sh`/`install.ps1`, or `generate-sbom.py` that alters the verification surface |
+| `scripts/check-verifying-doc.py` | Extracts every command in `VERIFYING.md` and drift-checks it against the release pipeline; runs in the `verify-docs` release job and the `verify-doc` smoke group | After editing `VERIFYING.md` or the release pipeline — run it to prove the recipes still work |
 
 #### Validation Commands
 
@@ -304,6 +306,7 @@ zig build test               # Full unit test suite
 ./scripts/smoke.sh --list-groups       # List all test groups
 ./scripts/smoke.sh --bench             # Smoke + resource benchmarks
 ./scripts/benchmark-resources.sh       # Standalone resource benchmarks
+./scripts/check-verifying-doc.py       # Drift-check VERIFYING.md recipes
 ./zig-out/bin/tau --help               # Verify help text
 ./zig-out/bin/tau --help-json          # Verify JSON schema
 ```

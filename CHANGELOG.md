@@ -84,7 +84,7 @@ are backward compatible.
   `gh attestation verify <asset> --repo javimosch/tau`. `install.sh` and
   `install.ps1` can opt into signature verification via
   `TAU_VERIFY_SIGSTORE=1` (fail closed; needs cosign). See
-  `docs/verifying-releases.md` (#184)
+  `VERIFYING.md` (#184)
 - Per-artifact SBOMs: the release job generates a CycloneDX 1.6 SBOM
   (`<asset>.sbom.json` via `scripts/generate-sbom.py`, stdlib-only and
   deterministic — commit-stamped timestamp, uuid5 serial) for every release
