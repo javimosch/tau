@@ -13,8 +13,9 @@ lives, what shape the config takes, and which tau version each
 integration path needs. Step-by-step guides:
 [docs/editors.md](editors.md) and [docs/acp.md](acp.md), plus a
 dedicated per-client guide for each client with verified snippets:
-[VS Code](clients/vscode.md), [Cursor](clients/cursor.md),
-[Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+[Zed](clients/zed.md), [VS Code](clients/vscode.md),
+[Cursor](clients/cursor.md), [Windsurf](clients/windsurf.md),
+[Gemini CLI](clients/gemini-cli.md),
 [Claude Desktop](clients/claude-desktop.md).
 
 ## Supported editor clients

@@ -266,6 +266,7 @@ creates `mcacp.json` once — the later clients report
 Dedicated per-client guides — each with the exact file contents
 `tau setup --client` writes (drift-checked in CI against the real output):
 
+- [Zed](clients/zed.md)
 - [VS Code](clients/vscode.md)
 - [Cursor](clients/cursor.md)
 - [Windsurf](clients/windsurf.md)

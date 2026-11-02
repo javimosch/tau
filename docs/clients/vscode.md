@@ -109,4 +109,5 @@ a missing or stale entry with `tau doctor --fix`.
 - [docs/acp.md](../acp.md) — the full ACP guide.
 - [docs/editors.md](../editors.md) — every `tau setup --client` target.
 - [docs/compatibility.md](../compatibility.md) — generated client matrix.
+- [Zed](zed.md) — native ACP support via `agent_servers`.
 - [Cursor](cursor.md) — the same `acp.agents` shape in Cursor's settings.

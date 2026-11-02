@@ -1994,9 +1994,14 @@ test "docs/clients per-client guides mirror the client renderers" {
     const a = arena.allocator();
     const io = testing.io;
 
-    // Guide file per MCP-bridge client (gemini's file is named gemini-cli.md).
-    const Guide = struct { file: []const u8, kind: ClientKind };
+    // Guide file per client (gemini's file is named gemini-cli.md). Direct
+    // ACP clients verify the two client-* slots; MCP-bridge clients verify
+    // all four.
+    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false };
     const guides = [_]Guide{
+        .{ .file = "docs/clients/zed.md", .kind = .zed, .direct = true },
+        .{ .file = "docs/clients/vscode.md", .kind = .vscode, .direct = true },
+        .{ .file = "docs/clients/cursor.md", .kind = .cursor, .direct = true },
         .{ .file = "docs/clients/windsurf.md", .kind = .windsurf },
         .{ .file = "docs/clients/gemini-cli.md", .kind = .gemini },
         .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
@@ -2035,6 +2040,7 @@ test "docs/clients per-client guides mirror the client renderers" {
     for (guides) |g| {
         const doc = try std.Io.Dir.cwd().readFileAlloc(io, g.file, a, .unlimited);
         for (slots) |s| {
+            if (g.direct and std.mem.startsWith(u8, s.marker, "bridge")) continue;
             const marker = try std.fmt.allocPrint(a, "<!-- setup-verify: {s} -->", .{s.marker});
             const mpos = std.mem.indexOf(u8, doc, marker) orelse {
                 std.debug.print("{s} missing marker '{s}'\n", .{ g.file, marker });
