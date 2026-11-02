@@ -151,7 +151,7 @@ installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|a
 to override), can write ACP client config for your editor
 (`--client zed|nvim|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|all` — step-by-step guide in
 [docs/editors.md](docs/editors.md), all clients in [docs/acp.md](docs/acp.md),
-per-client MCP guides in [docs/clients/](docs/clients/windsurf.md)),
+per-client setup guides in [docs/clients/](docs/clients/zed.md)),
 and finishes with the `tau doctor` health report:
 
 ```bash
