@@ -179,6 +179,15 @@ jobs:
           [ "$rc" -eq 0 ] || { echo "setup --json exited $rc (want 0)"; exit 1; }
           python3 scripts/check-setup-schema.py "$tmp/setup.ndjson"
 
+      - name: Versioned schema drift check
+        # schema/v<version>/ is the generated, release-anchored copy of every
+        # stable --json output schema ($id re-anchored to the release tag,
+        # plus index.json) published as the tau-schemas.tar.gz release asset.
+        # Regenerate: python3 scripts/gen-versioned-schemas.py
+        # (the versioned-schemas smoke group pins the same invariant).
+        shell: bash
+        run: python3 scripts/gen-versioned-schemas.py --check
+
       - name: Stability contract drift check
         # docs/stability.md is hand-written policy — this proves it still
         # names every catalog exit code, every schema/ file, and only links
