@@ -102,7 +102,7 @@ added; existing fields keep their names, types, and meaning):
 | `tau upgrade [--json]` | `{"name","version","checked","status","detail",...}` report object; `changelog` entries appear when the release notes fetch succeeds; POSIX-only (exit 111 elsewhere) | [schema/tau-upgrade.schema.json](../schema/tau-upgrade.schema.json) |
 | `tau fleet` | manifests + status as pretty-printed JSON on stdout | this file |
 
-Two cross-cutting conventions are part of the contract:
+These cross-cutting conventions are part of the contract:
 
 - **`done` marker**: every NDJSON stream ends with exactly one
   `done:true` line; a missing terminal line means the stream was
@@ -110,6 +110,19 @@ Two cross-cutting conventions are part of the contract:
 - **stdout purity**: JSON/NDJSON on stdout is never colorized and never
   interleaved with diagnostics — diagnostics always go to stderr (see
   the color policy in [docs/configuration.md](configuration.md)).
+- **Versioned schemas**: the checked-in `schema/tau-*.schema.json` files
+  track the latest (master) contract. Each tagged release also ships
+  `schema/v<version>/` — a generated copy of every command-output schema
+  byte-identical to the source except its `$id`, which is re-anchored to
+  the release tag
+  (`https://raw.githubusercontent.com/javimosch/tau/v<version>/schema/v<version>/<file>`)
+  — plus an `index.json` manifest mapping each stable command to its
+  schema. The directory is published on the release as the
+  `tau-schemas.tar.gz` asset (digests in `SHA256SUMS.txt`), so
+  integrators pin the versioned `$id` while `schema/` keeps resolving to
+  latest. Regenerate after a version bump or schema edit with
+  `python3 scripts/gen-versioned-schemas.py`; the `versioned-schemas`
+  smoke group and a CI step drift-check the generated set.
 
 ### Config file keys
 
