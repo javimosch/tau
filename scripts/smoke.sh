@@ -91,6 +91,7 @@ ALL_TEST_GROUPS=(
   "golden-errors:test_group_golden_errors"
   "golden-color:test_group_golden_color"
   "golden-onboarding:test_group_golden_onboarding"
+  "golden-doctor:test_group_golden_doctor"
   "golden-help:test_group_golden_help"
   "update:test_group_update"
   "upgrade:test_group_upgrade"
@@ -1222,7 +1223,7 @@ test_group_doctor() {
   mkdir -p "$mock_config"
 
   # 1. Keyless env + no config file: api_key fails, exit 1, network checks skip.
-  capture doc_keyless env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_keyless env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline
   ok "doctor --offline keyless exit 1" "$doc_keyless_rc" 1
   if printf '%s' "$doc_keyless_out" | python3 -c 'import sys,json;json.load(sys.stdin)' 2>/dev/null; then
@@ -1241,7 +1242,7 @@ test_group_doctor() {
   contains "report has summary" "$doc_keyless_out" '"summary":{'
 
   # 2. Key via env + --provider override: local checks pass -> exit 0.
-  capture doc_openai env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_openai env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     OPENAI_API_KEY=sk-doctor-secret HOME="$mock_home" "$BIN" doctor --offline --provider openai
   ok "doctor --offline --provider openai with key exit 0" "$doc_openai_rc" 0
   contains "report ok:true" "$doc_openai_out" '"ok":true'
@@ -1254,7 +1255,7 @@ test_group_doctor() {
   fi
 
   # 3. --model provider/id shorthand resolves the provider.
-  capture doc_shorthand env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_shorthand env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline --model deepseek/deepseek-reasoner
   contains "--model provider/id shorthand resolves" "$doc_shorthand_out" 'provider=deepseek'
   contains "shorthand model reported" "$doc_shorthand_out" 'model=deepseek-reasoner'
@@ -1262,7 +1263,7 @@ test_group_doctor() {
   # 4. Malformed config.json: config_file fails with the path; the remaining
   #    checks still run (no early abort).
   printf 'this is not valid json' > "$mock_config/config.json"
-  capture doc_badcfg env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_badcfg env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline
   ok "malformed config exit 1" "$doc_badcfg_rc" 1
   contains "config_file fails" "$doc_badcfg_out" '"name":"config_file","status":"fail"'
@@ -1274,7 +1275,7 @@ test_group_doctor() {
   # 5. Config file naming an unknown provider: config_file warns and
   #    provider_resolution fails (exit 1, not the parse-error 80).
   printf '{"provider":"nope"}' > "$mock_config/config.json"
-  capture doc_badprov env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_badprov env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline
   ok "unknown config provider exit 1" "$doc_badprov_rc" 1
   contains "config_file warns on unknown provider" "$doc_badprov_out" '"name":"config_file","status":"warn"'
@@ -1283,13 +1284,13 @@ test_group_doctor() {
 
   # 6. Unknown --provider flag: also a report-level fail, not exit 80.
   rm -f "$mock_config/config.json"
-  capture doc_flagprov env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_flagprov env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline --provider nope
   ok "unknown --provider exit 1" "$doc_flagprov_rc" 1
   contains "flag provider_resolution fails" "$doc_flagprov_out" '"name":"provider_resolution","status":"fail"'
 
   # 7. --deep with no key: auth_probe still skips (nothing to probe).
-  capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_deep env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --deep
   contains "--deep keyless auth_probe skips" "$doc_deep_out" '"name":"auth_probe","status":"skip"'
 
@@ -1318,7 +1319,7 @@ test_group_doctor() {
   # 10. Warn does not fail the run: config file names an unknown provider but a
   #     valid --provider flag + key resolve everything else -> exit 0.
   printf '{"provider":"nope"}' > "$mock_config/config.json"
-  capture doc_warn env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_warn env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     OPENAI_API_KEY=sk-warn HOME="$mock_home" "$BIN" doctor --offline --provider openai
   ok "warn-only report exits 0" "$doc_warn_rc" 0
   contains "config_file warns on unknown provider" "$doc_warn_out" '"name":"config_file","status":"warn"'
@@ -1329,7 +1330,7 @@ test_group_doctor() {
   # 11. doctor --fix (non-interactive, no --yes): fixable outcomes are listed
   #     in "fixes" but skipped — nothing is written without confirmation.
   rm -rf "$mock_home/.local" "$mock_home/.config"
-  capture doc_fix_skip env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_fix_skip env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix
   contains "--fix report carries a fixes array" "$doc_fix_skip_out" '"fixes":['
   contains "scaffold fix skipped without confirmation" "$doc_fix_skip_out" '"id":"scaffold_config","check":"config_file","status":"skipped"'
@@ -1344,7 +1345,7 @@ test_group_doctor() {
   # 12. doctor --fix --yes: scaffold + completions apply, permissions tighten,
   #     and the emitted report reflects the post-fix state. TAU_API_KEY makes
   #     api_key resolvable so the whole post-fix report is ok -> exit 0.
-  capture doc_fix_yes env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+  capture doc_fix_yes env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
   ok "--fix --yes all-fixable run exits 0" "$doc_fix_yes_rc" 0
   contains "scaffold fix applied" "$doc_fix_yes_out" '"id":"scaffold_config","check":"config_file","status":"applied"'
@@ -1371,7 +1372,7 @@ test_group_doctor() {
   # 13. --fix --yes on an invalid config: moved to .bak, fresh scaffold written.
   printf 'this is not valid json' > "$mock_config/config.json"
   chmod 644 "$mock_config/config.json"
-  capture doc_fix_restore env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+  capture doc_fix_restore env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
   ok "restore run exits 0" "$doc_fix_restore_rc" 0
   contains "restore fix applied" "$doc_fix_restore_out" '"id":"restore_config","check":"config_file","status":"applied"'
@@ -1384,7 +1385,7 @@ test_group_doctor() {
   rm -f "$mock_config/config.json" "$mock_config/config.json.bak"
 
   # 14. -y/--yes implies --fix; bad --shell value is an arg error.
-  capture doc_fix_short env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_fix_short env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline -y
   contains "-y implies --fix" "$doc_fix_short_out" '"fixes":['
   "$BIN" doctor --shell tcsh >/dev/null 2>&1; ok "doctor --shell tcsh -> exit 80" "$?" 80
@@ -1397,7 +1398,7 @@ test_group_doctor() {
   printf '{"api_key":"sk-plain-doc","keys":{"openai":"sk-plain-doc2"}}' > "$mock_config/config.json"
   printf '{"agent_servers":{"tau":{"type":"custom","command":"tau","args":["acp","serve"],"env":{"TAU_API_KEY":"sk-env-doc"}}}}' > "$mock_home/.config/zed/settings.json"
   chmod 644 "$mock_home/.config/zed/settings.json"
-  capture doc_secrets env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+  capture doc_secrets env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-env HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline
   ok "plaintext secrets warn keeps exit 0" "$doc_secrets_rc" 0
   contains "plaintext_secrets warns" "$doc_secrets_out" '"name":"plaintext_secrets","status":"warn"'
@@ -1412,7 +1413,7 @@ test_group_doctor() {
   fi
   contains "client_permissions warns on loose file" "$doc_secrets_out" '"name":"client_permissions","status":"warn"'
   contains "client_permissions names the mode" "$doc_secrets_out" 'mode 644'
-  capture doc_chmod env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+  capture doc_chmod env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-env HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
   ok "chmod fix run exits 0" "$doc_chmod_rc" 0
   contains "chmod_client_files applied" "$doc_chmod_out" '"id":"chmod_client_files","check":"client_permissions","status":"applied"'
@@ -1464,7 +1465,7 @@ PYEOF
     done
 
     # a) 401 still counts as reachable; TAU_ENDPOINT drives the probe target.
-    capture doc_stub env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_stub env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
       HOME="$mock_home" "$BIN" doctor --provider openai
     ok "stub endpoint run exits 0" "$doc_stub_rc" 0
@@ -1474,7 +1475,7 @@ PYEOF
     contains "auth_probe skips without --deep" "$doc_stub_out" '"name":"auth_probe","status":"skip"'
 
     # b) --deep + 401 -> auth_probe fails with an actionable hint; exit 1.
-    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_deep env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
       HOME="$mock_home" "$BIN" doctor --provider openai --deep
     ok "deep probe 401 -> exit 1" "$doc_deep_rc" 1
@@ -1490,7 +1491,7 @@ PYEOF
 
     # c) --deep + 200 -> auth_probe ok; exit 0.
     echo 200 > "$stub_dir/code"
-    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_deep env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
       HOME="$mock_home" "$BIN" doctor --provider openai --deep
     ok "deep probe 200 -> exit 0" "$doc_deep_rc" 0
@@ -1499,7 +1500,7 @@ PYEOF
 
     # d) --deep + 429 -> warn, not fail; exit 0.
     echo 429 > "$stub_dir/code"
-    capture doc_deep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_deep env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       OPENAI_API_KEY=sk-stub TAU_ENDPOINT="http://127.0.0.1:$stub_port/v1/chat/completions" \
       HOME="$mock_home" "$BIN" doctor --provider openai --deep
     ok "deep probe 429 warn -> exit 0" "$doc_deep_rc" 0
@@ -1517,7 +1518,7 @@ PYEOF
   #     terminal {"ok":...,"summary":{...},"done":true} verdict as the last
   #     line. Exit code is unchanged (keyless -> 1).
   rm -f "$mock_config/config.json"
-  capture doc_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_json env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline --json
   ok "doctor --json keyless exit 1" "$doc_json_rc" 1
   if printf '%s\n' "$doc_json_out" | python3 -c '
@@ -1543,7 +1544,7 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   # 17. --json --fix --yes: fix events stream between the first-pass check
   #     events and the verdict; re-diagnosed checks re-emit post-fix state.
   rm -rf "$mock_home/.local" "$mock_home/.config"
-  capture doc_json_fix env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+  capture doc_json_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --json --fix --yes
   ok "doctor --json --fix --yes exits 0" "$doc_json_fix_rc" 0
   contains "fix events carry done:false payload" "$doc_json_fix_out" '"fix":{"id":"scaffold_config","check":"config_file","status":"applied"'
@@ -1559,7 +1560,7 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   #     the checks table, effective settings, and the config file verbatim
   #     (credentials masked). Exit code is unchanged (keyless -> 1).
   rm -f "$mock_config/config.json"
-  capture doc_report env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_report env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline --report
   ok "doctor --report keyless exit 1" "$doc_report_rc" 1
   contains "report has a markdown title" "$doc_report_out" '# tau doctor report'
@@ -1581,7 +1582,7 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   # 19. --report embeds the config file with credentials masked: the literal
   #     key under keys.openai never appears in the bundle.
   printf '{ "provider": "openai", "keys": { "openai": "sk-report-secret-456" } }' > "$mock_config/config.json"
-  capture doc_report_cfg env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_report_cfg env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline --report --provider openai
   ok "report with config + env-less key exits 0" "$doc_report_cfg_rc" 0
   contains "config dump is embedded" "$doc_report_cfg_out" '```jsonc'
@@ -1604,7 +1605,7 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   #     (probe_<name>_auth). Offline keeps everything skipped; the stub
   #     server exercises real pass/fail for the configured provider.
   rm -f "$mock_config/config.json"
-  capture doc_noprobe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_noprobe env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline
   contains "default run advertises --probe" "$doc_noprobe_out" '"name":"provider_probes","status":"skip"'
   contains "placeholder hint mentions --probe" "$doc_noprobe_out" 'pass --probe'
@@ -1614,7 +1615,7 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
     ok "no per-provider rows without --probe" 0 0
   fi
 
-  capture doc_probe_off env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_probe_off env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline --probe
   ok "doctor --offline --probe keyless exit 1" "$doc_probe_off_rc" 1
   contains "probe connectivity row skipped offline" "$doc_probe_off_out" '"name":"probe_openai","status":"skip"'
@@ -1629,7 +1630,7 @@ for want in ("config_file", "provider_resolution", "api_key", "curl", "endpoint_
   fi
 
   # --probe streams its per-provider rows as NDJSON check events under --json.
-  capture doc_probe_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_probe_json env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$mock_home" "$BIN" doctor --offline --probe --json
   contains "--probe rows stream as check events" "$doc_probe_json_out" '"check":{"name":"probe_openai","status":"skip"'
   contains "--probe auth rows stream too" "$doc_probe_json_out" '"check":{"name":"probe_deepseek_auth","status":"skip"'
@@ -1674,7 +1675,7 @@ PYEOF
       sleep 0.1
     done
 
-    capture doc_probe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_probe env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       OPENAI_API_KEY=sk-probe-stub TAU_ENDPOINT="http://127.0.0.1:$pstub_port/v1/chat/completions" \
       HOME="$mock_home" "$BIN" doctor --provider openai --probe
     ok "probe sweep with a rejected key exits 1" "$doc_probe_rc" 1
@@ -1692,7 +1693,7 @@ PYEOF
     fi
 
     echo 200 > "$pstub_dir/code"
-    capture doc_probe env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_probe env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       OPENAI_API_KEY=sk-probe-stub TAU_ENDPOINT="http://127.0.0.1:$pstub_port/v1/chat/completions" \
       HOME="$mock_home" "$BIN" doctor --provider openai --probe
     contains "probe auth verifies on 200" "$doc_probe_out" '"name":"probe_openai_auth","status":"ok"'
@@ -1715,14 +1716,14 @@ PYEOF
   contains "selftest placeholder hint names the flag" "$doc_noprobe_out" 'pass --selftest'
 
   if command -v curl >/dev/null 2>&1; then
-    capture doc_selftest env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_selftest env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       HOME="$mock_home" "$BIN" doctor --offline --selftest
     contains "selftest runs end-to-end under --offline" "$doc_selftest_out" '"name":"selftest","status":"ok"'
     contains "selftest reports the stub session" "$doc_selftest_out" 'loopback stub provider succeeded'
 
     # Credential-free guarantee: ambient keys + a dead ambient TAU_ENDPOINT
     # must not leak into the child — a passing row proves the scrub.
-    capture doc_selftest_iso env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_selftest_iso env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       OPENAI_API_KEY=sk-should-not-leak TAU_ENDPOINT="http://127.0.0.1:1/dead" \
       HOME="$mock_home" "$BIN" doctor --offline --selftest
     contains "selftest ignores ambient endpoint and keys" "$doc_selftest_iso_out" '"name":"selftest","status":"ok"'
@@ -1733,12 +1734,12 @@ PYEOF
     fi
 
     # --json streams the selftest row as a check event like any other check.
-    capture doc_selftest_json env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_selftest_json env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       HOME="$mock_home" "$BIN" doctor --offline --selftest --json
     contains "selftest streams as a check event" "$doc_selftest_json_out" '"check":{"name":"selftest","status":"ok"'
     contains "selftest json verdict terminates" "$doc_selftest_json_out" '"done":true'
   else
-    capture doc_selftest_nocurl env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    capture doc_selftest_nocurl env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
       HOME="$mock_home" "$BIN" doctor --offline --selftest
     contains "selftest skips without curl" "$doc_selftest_nocurl_out" '"name":"selftest","status":"skip"'
     contains "selftest skip names curl" "$doc_selftest_nocurl_out" 'curl unavailable'
@@ -1754,13 +1755,13 @@ PYEOF
   wire_home="$(mktemp -d)"
   register_temp_dir "$wire_home"
 
-  capture doc_wire_none env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_wire_none env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$wire_home" "$BIN" doctor --offline
   contains "no editors -> client_wiring skip row" "$doc_wire_none_out" '"name":"client_wiring","status":"skip"'
   contains "placeholder names the setup flag" "$doc_wire_none_out" 'tau setup --client'
 
   mkdir -p "$wire_home/.config/zed" "$wire_home/.config/nvim" "$wire_home/.emacs.d" "$wire_home/.config/opencode"
-  capture doc_wire_missing env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_wire_missing env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$wire_home" "$BIN" doctor --offline
   contains "zed detected but unwired -> warn" "$doc_wire_missing_out" '"name":"client_zed","status":"warn"'
   contains "zed warn explains the missing file" "$doc_wire_missing_out" 'no settings file'
@@ -1775,7 +1776,7 @@ PYEOF
     ok "undetected editors emit no row" 0 0
   fi
 
-  capture doc_wire_fix env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_wire_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$wire_home" "$BIN" doctor --offline --fix --yes
   contains "wire fix applied for zed" "$doc_wire_fix_out" '"id":"wire_client_zed","check":"client_zed","status":"applied"'
   contains "zed re-diagnosed ok" "$doc_wire_fix_out" '"name":"client_zed","status":"ok"'
@@ -1788,7 +1789,7 @@ PYEOF
 
   mkdir -p "$wire_home/.config/Code/User"
   printf '{"acp.agents": {"tau": {"command": "/nonexistent/tau", "args": ["acp", "serve"]}}}' > "$wire_home/.config/Code/User/settings.json"
-  capture doc_wire_stale env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_wire_stale env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$wire_home" "$BIN" doctor --offline --fix --yes
   contains "stale vscode wiring warns" "$doc_wire_stale_out" '"name":"client_vscode","status":"warn"'
   contains "stale message names the dead path" "$doc_wire_stale_out" 'wired command does not exist: /nonexistent/tau'
@@ -1803,7 +1804,7 @@ PYEOF
   # Cursor shares the vscode wiring path: detected dir, missing settings
   # file -> warn + wire_client_cursor fix writes the minimal acp.agents file.
   mkdir -p "$wire_home/.config/Cursor"
-  capture doc_wire_cursor env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+  capture doc_wire_cursor env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$wire_home" "$BIN" doctor --offline --fix --yes
   contains "cursor detected but unwired -> warn+fix" "$doc_wire_cursor_out" '"id":"wire_client_cursor","check":"client_cursor","status":"applied"'
   contains "cursor re-diagnosed ok" "$doc_wire_cursor_out" '"name":"client_cursor","status":"ok"'
@@ -1812,6 +1813,51 @@ PYEOF
   else
     ok "cursor settings file written with acp.agents" 1 0
   fi
+  # 24. Proxy/TLS diagnostics (issue #332): proxy_env validates the proxy
+  #     vars curl will see — credentials embedded in the URL are flagged and
+  #     always redacted, NO_PROXY covering the endpoint host warns, and
+  #     HTTP_PROXY-only against an HTTPS endpoint warns it is a no-op.
+  #     tls_ca verifies custom CA paths — a missing bundle file fails —
+  #     and a configured proxy without a custom CA warns (the corporate
+  #     TLS-intercept case). All rows run under --offline.
+  rm -f "$mock_config/config.json"
+  capture doc_px_creds env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HTTPS_PROXY='http://user:hunter2pw@proxy.local:3128' HOME="$mock_home" SHELL=/bin/bash \
+    "$BIN" doctor --offline --provider openai --api-key k
+  contains "embedded proxy credentials warn" "$doc_px_creds_out" '"name":"proxy_env","status":"warn"'
+  contains "proxy row shows the redacted URL" "$doc_px_creds_out" 'http://***@proxy.local:3128'
+  lacks "proxy password never printed" "$doc_px_creds_out" 'hunter2pw'
+  contains "corp proxy without CA warns" "$doc_px_creds_out" '"name":"tls_ca","status":"warn"'
+  contains "tls hint names CURL_CA_BUNDLE" "$doc_px_creds_out" 'CURL_CA_BUNDLE'
+
+  capture doc_px_bypass env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HTTPS_PROXY='http://proxy.local:3128' NO_PROXY=api.openai.com HOME="$mock_home" SHELL=/bin/bash \
+    "$BIN" doctor --offline --provider openai --api-key k
+  contains "NO_PROXY bypass warns" "$doc_px_bypass_out" '"name":"proxy_env","status":"warn"'
+  contains "bypass names the endpoint host" "$doc_px_bypass_out" 'api.openai.com'
+  contains "bypass hint names NO_PROXY" "$doc_px_bypass_out" 'remove the host from NO_PROXY'
+
+  capture doc_px_httponly env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HTTP_PROXY='http://proxy.local:8080' HOME="$mock_home" SHELL=/bin/bash \
+    "$BIN" doctor --offline --provider openai --api-key k
+  contains "HTTP_PROXY-only warns on https endpoint" "$doc_px_httponly_out" '"name":"proxy_env","status":"warn"'
+  contains "http-only hint names HTTPS_PROXY" "$doc_px_httponly_out" 'set HTTPS_PROXY'
+
+  capture doc_px_badca env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    CURL_CA_BUNDLE="$mock_home/missing-ca.pem" HOME="$mock_home" SHELL=/bin/bash \
+    "$BIN" doctor --offline --provider openai --api-key k
+  ok "missing CA bundle exits 1" "$doc_px_badca_rc" 1
+  contains "tls_ca fails on missing file" "$doc_px_badca_out" '"name":"tls_ca","status":"fail"'
+  contains "CA failure names the var" "$doc_px_badca_out" 'CURL_CA_BUNDLE'
+  contains "CA failure is actionable" "$doc_px_badca_out" 'unset it to use the system store'
+
+  printf -- '-----BEGIN CERTIFICATE-----\n' > "$mock_home/ca.pem"
+  capture doc_px_goodca env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    CURL_CA_BUNDLE="$mock_home/ca.pem" HOME="$mock_home" SHELL=/bin/bash \
+    "$BIN" doctor --offline --provider openai --api-key k
+  contains "valid CA bundle reports ok" "$doc_px_goodca_out" '"name":"tls_ca","status":"ok"'
+  contains "CA row names the var" "$doc_px_goodca_out" 'custom CA bundle via CURL_CA_BUNDLE'
+  rm -f "$mock_home/ca.pem"
 }
 
 # Group: tau bug — pre-filled GitHub issue carrying the redacted doctor bundle
@@ -3151,6 +3197,9 @@ _golden_env() {
       -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
       -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
       -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u TAU_CHANGELOG_URL \
+      -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
+      -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy \
+      -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR \
       -u BROWSER \
       HOME="$_GOLDEN_HOME" "$@"
 }
@@ -3675,6 +3724,30 @@ test_group_golden_onboarding() {
   golden_check_n ob-config-show-badjson 0 "$BIN" config show
   # Leave a clean HOME behind — later golden groups share _GOLDEN_HOME and a
   # malformed config would leak a warn envelope into their stderr snapshots.
+  _golden_fresh_home
+}
+
+# Group: golden doctor proxy/TLS diagnostics (issue #332) — byte-locks the
+# full --offline report for each proxy/CA scenario so the messages and
+# remediation hints can't silently drift. Every case runs under the
+# scrubbed _golden_env (all *_{proxy,PROXY} and CA vars unset) with SHELL
+# pinned so the report is deterministic; scenarios then set exactly the
+# vars under test. Regenerate after an intentional contract change:
+#   GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-doctor
+test_group_golden_doctor() {
+  GOLDEN_DIR="$ROOT/tests/golden"
+  _GOLDEN_BIN="$(realpath "$BIN" 2>/dev/null || printf '%s' "$BIN")"
+
+  _golden_fresh_home
+  golden_check_n doc-proxy-none      0 env SHELL=/bin/bash "$BIN" doctor --offline --provider openai --api-key k
+  golden_check_n doc-proxy-corp      0 env SHELL=/bin/bash HTTPS_PROXY=http://proxy.corp:3128 "$BIN" doctor --offline --provider openai --api-key k
+  golden_check_n doc-proxy-creds     0 env SHELL=/bin/bash HTTPS_PROXY=http://user:hunter2@proxy.corp:3128 "$BIN" doctor --offline --provider openai --api-key k
+  golden_check_n doc-proxy-noscheme  0 env SHELL=/bin/bash HTTPS_PROXY=proxy.corp:3128 "$BIN" doctor --offline --provider openai --api-key k
+  golden_check_n doc-proxy-http-only 0 env SHELL=/bin/bash HTTP_PROXY=http://proxy.corp:8080 "$BIN" doctor --offline --provider openai --api-key k
+  golden_check_n doc-proxy-bypass    0 env SHELL=/bin/bash HTTPS_PROXY=http://proxy.corp:3128 NO_PROXY=api.openai.com "$BIN" doctor --offline --provider openai --api-key k
+  golden_check_n doc-tls-ca-missing  1 env SHELL=/bin/bash CURL_CA_BUNDLE="$_GOLDEN_HOME/missing-ca.pem" "$BIN" doctor --offline --provider openai --api-key k
+  printf -- '-----BEGIN CERTIFICATE-----\n' > "$_GOLDEN_HOME/ca.pem"
+  golden_check_n doc-tls-ca-ok       0 env SHELL=/bin/bash CURL_CA_BUNDLE="$_GOLDEN_HOME/ca.pem" "$BIN" doctor --offline --provider openai --api-key k
   _golden_fresh_home
 }
 
