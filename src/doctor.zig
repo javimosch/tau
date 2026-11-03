@@ -924,6 +924,219 @@ fn probeStatus(code: u16) CheckStatus {
     return .warn;
 }
 
+// ---------------------------------------------------------------------------
+// proxy / corporate-CA diagnostics
+// ---------------------------------------------------------------------------
+
+/// First non-empty env value among aliases — lowercase spellings win, the
+/// same precedence curl gives them (e.g. https_proxy beats HTTPS_PROXY).
+const EnvVar = struct { name: []const u8, value: []const u8 };
+
+fn envFirst(env: *std.process.Environ.Map, names: []const []const u8) ?EnvVar {
+    for (names) |n| {
+        if (env.get(n)) |v| {
+            if (v.len > 0) return .{ .name = n, .value = v };
+        }
+    }
+    return null;
+}
+
+/// "scheme://[user[:pass]@]host[:port][/path]" -> host, or null when there
+/// is no scheme://authority or the host is empty. Bracketed IPv6 literals
+/// return without the brackets.
+fn urlHost(url: []const u8) ?[]const u8 {
+    const rest_start = (std.mem.indexOf(u8, url, "://") orelse return null) + 3;
+    const rest = url[rest_start..];
+    const authority = rest[0 .. std.mem.indexOfScalar(u8, rest, '/') orelse rest.len];
+    const hostport = if (std.mem.lastIndexOfScalar(u8, authority, '@')) |a| authority[a + 1 ..] else authority;
+    if (hostport.len > 0 and hostport[0] == '[') {
+        const end = std.mem.indexOfScalar(u8, hostport, ']') orelse return null;
+        return hostport[1..end];
+    }
+    const host = hostport[0 .. std.mem.indexOfScalar(u8, hostport, ':') orelse hostport.len];
+    if (host.len == 0) return null;
+    return host;
+}
+
+/// Does the URL carry userinfo (user[:pass]@) in its authority?
+fn urlHasCreds(url: []const u8) bool {
+    const rest_start = (std.mem.indexOf(u8, url, "://") orelse return false) + 3;
+    const rest = url[rest_start..];
+    const authority = rest[0 .. std.mem.indexOfScalar(u8, rest, '/') orelse rest.len];
+    return std.mem.indexOfScalar(u8, authority, '@') != null;
+}
+
+/// scheme://user:pass@host/path -> scheme://***@host/path. Proxy URLs can
+/// carry credentials; only the redacted form may reach a report.
+fn redactUrlUserinfo(arena: std.mem.Allocator, url: []const u8) []const u8 {
+    const rest_start = (std.mem.indexOf(u8, url, "://") orelse return url) + 3;
+    const rest = url[rest_start..];
+    const authority_end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+    const at = std.mem.lastIndexOfScalar(u8, rest[0..authority_end], '@') orelse return url;
+    return std.fmt.allocPrint(arena, "{s}***@{s}", .{ url[0..rest_start], rest[at + 1 ..] }) catch url;
+}
+
+/// Does a NO_PROXY list cover host? Comma-separated entries; "*" matches
+/// everything, a trailing :port is ignored, bracketed IPv6 loses its
+/// brackets, and entries suffix-match the host tail on a domain boundary
+/// (curl semantics: "example.com" covers "api.example.com", ".example.com"
+/// does too — but "notexample.com" does not). Case-insensitive.
+fn noProxyCovers(no_proxy: []const u8, host: []const u8) bool {
+    var it = std.mem.splitScalar(u8, no_proxy, ',');
+    while (it.next()) |raw| {
+        var entry = std.mem.trim(u8, raw, " \t");
+        if (entry.len == 0) continue;
+        if (std.mem.eql(u8, entry, "*")) return true;
+        if (std.mem.lastIndexOfScalar(u8, entry, ':')) |c| {
+            const port = entry[c + 1 ..];
+            var digits = port.len > 0;
+            for (port) |ch| {
+                if (!std.ascii.isDigit(ch)) digits = false;
+            }
+            if (digits) entry = entry[0..c];
+        }
+        if (entry.len > 1 and entry[0] == '[' and entry[entry.len - 1] == ']')
+            entry = entry[1 .. entry.len - 1];
+        if (entry.len == 0 or host.len < entry.len) continue;
+        const tail = host[host.len - entry.len ..];
+        if (!std.ascii.eqlIgnoreCase(tail, entry)) continue;
+        // Exact match, a leading-dot entry, or a '.' domain boundary before
+        // the matched tail — "notexample.com" must not match "example.com".
+        if (host.len == entry.len or entry[0] == '.' or host[host.len - entry.len - 1] == '.') return true;
+    }
+    return false;
+}
+
+/// Check: proxy environment sanity. Provider HTTP goes through a curl
+/// subprocess, which honors the standard proxy variables — this row
+/// validates what curl will see for the resolved endpoint: the effective
+/// proxy (HTTPS_PROXY else ALL_PROXY) must parse as scheme://host,
+/// credentials embedded in the URL are flagged (env vars are visible to
+/// every child process), only-HTTP_PROXY for an HTTPS endpoint is a silent
+/// no-op, and a NO_PROXY entry covering the endpoint host makes the proxy
+/// a no-op for provider traffic. Warns at most — a genuinely dead proxy is
+/// reported concretely by endpoint_reachable.
+fn checkProxyEnv(arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) Check {
+    const name = "proxy_env";
+    const https = envFirst(env, &.{ "https_proxy", "HTTPS_PROXY" });
+    const http = envFirst(env, &.{ "http_proxy", "HTTP_PROXY" });
+    const all = envFirst(env, &.{ "all_proxy", "ALL_PROXY" });
+    const nop = envFirst(env, &.{ "no_proxy", "NO_PROXY" });
+    if (https == null and http == null and all == null)
+        return .{ .name = name, .status = .ok, .message = "no proxy environment set — provider traffic goes direct" };
+
+    const eff = https orelse all;
+    const host = urlHost(cfg.endpoint);
+    if (eff) |e| {
+        if (urlHost(e.value) == null)
+            return .{
+                .name = name,
+                .status = .warn,
+                .message = std.fmt.allocPrint(arena, "{s} is set but does not look like scheme://host — curl may misparse it", .{e.name}) catch "proxy URL unparseable",
+                .hint = "use a full proxy URL, e.g. http://proxy.corp:3128",
+            };
+        if (urlHasCreds(e.value))
+            return .{
+                .name = name,
+                .status = .warn,
+                .message = std.fmt.allocPrint(arena, "{s} proxies via {s} but embeds credentials in the URL", .{ e.name, redactUrlUserinfo(arena, e.value) }) catch "proxy URL embeds credentials",
+                .hint = "credentials in env vars leak to child processes — prefer a credential-free URL and let curl read auth from ~/.netrc or the proxy's own auth flow",
+            };
+        if (host != null and nop != null and noProxyCovers(nop.?.value, host.?))
+            return .{
+                .name = name,
+                .status = .warn,
+                .message = std.fmt.allocPrint(arena, "{s} proxies via {s} but endpoint host {s} is covered by {s} — provider traffic bypasses the proxy", .{ e.name, redactUrlUserinfo(arena, e.value), host.?, nop.?.name }) catch "endpoint bypasses proxy",
+                .hint = "remove the host from NO_PROXY to route provider traffic through the proxy",
+            };
+        return .{
+            .name = name,
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "{s}={s} applies to provider traffic", .{ e.name, redactUrlUserinfo(arena, e.value) }) catch "proxy configured",
+        };
+    }
+    // Only http_proxy set: for an https endpoint that is a silent no-op.
+    if (host != null and std.mem.startsWith(u8, cfg.endpoint, "https://"))
+        return .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "{s} is set but the endpoint is HTTPS — curl ignores it for HTTPS URLs", .{http.?.name}) catch "only HTTP_PROXY set",
+            .hint = "set HTTPS_PROXY (or ALL_PROXY) to proxy HTTPS provider traffic",
+        };
+    return .{
+        .name = name,
+        .status = .ok,
+        .message = std.fmt.allocPrint(arena, "{s} set (applies to http:// URLs only)", .{http.?.name}) catch "HTTP_PROXY set",
+    };
+}
+
+/// Check: custom CA configuration for TLS. tau shells out to curl, which
+/// honors CURL_CA_BUNDLE, then SSL_CERT_FILE for the trust store and
+/// SSL_CERT_DIR (colon-separated hash dirs, OpenSSL backends). A var
+/// pointing at a missing or wrong-kind path fails — every HTTPS request
+/// would error out. A configured proxy with no custom CA warns: the
+/// classic corporate TLS-intercepting proxy needs the org's CA bundle or
+/// requests die with "certificate verify failed".
+fn checkTlsCa(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const name = "tls_ca";
+    const file_vars = [_][]const u8{ "CURL_CA_BUNDLE", "SSL_CERT_FILE" };
+    for (file_vars) |vname| {
+        const p = env.get(vname) orelse continue;
+        if (p.len == 0) continue;
+        const st = std.Io.Dir.cwd().statFile(io, p, .{}) catch
+            return .{
+                .name = name,
+                .status = .fail,
+                .message = std.fmt.allocPrint(arena, "{s} points at {s} which does not exist — every HTTPS request will fail", .{ vname, p }) catch "CA bundle path missing",
+                .hint = "point it at your organization's CA bundle, or unset it to use the system store",
+            };
+        if (st.kind == .directory)
+            return .{
+                .name = name,
+                .status = .fail,
+                .message = std.fmt.allocPrint(arena, "{s} points at {s} which is a directory — every HTTPS request will fail", .{ vname, p }) catch "CA bundle path is a directory",
+                .hint = "point it at a PEM CA bundle file, or unset it to use the system store",
+            };
+        return .{
+            .name = name,
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "custom CA bundle via {s}: {s}", .{ vname, p }) catch "custom CA bundle",
+        };
+    }
+    if (env.get("SSL_CERT_DIR")) |d| {
+        if (d.len > 0) {
+            var it = std.mem.splitScalar(u8, d, ':');
+            while (it.next()) |dir| {
+                if (dir.len == 0) continue;
+                const st = std.Io.Dir.cwd().statFile(io, dir, .{}) catch
+                    return .{
+                        .name = name,
+                        .status = .fail,
+                        .message = std.fmt.allocPrint(arena, "SSL_CERT_DIR entry {s} does not exist", .{dir}) catch "SSL_CERT_DIR entry missing",
+                        .hint = "point SSL_CERT_DIR at your organization's CA directory, or unset it to use the system store",
+                    };
+                if (st.kind != .directory)
+                    return .{
+                        .name = name,
+                        .status = .fail,
+                        .message = std.fmt.allocPrint(arena, "SSL_CERT_DIR entry {s} is not a directory", .{dir}) catch "SSL_CERT_DIR entry not a directory",
+                        .hint = "point SSL_CERT_DIR at your organization's CA directory, or unset it to use the system store",
+                    };
+            }
+            return .{ .name = name, .status = .ok, .message = "custom CA directory via SSL_CERT_DIR" };
+        }
+    }
+    const proxied = envFirst(env, &.{ "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY" }) != null;
+    if (proxied)
+        return .{
+            .name = name,
+            .status = .warn,
+            .message = "proxy configured without a custom CA bundle",
+            .hint = "behind a TLS-intercepting corporate proxy, curl needs your org's CA — set CURL_CA_BUNDLE to its PEM bundle or requests fail with 'certificate verify failed'",
+        };
+    return .{ .name = name, .status = .ok, .message = "system CA store" };
+}
+
 /// Check 5: endpoint reachable — any HTTP response counts (even 401/405);
 /// DNS/connect failure or timeout fails.
 fn checkEndpoint(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, curl_ok: bool) Check {
@@ -1421,6 +1634,11 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try addCheck(arena, &checks, curl_check, cfg);
+    // Proxy + CA rows: local env/filesystem diagnostics — they run under
+    // --offline too, and they explain the failures endpoint_reachable can
+    // only report as "unreachable" behind corporate networks.
+    try addCheck(arena, &checks, checkProxyEnv(arena, cfg, env), cfg);
+    try addCheck(arena, &checks, checkTlsCa(io, arena, env), cfg);
     try addCheck(arena, &checks, checkEndpoint(io, gpa, arena, cfg, curl_ok), cfg);
     try addCheck(arena, &checks, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok), cfg);
     if (cfg.doctor_probe) {
@@ -1885,6 +2103,138 @@ test "checkEndpoint/checkAuthProbe: offline and dependency gates skip" {
     const ap_nokey = checkAuthProbe(testing.io, testing.allocator, a, .{ .doctor_deep = true }, null, true);
     try testing.expectEqual(CheckStatus.skip, ap_nokey.status);
     try testing.expect(std.mem.indexOf(u8, ap_nokey.message, "no API key") != null);
+}
+
+test "urlHost: scheme/userinfo/port/IPv6, null without scheme or host" {
+    try testing.expectEqualStrings("api.openai.com", urlHost("https://api.openai.com/v1/chat").?);
+    try testing.expectEqualStrings("proxy.corp", urlHost("http://proxy.corp:3128").?);
+    try testing.expectEqualStrings("proxy.corp", urlHost("http://user:pass@proxy.corp:3128").?);
+    try testing.expectEqualStrings("::1", urlHost("http://[::1]:8080/x").?);
+    try testing.expect(urlHost("proxy.corp:3128") == null);
+    try testing.expect(urlHost("http:///x") == null);
+    try testing.expect(urlHost("notaurl") == null);
+}
+
+test "urlHasCreds + redactUrlUserinfo: only the redacted form survives" {
+    try testing.expect(!urlHasCreds("http://proxy.corp:3128"));
+    try testing.expect(urlHasCreds("http://user:pw@proxy.corp:3128"));
+    try testing.expect(!urlHasCreds("proxy.corp"));
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const red = redactUrlUserinfo(a, "http://user:hunter2@proxy.corp:3128/x");
+    try testing.expectEqualStrings("http://***@proxy.corp:3128/x", red);
+    try testing.expect(std.mem.indexOf(u8, red, "hunter2") == null);
+    try testing.expectEqualStrings("http://proxy.corp:3128", redactUrlUserinfo(a, "http://proxy.corp:3128"));
+}
+
+test "noProxyCovers: wildcard, exact, suffix boundary, port, case" {
+    try testing.expect(noProxyCovers("*", "api.openai.com"));
+    try testing.expect(noProxyCovers("api.openai.com", "api.openai.com"));
+    try testing.expect(noProxyCovers("API.OPENAI.COM", "api.openai.com"));
+    try testing.expect(noProxyCovers("openai.com", "api.openai.com"));
+    try testing.expect(noProxyCovers(".openai.com", "api.openai.com"));
+    try testing.expect(noProxyCovers("localhost, internal.corp", "internal.corp"));
+    try testing.expect(noProxyCovers("api.openai.com:443", "api.openai.com"));
+    try testing.expect(!noProxyCovers("openai.com", "notopenai.com"));
+    try testing.expect(!noProxyCovers("ample.com", "example.com"));
+    try testing.expect(!noProxyCovers("", "api.openai.com"));
+    try testing.expect(!noProxyCovers("api.openai.com", "openai.com"));
+}
+
+test "checkProxyEnv: unset/valid/creds/noscheme/http-only/NO_PROXY-bypass" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    const cfg: Config = .{ .endpoint = "https://api.openai.com/v1/chat/completions" };
+
+    const none = checkProxyEnv(a, cfg, &env);
+    try testing.expectEqual(CheckStatus.ok, none.status);
+    try testing.expect(std.mem.indexOf(u8, none.message, "direct") != null);
+
+    try env.put("HTTPS_PROXY", "http://proxy.corp:3128");
+    const good = checkProxyEnv(a, cfg, &env);
+    try testing.expectEqual(CheckStatus.ok, good.status);
+    try testing.expect(std.mem.indexOf(u8, good.message, "proxy.corp") != null);
+
+    _ = env.swapRemove("HTTPS_PROXY");
+    try env.put("HTTPS_PROXY", "http://user:hunter2@proxy.corp:3128");
+    const creds = checkProxyEnv(a, cfg, &env);
+    try testing.expectEqual(CheckStatus.warn, creds.status);
+    try testing.expect(std.mem.indexOf(u8, creds.message, "***@proxy.corp") != null);
+    try testing.expect(std.mem.indexOf(u8, creds.message, "hunter2") == null);
+
+    _ = env.swapRemove("HTTPS_PROXY");
+    try env.put("HTTPS_PROXY", "proxy.corp:3128");
+    const noscheme = checkProxyEnv(a, cfg, &env);
+    try testing.expectEqual(CheckStatus.warn, noscheme.status);
+    try testing.expect(std.mem.indexOf(u8, noscheme.hint.?, "http://") != null);
+
+    _ = env.swapRemove("HTTPS_PROXY");
+    try env.put("HTTP_PROXY", "http://proxy.corp:8080");
+    const http_only = checkProxyEnv(a, cfg, &env);
+    try testing.expectEqual(CheckStatus.warn, http_only.status);
+    try testing.expect(std.mem.indexOf(u8, http_only.hint.?, "HTTPS_PROXY") != null);
+
+    _ = env.swapRemove("HTTP_PROXY");
+    try env.put("HTTPS_PROXY", "http://proxy.corp:3128");
+    try env.put("NO_PROXY", "localhost,api.openai.com");
+    const bypass = checkProxyEnv(a, cfg, &env);
+    try testing.expectEqual(CheckStatus.warn, bypass.status);
+    try testing.expect(std.mem.indexOf(u8, bypass.message, "bypasses the proxy") != null);
+
+    // ALL_PROXY is the effective fallback when HTTPS_PROXY is unset; a
+    // NO_PROXY that does NOT cover the endpoint leaves the proxy ok.
+    _ = env.swapRemove("HTTPS_PROXY");
+    try env.put("ALL_PROXY", "http://proxy.corp:3128");
+    _ = env.swapRemove("NO_PROXY");
+    try env.put("NO_PROXY", "localhost");
+    const allp = checkProxyEnv(a, cfg, &env);
+    try testing.expectEqual(CheckStatus.ok, allp.status);
+}
+
+test "checkTlsCa: missing CA fails, valid bundle ok, proxy-without-CA warns" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const ca_path = try std.fmt.allocPrint(a, "{s}/corp-ca.pem", .{home.home});
+
+    try home.env.put("CURL_CA_BUNDLE", ca_path);
+    const missing = checkTlsCa(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.fail, missing.status);
+    try testing.expect(std.mem.indexOf(u8, missing.message, "does not exist") != null);
+    try testing.expect(std.mem.indexOf(u8, missing.hint.?, "unset") != null);
+
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = ca_path, .data = "-----BEGIN CERTIFICATE-----\n" });
+    const good = checkTlsCa(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, good.status);
+    try testing.expect(std.mem.indexOf(u8, good.message, "CURL_CA_BUNDLE") != null);
+    _ = home.env.swapRemove("CURL_CA_BUNDLE");
+
+    try home.env.put("SSL_CERT_DIR", home.home);
+    const certdir = checkTlsCa(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, certdir.status);
+    _ = home.env.swapRemove("SSL_CERT_DIR");
+    try home.env.put("SSL_CERT_DIR", ca_path); // file, not a dir
+    const baddir = checkTlsCa(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.fail, baddir.status);
+    try testing.expect(std.mem.indexOf(u8, baddir.message, "not a directory") != null);
+    _ = home.env.swapRemove("SSL_CERT_DIR");
+
+    try home.env.put("HTTPS_PROXY", "http://proxy.corp:3128");
+    const corp = checkTlsCa(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, corp.status);
+    try testing.expect(std.mem.indexOf(u8, corp.hint.?, "CURL_CA_BUNDLE") != null);
+    _ = home.env.swapRemove("HTTPS_PROXY");
+
+    const sys = checkTlsCa(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, sys.status);
+    try testing.expectEqualStrings("system CA store", sys.message);
 }
 
 /// A throwaway HOME under .zig-cache/tmp so checkConfigFile exercises its real

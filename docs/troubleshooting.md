@@ -151,12 +151,33 @@ network. Rows:
 | `provider_resolution` | The configured/`--provider` provider isn't registered |
 | `api_key` | No key resolves at any level of the precedence chain |
 | `curl` | `curl` is missing or `curl --version` fails — all LLM HTTP needs it |
+| `proxy_env` | A `*_proxy`/`*_PROXY` variable looks wrong for the resolved endpoint: unparseable URL, credentials embedded in the URL (always redacted in output), `HTTP_PROXY` alone for an HTTPS endpoint (silent no-op), or `NO_PROXY` covering the endpoint host (proxy bypassed). Warn only; runs under `--offline` |
+| `tls_ca` | `CURL_CA_BUNDLE`/`SSL_CERT_FILE` points at a missing or non-file path, or an `SSL_CERT_DIR` entry is missing (**fail** — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case needs `CURL_CA_BUNDLE` set to the org's PEM bundle. Runs under `--offline` |
 | `endpoint_reachable` | The provider endpoint doesn't answer (skipped under `--offline`) |
 | `auth_probe` (`--deep` only) | A one-token authenticated completion fails — the resolved key is rejected |
 | `client_permissions` | A detected client settings file (or the mcacp bridge config) grants group/other access — env blocks inside it can hold API keys (POSIX only) |
 | `update_available` | A newer release exists (warn only; opt out via `TAU_NO_UPDATE_CHECK=1`) |
 | `provider_probes` (`--probe` only) | Per-provider sweep: connectivity + credential pass/fail rows for *every* registered provider — reports key sources, never key material |
 | `selftest` (`--selftest` only) | Credential-free end-to-end run against a loopback stub provider fails — proves the installed binary works without real credentials or network |
+
+#### Behind a corporate proxy
+
+tau does no HTTP itself — every request goes through `curl`, so the standard
+`curl` environment applies verbatim:
+
+- `https_proxy`/`HTTPS_PROXY` (then `all_proxy`/`ALL_PROXY`) route HTTPS
+  provider traffic; `http_proxy` alone is a silent no-op for `https://`
+  endpoints — the `proxy_env` row warns when that happens.
+- `no_proxy`/`NO_PROXY` is a comma list of hosts/suffixes that bypass the
+  proxy; if it covers your endpoint host, `proxy_env` warns that the proxy
+  will not be used for provider traffic.
+- TLS-intercepting proxies need your organization's CA in curl's trust
+  store: set `CURL_CA_BUNDLE` (or `SSL_CERT_FILE`/`SSL_CERT_DIR`) to the
+  corporate PEM bundle. `tls_ca` warns when a proxy is configured without a
+  custom CA, and fails when a configured CA path does not exist.
+- Proxy credentials in the URL (`http://user:pass@proxy`) work but are
+  flagged — env vars leak to child processes; `proxy_env` reports them
+  redacted and suggests a credential-free URL.
 
 ### `tau doctor --fix` — automatic remediation
 
