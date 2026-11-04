@@ -165,6 +165,10 @@ and finishes with the `tau doctor` health report:
     --offline                              # unattended: devcontainers, dotfiles, CI
 ```
 
+Already running MCP servers you configured by hand? `--import` merges them
+into the wired client without overwriting anything — the full walkthrough
+is [MIGRATING.md](MIGRATING.md).
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
