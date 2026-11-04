@@ -98,7 +98,34 @@
               "bridge_path": { "type": "string", "description": "mcacp bridge config path (~/.config/mcacp/mcacp.json); MCP-bridge clients only." },
               "bridge_status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"], "description": "Outcome of the bridge-side wiring; MCP-bridge clients only." },
               "bridge_snippet_path": { "type": "string", "description": "Paste-ready bridge fragment when the existing mcacp.json could not be spliced." },
-              "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side write." }
+              "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side write." },
+              "imported": {
+                "type": "array",
+                "description": "MCP server entries merged into this client's settings file by --import, each with the client it was imported from. Always emitted for MCP-bridge clients under --import (empty when nothing was merged).",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "from"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": { "type": "string", "description": "Server entry name as written into the client's server section." },
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode"], "description": "Supported client whose settings file supplied the entry." }
+                  }
+                }
+              },
+              "import_skipped": {
+                "type": "array",
+                "description": "MCP server entries or source settings files --import could not merge, each with a reason. Entry-level skips carry \"name\"; file-level findings (unreadable/unparseable source) omit it.",
+                "items": {
+                  "type": "object",
+                  "required": ["from", "reason"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": { "type": "string", "description": "Server entry name; absent on file-level findings." },
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode"], "description": "Supported client whose settings file the entry or finding came from." },
+                    "reason": { "type": "string", "description": "Why the entry or file was not imported." }
+                  }
+                }
+              }
             }
           }
         },

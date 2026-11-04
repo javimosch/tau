@@ -2572,6 +2572,59 @@ test_group_setup() {
     HOME="$mock_home25" "$BIN" setup --remove --client zed
   ok "remove with nothing wired exits 0" "$s31_rc" 0
   contains "unwired client reports absent" "$s31_out" '"status":"absent"'
+
+  # ── --import: merge existing MCP servers into the wired client ───────
+
+  # An existing bridge-client file gets the mcacp entry plus the user's
+  # servers from the other supported clients spliced in — comments, the
+  # existing entry, and sibling settings survive byte-for-byte.
+  local mock_home26; mock_home26="$(mktemp -d)"; register_temp_dir "$mock_home26"
+  mkdir -p "$mock_home26/.codeium/windsurf" "$mock_home26/.config/Claude" "$mock_home26/.gemini"
+  printf '{\n  // keep me\n  "mcpServers": {\n    "mine": { "command": "mine", "args": ["x"] }\n  },\n  "theme": "dark"\n}\n' \
+    > "$mock_home26/.codeium/windsurf/mcp_config.json"
+  printf '{\n  "mcpServers": {\n    "fs": { "command": "npx", "args": ["-y", "fs-mcp"] },\n    "remote-svc": { "url": "https://mcp.example.com/sse" }\n  }\n}\n' \
+    > "$mock_home26/.config/Claude/claude_desktop_config.json"
+  printf '{"mcpServers": {"fs2": {"command": "uvx"}}}\n' > "$mock_home26/.gemini/settings.json"
+  capture s32 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home26" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import
+  ok "setup --import exits 0" "$s32_rc" 0
+  contains "import reports merged entries" "$s32_out" '"imported":[{"name":"fs2","from":"gemini"},{"name":"fs","from":"claude-desktop"}]'
+  contains "import reports the remote skip" "$s32_out" 'remote servers are not imported'
+  grep -q '"mcacp"' "$mock_home26/.codeium/windsurf/mcp_config.json"; ok "mcacp spliced into existing file" "$?" 0
+  grep -q '// keep me' "$mock_home26/.codeium/windsurf/mcp_config.json"; ok "comment survives the splice" "$?" 0
+  grep -q '"mine"' "$mock_home26/.codeium/windsurf/mcp_config.json"; ok "existing server survives" "$?" 0
+  grep -q '"fs2"' "$mock_home26/.codeium/windsurf/mcp_config.json"; ok "gemini server imported" "$?" 0
+  grep -q '"fs"' "$mock_home26/.codeium/windsurf/mcp_config.json"; ok "claude server imported" "$?" 0
+  grep -q '"theme": "dark"' "$mock_home26/.codeium/windsurf/mcp_config.json"; ok "sibling setting survives" "$?" 0
+  grep -q 'remote-svc' "$mock_home26/.codeium/windsurf/mcp_config.json" 2>/dev/null
+  ok "remote server was not imported" "$?" 1
+
+  # --dry-run previews the merge without writing anything.
+  local mock_home27; mock_home27="$(mktemp -d)"; register_temp_dir "$mock_home27"
+  mkdir -p "$mock_home27/.gemini"
+  printf '{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}\n' > "$mock_home27/.gemini/settings.json"
+  capture s33 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home27" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --dry-run
+  ok "setup --import --dry-run exits 0" "$s33_rc" 0
+  contains "import dry-run previews install" "$s33_out" '"status":"would_install"'
+  contains "import dry-run names the entry" "$s33_out" '"name":"fs","from":"gemini"'
+  [ ! -e "$mock_home27/.codeium" ]; ok "import dry-run wrote no client file" "$?" 0
+
+  # --import and --remove/--uninstall are mutually exclusive (exit 80).
+  "$BIN" setup --import --remove >/dev/null 2>&1; ok "setup --import --remove -> exit 80" "$?" 80
+  "$BIN" setup --uninstall --import >/dev/null 2>&1; ok "setup --uninstall --import -> exit 80" "$?" 80
+
+  # TAU_SETUP_IMPORT=1 enables the same path; non-bridge clients are a no-op.
+  local mock_home28; mock_home28="$(mktemp -d)"; register_temp_dir "$mock_home28"
+  capture s34 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home28" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_SETUP_IMPORT=1 "$BIN" setup --offline --client windsurf
+  ok "env-driven --import exits 0" "$s34_rc" 0
+  contains "env-driven import emits imported field" "$s34_out" '"imported":[]'
+  local mock_home29; mock_home29="$(mktemp -d)"; register_temp_dir "$mock_home29"
+  capture s35 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home29" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_SETUP_IMPORT=1 "$BIN" setup --offline --client zed
+  ok "--import on a direct client exits 0" "$s35_rc" 0
+  printf '%s' "$s35_out" | grep -q '"imported"'; ok "direct client entry carries no imported field" "$?" 1
 }
 
 # Group: runnable client-config examples under examples/clients/ —
@@ -3262,6 +3315,7 @@ _golden_env() {
       -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
       -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
       -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u TAU_CHANGELOG_URL \
+      -u TAU_SETUP_IMPORT \
       -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
       -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy \
       -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR \
@@ -3666,6 +3720,7 @@ test_group_golden_onboarding() {
   # Arg-validation failures never reach the doctor step — pin unconditionally.
   golden_check_n ob-setup-bad-client 80 "$BIN" setup --client vim
   golden_check_n ob-setup-bad-shell  80 "$BIN" setup --shell tcsh
+  golden_check_n ob-setup-import-remove 80 "$BIN" setup --import --remove
 
   # The doctor step embeds a report whose curl check text depends on the
   # installed curl — with curl present it normalizes to <VER>; without curl
@@ -3736,6 +3791,29 @@ test_group_golden_onboarding() {
     golden_check_n ob-setup-client-opencode 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client opencode
     golden_file    ob-setup-opencode.json "$_GOLDEN_HOME/.config/opencode/opencode.json"
     golden_file    ob-setup-opencode.mcacp "$_GOLDEN_HOME/.config/mcacp/mcacp.json"
+
+    # --import: merge the user's MCP servers into the wired bridge client —
+    # a fresh file carries mcacp plus every imported entry; the remote one
+    # is reported skipped.
+    _golden_fresh_home
+    mkdir -p "$_GOLDEN_HOME/.config/Claude" "$_GOLDEN_HOME/.gemini"
+    printf '{\n  "mcpServers": {\n    "filesystem": { "command": "npx", "args": ["-y", "fs-mcp", "/tmp"] },\n    "remote-svc": { "url": "https://mcp.example.com/sse" }\n  }\n}\n' \
+      > "$_GOLDEN_HOME/.config/Claude/claude_desktop_config.json"
+    printf '{"mcpServers": {"fs2": {"command": "uvx", "args": ["fs-mcp"]}}}\n' > "$_GOLDEN_HOME/.gemini/settings.json"
+    golden_check_n ob-setup-import    0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client windsurf --import
+    golden_file    ob-setup-import.json "$_GOLDEN_HOME/.codeium/windsurf/mcp_config.json"
+
+    # --import on an existing file splices mcacp + imported servers in —
+    # comments and the user's own entries survive byte-for-byte; --dry-run
+    # previews the merge without touching the file.
+    _golden_fresh_home
+    mkdir -p "$_GOLDEN_HOME/.codeium/windsurf" "$_GOLDEN_HOME/.gemini"
+    printf '{\n  // user comment must survive\n  "mcpServers": {\n    "mine": { "command": "mine" }\n  }\n}\n' \
+      > "$_GOLDEN_HOME/.codeium/windsurf/mcp_config.json"
+    printf '{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}\n' > "$_GOLDEN_HOME/.gemini/settings.json"
+    golden_check_n ob-setup-import-splice 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client windsurf --import
+    golden_file    ob-setup-import-splice.json "$_GOLDEN_HOME/.codeium/windsurf/mcp_config.json"
+    golden_check_n ob-setup-import-dry    0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client windsurf --import --dry-run
   fi
 
   # ── tau setup --remove/--uninstall ──
@@ -4458,6 +4536,20 @@ test_group_cli_schemas() {
     ok "cli-schemas: setup --remove stream validates" 0 0
   else
     ok "cli-schemas: setup --remove stream validates" 1 0
+  fi
+
+  # ── tau setup --import --json ──
+  # The imported/import_skipped fields land inside the clients entries.
+  local imp_home="$SMOKE_TEMP/setup-imp-home"
+  mkdir -p "$imp_home/.gemini"
+  printf '{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}\n' > "$imp_home/.gemini/settings.json"
+  out=$("${scrub[@]}" HOME="$imp_home" SHELL=/bin/bash XIAOMI_API_KEY=smoke-schema-key "$BIN" setup --json --offline --client windsurf --import); rc=$?
+  ok "cli-schemas: setup --import --json exit 0" "$rc" 0
+  contains "cli-schemas: import reports the merged entry" "$out" '"imported":[{"name":"fs","from":"gemini"}]'
+  if printf '%s' "$out" | python3 "$setup_check" - >/dev/null 2>&1; then
+    ok "cli-schemas: setup --import stream validates" 0 0
+  else
+    ok "cli-schemas: setup --import stream validates" 1 0
   fi
 }
 

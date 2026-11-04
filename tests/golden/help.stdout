@@ -73,6 +73,10 @@ Setup:
                               TAU_NONINTERACTIVE=1)
       --dry-run               Preview every write step (would_* statuses
                               + "dry_run":true); change nothing
+      --import                Merge existing MCP server entries from the
+                              other supported clients into each wired
+                              MCP client (env TAU_SETUP_IMPORT; not with
+                              --remove)
       --remove/--uninstall    Reverse per-client editor wiring (comments
                               and other settings survive byte-for-byte);
                               --client scopes the sweep, none unwires all

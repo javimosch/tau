@@ -30,6 +30,16 @@
 // outside the removal set still uses it. --client scopes the sweep; without
 // it every client is processed (removal only touches files that actually
 // carry tau wiring). --dry-run reports "would_remove" and changes nothing.
+//
+// Import mode (`--import`, env TAU_SETUP_IMPORT): opts into editing MCP-
+// bridge client settings files in place — the mcacp entry plus the user's
+// existing MCP server entries collected from the other supported clients'
+// files are spliced in (JSONC-safe: comments and sibling members survive
+// byte-for-byte, existing entries are never overwritten). Per-client
+// entries carry "imported" (merged entries, with their source client) and
+// "import_skipped" (entries or source files that couldn't be merged, with
+// reasons); --dry-run reports "would_install" and changes nothing.
+// Mutually exclusive with --remove/--uninstall.
 
 const std = @import("std");
 const term = @import("term.zig");
@@ -1207,8 +1217,11 @@ const ClientOutcome = enum { installed, already_installed, manual, failed, would
 /// them would destroy user comments). In dry-run mode every write is
 /// previewed: a fresh settings file reports "would_install", snippet
 /// outcomes stay "manual" (snippet_path names the file that would be
-/// written).
-fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, command: []const u8, dry: bool) !ClientOutcome {
+/// written). `imp` is --import: for MCP-bridge clients it opts into editing
+/// the settings file in place — the mcacp entry plus the user's servers
+/// collected from the other supported clients are spliced in, preserving
+/// comments and existing members byte-for-byte.
+fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, command: []const u8, imp: bool, dry: bool) !ClientOutcome {
     if (!first) try entries.append(arena, ',');
     try entries.appendSlice(arena, "{\"client\":");
     try js(arena, entries, clientName(k));
@@ -1254,6 +1267,15 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         cur = b;
     } else |err| {
         unreadable = err != error.FileNotFound;
+    }
+
+    if (imp and clientUsesBridge(k) and !unreadable) {
+        // --import opts into editing this file in place: the mcacp entry
+        // and the user's servers from the other supported clients are
+        // spliced in. A file that can't be scanned falls through to the
+        // manual snippet path below.
+        if (try wireBridgeClientImport(io, arena, entries, home, k, command, cur, dry)) |oc|
+            return closeClientEntry(io, arena, entries, home, k, command, dry, oc);
     }
 
     if (cur == null and !unreadable) {
@@ -1305,12 +1327,322 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
     try js(arena, entries, snip);
     try entries.appendSlice(arena, ",\"reason\":");
     try js(arena, entries, reason);
+    if (imp and clientUsesBridge(k)) try entries.appendSlice(arena, ",\"imported\":[]");
     try entries.appendSlice(arena, ",\"next\":");
     try js(arena, entries, "merge the snippet into your settings file by hand");
     return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
 }
 
-/// Configure editor ACP clients for `tau acp serve`. Without --client the
+// --- --import: carry the user's MCP servers into bridge-client files --------
+
+/// One MCP server entry found in a supported client's settings file,
+/// normalized to a stdio spawn line. `env` is re-serialized for the
+/// target's shape; `enabled` is only meaningful for OpenCode "mcp" entries.
+const ImportServer = struct {
+    name: []const u8,
+    command: []const u8,
+    args: []const []const u8 = &.{},
+    env: ?std.json.Value = null,
+    enabled: ?bool = null,
+    from: ClientKind,
+};
+
+/// One line of the per-client import report — `name` is null for
+/// file-level findings (unreadable/unparseable source settings files).
+const ImportSkip = struct { name: ?[]const u8 = null, from: ClientKind, reason: []const u8 };
+const ImportDid = struct { name: []const u8, from: ClientKind };
+
+const ImportPlan = struct {
+    /// Importable servers, deduplicated by name (first source wins).
+    servers: std.ArrayList(ImportServer) = .empty,
+    /// Entries/sources skipped, each carrying a reason.
+    skipped: std.ArrayList(ImportSkip) = .empty,
+};
+
+const Canon = union(enum) { ok: ImportServer, skip: []const u8 };
+
+/// A stdio server entry in the "mcpServers" shape (Windsurf/Gemini/Claude
+/// Desktop): "command" string + optional "args" string array + optional
+/// "env" object. Remote (URL-keyed) servers are not imported — their shape
+/// doesn't translate to a stdio spawn line.
+fn canonStdio(arena: std.mem.Allocator, name: []const u8, e: std.json.ObjectMap, from: ClientKind) !Canon {
+    if (e.get("url") != null or e.get("serverUrl") != null)
+        return .{ .skip = "remote servers are not imported" };
+    const cmd = e.get("command") orelse
+        return .{ .skip = "not a stdio server entry (no \"command\" string)" };
+    if (cmd != .string)
+        return .{ .skip = "not a stdio server entry (no \"command\" string)" };
+    var args: std.ArrayList([]const u8) = .empty;
+    if (e.get("args")) |a| {
+        if (a != .array) return .{ .skip = "\"args\" is not a string array" };
+        for (a.array.items) |it| {
+            if (it != .string) return .{ .skip = "\"args\" is not a string array" };
+            try args.append(arena, it.string);
+        }
+    }
+    var env: ?std.json.Value = null;
+    if (e.get("env")) |v| {
+        if (v == .object) env = v;
+    }
+    return .{ .ok = .{ .name = name, .command = cmd.string, .args = args.items, .env = env, .from = from } };
+}
+
+/// A server entry in OpenCode's "mcp" shape: local entries pack the whole
+/// spawn line into a "command" string array and may carry "enabled".
+/// Remote entries are skipped for the same reason as above.
+fn canonOpenCode(arena: std.mem.Allocator, name: []const u8, e: std.json.ObjectMap, from: ClientKind) !Canon {
+    if (e.get("type")) |t| {
+        if (t == .string and std.mem.eql(u8, t.string, "remote"))
+            return .{ .skip = "remote servers are not imported" };
+    }
+    const cmd = e.get("command") orelse
+        return .{ .skip = "not a local server entry (no \"command\" array)" };
+    if (cmd != .array or cmd.array.items.len == 0)
+        return .{ .skip = "not a local server entry (no \"command\" array)" };
+    var argv: std.ArrayList([]const u8) = .empty;
+    for (cmd.array.items) |it| {
+        if (it != .string) return .{ .skip = "\"command\" is not a string array" };
+        try argv.append(arena, it.string);
+    }
+    var enabled: ?bool = null;
+    if (e.get("enabled")) |v| {
+        if (v == .bool) enabled = v.bool;
+    }
+    var env: ?std.json.Value = null;
+    if (e.get("env")) |v| {
+        if (v == .object) env = v;
+    }
+    return .{ .ok = .{ .name = name, .command = argv.items[0], .args = argv.items[1..], .env = env, .enabled = enabled, .from = from } };
+}
+
+const SectionScan = union(enum) { ok: std.json.ObjectMap, none, invalid };
+
+/// The "mcpServers"/"mcp" object inside a client settings file — `.none`
+/// when the document parses but has no such member.
+fn mcpSectionObj(arena: std.mem.Allocator, bytes: []const u8, key: []const u8) SectionScan {
+    const stripped = configfile.stripComments(arena, bytes) catch return .invalid;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch return .invalid;
+    const section = switch (parsed) {
+        .object => |o| o.get(key) orelse return .none,
+        else => return .none,
+    };
+    return switch (section) {
+        .object => |o| .{ .ok = o },
+        else => .none,
+    };
+}
+
+/// Scan every MCP-bridge client except `target` for user-defined MCP server
+/// entries. Missing files are silent (that client just isn't configured);
+/// files that can't be read or parsed land in `skipped` with a file-level
+/// reason. Entries are deduplicated by name — the first source wins, in
+/// all_clients order; tau's own "mcacp" bridge entry is never imported.
+fn collectImportable(io: std.Io, arena: std.mem.Allocator, home: []const u8, target: ClientKind) !ImportPlan {
+    var plan: ImportPlan = .{};
+    var seen = std.StringHashMap(ClientKind).init(arena);
+    for (all_clients) |src| {
+        if (src == target or !clientUsesBridge(src)) continue;
+        const path = (try clientSettingsPath(arena, home, src)).?;
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
+            switch (err) {
+                error.FileNotFound => continue,
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    const msg = try std.fmt.allocPrint(arena, "could not read settings file {s}", .{path});
+                    try plan.skipped.append(arena, .{ .from = src, .reason = msg });
+                    continue;
+                },
+            }
+        };
+        const section = switch (mcpSectionObj(arena, bytes, clientSectionKey(src))) {
+            .invalid => {
+                try plan.skipped.append(arena, .{ .from = src, .reason = "settings file did not parse as JSON/JSONC" });
+                continue;
+            },
+            .none => continue,
+            .ok => |o| o,
+        };
+        var it = section.iterator();
+        while (it.next()) |e| {
+            const name = e.key_ptr.*;
+            if (std.mem.eql(u8, name, "mcacp")) continue; // tau's own bridge entry
+            if (seen.get(name)) |first| {
+                const msg = try std.fmt.allocPrint(arena, "same name already imported from {s}", .{clientName(first)});
+                try plan.skipped.append(arena, .{ .name = name, .from = src, .reason = msg });
+                continue;
+            }
+            const entry = switch (e.value_ptr.*) {
+                .object => |o| o,
+                else => {
+                    try plan.skipped.append(arena, .{ .name = name, .from = src, .reason = "entry is not an object" });
+                    continue;
+                },
+            };
+            const canon = if (src == .opencode)
+                try canonOpenCode(arena, name, entry, src)
+            else
+                try canonStdio(arena, name, entry, src);
+            switch (canon) {
+                .ok => |srv| {
+                    try seen.put(name, src);
+                    try plan.servers.append(arena, srv);
+                },
+                .skip => |r| try plan.skipped.append(arena, .{ .name = name, .from = src, .reason = r }),
+            }
+        }
+    }
+    return plan;
+}
+
+/// The "mcacp" server-entry token for `k`'s settings file — the same shape
+/// the renderClientJson templates write (OpenCode packs the spawn line
+/// into a "command" array).
+fn bridgeEntryToken(k: ClientKind) []const u8 {
+    return switch (k) {
+        .opencode => "{\"type\":\"local\",\"command\":[\"npx\",\"-y\",\"mcacp\"],\"enabled\":true}",
+        else => "{\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}",
+    };
+}
+
+/// The settings-file token for `srv` in `target`'s server-entry shape.
+fn renderImportToken(arena: std.mem.Allocator, target: ClientKind, srv: ImportServer) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    if (target == .opencode) {
+        try b.appendSlice(arena, "{\"type\":\"local\",\"command\":[");
+        try js(arena, &b, srv.command);
+        for (srv.args) |a| {
+            try b.append(arena, ',');
+            try js(arena, &b, a);
+        }
+        try b.appendSlice(arena, "],\"enabled\":");
+        try b.appendSlice(arena, if (srv.enabled orelse true) "true" else "false");
+        if (srv.env) |v| {
+            try b.appendSlice(arena, ",\"env\":");
+            try b.appendSlice(arena, try std.json.Stringify.valueAlloc(arena, v, .{}));
+        }
+        try b.append(arena, '}');
+    } else {
+        try b.appendSlice(arena, "{\"command\":");
+        try js(arena, &b, srv.command);
+        try b.appendSlice(arena, ",\"args\":[");
+        for (srv.args, 0..) |a, i| {
+            if (i > 0) try b.append(arena, ',');
+            try js(arena, &b, a);
+        }
+        try b.append(arena, ']');
+        if (srv.env) |v| {
+            try b.appendSlice(arena, ",\"env\":");
+            try b.appendSlice(arena, try std.json.Stringify.valueAlloc(arena, v, .{}));
+        }
+        try b.append(arena, '}');
+    }
+    return b.items;
+}
+
+/// Append the "imported"/"import_skipped" fields to an open client entry.
+/// `imported` is always emitted (an empty array records that --import was
+/// on and found nothing); `import_skipped` only when non-empty.
+fn appendImportReport(arena: std.mem.Allocator, entries: *std.ArrayList(u8), imported: []const ImportDid, skipped: []const ImportSkip) !void {
+    try entries.appendSlice(arena, ",\"imported\":[");
+    for (imported, 0..) |d, i| {
+        if (i > 0) try entries.append(arena, ',');
+        try entries.appendSlice(arena, "{\"name\":");
+        try js(arena, entries, d.name);
+        try entries.appendSlice(arena, ",\"from\":");
+        try js(arena, entries, clientName(d.from));
+        try entries.append(arena, '}');
+    }
+    try entries.append(arena, ']');
+    if (skipped.len == 0) return;
+    try entries.appendSlice(arena, ",\"import_skipped\":[");
+    for (skipped, 0..) |s, i| {
+        if (i > 0) try entries.append(arena, ',');
+        try entries.appendSlice(arena, "{\"from\":");
+        try js(arena, entries, clientName(s.from));
+        if (s.name) |n| {
+            try entries.appendSlice(arena, ",\"name\":");
+            try js(arena, entries, n);
+        }
+        try entries.appendSlice(arena, ",\"reason\":");
+        try js(arena, entries, s.reason);
+        try entries.append(arena, '}');
+    }
+    try entries.append(arena, ']');
+}
+
+/// The --import wiring for one MCP-bridge client: merge the mcacp entry and
+/// the user's MCP servers (collected from the other supported clients'
+/// settings files) into the client's settings file. A fresh file is
+/// rendered then merged the same way. Splices keep comments and sibling
+/// members byte-for-byte and never overwrite an entry the file already
+/// carries. Returns null when an existing file can't be scanned — the
+/// caller falls back to the manual snippet path. `cur` is the current file
+/// bytes, or null when the file is absent (the caller only invokes this
+/// for absent-or-readable files).
+fn wireBridgeClientImport(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, command: []const u8, cur: ?[]const u8, dry: bool) !?ClientOutcome {
+    var body: []const u8 = undefined;
+    var changed = false;
+    if (cur) |b| {
+        body = b;
+        switch (try configedit.insertNestedMember(arena, body, clientSectionKey(k), clientEntryName(k), bridgeEntryToken(k))) {
+            .invalid => return null,
+            .present => {},
+            .inserted => |nb| {
+                body = nb;
+                changed = true;
+            },
+        }
+    } else {
+        body = try renderClientJson(arena, k, command);
+    }
+
+    var imported: std.ArrayList(ImportDid) = .empty;
+    const plan = try collectImportable(io, arena, home, k);
+    var skipped = plan.skipped;
+    for (plan.servers.items) |srv| {
+        switch (try configedit.insertNestedMember(arena, body, clientSectionKey(k), srv.name, try renderImportToken(arena, k, srv))) {
+            .inserted => |nb| {
+                body = nb;
+                changed = true;
+                try imported.append(arena, .{ .name = srv.name, .from = srv.from });
+            },
+            .present => try skipped.append(arena, .{ .name = srv.name, .from = srv.from, .reason = "already present in the target file" }),
+            .invalid => try skipped.append(arena, .{ .name = srv.name, .from = srv.from, .reason = "settings file did not parse as JSON/JSONC" }),
+        }
+    }
+
+    const path = (try clientSettingsPath(arena, home, k)).?;
+    if (!changed) {
+        try entries.appendSlice(arena, ",\"status\":\"already_installed\"");
+        try appendImportReport(arena, entries, imported.items, skipped.items);
+        try entries.appendSlice(arena, ",\"next\":");
+        try js(arena, entries, clientNextStep(k));
+        return .already_installed;
+    }
+
+    const wrote = writeIfChanged(io, arena, path, body, dry) catch |err| {
+        try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
+        const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
+        try js(arena, entries, msg);
+        return .failed;
+    };
+    try entries.appendSlice(arena, ",\"status\":");
+    try entries.appendSlice(arena, switch (wrote) {
+        .would_write => "\"would_install\"",
+        .written => "\"installed\"",
+        .unchanged => "\"already_installed\"",
+    });
+    try appendImportReport(arena, entries, imported.items, skipped.items);
+    try entries.appendSlice(arena, ",\"command\":");
+    try js(arena, entries, command);
+    try entries.appendSlice(arena, ",\"next\":");
+    try js(arena, entries, clientNextStep(k));
+    return switch (wrote) {
+        .would_write => .would_install,
+        .written => .installed,
+        .unchanged => .already_installed,
+    };
+}
 /// step reports which supported editors appear installed and is skipped.
 /// Returns false only on IO failures — "manual" outcomes pass the verdict
 /// but carry a `next` field telling the user what to do. In dry-run mode
@@ -1356,7 +1688,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
     var all_manual = true;
     var any_would = false;
     for (clients, 0..) |k, i| {
-        const outcome = try configureClient(io, arena, &entries, i == 0, home, k, command, dry);
+        const outcome = try configureClient(io, arena, &entries, i == 0, home, k, command, cfg.setup_import, dry);
         if (outcome == .failed) ok = false;
         if (outcome != .manual) all_manual = false;
         if (outcome == .would_install) any_would = true;
@@ -2093,7 +2425,7 @@ test "configureClient installs a fresh zed settings file, then detects it" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"installed\"") != null);
 
@@ -2107,7 +2439,7 @@ test "configureClient installs a fresh zed settings file, then detects it" {
 
     // Second run: the tau entry is detected, nothing is rewritten.
     entries.clearRetainingCapacity();
-    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.already_installed, oc2);
 }
 
@@ -2122,7 +2454,7 @@ test "configureClient in dry-run previews a fresh settings file without writing"
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", true);
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.would_install, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"would_install\"") != null);
 
@@ -2132,9 +2464,9 @@ test "configureClient in dry-run previews a fresh settings file without writing"
     try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home})));
 
     // Dry-run on an already-configured client still reports already_installed.
-    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
     entries.clearRetainingCapacity();
-    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", true);
+    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.already_installed, oc2);
 }
 
@@ -2153,7 +2485,7 @@ test "configureClient dry-run keeps manual outcome and writes no snippet" {
     _ = try writeIfChanged(io, a, sp, orig, false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", true);
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
 
@@ -2179,7 +2511,7 @@ test "configureClient leaves an existing settings file alone and emits a snippet
     _ = try writeIfChanged(io, a, sp, orig, false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"manual\"") != null);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
@@ -2209,7 +2541,7 @@ test "configureClient nvim always writes a lua snippet and reports manual" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false);
+    const oc = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"editor_detected\":false") != null);
 
@@ -2334,7 +2666,7 @@ test "configureClient windsurf writes the mcp entry and the mcacp bridge config"
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false);
+    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"installed\"") != null);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_path\":") != null);
@@ -2360,7 +2692,7 @@ test "configureClient windsurf writes the mcp entry and the mcacp bridge config"
 
     // Second run is fully idempotent.
     entries.clearRetainingCapacity();
-    const oc2 = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false);
+    const oc2 = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.already_installed, oc2);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"already_installed\"") != null);
 }
@@ -2376,7 +2708,7 @@ test "configureClient bridge in dry-run previews both files without writing" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", true);
+    const oc = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.would_install, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"would_install\"") != null);
     try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/.gemini", .{home})));
@@ -2434,7 +2766,7 @@ test "opencode bridge: mcp.local entry writes and classifies" {
     const sp = try std.fmt.allocPrint(a, "{s}/opencode.json", .{odir});
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .opencode, exe, false);
+    const oc = try configureClient(io, a, &entries, true, home, .opencode, exe, false, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"installed\"") != null);
 
@@ -2608,7 +2940,7 @@ test "unwireClient deletes a setup-written file and reports absent on re-run" {
     const set = [_]ClientKind{.zed};
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     _ = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
 
@@ -2665,7 +2997,7 @@ test "unwireClient dry-run previews and changes nothing" {
     const set = [_]ClientKind{.zed};
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     const before = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
 
@@ -2692,8 +3024,8 @@ test "unwireClient bridge: shared mcacp kept while another bridge client is wire
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false);
-    _ = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", false);
+    _ = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false, false);
+    _ = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", false, false);
     const bpath = try mcacpConfigPath(a, home);
 
     // Removing only windsurf keeps the shared bridge for gemini.
@@ -2728,7 +3060,7 @@ test "unwireClient nvim reports manual and removes the setup snippet" {
     const set = [_]ClientKind{.nvim};
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false);
+    _ = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false, false);
     const snip = try snippetPath(a, home, .nvim);
     _ = try std.Io.Dir.cwd().readFileAlloc(io, snip, a, .unlimited);
 
@@ -2776,4 +3108,267 @@ test "removeFile: absent, removed, and would_remove under dry-run" {
     _ = try writeIfChanged(io, a, p, "x", false);
     try testing.expectEqual(FileRemove.would_remove, try removeFile(io, p, true));
     try testing.expectEqual(FileRemove.removed, try removeFile(io, p, false));
+}
+
+test "collectImportable gathers stdio servers, skips mcacp/remote, dedups by name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // Claude Desktop: two stdio servers + a remote one + tau's own entry.
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
+        \\{
+        \\  // comment survives the scan
+        \\  "mcpServers": {
+        \\    "filesystem": { "command": "npx", "args": ["-y", "fs-mcp"], "env": {"ROOT": "/x"} },
+        \\    "github": { "command": "docker", "args": ["run", "gh"] },
+        \\    "remote-svc": { "url": "https://mcp.example.com/sse" },
+        \\    "mcacp": { "command": "npx", "args": ["-y", "mcacp"] }
+        \\  }
+        \\}
+        \\
+    , false);
+    // Gemini: one new server + a name that collides with Claude's.
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
+        \\{"mcpServers": {"fs2": {"command": "uvx"}, "github": {"command": "other"}}}
+        \\
+    , false);
+
+    const plan = try collectImportable(io, a, home, .windsurf);
+    try testing.expectEqual(@as(usize, 3), plan.servers.items.len);
+    // Sources iterate in all_clients order: gemini before claude_desktop —
+    // gemini's "github" wins the dedup.
+    try testing.expectEqualStrings("fs2", plan.servers.items[0].name);
+    try testing.expectEqual(ClientKind.gemini, plan.servers.items[0].from);
+    try testing.expectEqual(@as(usize, 0), plan.servers.items[0].args.len);
+    try testing.expectEqualStrings("github", plan.servers.items[1].name);
+    try testing.expectEqual(ClientKind.gemini, plan.servers.items[1].from);
+    try testing.expectEqualStrings("filesystem", plan.servers.items[2].name);
+    try testing.expect(plan.servers.items[2].env != null);
+
+    // Skips: remote entry + the deduped name — and never the mcacp entry.
+    var saw_remote = false;
+    var saw_dup = false;
+    for (plan.skipped.items) |s| {
+        if (s.name) |n| {
+            if (std.mem.eql(u8, n, "remote-svc")) saw_remote = true;
+            if (std.mem.eql(u8, n, "github") and s.from == .claude_desktop) saw_dup = true;
+        }
+        try testing.expect(!std.mem.eql(u8, s.name orelse "", "mcacp"));
+    }
+    try testing.expect(saw_remote);
+    try testing.expect(saw_dup);
+}
+
+test "collectImportable unparseable source reports a file-level skip" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}), "{ not json", false);
+    const plan = try collectImportable(io, a, home, .windsurf);
+    try testing.expectEqual(@as(usize, 0), plan.servers.items.len);
+    try testing.expectEqual(@as(usize, 1), plan.skipped.items.len);
+    try testing.expect(plan.skipped.items[0].name == null);
+    try testing.expectEqual(ClientKind.gemini, plan.skipped.items[0].from);
+}
+
+test "canonOpenCode translates local entries, skips remote and bad shapes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a,
+        \\{"local": {"type":"local","command":["npx","-y","m"],"enabled":false},
+        \\ "remote": {"type":"remote","url":"https://x"},
+        \\ "bad": {"type":"local"},
+        \\ "bare": {"command":["cmd"]}}
+        \\
+    , .{});
+    const obj = parsed.object;
+
+    const ok = try canonOpenCode(a, "local", obj.get("local").?.object, .opencode);
+    try testing.expectEqualStrings("npx", ok.ok.command);
+    try testing.expectEqual(@as(usize, 2), ok.ok.args.len);
+    try testing.expectEqualStrings("-y", ok.ok.args[0]);
+    try testing.expectEqual(@as(?bool, false), ok.ok.enabled);
+
+    const rem = try canonOpenCode(a, "remote", obj.get("remote").?.object, .opencode);
+    try testing.expectEqualStrings("remote servers are not imported", rem.skip);
+
+    const bad = try canonOpenCode(a, "bad", obj.get("bad").?.object, .opencode);
+    try testing.expectEqualStrings("not a local server entry (no \"command\" array)", bad.skip);
+
+    const bare = try canonOpenCode(a, "bare", obj.get("bare").?.object, .opencode);
+    try testing.expectEqualStrings("cmd", bare.ok.command);
+    try testing.expectEqual(@as(?bool, null), bare.ok.enabled);
+}
+
+test "renderImportToken renders both server-entry shapes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const srv = ImportServer{
+        .name = "s",
+        .command = "npx",
+        .args = &.{ "-y", "m" },
+        .enabled = false,
+        .from = .gemini,
+    };
+    try testing.expectEqualStrings(
+        "{\"command\":\"npx\",\"args\":[\"-y\",\"m\"]}",
+        try renderImportToken(a, .windsurf, srv),
+    );
+    try testing.expectEqualStrings(
+        "{\"type\":\"local\",\"command\":[\"npx\",\"-y\",\"m\"],\"enabled\":false}",
+        try renderImportToken(a, .opencode, srv),
+    );
+}
+
+test "configureClient --import splices mcacp + imported servers into an existing file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // Target file: a user's windsurf config — comment + own server + a
+    // sibling setting must all survive byte-for-byte.
+    const wpath = try std.fmt.allocPrint(a, "{s}/.codeium/windsurf/mcp_config.json", .{home});
+    const before =
+        \\{
+        \\  // keep me
+        \\  "mcpServers": {
+        \\    "mine": { "command": "mine", "args": ["x"] }
+        \\  },
+        \\  "theme": "dark"
+        \\}
+        \\
+    ;
+    _ = try writeIfChanged(io, a, wpath, before, false);
+
+    // Source: claude_desktop carries a server to import.
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
+        \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}
+        \\
+    , false);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    try testing.expectEqual(ClientOutcome.installed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[{\"name\":\"fs\",\"from\":\"claude-desktop\"}]") != null);
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, wpath, a, .unlimited);
+    // User wiring preserved: the comment, the existing entry, the sibling.
+    try testing.expect(std.mem.indexOf(u8, after, "// keep me") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "\"command\": \"mine\"") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "\"theme\": \"dark\"") != null);
+    // mcacp spliced in alongside the imported server.
+    try testing.expect(std.mem.indexOf(u8, after, "\"mcacp\"") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "\"fs\"") != null);
+    // Still valid JSONC.
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .windsurf, after));
+    try testing.expectEqual(@as(?bool, true), sectionHasEntry(a, "mcpServers", "fs", after));
+}
+
+test "configureClient --import dry-run previews the merge, writes nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    const wpath = try std.fmt.allocPrint(a, "{s}/.codeium/windsurf/mcp_config.json", .{home});
+    const before = "{\"mcpServers\": {}}\n";
+    _ = try writeIfChanged(io, a, wpath, before, false);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
+        \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}
+        \\
+    , false);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, true);
+    try testing.expectEqual(ClientOutcome.would_install, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[{\"name\":\"fs\",\"from\":\"gemini\"}]") != null);
+
+    // The target file is byte-identical — the merge was only previewed.
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, wpath, a, .unlimited);
+    try testing.expectEqualStrings(before, after);
+}
+
+test "configureClient --import on an already-wired file merges only missing servers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    const wpath = try std.fmt.allocPrint(a, "{s}/.codeium/windsurf/mcp_config.json", .{home});
+    _ = try writeIfChanged(io, a, wpath,
+        \\{"mcpServers": {"mcacp": {"command": "npx", "args": ["-y", "mcacp"]}}}
+        \\
+    , false);
+    const plan_home = home;
+
+    // Nothing to import yet -> already_installed.
+    var entries: std.ArrayList(u8) = .empty;
+    const oc0 = try configureClient(io, a, &entries, true, plan_home, .windsurf, "/abs/tau", true, false);
+    try testing.expectEqual(ClientOutcome.already_installed, oc0);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[]") != null);
+
+    // A source appears -> only the new server merges.
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
+        \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}
+        \\
+    , false);
+    entries.clearRetainingCapacity();
+    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    try testing.expectEqual(ClientOutcome.installed, oc);
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, wpath, a, .unlimited);
+    try testing.expectEqual(@as(?bool, true), sectionHasEntry(a, "mcpServers", "fs", after));
+}
+
+test "configureClient --import falls back to manual on an unparseable file" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    const wpath = try std.fmt.allocPrint(a, "{s}/.codeium/windsurf/mcp_config.json", .{home});
+    const before = "{ not json\n";
+    _ = try writeIfChanged(io, a, wpath, before, false);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    try testing.expectEqual(ClientOutcome.manual, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[]") != null);
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, wpath, a, .unlimited);
+    try testing.expectEqualStrings(before, after);
 }
