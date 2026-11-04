@@ -20,12 +20,23 @@
 // write-capable step object plus the verdict carry "dry_run":true. Read-only
 // outcomes (exists/already_installed/present/manual/skipped/failed) keep
 // their normal names so a dry run reports the plan in the same vocabulary.
+//
+// Removal mode (`--remove`/`--uninstall`): cleanly reverses the clients
+// step — the init/completions/doctor steps don't run. The tau (or mcacp)
+// entry is spliced out of each client's settings file without touching
+// comments or sibling members; files left with no settings at all are
+// deleted, and setup-generated snippets under ~/.config/tau/snippets/ go
+// too. The shared mcacp bridge config is kept while another MCP client
+// outside the removal set still uses it. --client scopes the sweep; without
+// it every client is processed (removal only touches files that actually
+// carry tau wiring). --dry-run reports "would_remove" and changes nothing.
 
 const std = @import("std");
 const term = @import("term.zig");
 const json = @import("json.zig");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
+const configedit = @import("configedit.zig");
 const initmod = @import("init.zig");
 const doctor = @import("doctor.zig");
 const completions = @import("completions");
@@ -1370,6 +1381,339 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
     return ok;
 }
 
+// --- Step 3b: remove editor ACP clients (`--remove`/`--uninstall`) ----------
+
+/// What unwireClient did (or, in dry-run mode, would do) for one client.
+/// `manual` means hand-work remains (init-file wiring, an unreadable or
+/// unparseable settings file) — it passes the verdict like the install
+/// side's manual outcomes do.
+const RemoveOutcome = enum { removed, would_remove, absent, manual, failed };
+
+/// File deletion outcome for the removal path — the counterpart of
+/// writeIfChanged for `setup --remove`.
+const FileRemove = enum { removed, absent, would_remove };
+
+/// Delete `path` when it exists. In dry-run mode an existing file reports
+/// .would_remove and is left alone; a missing one is .absent.
+fn removeFile(io: std.Io, path: []const u8, dry: bool) !FileRemove {
+    const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
+        if (err == error.FileNotFound) return .absent;
+        return err;
+    };
+    if (st.kind == .directory) return error.IsDir;
+    if (dry) return .would_remove;
+    try std.Io.Dir.cwd().deleteFile(io, path);
+    return .removed;
+}
+
+/// True when `k` is in the removal set.
+fn inSet(set: []const ClientKind, k: ClientKind) bool {
+    for (set) |c| if (c == k) return true;
+    return false;
+}
+
+/// Delete the setup-generated snippet for `k` when it exists and append the
+/// snippet_path/snippet_status fields to the open client entry. Snippets
+/// under ~/.config/tau/snippets/ are tau-owned artifacts — removing them is
+/// part of the clean reversal. A failed delete is reported but never fails
+/// the client (the wiring itself is already gone).
+fn removeSnippetFields(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, dry: bool) !void {
+    const snip = try snippetPath(arena, home, k);
+    const fr = removeFile(io, snip, dry) catch |err| {
+        try entries.appendSlice(arena, ",\"snippet_path\":");
+        try js(arena, entries, snip);
+        try entries.appendSlice(arena, ",\"snippet_status\":\"failed\",\"snippet_message\":");
+        try js(arena, entries, @errorName(err));
+        return;
+    };
+    if (fr == .absent) return;
+    try entries.appendSlice(arena, ",\"snippet_path\":");
+    try js(arena, entries, snip);
+    try entries.appendSlice(arena, ",\"snippet_status\":");
+    try js(arena, entries, if (fr == .would_remove) "would_remove" else "removed");
+}
+
+/// Bridge-side detail for a removed client entry — mirrors BridgeDetail on
+/// the install path. `status` is the JSON word for bridge_status.
+const BridgeRemove = struct {
+    status: []const u8, // removed|would_remove|kept|absent|manual
+    path: []const u8,
+    reason: ?[]const u8 = null,
+    file_deleted: bool = false,
+    outcome: RemoveOutcome,
+};
+
+/// Reverse the bridge half of an MCP client's wiring: drop agent_servers.tau
+/// from ~/.config/mcacp/mcacp.json (deleting the file when it holds nothing
+/// else). The bridge is shared — when another MCP client outside the removal
+/// set still carries an "mcacp" entry the bridge is "kept" untouched. Files
+/// that can't be read or parsed report "manual" with the hand-step.
+fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool) !BridgeRemove {
+    const bpath = try mcacpConfigPath(arena, home);
+
+    var others: std.ArrayList(u8) = .empty;
+    var first = true;
+    for (all_clients) |c| {
+        if (c == k or !clientUsesBridge(c) or inSet(set, c)) continue;
+        const cpath = (try clientSettingsPath(arena, home, c)).?;
+        const b = std.Io.Dir.cwd().readFileAlloc(io, cpath, arena, .unlimited) catch continue;
+        if (hasTauEntry(arena, c, b) orelse false) {
+            if (!first) try others.appendSlice(arena, ", ");
+            first = false;
+            try others.appendSlice(arena, clientName(c));
+        }
+    }
+    if (others.items.len > 0) {
+        return .{
+            .status = "kept",
+            .path = bpath,
+            .reason = try std.fmt.allocPrint(arena, "still used by: {s}", .{others.items}),
+            .outcome = .absent,
+        };
+    }
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, bpath, arena, .unlimited) catch |err| {
+        if (err == error.FileNotFound)
+            return .{ .status = "absent", .path = bpath, .outcome = .absent };
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{
+            .status = "manual",
+            .path = bpath,
+            .reason = "could not read mcacp bridge config — remove the \"tau\" entry by hand",
+            .outcome = .manual,
+        };
+    };
+    switch (try configedit.removeNestedMember(arena, bytes, "agent_servers", "tau")) {
+        .invalid => return .{
+            .status = "manual",
+            .path = bpath,
+            .reason = "mcacp bridge config did not parse as JSON/JSONC — remove the \"tau\" entry by hand",
+            .outcome = .manual,
+        },
+        .absent => return .{ .status = "absent", .path = bpath, .outcome = .absent },
+        .empty => {
+            const fr = try removeFile(io, bpath, dry);
+            return .{
+                .status = if (fr == .would_remove) "would_remove" else "removed",
+                .path = bpath,
+                .file_deleted = true,
+                .outcome = if (fr == .would_remove) .would_remove else .removed,
+            };
+        },
+        .spliced => |body| {
+            const w = try writeIfChanged(io, arena, bpath, body, dry);
+            return .{
+                .status = if (w == .would_write) "would_remove" else "removed",
+                .path = bpath,
+                .outcome = if (w == .would_write) .would_remove else .removed,
+            };
+        },
+    }
+}
+
+/// Close a removal-mode client entry. Bridge clients append the bridge-side
+/// fields first: a "manual"/"failed" bridge outcome downgrades the client
+/// outcome (the wiring is only half undone); "kept" does not — the client's
+/// own wiring is still cleanly reversed. When the bridge entry actually went
+/// away, the mcacp paste-snippet is cleaned up too.
+fn closeRemoveEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool, oc: RemoveOutcome) !RemoveOutcome {
+    if (!clientUsesBridge(k)) {
+        try entries.append(arena, '}');
+        return oc;
+    }
+    const det = removeBridgeWiring(io, arena, home, k, set, dry) catch |err| {
+        try entries.appendSlice(arena, ",\"bridge_status\":\"failed\",\"bridge_message\":");
+        try js(arena, entries, @errorName(err));
+        try entries.append(arena, '}');
+        return .failed;
+    };
+    try entries.appendSlice(arena, ",\"bridge_path\":");
+    try js(arena, entries, det.path);
+    try entries.appendSlice(arena, ",\"bridge_status\":");
+    try js(arena, entries, det.status);
+    if (det.file_deleted) try entries.appendSlice(arena, ",\"bridge_file_deleted\":true");
+    if (det.reason) |r| {
+        try entries.appendSlice(arena, ",\"bridge_reason\":");
+        try js(arena, entries, r);
+    }
+    if (det.outcome == .removed or det.outcome == .would_remove) {
+        // The bridge entry is gone — its setup-generated paste snippet is
+        // dead weight now. Report it like the per-client snippet fields.
+        const snip = try mcacpSnippetPath(arena, home);
+        const fr = removeFile(io, snip, dry) catch null;
+        if (fr != null and fr.? != .absent) {
+            try entries.appendSlice(arena, ",\"bridge_snippet_path\":");
+            try js(arena, entries, snip);
+            try entries.appendSlice(arena, ",\"bridge_snippet_status\":");
+            try js(arena, entries, if (fr.? == .would_remove) "would_remove" else "removed");
+        }
+    }
+    try entries.append(arena, '}');
+    if (oc == .failed or det.outcome == .failed) return .failed;
+    if (oc == .manual or det.outcome == .manual) return .manual;
+    if (det.outcome == .removed or det.outcome == .would_remove) return det.outcome;
+    return oc;
+}
+
+/// Reverse one client's `tau acp serve` wiring and append its JSON entry to
+/// `entries`. The settings file is never re-rendered: the entry is spliced
+/// out on the original bytes so comments and sibling settings survive
+/// byte-for-byte; a file left holding no settings at all is deleted instead
+/// (file_deleted:true). Files that can't be read or parsed are never
+/// guessed at — they report "manual" with the hand-step. In dry-run mode
+/// every deletion/rewrite is previewed as "would_remove" and nothing
+/// changes.
+fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool) !RemoveOutcome {
+    if (!first) try entries.append(arena, ',');
+    try entries.appendSlice(arena, "{\"client\":");
+    try js(arena, entries, clientName(k));
+
+    if (k == .nvim or k == .emacs) {
+        // Init-file wiring (Lua/elisp) can't be introspected or safely
+        // spliced — clean the setup-generated snippet and hand the rest off.
+        try removeSnippetFields(io, arena, entries, home, k, dry);
+        try entries.appendSlice(arena, ",\"status\":\"manual\",\"reason\":");
+        try js(arena, entries, "init-file wiring cannot be inspected — remove the pasted tau block by hand");
+        try entries.appendSlice(arena, ",\"next\":");
+        try js(arena, entries, "delete the tau block from your editor init file and restart");
+        try entries.append(arena, '}');
+        return .manual;
+    }
+
+    const path = (try clientSettingsPath(arena, home, k)).?;
+    try entries.appendSlice(arena, ",\"path\":");
+    try js(arena, entries, path);
+
+    var oc: RemoveOutcome = .absent;
+    const bytes: ?[]const u8 = blk: {
+        const b = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
+            switch (err) {
+                error.FileNotFound => {
+                    try entries.appendSlice(arena, ",\"status\":\"absent\"");
+                    break :blk null;
+                },
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    try entries.appendSlice(arena, ",\"status\":\"manual\",\"reason\":");
+                    try js(arena, entries, "could not read the existing settings file — remove the entry by hand");
+                    oc = .manual;
+                    break :blk null;
+                },
+            }
+        };
+        break :blk b;
+    };
+
+    if (bytes) |b| {
+        blk: {
+            switch (try configedit.removeNestedMember(arena, b, clientSectionKey(k), clientEntryName(k))) {
+                .invalid => {
+                    try entries.appendSlice(arena, ",\"status\":\"manual\",\"reason\":");
+                    const msg = try std.fmt.allocPrint(arena, "settings file did not parse as JSON/JSONC — remove the \"{s}\" entry by hand", .{clientEntryName(k)});
+                    try js(arena, entries, msg);
+                    oc = .manual;
+                },
+                .absent => {
+                    try entries.appendSlice(arena, ",\"status\":\"absent\"");
+                },
+                .empty => {
+                    const fr = removeFile(io, path, dry) catch |err| {
+                        try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
+                        const msg = try std.fmt.allocPrint(arena, "could not delete {s}: {s}", .{ path, @errorName(err) });
+                        try js(arena, entries, msg);
+                        oc = .failed;
+                        break :blk;
+                    };
+                    try entries.appendSlice(arena, ",\"status\":");
+                    try entries.appendSlice(arena, if (fr == .would_remove) "\"would_remove\"" else "\"removed\"");
+                    try entries.appendSlice(arena, ",\"file_deleted\":true");
+                    oc = if (fr == .would_remove) .would_remove else .removed;
+                },
+                .spliced => |body| {
+                    const w = writeIfChanged(io, arena, path, body, dry) catch |err| {
+                        try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
+                        const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
+                        try js(arena, entries, msg);
+                        oc = .failed;
+                        break :blk;
+                    };
+                    try entries.appendSlice(arena, ",\"status\":");
+                    try entries.appendSlice(arena, switch (w) {
+                        .would_write => "\"would_remove\"",
+                        .written => "\"removed\"",
+                        .unchanged => "\"absent\"",
+                    });
+                    oc = switch (w) {
+                        .would_write => .would_remove,
+                        .written => .removed,
+                        .unchanged => .absent,
+                    };
+                },
+            }
+        }
+    }
+
+    try removeSnippetFields(io, arena, entries, home, k, dry);
+    return closeRemoveEntry(io, arena, entries, home, k, set, dry, oc);
+}
+
+/// The `setup --remove` step: reverse per-client editor wiring. --client
+/// scopes the sweep; without it every client is processed — removal only
+/// touches files that actually carry tau wiring, so the sweep is safe.
+/// Returns false only on real failures — "manual" and "absent" outcomes
+/// pass the verdict. Step status: failed | would_remove | removed | manual
+/// (nothing removed but hand-work remains) | absent (nothing was wired).
+fn stepRemoveClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+    const dry = cfg.setup_dry_run;
+    var buf: std.ArrayList(u8) = .empty;
+    const home = env.get("HOME") orelse {
+        try buf.appendSlice(arena, "{\"step\":\"remove_clients\",\"status\":\"failed\",\"message\":");
+        try js(arena, &buf, "HOME is not set — cannot locate editor config directories");
+        try buf.appendSlice(arena, "}");
+        emit(&buf);
+        return false;
+    };
+
+    var clients: []const ClientKind = try resolveClients(arena, cfg);
+    if (clients.len == 0) clients = &all_clients;
+
+    var entries: std.ArrayList(u8) = .empty;
+    try entries.append(arena, '[');
+    var ok = true;
+    var any_removed = false;
+    var any_would = false;
+    var any_manual = false;
+    for (clients, 0..) |k, i| {
+        switch (try unwireClient(io, arena, &entries, i == 0, home, k, clients, dry)) {
+            .failed => ok = false,
+            .removed => any_removed = true,
+            .would_remove => any_would = true,
+            .manual => any_manual = true,
+            .absent => {},
+        }
+    }
+    try entries.append(arena, ']');
+
+    try buf.appendSlice(arena, "{\"step\":\"remove_clients\",\"status\":");
+    if (!ok) {
+        try buf.appendSlice(arena, "\"failed\"");
+    } else if (any_would) {
+        try buf.appendSlice(arena, "\"would_remove\"");
+    } else if (any_removed) {
+        try buf.appendSlice(arena, "\"removed\"");
+    } else if (any_manual) {
+        try buf.appendSlice(arena, "\"manual\"");
+    } else {
+        try buf.appendSlice(arena, "\"absent\"");
+    }
+    try buf.appendSlice(arena, ",\"clients\":");
+    try buf.appendSlice(arena, entries.items);
+    if (dry) try buf.appendSlice(arena, ",\"dry_run\":true");
+    try buf.appendSlice(arena, "}");
+    emit(&buf);
+    return ok;
+}
+
 // --- Driver ---------------------------------------------------------------
 
 /// True when setup was explicitly declared unattended — `--yes`,
@@ -1388,23 +1732,32 @@ pub fn unattended(cfg: Config) bool {
 /// given) so scripts can confirm the contract was requested. Under
 /// --dry-run the write steps preview their changes (`would_*` statuses) and
 /// the verdict carries "dry_run":true.
+/// Removal mode (`--remove`/`--uninstall`): the stream is just the
+/// remove_clients step + verdict (which carries "remove":true) — the
+/// init/completions/doctor steps don't run.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
-    var ok = try stepInit(io, arena, cfg, env);
-    if (!try stepCompletions(io, arena, cfg, env)) ok = false;
-    if (!try stepClients(io, arena, cfg, env)) ok = false;
-
     var buf: std.ArrayList(u8) = .empty;
-    const rep = try doctor.collectReport(io, gpa, arena, cfg, env);
-    try buf.appendSlice(arena, "{\"step\":\"doctor\",\"report\":");
-    try buf.appendSlice(arena, if (isJsonObject(rep.json)) rep.json else "{}");
-    try buf.appendSlice(arena, "}");
-    emit(&buf);
-    if (!rep.ok) ok = false;
+    var ok = true;
+    if (cfg.setup_remove) {
+        ok = try stepRemoveClients(io, arena, cfg, env);
+    } else {
+        ok = try stepInit(io, arena, cfg, env);
+        if (!try stepCompletions(io, arena, cfg, env)) ok = false;
+        if (!try stepClients(io, arena, cfg, env)) ok = false;
+
+        const rep = try doctor.collectReport(io, gpa, arena, cfg, env);
+        try buf.appendSlice(arena, "{\"step\":\"doctor\",\"report\":");
+        try buf.appendSlice(arena, if (isJsonObject(rep.json)) rep.json else "{}");
+        try buf.appendSlice(arena, "}");
+        emit(&buf);
+        if (!rep.ok) ok = false;
+    }
 
     try buf.appendSlice(arena, "{\"step\":\"setup\",\"ok\":");
     try buf.appendSlice(arena, if (ok) "true" else "false");
     try buf.appendSlice(arena, ",\"version\":");
     try js(arena, &buf, version);
+    if (cfg.setup_remove) try buf.appendSlice(arena, ",\"remove\":true");
     if (unattended(cfg)) try buf.appendSlice(arena, ",\"non_interactive\":true");
     if (cfg.setup_yes) try buf.appendSlice(arena, ",\"yes\":true");
     if (cfg.setup_dry_run) try buf.appendSlice(arena, ",\"dry_run\":true");
@@ -2234,4 +2587,193 @@ test "docs/clients per-client guides mirror the client renderers" {
             }
         }
     }
+}
+
+test "inSet membership" {
+    const set = [_]ClientKind{ .zed, .gemini };
+    try testing.expect(inSet(&set, .gemini));
+    try testing.expect(!inSet(&set, .windsurf));
+    try testing.expect(!inSet(&set, .zed) == false);
+}
+
+test "unwireClient deletes a setup-written file and reports absent on re-run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const set = [_]ClientKind{.zed};
+
+    var entries: std.ArrayList(u8) = .empty;
+    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
+    _ = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+
+    entries.clearRetainingCapacity();
+    const oc = try unwireClient(io, a, &entries, true, home, .zed, &set, false);
+    try testing.expectEqual(RemoveOutcome.removed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"file_deleted\":true") != null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited));
+
+    entries.clearRetainingCapacity();
+    const oc2 = try unwireClient(io, a, &entries, true, home, .zed, &set, false);
+    try testing.expectEqual(RemoveOutcome.absent, oc2);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"absent\"") != null);
+}
+
+test "unwireClient splices the entry out and preserves user bytes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const set = [_]ClientKind{.zed};
+    const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
+    const orig = "{\n  // user comment must survive\n  \"vim_mode\": true,\n  \"agent_servers\": {\n    \"tau\": { \"type\": \"custom\", \"command\": \"/x/tau\", \"args\": [\"acp\", \"serve\"] }\n  },\n  \"theme\": \"dark\"\n}\n";
+    _ = try writeIfChanged(io, a, sp, orig, false);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try unwireClient(io, a, &entries, true, home, .zed, &set, false);
+    try testing.expectEqual(RemoveOutcome.removed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"file_deleted\"") == null);
+
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, got, "\"tau\"") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"agent_servers\"") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "// user comment must survive") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"vim_mode\": true") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"theme\": \"dark\"") != null);
+    // The result still parses as JSON.
+    try testing.expect(hasTauEntry(a, .zed, got) != null);
+}
+
+test "unwireClient dry-run previews and changes nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const set = [_]ClientKind{.zed};
+
+    var entries: std.ArrayList(u8) = .empty;
+    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false);
+    const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
+    const before = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+
+    entries.clearRetainingCapacity();
+    const oc = try unwireClient(io, a, &entries, true, home, .zed, &set, true);
+    try testing.expectEqual(RemoveOutcome.would_remove, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"would_remove\"") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"file_deleted\":true") != null);
+
+    // Bytes unchanged, file still wired.
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+    try testing.expectEqualStrings(before, after);
+    try testing.expectEqual(@as(?bool, true), hasTauEntry(a, .zed, after));
+}
+
+test "unwireClient bridge: shared mcacp kept while another bridge client is wired" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var entries: std.ArrayList(u8) = .empty;
+    _ = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false);
+    _ = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", false);
+    const bpath = try mcacpConfigPath(a, home);
+
+    // Removing only windsurf keeps the shared bridge for gemini.
+    const wset = [_]ClientKind{.windsurf};
+    entries.clearRetainingCapacity();
+    const oc = try unwireClient(io, a, &entries, true, home, .windsurf, &wset, false);
+    try testing.expectEqual(RemoveOutcome.removed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"kept\"") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "gemini") != null);
+    const still = try std.Io.Dir.cwd().readFileAlloc(io, bpath, a, .unlimited);
+    try testing.expectEqual(@as(?bool, true), bridgeHasTau(a, still));
+
+    // Removing gemini too (both in the set) drops the bridge config.
+    const both = [_]ClientKind{ .windsurf, .gemini };
+    entries.clearRetainingCapacity();
+    const oc2 = try unwireClient(io, a, &entries, true, home, .gemini, &both, false);
+    try testing.expectEqual(RemoveOutcome.removed, oc2);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"removed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_file_deleted\":true") != null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, bpath, a, .unlimited));
+}
+
+test "unwireClient nvim reports manual and removes the setup snippet" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const set = [_]ClientKind{.nvim};
+
+    var entries: std.ArrayList(u8) = .empty;
+    _ = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false);
+    const snip = try snippetPath(a, home, .nvim);
+    _ = try std.Io.Dir.cwd().readFileAlloc(io, snip, a, .unlimited);
+
+    entries.clearRetainingCapacity();
+    const oc = try unwireClient(io, a, &entries, true, home, .nvim, &set, false);
+    try testing.expectEqual(RemoveOutcome.manual, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_status\":\"removed\"") != null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, snip, a, .unlimited));
+}
+
+test "unwireClient unparseable settings reports manual and leaves bytes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const set = [_]ClientKind{.zed};
+    const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
+    const orig = "{ not json at all";
+    _ = try writeIfChanged(io, a, sp, orig, false);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try unwireClient(io, a, &entries, true, home, .zed, &set, false);
+    try testing.expectEqual(RemoveOutcome.manual, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"manual\"") != null);
+    const got = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
+    try testing.expectEqualStrings(orig, got);
+}
+
+test "removeFile: absent, removed, and would_remove under dry-run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const p = try std.fmt.allocPrint(a, "{s}/f.txt", .{root});
+
+    try testing.expectEqual(FileRemove.absent, try removeFile(io, p, false));
+    _ = try writeIfChanged(io, a, p, "x", false);
+    try testing.expectEqual(FileRemove.would_remove, try removeFile(io, p, true));
+    try testing.expectEqual(FileRemove.removed, try removeFile(io, p, false));
 }

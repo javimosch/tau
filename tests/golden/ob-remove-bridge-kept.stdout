@@ -1,0 +1,2 @@
+{"step":"remove_clients","status":"removed","clients":[{"client":"windsurf","path":"<HOME>/.codeium/windsurf/mcp_config.json","status":"removed","file_deleted":true,"bridge_path":"<HOME>/.config/mcacp/mcacp.json","bridge_status":"kept","bridge_reason":"still used by: gemini"}]}
+{"step":"setup","ok":true,"version":"0.4.0","remove":true,"done":true}

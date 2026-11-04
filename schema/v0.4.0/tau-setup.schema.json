@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-setup.schema.json",
   "title": "tau setup --json NDJSON event",
-  "description": "Schema for one line of `tau setup [--json]` output. Setup streams newline-delimited JSON: one event per step — init (config scaffold), completions (shell completion installs), clients (editor ACP wiring), doctor (embedded health report) — plus exactly one terminal verdict_event (always the last line, always \"done\":true). Step order is fixed: init, completions, clients, doctor, verdict. The event types are mutually exclusive — validate each NDJSON line against this schema individually. The process exit code mirrors the verdict's ok (0 when true, 1 when false).",
+  "description": "Schema for one line of `tau setup [--json]` output. Setup streams newline-delimited JSON: one event per step — init (config scaffold), completions (shell completion installs), clients (editor ACP wiring), doctor (embedded health report) — plus exactly one terminal verdict_event (always the last line, always \"done\":true). Step order is fixed: init, completions, clients, doctor, verdict. Removal mode (`tau setup --remove`/`--uninstall`) emits a different fixed sequence: remove_clients (editor wiring reversal), verdict — the verdict carries \"remove\":true there. The event types are mutually exclusive — validate each NDJSON line against this schema individually. The process exit code mirrors the verdict's ok (0 when true, 1 when false).",
   "oneOf": [
     { "$ref": "#/$defs/init_event" },
     { "$ref": "#/$defs/completions_event" },
     { "$ref": "#/$defs/clients_event" },
+    { "$ref": "#/$defs/remove_clients_event" },
     { "$ref": "#/$defs/doctor_event" },
     { "$ref": "#/$defs/verdict_event" }
   ],
@@ -104,6 +105,46 @@
         "dry_run": { "const": true, "description": "Present under --dry-run." }
       }
     },
+    "remove_clients_event": {
+      "type": "object",
+      "description": "Removal-mode step event (`tau setup --remove`/`--uninstall`), emitted where the install stream would put init — the only step event before the verdict. Reverses per-client editor wiring: the tau (or mcacp) entry is spliced out of each settings file without re-rendering, files left with no settings are deleted, setup-generated snippets are cleaned, and the shared mcacp bridge entry is dropped once no client outside the removal set still uses it. --client scopes the sweep; without it every client is processed. status is \"removed\", \"would_remove\" under --dry-run, \"manual\" when nothing was removed but hand-work remains (init-file wiring, unreadable/unparseable files), \"absent\" when nothing was wired, or \"failed\".",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "remove_clients" },
+        "status": { "type": "string", "enum": ["removed", "would_remove", "manual", "absent", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "clients": {
+          "type": "array",
+          "description": "One entry per processed client, in client order; absent on failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["client", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode"] },
+              "status": { "type": "string", "enum": ["removed", "would_remove", "absent", "manual", "failed"] },
+              "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
+              "file_deleted": { "const": true, "description": "The settings file was (or, under --dry-run, would be) deleted entirely — it held no settings besides the tau wiring." },
+              "snippet_path": { "type": "string", "description": "Setup-generated snippet file that was cleaned; emitted when a snippet existed." },
+              "snippet_status": { "type": "string", "enum": ["removed", "would_remove", "failed"], "description": "Outcome of the snippet cleanup; emitted with snippet_path." },
+              "snippet_message": { "type": "string", "description": "Failure detail for the snippet cleanup." },
+              "reason": { "type": "string", "description": "Why the outcome is manual (init-file wiring, unreadable or unparseable settings file)." },
+              "next": { "type": "string", "description": "The hand-step that finishes the removal; emitted on manual outcomes." },
+              "message": { "type": "string", "description": "Failure detail for this client." },
+              "bridge_path": { "type": "string", "description": "mcacp bridge config path (~/.config/mcacp/mcacp.json); MCP-bridge clients only." },
+              "bridge_status": { "type": "string", "enum": ["removed", "would_remove", "kept", "absent", "manual", "failed"], "description": "Outcome of the shared bridge-side entry: kept when another MCP client outside the removal set still uses it." },
+              "bridge_file_deleted": { "const": true, "description": "The bridge config was (or would be) deleted entirely." },
+              "bridge_reason": { "type": "string", "description": "Why the bridge entry was kept or needs hand-removal." },
+              "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side removal." },
+              "bridge_snippet_path": { "type": "string", "description": "mcacp paste-snippet cleaned once the bridge entry went away; emitted when it existed." },
+              "bridge_snippet_status": { "type": "string", "enum": ["removed", "would_remove"], "description": "Outcome of the bridge snippet cleanup; emitted with bridge_snippet_path." }
+            }
+          }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
     "doctor_event": {
       "type": "object",
       "description": "Fourth event: the embedded `tau doctor` health report — the same single-object shape `tau doctor` prints without --json (see docs/doctor-json.md).",
@@ -123,6 +164,7 @@
         "step": { "const": "setup" },
         "ok": { "type": "boolean", "description": "true when every step passed (skipped/manual outcomes still pass)." },
         "version": { "type": "string", "description": "tau version that produced the stream, e.g. \"0.4.0\"." },
+        "remove": { "const": true, "description": "Present in removal mode (`tau setup --remove`/`--uninstall`) — the stream then carries only the remove_clients step event and this verdict." },
         "non_interactive": { "const": true, "description": "Present when the run was declared unattended (--yes/--non-interactive or env equivalents)." },
         "yes": { "const": true, "description": "Present when --yes approved all write steps." },
         "dry_run": { "const": true, "description": "Present under --dry-run." },

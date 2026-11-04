@@ -262,6 +262,11 @@ pub const Config = struct {
     /// filesystem: steps report `would_*` statuses plus `"dry_run":true` so
     /// scripts can diff the plan against a real run.
     setup_dry_run: bool = false,
+    /// `tau setup --remove` / `--uninstall` — reverse per-client editor
+    /// wiring instead of writing it: splice the tau (or mcacp) entry out of
+    /// each client's settings file, delete files left with no settings, and
+    /// clean setup-generated snippets. --client scopes the sweep.
+    setup_remove: bool = false,
 
     // --- Config subcommands (src/configedit.zig / src/configvalidate.zig) ---
     /// `tau config` subcommand carried through parse. Null/absent means the

@@ -73,6 +73,9 @@ Setup:
                               TAU_NONINTERACTIVE=1)
       --dry-run               Preview every write step (would_* statuses
                               + "dry_run":true); change nothing
+      --remove/--uninstall    Reverse per-client editor wiring (comments
+                              and other settings survive byte-for-byte);
+                              --client scopes the sweep, none unwires all
       --json                  Pin the stable schema-checked NDJSON stream
                               (schema/tau-setup.schema.json)
 

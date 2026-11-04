@@ -21,7 +21,11 @@ full agentic tool loop and streams back `session/update` notifications
 > preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode)
 > also get the
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
-> without `--client` to see which editors were detected.
+> without `--client` to see which editors were detected. To undo the wiring,
+> `tau setup --remove [--client <name>] [--dry-run]` splices the tau (or
+> mcacp) entry back out — comments and your other settings survive
+> byte-for-byte, files left with no settings are deleted, and the shared
+> bridge entry goes once no remaining client still uses it.
 > [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
 > VS Code, Cursor, Neovim, and the MCP clients, step by step — and
 > [docs/clients/](clients/zed.md) has a dedicated guide per client

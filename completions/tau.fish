@@ -209,6 +209,8 @@ complete -c tau -n $setup -f -l deep -d 'run an authenticated probe in the docto
 complete -c tau -n $setup -f -s y -l yes -d 'unattended: approve all write steps'
 complete -c tau -n $setup -f -l non-interactive -d 'unattended contract for scripts/CI'
 complete -c tau -n $setup -f -l dry-run -d 'preview write steps; change nothing'
+complete -c tau -n $setup -f -l remove -d 'reverse per-client editor wiring'
+complete -c tau -n $setup -f -l uninstall -d 'alias for --remove'
 complete -c tau -n $setup -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'seed scaffold + diagnose provider'
 complete -c tau -n $setup -f -l model -x -d 'diagnose an override model'
 complete -c tau -n $setup -f -l api-key -x -d 'diagnose an override API key'
