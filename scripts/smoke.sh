@@ -75,6 +75,7 @@ ALL_TEST_GROUPS=(
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
   "doc-snippets:test_group_doc_snippets"
+  "migrating-doc:test_group_migrating_doc"
   "goal:test_group_goal_offline"
   "dry-run:test_group_dry_run"
   "at-file-system-prompt:test_group_at_file_system_prompt"
@@ -2824,6 +2825,113 @@ test_group_doc_snippets() {
   done
   [ "$ran" -ge 3 ]
   ok "cookbook recipes discovered ($ran)" "$?" 0
+}
+
+# Group: MIGRATING.md command snippets run end-to-end in a seeded env.
+#
+# Same recipe as doc-snippets — extract-doc-snippets.py pulls every `tau ...`
+# line from MIGRATING.md's fenced bash blocks and each is executed verbatim —
+# but the scratch HOME is seeded with the hand-managed MCP client configs the
+# guide assumes (a commented JSONC Windsurf file holding an existing server,
+# a Claude Desktop file with one stdio + one remote server, an OpenCode file
+# with a local entry) so `setup --import` has real sources to merge. After
+# the doc's command sequence completes, the Windsurf file must still hold the
+# seeded and imported entries, must NOT hold the remote server, and the
+# hand-written comment must survive — the byte-preservation guarantee the
+# guide promises. A `tau` symlink to $BIN sits next to the curl shim so the
+# doc's bare `tau` commands resolve to the binary under test.
+#
+# POSIX-only: the extensionless curl shim needs a shebang exec, which a
+# native Windows binary cannot spawn.
+test_group_migrating_doc() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      skip_test "migrating doc" "curl shim is an extensionless script (POSIX exec only)"
+      return
+      ;;
+  esac
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "migrating doc" "extractor + fake-curl stub need python3"
+    return
+  fi
+
+  note "MIGRATING.md command snippets (seeded MCP configs, stubbed provider)"
+
+  local stub_bin="$SMOKE_TEMP/migrating-doc-bin"
+  local home="$SMOKE_TEMP/migrating-doc-home"
+  mkdir -p "$stub_bin" "$home/.codeium/windsurf" "$home/.config/Claude" "$home/.config/opencode"
+  cp "$SCRIPT_DIR/lib/fake-curl" "$stub_bin/curl"
+  chmod +x "$stub_bin/curl"
+  ln -s "$BIN" "$stub_bin/tau" 2>/dev/null || cp "$BIN" "$stub_bin/tau"
+
+  # The migration starting state: hand-managed MCP configs on disk —
+  # Windsurf as the target (JSONC comment + an existing server to preserve),
+  # Claude Desktop and OpenCode as import sources (one remote entry that
+  # --import must refuse to carry over).
+  cat > "$home/.codeium/windsurf/mcp_config.json" <<'EOF'
+{
+  // hand-managed servers — keep these
+  "mcpServers": {
+    "existing-srv": { "command": "existing-bin", "args": ["--flag"] }
+  }
+}
+EOF
+  cat > "$home/.config/Claude/claude_desktop_config.json" <<'EOF'
+{ "mcpServers": {
+    "hand-fs": { "command": "npx", "args": ["-y","@mcp/fs","/tmp"], "env": {"FS_KEY":"x"} },
+    "hand-remote": { "url": "https://example.com/mcp" } } }
+EOF
+  cat > "$home/.config/opencode/opencode.json" <<'EOF'
+{ "mcp": { "hand-okl": { "type": "local", "command": ["bun","x","okl-server"], "enabled": true } } }
+EOF
+
+  # Same clean env as doc-snippets: dummy keys per provider, scratch HOME,
+  # update check pinned off, stub curl answering all provider HTTP.
+  local -a envp=(
+    env
+    XIAOMI_API_KEY=fake-ci PIZIG_API_KEY=fake-ci OPENAI_API_KEY=fake-ci
+    DEEPSEEK_API_KEY=fake-ci OPENCODE_API_KEY=fake-ci TAU_API_KEY=fake-ci
+    HOME="$home" SHELL=/bin/bash TAU_NO_UPDATE_CHECK=1 TAU_BIN="$BIN"
+    PATH="$stub_bin:$PATH"
+  )
+
+  local list="$SMOKE_TEMP/migrating-doc.list"
+  python3 "$ROOT/scripts/extract-doc-snippets.py" "$ROOT/MIGRATING.md" > "$list"
+  ok "extract MIGRATING.md command snippets" "$?" 0
+
+  local count
+  count=$(wc -l < "$list" | tr -d ' ')
+  [ "$count" -ge 5 ]
+  ok "MIGRATING.md yields >=5 runnable tau commands ($count found)" "$?" 0
+
+  # Run every snippet in doc order — the sequence mirrors the guide
+  # (preview -> apply -> verify -> rollback), so state built by earlier
+  # commands is available to later ones.
+  local loc cmd run snip_rc
+  while IFS=$'\t' read -r loc cmd; do
+    [ -z "$cmd" ] && continue
+    run="$cmd"
+    capture snip "${envp[@]}" bash -c "$run"
+    ok "MIGRATING $loc: ${cmd:0:64}" "$snip_rc" 0
+    if [ "$snip_rc" != "0" ]; then
+      diag "command: $run"
+      diag "stdout: $(printf '%s' "$snip_out" | head -c 400)"
+      diag "stderr: $(printf '%s' "$snip_err" | head -c 400)"
+    fi
+  done < "$list"
+
+  # End-state assertions — the guarantees the guide makes, checked on disk.
+  local wfile="$home/.codeium/windsurf/mcp_config.json"
+  local wbody
+  wbody=$(cat "$wfile" 2>/dev/null)
+  [ -n "$wbody" ]
+  ok "windsurf settings file still present" "$?" 0
+  contains "imported stdio server carried over" "$wbody" '"hand-fs"'
+  contains "imported opencode entry carried over" "$wbody" '"hand-okl"'
+  contains "pre-existing entry preserved" "$wbody" '"existing-srv"'
+  contains "JSONC comment survived the splice" "$wbody" 'hand-managed servers'
+  lacks "remote server not imported" "$wbody" '"hand-remote"'
+  lacks "mcacp entry removed by --remove" "$wbody" '"mcacp"'
 }
 
 # Group: Issue #17 goal mode subcommands offline
