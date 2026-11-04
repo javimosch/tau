@@ -460,6 +460,46 @@ pub fn removeNestedMember(arena: std.mem.Allocator, bytes: []const u8, section: 
     return .{ .spliced = out };
 }
 
+/// What inserting `entry` into `section` produced. `inserted` is the new
+/// document bytes — the original is never re-rendered, so comments, key
+/// order and sibling members survive byte-for-byte.
+pub const NestedInsert = union(enum) {
+    /// New file bytes with the entry added (and the section object created
+    /// when the document didn't carry it).
+    inserted: []u8,
+    /// The entry is already present inside the section — nothing to do.
+    present,
+    /// The bytes don't scan as a JSONC object document, or the section
+    /// exists but isn't an object.
+    invalid,
+};
+
+/// Insert `"entry": token` into the object member `section` at the top level
+/// of a JSONC document — e.g. an MCP server entry inside "mcpServers" in an
+/// editor settings file (`tau setup --import`). `token` is a raw JSON value
+/// (already rendered). When the document has no `section` member a fresh
+/// `"section": { "entry": token }` member is appended instead. Comments and
+/// unrelated members are preserved byte-for-byte; the entry is appended
+/// after the section's last member using the file's own indentation.
+pub fn insertNestedMember(arena: std.mem.Allocator, bytes: []const u8, section: []const u8, entry: []const u8, token: []const u8) !NestedInsert {
+    const doc = scanDoc(arena, bytes) catch return .invalid;
+    if (findMember(doc, section)) |smi| {
+        const sm = doc.members[smi];
+        if (sm.value_start >= bytes.len or bytes[sm.value_start] != '{') return .invalid;
+        const sobj = scanObj(arena, bytes, sm.value_start) catch return .invalid;
+        if (findMember(sobj, entry) != null) return .present;
+        return .{ .inserted = try insertMember(arena, bytes, sobj, entry, token) };
+    }
+    // No section member — append "section": { "entry": token } at top level.
+    var stok: std.ArrayList(u8) = .empty;
+    try stok.appendSlice(arena, "{ \"");
+    try jsonmod.escapeInto(arena, &stok, entry);
+    try stok.appendSlice(arena, "\": ");
+    try stok.appendSlice(arena, token);
+    try stok.appendSlice(arena, " }");
+    return .{ .inserted = try insertMember(arena, bytes, doc, section, stok.items) };
+}
+
 // ---------------------------------------------------------------------------
 // Value coercion (set) — same rules `config validate` enforces.
 // ---------------------------------------------------------------------------

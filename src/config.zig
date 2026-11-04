@@ -267,6 +267,13 @@ pub const Config = struct {
     /// each client's settings file, delete files left with no settings, and
     /// clean setup-generated snippets. --client scopes the sweep.
     setup_remove: bool = false,
+    /// `tau setup --import` — carry the user's existing MCP server entries
+    /// from the other supported clients' settings files into each wired
+    /// MCP-bridge client, splicing the mcacp entry into existing files
+    /// instead of dropping a manual snippet (comments and sibling settings
+    /// survive byte-for-byte). Mutually exclusive with --remove/--uninstall;
+    /// env `TAU_SETUP_IMPORT=1` is the env equivalent.
+    setup_import: bool = false,
 
     // --- Config subcommands (src/configedit.zig / src/configvalidate.zig) ---
     /// `tau config` subcommand carried through parse. Null/absent means the

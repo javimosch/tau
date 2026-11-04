@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mcacp": {
+      "command": "npx",
+      "args": ["-y", "mcacp"]
+    },
+    "fs2": {"command":"uvx","args":["fs-mcp"]},
+    "filesystem": {"command":"npx","args":["-y","fs-mcp","/tmp"]}
+  }
+}

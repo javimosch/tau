@@ -483,12 +483,17 @@ pub fn parse(
 
     // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
     // [--api-key K] [--offline] [--deep] [--client <zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all>]
-    // [--yes|-y] [--non-interactive] [--dry-run] [--json] [--remove|--uninstall]`
+    // [--yes|-y] [--non-interactive] [--dry-run] [--json] [--remove|--uninstall]
+    // [--import]`
     // — one-shot onboarding: scaffold the config (init), install shell
     // completions, write/detect editor ACP client config, embed a doctor
     // health report. --remove/--uninstall reverses the clients step instead
     // (init/completions/doctor don't run): --client scopes the sweep, no
-    // --client unwires every client that carries tau wiring. The stdout
+    // --client unwires every client that carries tau wiring. --import opts
+    // into editing existing MCP-client settings files: the mcacp entry and
+    // the user's server entries from the other supported clients are
+    // spliced in (comments preserved), mutually exclusive with --remove.
+    // The stdout
     // stream is already NDJSON; --json is the
     // stable-contract spelling that pins it (schema/tau-setup.schema.json).
     // A command, not a prompt; an unknown provider rides into the doctor step
@@ -544,6 +549,8 @@ pub fn parse(
                 scfg.setup_dry_run = true;
             } else if (eq(a, "--remove") or eq(a, "--uninstall")) {
                 scfg.setup_remove = true;
+            } else if (eq(a, "--import")) {
+                scfg.setup_import = true;
             } else if (eq(a, "--json")) {
                 scfg.cli_json = true;
                 scfg.mode = .json;
@@ -572,6 +579,11 @@ pub fn parse(
         }
         if (envTruthy(env.get("TAU_YES"))) scfg.setup_yes = true;
         if (envTruthy(env.get("TAU_NONINTERACTIVE"))) scfg.setup_non_interactive = true;
+        if (envTruthy(env.get("TAU_SETUP_IMPORT"))) scfg.setup_import = true;
+        // Importing servers into client files is the opposite of unwiring
+        // them — the two modes are mutually exclusive.
+        if (scfg.setup_import and scfg.setup_remove)
+            return errResult(arena, "--import and --remove/--uninstall are mutually exclusive", .{});
         if (try resolveProviderAndModel(&scfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
             scfg.doctor_bad_provider = bad;
         }
@@ -1676,6 +1688,46 @@ test "parse: setup --remove/--uninstall set setup_remove" {
     try std.testing.expect(un.config.setup_remove);
     try std.testing.expectEqualStrings("zed", un.config.setup_client.?);
     try std.testing.expect(un.config.setup_dry_run);
+}
+
+test "parse: setup --import sets setup_import, mutex with --remove/--uninstall" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expect(!bare.config.setup_import);
+
+    const imp = try parseArgv(a, &.{ "tau", "setup", "--import", "--client", "windsurf" }, .{});
+    try std.testing.expectEqual(Action.setup, imp.action);
+    try std.testing.expect(imp.config.setup_import);
+    try std.testing.expectEqualStrings("windsurf", imp.config.setup_client.?);
+
+    // Merging servers into client files is the opposite of unwiring them —
+    // both spellings of the removal flag conflict, in either order.
+    const rm_first = try parseArgv(a, &.{ "tau", "setup", "--remove", "--import" }, .{});
+    try std.testing.expectEqual(Action.err, rm_first.action);
+    try std.testing.expectEqualStrings("--import and --remove/--uninstall are mutually exclusive", rm_first.err_msg.?);
+    const imp_first = try parseArgv(a, &.{ "tau", "setup", "--import", "--uninstall" }, .{});
+    try std.testing.expectEqual(Action.err, imp_first.action);
+    try std.testing.expectEqualStrings("--import and --remove/--uninstall are mutually exclusive", imp_first.err_msg.?);
+}
+
+test "parse: TAU_SETUP_IMPORT env enables setup --import" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_IMPORT", "1" },
+    }, .{});
+    try std.testing.expect(p.config.setup_import);
+
+    // Falsy values leave the flag off.
+    const q = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_IMPORT", "0" },
+    }, .{});
+    try std.testing.expect(!q.config.setup_import);
 }
 
 test "parse: upgrade --json pins the stable report object" {

@@ -278,6 +278,14 @@ const setup_help =
     \\                         prompts, never reads stdin
     \\                         (env TAU_NONINTERACTIVE=1)
     \\      --dry-run          Preview every write step; change nothing
+    \\      --import           Merge your existing MCP server entries from
+    \\                         the other supported clients' settings files
+    \\                         into each wired MCP client (windsurf|gemini|
+    \\                         claude-desktop|opencode): the mcacp entry and
+    \\                         your servers are spliced into existing files
+    \\                         — comments and current entries survive
+    \\                         byte-for-byte, nothing is overwritten.
+    \\                         (env TAU_SETUP_IMPORT; not with --remove)
     \\      --remove           Reverse per-client editor wiring: splice the
     \\      --uninstall        tau (or mcacp) entry out of each client's
     \\                         settings file (comments and other settings
@@ -298,6 +306,7 @@ const setup_help =
     \\  tau setup --shell bash --client claude-desktop --yes
     \\  tau setup --remove --client zed
     \\  tau setup --uninstall --dry-run
+    \\  tau setup --client windsurf --import --dry-run
     \\
 ;
 
