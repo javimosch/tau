@@ -43,6 +43,7 @@
 --probe
 --provider
 --raw
+--remove
 --report
 --role
 --scan-agents
@@ -59,6 +60,7 @@
 --timeout-ms
 --title
 --tools
+--uninstall
 --verbose
 --version
 --worker-model

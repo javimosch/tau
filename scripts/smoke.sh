@@ -2507,6 +2507,71 @@ test_group_setup() {
   ok "setup --dry-run --yes --non-interactive exits 0" "$s24_rc" 0
   contains "dry+unattended verdict has all markers" "$s24_out" '"non_interactive":true,"yes":true,"dry_run":true'
   [ ! -e "$mock_home21/.config/tau/config.json" ]; ok "dry+yes wrote nothing" "$?" 0
+
+  # ── --remove/--uninstall: reverse per-client wiring ────────────────────
+
+  # A setup-written client file unwires cleanly: the file held only the tau
+  # entry so it is deleted outright.
+  local mock_home22; mock_home22="$(mktemp -d)"; register_temp_dir "$mock_home22"
+  capture s25 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home22" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes
+  ok "setup seed for --remove exits 0" "$s25_rc" 0
+  [ -f "$mock_home22/.config/zed/settings.json" ]; ok "zed wiring seeded" "$?" 0
+  capture s26 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home22" "$BIN" setup --remove --client zed
+  ok "setup --remove --client zed exits 0" "$s26_rc" 0
+  contains "remove stream is the remove_clients step" "$s26_out" '"step":"remove_clients","status":"removed"'
+  contains "remove reports the deleted file" "$s26_out" '"file_deleted":true'
+  contains "remove verdict carries the marker" "$s26_out" '"remove":true'
+  [ ! -e "$mock_home22/.config/zed/settings.json" ]; ok "zed settings file deleted" "$?" 0
+  [ -f "$mock_home22/.config/tau/config.json" ]; ok "config.json survives --remove" "$?" 0
+
+  # A file carrying user settings loses only the tau entry — comments and
+  # sibling keys survive byte-for-byte.
+  local mock_home23; mock_home23="$(mktemp -d)"; register_temp_dir "$mock_home23"
+  mkdir -p "$mock_home23/.config/zed"
+  printf '{\n  // keep me\n  "vim_mode": true,\n  "agent_servers": { "tau": { "type": "custom", "command": "tau", "args": ["acp", "serve"] } }\n}\n' \
+    > "$mock_home23/.config/zed/settings.json"
+  capture s27 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home23" "$BIN" setup --remove --client zed
+  ok "splice remove exits 0" "$s27_rc" 0
+  printf '{\n  // keep me\n  "vim_mode": true\n}\n' | cmp -s - "$mock_home23/.config/zed/settings.json"
+  ok "user settings survive the splice verbatim" "$?" 0
+
+  # --dry-run previews the removal without touching bytes; --uninstall is
+  # the same flag.
+  local mock_home24; mock_home24="$(mktemp -d)"; register_temp_dir "$mock_home24"
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home24" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client gemini --yes >/dev/null
+  capture s28 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home24" "$BIN" setup --uninstall --client gemini --dry-run
+  ok "setup --uninstall --dry-run exits 0" "$s28_rc" 0
+  contains "uninstall dry-run previews removal" "$s28_out" '"status":"would_remove"'
+  contains "uninstall dry-run marks the step" "$s28_out" '"dry_run":true'
+  [ -f "$mock_home24/.gemini/settings.json" ]; ok "dry-run left gemini settings" "$?" 0
+  [ -f "$mock_home24/.config/mcacp/mcacp.json" ]; ok "dry-run left bridge config" "$?" 0
+
+  # The shared mcacp bridge survives while another MCP client still uses it.
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home24" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --yes >/dev/null
+  capture s29 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home24" "$BIN" setup --remove --client windsurf
+  ok "remove one bridge client exits 0" "$s29_rc" 0
+  contains "bridge kept for the still-wired client" "$s29_out" '"bridge_status":"kept"'
+  [ -f "$mock_home24/.config/mcacp/mcacp.json" ]; ok "bridge config kept" "$?" 0
+  # ...and the sweep drops it once nothing is left using it.
+  capture s30 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home24" "$BIN" setup --remove
+  ok "remove sweep exits 0" "$s30_rc" 0
+  contains "sweep removes the bridge" "$s30_out" '"bridge_status":"removed"'
+  [ ! -e "$mock_home24/.config/mcacp/mcacp.json" ]; ok "bridge config deleted on sweep" "$?" 0
+
+  # Nothing wired: the sweep reports absent, still a pass.
+  local mock_home25; mock_home25="$(mktemp -d)"; register_temp_dir "$mock_home25"
+  capture s31 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home25" "$BIN" setup --remove --client zed
+  ok "remove with nothing wired exits 0" "$s31_rc" 0
+  contains "unwired client reports absent" "$s31_out" '"status":"absent"'
 }
 
 # Group: runnable client-config examples under examples/clients/ —
@@ -3673,6 +3738,53 @@ test_group_golden_onboarding() {
     golden_file    ob-setup-opencode.mcacp "$_GOLDEN_HOME/.config/mcacp/mcacp.json"
   fi
 
+  # ── tau setup --remove/--uninstall ──
+  # The removal stream carries no doctor report, so these snapshots are
+  # deterministic without curl. Seeding runs aren't pinned — only the
+  # remove transcripts and the resulting file bytes are.
+
+  # A setup-written file unwires to nothing: deleted outright, reported
+  # with file_deleted.
+  _golden_fresh_home
+  env HOME="$_GOLDEN_HOME" SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client zed >/dev/null
+  golden_check_n ob-remove-zed        0 "$BIN" setup --remove --client zed
+  if [ ! -e "$_GOLDEN_HOME/.config/zed/settings.json" ]; then
+    ok "ob-remove-zed deleted the settings file" 0 0
+  else
+    ok "ob-remove-zed deleted the settings file" 1 0
+  fi
+
+  # A user-modified file loses only the tau entry — the spliced result is
+  # byte-locked (comments + sibling settings survive verbatim).
+  _golden_fresh_home
+  mkdir -p "$_GOLDEN_HOME/.config/zed"
+  printf '{\n  // user comment must survive\n  "vim_mode": true,\n  "agent_servers": {\n    "tau": { "type": "custom", "command": "tau", "args": ["acp", "serve"] }\n  },\n  "theme": "dark"\n}\n' \
+    > "$_GOLDEN_HOME/.config/zed/settings.json"
+  golden_check_n ob-remove-zed-splice 0 "$BIN" setup --remove --client zed
+  golden_file    ob-remove-zed.json   "$_GOLDEN_HOME/.config/zed/settings.json"
+
+  # --dry-run previews the removal; --uninstall spells the same flag.
+  _golden_fresh_home
+  env HOME="$_GOLDEN_HOME" SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client zed >/dev/null
+  golden_check_n ob-remove-dry        0 "$BIN" setup --uninstall --client zed --dry-run
+  golden_file    ob-remove-dry.json   "$_GOLDEN_HOME/.config/zed/settings.json"
+
+  # Nothing wired: the scoped removal reports absent.
+  _golden_fresh_home
+  golden_check_n ob-remove-absent     0 "$BIN" setup --remove --client zed
+
+  # The shared mcacp bridge is kept while another MCP client still uses it.
+  _golden_fresh_home
+  env HOME="$_GOLDEN_HOME" SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client windsurf >/dev/null
+  env HOME="$_GOLDEN_HOME" SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client gemini >/dev/null
+  golden_check_n ob-remove-bridge-kept 0 "$BIN" setup --remove --client windsurf
+
+  # The full sweep: every client unwires (nvim/emacs stay manual — their
+  # snippets are cleaned), the bridge goes once nobody uses it.
+  _golden_fresh_home
+  env HOME="$_GOLDEN_HOME" SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client all >/dev/null
+  golden_check_n ob-remove-sweep      0 "$BIN" setup --remove
+
   # ── tau config edit ──  (editor stubbed via TAU_EDITOR; VISUAL/EDITOR are
   # scrubbed so ambient values can't change precedence)
   _golden_fresh_home
@@ -4331,6 +4443,21 @@ test_group_cli_schemas() {
     ok "cli-schemas: setup checker rejects unknown step event" 0 1
   else
     ok "cli-schemas: setup checker rejects unknown step event" 0 0
+  fi
+
+  # ── tau setup --remove --json ──
+  # Removal mode emits a different fixed sequence: remove_clients + verdict.
+  local rm_home="$SMOKE_TEMP/setup-rm-home"
+  mkdir -p "$rm_home"
+  "${scrub[@]}" HOME="$rm_home" SHELL=/bin/bash XIAOMI_API_KEY=smoke-schema-key "$BIN" setup --offline --client zed >/dev/null
+  out=$("${scrub[@]}" HOME="$rm_home" "$BIN" setup --remove --json); rc=$?
+  ok "cli-schemas: setup --remove --json exit 0" "$rc" 0
+  contains "cli-schemas: remove stream opens with remove_clients" "$out" '"step":"remove_clients"'
+  contains "cli-schemas: remove verdict carries remove:true" "$out" '"remove":true'
+  if printf '%s' "$out" | python3 "$setup_check" - >/dev/null 2>&1; then
+    ok "cli-schemas: setup --remove stream validates" 0 0
+  else
+    ok "cli-schemas: setup --remove stream validates" 1 0
   fi
 }
 

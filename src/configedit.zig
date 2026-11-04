@@ -162,9 +162,11 @@ fn isSecretPath(kp: KeyPath) bool {
 // ---------------------------------------------------------------------------
 // JSONC scanner — locates object members on the ORIGINAL bytes (comments and
 // string contents respected), so splices preserve everything around them.
+// The pieces are pub so `tau setup --remove` can splice a named member out of
+// an arbitrary settings file (src/setup.zig) with the same guarantees.
 // ---------------------------------------------------------------------------
 
-const Member = struct {
+pub const Member = struct {
     key: []const u8, // decoded key name
     key_start: usize, // index of the opening quote
     value_start: usize,
@@ -173,13 +175,13 @@ const Member = struct {
     trailing_comma: ?usize, // the ',' separating this member from the next
 };
 
-const Obj = struct {
+pub const Obj = struct {
     open: usize, // index of '{'
     close: usize, // index of '}'
     members: []Member,
 };
 
-const ScanError = error{ InvalidJson, OutOfMemory };
+pub const ScanError = error{ InvalidJson, OutOfMemory };
 
 /// Advance past whitespace and JSONC comments.
 fn skipTrivia(bytes: []const u8, start: usize) usize {
@@ -265,7 +267,7 @@ fn valueEnd(bytes: []const u8, start: usize) ScanError!usize {
 
 /// Parse the member list of the object whose `{` is at `open`. All offsets are
 /// into the original `bytes`, comments included.
-fn scanObj(arena: std.mem.Allocator, bytes: []const u8, open: usize) ScanError!Obj {
+pub fn scanObj(arena: std.mem.Allocator, bytes: []const u8, open: usize) ScanError!Obj {
     var members: std.ArrayList(Member) = .empty;
     var i = skipTrivia(bytes, open + 1);
     var leading_comma: ?usize = null;
@@ -303,7 +305,7 @@ fn scanObj(arena: std.mem.Allocator, bytes: []const u8, open: usize) ScanError!O
 
 /// Scan the top-level object of a whole config file. Rejects trailing garbage
 /// after the closing brace.
-fn scanDoc(arena: std.mem.Allocator, bytes: []const u8) ScanError!Obj {
+pub fn scanDoc(arena: std.mem.Allocator, bytes: []const u8) ScanError!Obj {
     const open = skipTrivia(bytes, 0);
     if (open >= bytes.len or bytes[open] != '{') return error.InvalidJson;
     const obj = try scanObj(arena, bytes, open);
@@ -313,7 +315,7 @@ fn scanDoc(arena: std.mem.Allocator, bytes: []const u8) ScanError!Obj {
 
 /// Last member matching `key` (matches what the loader sees — a duplicate key
 /// later in the file shadows earlier ones).
-fn findMember(obj: Obj, key: []const u8) ?usize {
+pub fn findMember(obj: Obj, key: []const u8) ?usize {
     var found: ?usize = null;
     for (obj.members, 0..) |m, i| {
         if (std.mem.eql(u8, m.key, key)) found = i;
@@ -325,7 +327,7 @@ fn findMember(obj: Obj, key: []const u8) ?usize {
 // Splices
 // ---------------------------------------------------------------------------
 
-fn splice(arena: std.mem.Allocator, bytes: []const u8, start: usize, end: usize, with: []const u8) ![]u8 {
+pub fn splice(arena: std.mem.Allocator, bytes: []const u8, start: usize, end: usize, with: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(arena, bytes[0..start]);
     try out.appendSlice(arena, with);
@@ -389,7 +391,7 @@ fn insertMember(arena: std.mem.Allocator, bytes: []const u8, obj: Obj, key: []co
 
 /// Removal span for one member, chosen so the result stays valid JSON and
 /// doesn't leave a dangling comma or a whitespace-only line.
-fn removalSpan(bytes: []const u8, m: Member) struct { start: usize, end: usize } {
+pub fn removalSpan(bytes: []const u8, m: Member) struct { start: usize, end: usize } {
     if (m.trailing_comma) |c| {
         // Member + its separator; eat the rest of the line if now empty.
         var end = c + 1;
@@ -407,6 +409,55 @@ fn removalSpan(bytes: []const u8, m: Member) struct { start: usize, end: usize }
     while (end < bytes.len and (bytes[end] == ' ' or bytes[end] == '\t')) end += 1;
     if (end < bytes.len and bytes[end] == '\n') end += 1;
     return .{ .start = lineStart(bytes, m.key_start), .end = end };
+}
+
+/// What removing `entry` from `section` left behind. `spliced` is the new
+/// document bytes (the original is never re-rendered — comments, key order
+/// and sibling members are preserved verbatim); `empty` means nothing but a
+/// memberless object (plus stray comments) remains, so the caller should
+/// delete the file rather than write the husk.
+pub const NestedRemoval = union(enum) {
+    /// The section or the entry inside it isn't present — nothing to do.
+    absent,
+    /// New file bytes with the entry (and an emptied section husk) removed.
+    spliced: []u8,
+    /// Removing left a memberless document — delete the file.
+    empty,
+    /// The bytes don't scan as a JSONC object document.
+    invalid,
+};
+
+/// Remove `entry` from the object member `section` at the top level of a
+/// JSONC document — e.g. the "tau" member of "agent_servers" in an editor
+/// settings file (`tau setup --remove`). Comments and unrelated members are
+/// preserved byte-for-byte; when the removal empties the section object the
+/// section member is removed too, so no dead `"agent_servers": {}` husk is
+/// left behind.
+pub fn removeNestedMember(arena: std.mem.Allocator, bytes: []const u8, section: []const u8, entry: []const u8) !NestedRemoval {
+    const doc = scanDoc(arena, bytes) catch return .invalid;
+    const sm = doc.members[findMember(doc, section) orelse return .absent];
+    if (sm.value_start >= bytes.len or bytes[sm.value_start] != '{') return .absent;
+    const sobj = scanObj(arena, bytes, sm.value_start) catch return .invalid;
+    const em = sobj.members[findMember(sobj, entry) orelse return .absent];
+    const espan = removalSpan(bytes, em);
+    var out = try splice(arena, bytes, espan.start, espan.end, "");
+
+    // An emptied section husk goes too — the file keeps no dead shells.
+    const doc2 = scanDoc(arena, out) catch return .invalid;
+    if (findMember(doc2, section)) |smi2| {
+        const sm2 = doc2.members[smi2];
+        if (sm2.value_start < out.len and out[sm2.value_start] == '{') {
+            const sobj2 = scanObj(arena, out, sm2.value_start) catch return .invalid;
+            if (sobj2.members.len == 0) {
+                const husk = removalSpan(out, sm2);
+                out = try splice(arena, out, husk.start, husk.end, "");
+            }
+        }
+    }
+
+    const doc3 = scanDoc(arena, out) catch return .invalid;
+    if (doc3.members.len == 0) return .empty;
+    return .{ .spliced = out };
 }
 
 // ---------------------------------------------------------------------------

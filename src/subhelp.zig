@@ -278,6 +278,15 @@ const setup_help =
     \\                         prompts, never reads stdin
     \\                         (env TAU_NONINTERACTIVE=1)
     \\      --dry-run          Preview every write step; change nothing
+    \\      --remove           Reverse per-client editor wiring: splice the
+    \\      --uninstall        tau (or mcacp) entry out of each client's
+    \\                         settings file (comments and other settings
+    \\                         survive byte-for-byte), delete files left
+    \\                         with no settings, clean setup-generated
+    \\                         snippets, and drop the shared mcacp bridge
+    \\                         entry once no remaining client uses it.
+    \\                         --client scopes the sweep; without it every
+    \\                         wired client is unwired.
     \\      --json             Pin the stable schema-checked NDJSON stream
     \\                         (schema/tau-setup.schema.json; output is
     \\                         already NDJSON)
@@ -287,6 +296,8 @@ const setup_help =
     \\  tau setup --dry-run
     \\  tau setup --yes --client zed
     \\  tau setup --shell bash --client claude-desktop --yes
+    \\  tau setup --remove --client zed
+    \\  tau setup --uninstall --dry-run
     \\
 ;
 

@@ -483,10 +483,13 @@ pub fn parse(
 
     // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
     // [--api-key K] [--offline] [--deep] [--client <zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all>]
-    // [--yes|-y] [--non-interactive] [--dry-run] [--json]`
+    // [--yes|-y] [--non-interactive] [--dry-run] [--json] [--remove|--uninstall]`
     // — one-shot onboarding: scaffold the config (init), install shell
     // completions, write/detect editor ACP client config, embed a doctor
-    // health report. The stdout stream is already NDJSON; --json is the
+    // health report. --remove/--uninstall reverses the clients step instead
+    // (init/completions/doctor don't run): --client scopes the sweep, no
+    // --client unwires every client that carries tau wiring. The stdout
+    // stream is already NDJSON; --json is the
     // stable-contract spelling that pins it (schema/tau-setup.schema.json).
     // A command, not a prompt; an unknown provider rides into the doctor step
     // as a failed check (same convention as `tau doctor`).
@@ -539,6 +542,8 @@ pub fn parse(
                 scfg.setup_non_interactive = true;
             } else if (eq(a, "--dry-run")) {
                 scfg.setup_dry_run = true;
+            } else if (eq(a, "--remove") or eq(a, "--uninstall")) {
+                scfg.setup_remove = true;
             } else if (eq(a, "--json")) {
                 scfg.cli_json = true;
                 scfg.mode = .json;
@@ -1651,6 +1656,26 @@ test "parse: setup --json pins the stable NDJSON stream contract" {
     try std.testing.expect(q.config.cli_json);
     try std.testing.expect(q.config.setup_dry_run);
     try std.testing.expect(q.config.setup_yes);
+}
+
+test "parse: setup --remove/--uninstall set setup_remove" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expect(!bare.config.setup_remove);
+
+    const rm = try parseArgv(a, &.{ "tau", "setup", "--remove" }, .{});
+    try std.testing.expectEqual(Action.setup, rm.action);
+    try std.testing.expect(rm.config.setup_remove);
+
+    // --uninstall is the same flag spelled the other way; it composes with
+    // --client scoping and --dry-run.
+    const un = try parseArgv(a, &.{ "tau", "setup", "--uninstall", "--client", "zed", "--dry-run" }, .{});
+    try std.testing.expect(un.config.setup_remove);
+    try std.testing.expectEqualStrings("zed", un.config.setup_client.?);
+    try std.testing.expect(un.config.setup_dry_run);
 }
 
 test "parse: upgrade --json pins the stable report object" {

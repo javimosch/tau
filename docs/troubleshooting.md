@@ -434,6 +434,7 @@ any of them.
 | `tau version --check` | Non-blocking update check against the latest release (always exits 0; `TAU_NO_UPDATE_CHECK=1` opts out — also silences the `update_available` doctor warning) |
 | `tau upgrade` | Self-update in place via the same fail-closed SHA256-verified install.sh (`--yes` skips the confirmation prompt; POSIX only) |
 | `tau setup --yes` | Unattended onboarding: init + completions + ACP client config + doctor as one NDJSON transcript — exit 1 on any failed step |
+| `tau setup --remove [--client <name>] [--dry-run]` | Reverse editor client wiring: splice the tau/mcacp entry out of settings files (comments and other settings survive), delete files left empty, clean setup snippets, drop the shared mcacp bridge entry when nothing still uses it |
 | `tau config validate [path]` | Offline config-file validation (`{"ok","errors":[…]}` on stdout, exit 1 on failure) — CI/pre-commit gate |
 | `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
 | `tau --help-json` | Machine-readable flag catalog |
