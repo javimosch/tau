@@ -4162,6 +4162,8 @@ test_group_golden_maintenance() {
   golden_check ex-uncataloged      0 "$BIN" explain 42
   golden_check ex-unknown-name     1 "$BIN" explain bogus
   golden_check ex-code-zero        1 "$BIN" explain 0
+  golden_check ex-dym-type         1 "$BIN" explain authfaild
+  golden_check ex-dym-code         1 "$BIN" explain 1066
   golden_check ex-bad-flag        80 "$BIN" explain --nope
   golden_check ex-json-human-mutex 80 "$BIN" explain --json --human 80
 
@@ -5138,6 +5140,18 @@ test_group_explain() {
   capture r7 "$BIN" explain 0
   ok "explain: code 0 exits 1" "$r7_rc" 1
   contains "explain: code 0 emits not_found" "$r7_err" '"type":"not_found"'
+
+  # Did-you-mean: a mistyped type tag or overflowing code names the nearest
+  # catalog entry as a ready-to-run command; unrelated names and `0` get
+  # no guess (r6/r7 envelopes above stay suggestion-free).
+  capture r7b "$BIN" explain authfaild
+  ok "explain: type-tag typo exits 1" "$r7b_rc" 1
+  contains "explain: type-tag typo suggests AuthFailed" "$r7b_err" 'did you mean \"tau explain AuthFailed\"?'
+  capture r7c "$BIN" explain 1066
+  ok "explain: code typo exits 1" "$r7c_rc" 1
+  contains "explain: code typo suggests 106" "$r7c_err" 'did you mean \"tau explain 106\"?'
+  lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
+  lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope

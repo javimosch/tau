@@ -962,7 +962,7 @@ pub fn main(init: std.process.Init) !void {
             // generates docs/errors.md. Needs no provider or API key.
             if (parsed.config.explain_arg) |q| {
                 const spec = errs.findSpec(q) orelse {
-                    const msg = std.fmt.allocPrint(arena, "unknown error code or type: {s} — run `tau explain` to list the catalog", .{q}) catch "unknown error code or type";
+                    const msg = std.fmt.allocPrint(arena, "unknown error code or type: {s}{s} — run `tau explain` to list the catalog", .{ q, errs.suggestQuery(arena, q) orelse "" }) catch "unknown error code or type";
                     printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
                     std.process.exit(@intFromEnum(ExitCode.generic_failure));
                 };

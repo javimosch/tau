@@ -359,6 +359,15 @@ are backward compatible.
   (`--human` for prose), or lists the whole catalog with no argument.
   Sourced from the same `src/errors.zig` registry that generates
   docs/errors.md (#226)
+- `tau explain` did-you-mean suggestions — an unknown or mistyped
+  `<code|type>` query still exits 1 with a `not_found` envelope, but the
+  message now names the nearest catalog entry as a ready-to-run command
+  (`did you mean "tau explain AuthFailed"?`). Candidates derive at
+  comptime from the same `src/errors.zig` registry that generates
+  docs/errors.md and match case-insensitively within two edits; parseable
+  decimals (`0`, and uncataloged codes that resolve via the generic
+  `internal_error` entry) never trigger a guess. Locked by `ex-dym-*`
+  golden snapshots and unit tests (#341)
 
 ### Fixed
 
