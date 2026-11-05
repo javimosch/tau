@@ -13,7 +13,13 @@
 // between the installed and target versions render as a pre-upgrade
 // summary on stderr before the prompt/install and ride along as the
 // report's "changelog" field — best-effort, a fetch/parse miss drops the
-// summary, never the upgrade. The install destination resolves as
+// summary, never the upgrade. Failed runs ("status":"failed", exit 1)
+// carry a "hint" field with one-line remediation: lookup/download
+// failures name the network or the TAU_*_URL overrides, and installer
+// failures are classified from the install.sh error line (checksum
+// mismatch -> distrust the mirror, download failed -> check the
+// network/TAU_BASE_URL, unwritable dest -> --dir/TAU_INSTALL_DIR).
+// The install destination resolves as
 // --dir > TAU_INSTALL_DIR > the running binary's directory > the
 // installer's own default. POSIX-only — Windows is told to re-run
 // install.ps1 (exit 111, unimplemented).
@@ -62,6 +68,10 @@ pub const Report = struct {
     update_available: bool = false,
     status: Status,
     detail: []const u8,
+    /// One-line remediation for a failed run — the flag, env var, or
+    /// command that fixes it (the same convention the {"err"} envelope's
+    /// "hint" field follows). Present only when status is "failed".
+    hint: ?[]const u8 = null,
     release_url: ?[]const u8 = null,
     install_dir: ?[]const u8 = null,
     /// CHANGELOG sections between the installed and target versions;
@@ -97,6 +107,11 @@ pub fn formatReport(arena: std.mem.Allocator, r: Report) ![]u8 {
     try buf.appendSlice(arena, "\",\"detail\":\"");
     try json.escapeInto(arena, &buf, r.detail);
     try buf.appendSlice(arena, "\"");
+    if (r.hint) |h| {
+        try buf.appendSlice(arena, ",\"hint\":\"");
+        try json.escapeInto(arena, &buf, h);
+        try buf.appendSlice(arena, "\"");
+    }
     if (r.release_url) |u| {
         try buf.appendSlice(arena, ",\"release_url\":\"");
         try json.escapeInto(arena, &buf, u);
@@ -283,39 +298,69 @@ fn confirm(r: *std.Io.Reader, prompt: []const u8) bool {
     return std.ascii.eqlIgnoreCase(t, "y") or std.ascii.eqlIgnoreCase(t, "yes");
 }
 
+/// Map a failed install.sh run's stderr to the one-line remediation hint
+/// the report's "hint" field carries. Substring-matched against the
+/// installer's own failure lines — that message set is a stable contract
+/// documented in docs/troubleshooting.md ("Install & upgrade failures").
+/// First match wins; unknown output gets the generic retry hint.
+pub fn installerHint(stderr: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, stderr, "checksum verification failed") != null)
+        return "the asset's SHA256 did not match the release manifest — retry; if it persists, distrust the mirror (do not bypass with TAU_SKIP_CHECKSUM=1 unless the source is trusted)";
+    if (std.mem.indexOf(u8, stderr, "is not listed in SHA256SUMS") != null)
+        return "the asset is missing from the release checksum manifest — fix the mirror or pick another version";
+    if (std.mem.indexOf(u8, stderr, "could not download SHA256SUMS") != null)
+        return "the release ships no checksum manifest — fix the mirror (TAU_SKIP_CHECKSUM=1 bypasses on a trusted source only)";
+    if (std.mem.indexOf(u8, stderr, "no sha256sum") != null)
+        return "no checksum tool on PATH — install coreutils (TAU_SKIP_CHECKSUM=1 bypasses on a trusted source only)";
+    if (std.mem.indexOf(u8, stderr, "download failed") != null)
+        return "the release asset could not be downloaded — check the network/proxy or TAU_BASE_URL mirror, then retry";
+    if (std.mem.indexOf(u8, stderr, "failed to extract") != null)
+        return "the downloaded archive is corrupt or truncated — retry; if it persists, distrust the mirror";
+    if (std.mem.indexOf(u8, stderr, "cannot create install dir") != null or
+        std.mem.indexOf(u8, stderr, "cannot write") != null)
+        return "the install destination is not writable — pass --dir/TAU_INSTALL_DIR or fix permissions";
+    if (std.mem.indexOf(u8, stderr, "unsupported OS") != null or
+        std.mem.indexOf(u8, stderr, "unsupported architecture") != null)
+        return "no prebuilt asset for this platform — build from source (see README 'Build & Install')";
+    if (std.mem.indexOf(u8, stderr, "curl not found") != null or
+        std.mem.indexOf(u8, stderr, "tar not found") != null)
+        return "the installer needs curl and tar on PATH — install them or build from source";
+    return "the installer failed — see its log on stderr, or install manually via install.sh";
+}
+
 /// Download the installer, stage it, run `sh install.sh --version <latest>
 /// [--dir <d>]` and relay its progress to stderr so stdout stays a pure
 /// JSON result. Returns the post-install Report (caller fills the release
 /// fields and maps status to an exit code).
 fn runInstaller(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, url: []const u8, latest: []const u8, dir: ?[]const u8) Report {
     const fail = struct {
-        fn f(status: Status, detail: []const u8, d: ?[]const u8) Report {
-            return .{ .checked = true, .status = status, .detail = detail, .install_dir = d };
+        fn f(status: Status, detail: []const u8, hint: []const u8, d: ?[]const u8) Report {
+            return .{ .checked = true, .status = status, .detail = detail, .hint = hint, .install_dir = d };
         }
     }.f;
 
     const body = update.fetchLatest(io, gpa, arena, url) orelse
-        return fail(.failed, std.fmt.allocPrint(arena, "installer download failed ({s})", .{url}) catch "installer download failed", dir);
+        return fail(.failed, std.fmt.allocPrint(arena, "installer download failed ({s})", .{url}) catch "installer download failed", "the release tag's install.sh could not be fetched — check the network/proxy or set TAU_INSTALL_URL to a reachable mirror, then retry", dir);
     defer gpa.free(body);
 
     const tmp = stageDir(io, arena, env) orelse
-        return fail(.failed, "could not create a staging dir under TMPDIR", dir);
+        return fail(.failed, "could not create a staging dir under TMPDIR", "set TMPDIR to a writable directory and retry", dir);
     defer std.Io.Dir.cwd().deleteTree(io, tmp) catch {};
     const script = std.fmt.allocPrint(arena, "{s}/install.sh", .{tmp}) catch
-        return fail(.failed, "out of memory staging the installer", dir);
+        return fail(.failed, "out of memory staging the installer", "set TMPDIR to a writable directory and retry", dir);
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = script, .data = body }) catch
-        return fail(.failed, "could not write the staged installer", dir);
+        return fail(.failed, "could not write the staged installer", "set TMPDIR to a writable directory and retry", dir);
 
     var argv: std.ArrayList([]const u8) = .empty;
     argv.appendSlice(arena, &.{ "sh", script, "--version", latest }) catch
-        return fail(.failed, "out of memory building the installer command", dir);
+        return fail(.failed, "out of memory building the installer command", "retry; if it persists, install manually via install.sh", dir);
     if (dir) |d| argv.appendSlice(arena, &.{ "--dir", d }) catch {};
 
     const res = std.process.run(gpa, io, .{
         .argv = argv.items,
         .stdout_limit = .unlimited,
         .stderr_limit = .unlimited,
-    }) catch return fail(.failed, "could not launch the installer (sh not on PATH?)", dir);
+    }) catch return fail(.failed, "could not launch the installer (sh not on PATH?)", "install.sh runs via sh — ensure a POSIX shell is on PATH, or run the installer manually", dir);
     defer gpa.free(res.stdout);
     defer gpa.free(res.stderr);
     // The installer narrates on both streams; relay to stderr so our
@@ -334,9 +379,9 @@ fn runInstaller(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, en
                     .install_dir = dir,
                 };
             }
-            return fail(.failed, std.fmt.allocPrint(arena, "installer exited {d} — see stderr for its log", .{code}) catch "installer failed", dir);
+            return fail(.failed, std.fmt.allocPrint(arena, "installer exited {d} — see stderr for its log", .{code}) catch "installer failed", installerHint(res.stderr), dir);
         },
-        else => return fail(.failed, "installer terminated abnormally", dir),
+        else => return fail(.failed, "installer terminated abnormally", "retry; if it persists, run install.sh manually and file its log via `tau bug`", dir),
     }
 }
 
@@ -354,6 +399,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
             .checked = false,
             .status = if (disabled) .skipped else .failed,
             .detail = res.reason orelse "release lookup unavailable",
+            .hint = if (disabled) null else "the release lookup is unreachable — check the network/proxy (tau doctor reports proxy_env) or set TAU_UPDATE_URL to a reachable mirror, then retry",
         });
         return 1;
     }
@@ -364,6 +410,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
             .checked = true,
             .status = .failed,
             .detail = res.reason orelse "release tag not comparable",
+            .hint = "the release payload's tag is not a usable version — file it via `tau bug`, or upgrade manually with install.sh",
         });
         return 1;
     };
@@ -544,6 +591,60 @@ test "formatReport: pinned JSON shape for each outcome" {
     });
     try testing.expect(std.mem.indexOf(u8, esc, "\\\"c:\\\\dir\\\"") != null);
     try testing.expect(std.mem.indexOf(u8, esc, "not found\\n") != null);
+}
+
+test "formatReport: hint serializes after detail, absent when null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const rep = try formatReport(a, .{
+        .checked = false,
+        .status = .failed,
+        .detail = "release lookup failed (http://127.0.0.1:1/)",
+        .hint = "check the network, then retry",
+    });
+    try testing.expect(std.mem.indexOf(u8, rep, "\"status\":\"failed\",\"detail\":\"release lookup failed (http://127.0.0.1:1/)\",\"hint\":\"check the network, then retry\"") != null);
+
+    // Hints keep the JSON valid when they carry quotes.
+    const esc = try formatReport(a, .{
+        .checked = true,
+        .status = .failed,
+        .detail = "installer exited 1",
+        .hint = "say \"no\" to TAU_SKIP_CHECKSUM",
+    });
+    try testing.expect(std.mem.indexOf(u8, esc, "\\\"no\\\"") != null);
+}
+
+test "installerHint: install.sh failure lines map to remediation hints" {
+    const H = struct {
+        fn has(haystack: []const u8, needle: []const u8) bool {
+            return std.mem.indexOf(u8, haystack, needle) != null;
+        }
+    };
+
+    // Checksum mismatch -> distrust-the-mirror guidance, not a bypass.
+    const ck = installerHint("install.sh: checksum verification failed for tau-linux-x86_64.tar.gz — the download is corrupted or tampered; aborting\n");
+    try testing.expect(H.has(ck, "SHA256"));
+    try testing.expect(H.has(ck, "TAU_SKIP_CHECKSUM"));
+
+    // A mirror missing the manifest vs the asset missing from the manifest.
+    try testing.expect(H.has(installerHint("install.sh: could not download SHA256SUMS.txt for release v9.9.9\n"), "no checksum manifest"));
+    try testing.expect(H.has(installerHint("install.sh: tau-linux-x86_64.tar.gz is not listed in SHA256SUMS.txt\n"), "missing from the release checksum manifest"));
+
+    // Interrupted/missing download -> network/mirror retry.
+    try testing.expect(H.has(installerHint("install.sh: download failed — check that release v9.9.9 ships tau-linux-x86_64.tar.gz\n"), "could not be downloaded"));
+
+    // Truncated archive that passed a regenerated manifest -> extract fail.
+    try testing.expect(H.has(installerHint("install.sh: failed to extract tau-linux-x86_64.tar.gz\n"), "corrupt or truncated"));
+
+    // Destination + platform + prerequisite failures.
+    try testing.expect(H.has(installerHint("install.sh: cannot write /root/bin/tau\n"), "not writable"));
+    try testing.expect(H.has(installerHint("install.sh: unsupported OS 'FreeBSD'\n"), "no prebuilt asset"));
+    try testing.expect(H.has(installerHint("install.sh: curl not found on PATH\n"), "curl and tar"));
+
+    // Unknown installer output falls back to the generic retry hint.
+    try testing.expect(H.has(installerHint("install.sh: something else broke\n"), "install.sh"));
 }
 
 test "formatReport: changelog entries serialize as {version,notes} objects" {

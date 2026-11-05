@@ -1,0 +1,4 @@
+install.sh: platform=<OS>-<ARCH> release=v99.9.9 dest=<HOME>/ug-dest
+install.sh: url=file://<HOME>/ug-srv-ck/download/v99.9.9/tau-<OS>-<ARCH>.tar.gz
+checksum-tool: <MSG>
+install.sh: checksum verification failed for tau-<OS>-<ARCH>.tar.gz — the download is corrupted or tampered; aborting
