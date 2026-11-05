@@ -97,6 +97,7 @@ ALL_TEST_GROUPS=(
   "update:test_group_update"
   "upgrade:test_group_upgrade"
   "errors-doc:test_group_errors_doc"
+  "error-coverage:test_group_error_coverage"
   "config-doc:test_group_config_doc"
   "doctor-schema:test_group_doctor_schema"
   "cli-schemas:test_group_cli_schemas"
@@ -4389,6 +4390,53 @@ test_group_errors_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/errors.md.bak" "$doc"
   else
     skip_test "errors-doc: --check detects a stale doc" "docs/errors.md missing"
+  fi
+}
+
+# Group: error-catalog golden coverage gate
+# docs/errors.md declares the stable exit-code contract; scripts/
+# check-error-golden-coverage.py fails when a catalog code is exercised by
+# no golden test (a tests/golden {"err"} envelope or a golden_check*
+# want-exit). Windows-only codes (111) are pinned by the platform-gated
+# contract assertions in the acp/upgrade groups — the checker requires
+# those "code":N greps too, so that coverage can't silently rot either.
+test_group_error_coverage() {
+  note "error-catalog golden coverage gate"
+
+  local check="$ROOT/scripts/check-error-golden-coverage.py"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "error-coverage: every catalog code is golden-exercised" "python3 not on PATH"
+    skip_test "error-coverage: checker detects an unexercised code" "python3 not on PATH"
+    skip_test "error-coverage: platform-gated codes still require assertions" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$check" >/dev/null 2>&1; then
+    ok "error-coverage: every catalog code is golden-exercised" 0 0
+  else
+    ok "error-coverage: every catalog code is golden-exercised" 1 0
+  fi
+
+  # Prove the gate isn't vacuous: a catalog carrying a code no golden
+  # exercises must fail against the real golden set + smoke script.
+  local stage="$SMOKE_TEMP/error-coverage"
+  mkdir -p "$stage"
+  cp "$ROOT/docs/errors.md" "$stage/errors.md"
+  printf '| `199` | `ghost` | `false` | staged | staged | [x](y) |\n' >> "$stage/errors.md"
+  if python3 "$check" --catalog "$stage/errors.md" >/dev/null 2>&1; then
+    ok "error-coverage: checker detects an unexercised code" 0 1
+  else
+    ok "error-coverage: checker detects an unexercised code" 0 0
+  fi
+
+  # A platform-only code with its contract grep stripped must fail too —
+  # the exemption can't be a silent escape hatch.
+  : > "$stage/no-contract-smoke.sh"
+  if python3 "$check" --smoke "$stage/no-contract-smoke.sh" >/dev/null 2>&1; then
+    ok "error-coverage: platform-gated codes still require assertions" 0 1
+  else
+    ok "error-coverage: platform-gated codes still require assertions" 0 0
   fi
 }
 
