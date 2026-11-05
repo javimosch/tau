@@ -2336,6 +2336,9 @@ test_group_setup() {
   contains "--client all covers gemini" "$s12_out" '"client":"gemini"'
   contains "--client all covers claude-desktop" "$s12_out" '"client":"claude-desktop"'
   contains "--client all covers opencode" "$s12_out" '"client":"opencode"'
+  contains "--client all covers cline" "$s12_out" '"client":"cline"'
+  contains "--client all covers goose" "$s12_out" '"client":"goose"'
+  contains "--client all covers continue" "$s12_out" '"client":"continue"'
   [ -f "$mock_home10/.config/Code/User/settings.json" ]; ok "vscode settings written" "$?" 0
   grep -q '"acp.agents"' "$mock_home10/.config/Code/User/settings.json"; ok "vscode uses acp.agents key" "$?" 0
   [ -f "$mock_home10/.config/Cursor/User/settings.json" ]; ok "cursor settings written" "$?" 0
@@ -2348,6 +2351,12 @@ test_group_setup() {
   grep -q '"mcpServers"' "$mock_home10/.gemini/settings.json"; ok "gemini uses mcpServers key" "$?" 0
   [ -f "$mock_home10/.config/opencode/opencode.json" ]; ok "opencode.json written" "$?" 0
   grep -q '"type": "local"' "$mock_home10/.config/opencode/opencode.json"; ok "opencode uses mcp local-server shape" "$?" 0
+  [ -f "$mock_home10/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" ]; ok "cline_mcp_settings.json written" "$?" 0
+  grep -q '"mcpServers"' "$mock_home10/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"; ok "cline uses mcpServers key" "$?" 0
+  [ -f "$mock_home10/.config/tau/snippets/goose.yaml" ]; ok "goose.yaml snippet written" "$?" 0
+  grep -q 'cmd: npx' "$mock_home10/.config/tau/snippets/goose.yaml"; ok "goose snippet uses cmd/args YAML shape" "$?" 0
+  [ -f "$mock_home10/.config/tau/snippets/continue.yaml" ]; ok "continue.yaml snippet written" "$?" 0
+  grep -q 'mcpServers:' "$mock_home10/.config/tau/snippets/continue.yaml"; ok "continue snippet uses mcpServers list" "$?" 0
   [ -f "$mock_home10/.config/mcacp/mcacp.json" ]; ok "shared mcacp bridge config written" "$?" 0
   grep -q '"acp", "serve"' "$mock_home10/.config/mcacp/mcacp.json"; ok "mcacp.json wires tau acp serve" "$?" 0
 
@@ -2671,12 +2680,13 @@ test_group_client_examples() {
 
   # MCP-bridge client files carry no tau path — they launch `npx mcacp` — so
   # they diff byte-for-byte with no normalization.
-  for spec in windsurf gemini claude-desktop opencode; do
+  for spec in windsurf gemini claude-desktop opencode cline; do
     case "$spec" in
       windsurf)       want="$h/.codeium/windsurf/mcp_config.json" ;;
       gemini)         want="$h/.gemini/settings.json" ;;
       claude-desktop) want="$h/.config/Claude/claude_desktop_config.json" ;;
       opencode)       want="$h/.config/opencode/opencode.json" ;;
+      cline)          want="$h/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" ;;
     esac
     cmp -s "$want" "$ex/$spec.json"
     ok "$spec.json matches setup --client output" "$?" 0
@@ -2727,8 +2737,8 @@ mc = json.load(open(sys.argv[-1]))
 tau = mc.get("agent_servers", {}).get("tau", {})
 sys.exit(0 if ok and tau.get("args") == ["acp", "serve"] else 1)' \
     "$ex/claude-desktop.json" "$ex/windsurf.json" "$ex/gemini.json" \
-    "$ex/opencode.json" "$ex/mcacp.json" 2>/dev/null
-  ok "claude-desktop/windsurf/gemini/opencode + mcacp.json wire the bridge to tau" "$?" 0
+    "$ex/cline.json" "$ex/opencode.json" "$ex/mcacp.json" 2>/dev/null
+  ok "claude-desktop/windsurf/gemini/opencode/cline + mcacp.json wire the bridge to tau" "$?" 0
 }
 
 # Group: per-client setup guides drift check — docs/clients/*.md embed
@@ -3903,6 +3913,18 @@ test_group_golden_onboarding() {
     golden_check_n ob-setup-client-opencode 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client opencode
     golden_file    ob-setup-opencode.json "$_GOLDEN_HOME/.config/opencode/opencode.json"
     golden_file    ob-setup-opencode.mcacp "$_GOLDEN_HOME/.config/mcacp/mcacp.json"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-cline 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client cline
+    golden_file    ob-setup-cline.json "$_GOLDEN_HOME/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-goose 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client goose
+    golden_file    ob-setup-goose.yaml "$_GOLDEN_HOME/.config/tau/snippets/goose.yaml"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-continue 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client continue
+    golden_file    ob-setup-continue.yaml "$_GOLDEN_HOME/.config/tau/snippets/continue.yaml"
 
     # --import: merge the user's MCP servers into the wired bridge client —
     # a fresh file carries mcacp plus every imported entry; the remote one

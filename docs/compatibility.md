@@ -18,7 +18,8 @@ dedicated per-client guide for each client with verified snippets:
 [Neovim](clients/nvim.md), [Emacs](clients/emacs.md),
 [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
 [Claude Desktop](clients/claude-desktop.md),
-[OpenCode](clients/opencode.md).
+[OpenCode](clients/opencode.md), [Cline](clients/cline.md),
+[Goose](clients/goose.md), [Continue](clients/continue.md).
 
 ## Supported editor clients
 
@@ -32,8 +33,11 @@ dedicated per-client guide for each client with verified snippets:
 | `jetbrains` | `jetbrains` | `~/.jetbrains` | `~/.jetbrains/acp.json` | `agent_servers` | none | `~/.config/tau/snippets/jetbrains.jsonc` | `client_jetbrains` / `wire_client_jetbrains` |
 | `windsurf` (mcacp) | `windsurf` | `~/.codeium/windsurf` | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | none | `~/.config/tau/snippets/windsurf.jsonc` | `client_windsurf` / `wire_client_windsurf` |
 | `gemini` (mcacp) | `gemini` (alias `gemini-cli`) | `~/.gemini` | `~/.gemini/settings.json` | `mcpServers` | none | `~/.config/tau/snippets/gemini.jsonc` | `client_gemini` / `wire_client_gemini` |
-| `claude_desktop` (mcacp) | `claude-desktop` (alias `claude`) | `~/.config/Claude` | `~/.config/Claude/claude_desktop_config.json` | `mcpServers` | none | `~/.config/tau/snippets/claude-desktop.jsonc` | `client_claude_desktop` / `wire_client_claude_desktop` |
+| `claude-desktop` (mcacp) | `claude-desktop` (alias `claude`) | `~/.config/Claude` | `~/.config/Claude/claude_desktop_config.json` | `mcpServers` | none | `~/.config/tau/snippets/claude-desktop.jsonc` | `client_claude_desktop` / `wire_client_claude_desktop` |
 | `opencode` (mcacp) | `opencode` | `~/.config/opencode` | `~/.config/opencode/opencode.json` | `mcp` | none | `~/.config/tau/snippets/opencode.jsonc` | `client_opencode` / `wire_client_opencode` |
+| `cline` (mcacp) | `cline` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `mcpServers` | none | `~/.config/tau/snippets/cline.jsonc` | `client_cline` / `wire_client_cline` |
+| `goose` (mcacp) | `goose` | `~/.config/goose` | — (YAML config) | — | — | `~/.config/tau/snippets/goose.yaml` | `client_goose` (manual only — YAML config) |
+| `continue` (mcacp) | `continue` | `~/.continue` | — (YAML config) | — | — | `~/.config/tau/snippets/continue.yaml` | `client_continue` (manual only — YAML config) |
 
 `tau setup --client all` expands to every row. Detection (setup with no
 `--client`, or `tau doctor`) only *reports* clients whose config dir
@@ -55,7 +59,7 @@ the editor runs `command` + `args`, and `args` must be exactly
 }
 ```
 
-MCP-bridge clients (`windsurf`, `gemini`, `claude_desktop`, `opencode`) speak MCP, not ACP — they can't
+MCP-bridge clients (`windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`, `goose`, `continue`) speak MCP, not ACP — they can't
 spawn `tau acp serve` directly. Their server entry launches
 the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:
 
@@ -82,6 +86,12 @@ array — the same bridge, a different entry shape:
 }
 ```
 
+Goose and Continue (`goose`, `continue`) speak MCP too but keep
+their config in YAML, not JSON — `tau setup` can't splice a
+YAML file, so it wires the shared bridge config and drops a
+paste-ready YAML snippet (the `extensions:` / `mcpServers:`
+block from each client's guide) for the user to merge.
+
 `tau setup --client` writes the matching bridge config too —
 `~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau`
 entry in the direct-ACP shape above (one file, shared by every
@@ -91,7 +101,7 @@ bridge client; `tau doctor` checks both halves).
 |------|--------|
 | Client settings files (matrix above) | JSONC — `//` and `/* */` comments are tolerated and preserved: existing files are never rewritten, setup emits a paste-ready snippet instead |
 | `~/.config/mcacp/mcacp.json` | JSONC — the mcacp MCP→ACP bridge's `agent_servers.tau` entry, shared by every bridge client |
-| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell |
+| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell; `.yaml` for Goose/Continue (YAML MCP config) |
 | `~/.config/tau/config.json` | JSONC — see [docs/config.md](config.md) and `schema/tau-config.schema.json` |
 
 ## Required tau versions
@@ -122,5 +132,8 @@ After tau writes (or previews) the config, one in-editor step remains:
 | `jetbrains` | open the AI Chat tool window and pick tau in the agent selector |
 | `windsurf` | install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers |
 | `gemini` | install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools |
-| `claude_desktop` | install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server |
+| `claude-desktop` | install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server |
 | `opencode` | install mcacp (npm i -g mcacp or npx), restart OpenCode, and check the mcacp server with 'opencode mcp list' |
+| `cline` | install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Cline pane |
+| `goose` | install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.config/goose/config.yaml, then run 'goose session' and ask about the mcacp tools |
+| `continue` | install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.continue/config.yaml, restart Continue, and use agent mode to see tau's tools |

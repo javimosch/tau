@@ -445,11 +445,11 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 // --- Step 3: editor ACP clients --------------------------------------------
 
 /// Editor clients setup can configure to spawn `tau acp serve`.
-pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop, opencode };
+pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop, opencode, cline, goose, continue_ };
 
 /// Every ClientKind, in the order `--client all` expands and detection
 /// iterates: direct ACP clients first, then the MCP-bridge clients.
-pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode };
+pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_ };
 
 pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
@@ -463,6 +463,9 @@ pub fn clientName(k: ClientKind) []const u8 {
         .gemini => "gemini",
         .claude_desktop => "claude-desktop",
         .opencode => "opencode",
+        .cline => "cline",
+        .goose => "goose",
+        .continue_ => "continue",
     };
 }
 
@@ -479,6 +482,9 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "gemini") or std.mem.eql(u8, name, "gemini-cli")) return .gemini;
     if (std.mem.eql(u8, name, "claude-desktop") or std.mem.eql(u8, name, "claude")) return .claude_desktop;
     if (std.mem.eql(u8, name, "opencode")) return .opencode;
+    if (std.mem.eql(u8, name, "cline")) return .cline;
+    if (std.mem.eql(u8, name, "goose")) return .goose;
+    if (std.mem.eql(u8, name, "continue")) return .continue_;
     return null;
 }
 
@@ -487,10 +493,13 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
 /// settings entry launches the bridge (`npx mcacp`); the bridge's own
 /// config (~/.config/mcacp/mcacp.json) carries the real tau agent entry.
 /// (OpenCode *serves* ACP via `opencode acp` but consumes MCP servers —
-/// same bridge path as the other MCP-only clients.)
+/// same bridge path as the other MCP-only clients. Goose and Continue are
+/// MCP clients too but their configs are YAML, not JSON — setup wires the
+/// shared bridge file and emits a paste-ready YAML snippet instead of
+/// touching the client config.)
 pub fn clientUsesBridge(k: ClientKind) bool {
     return switch (k) {
-        .windsurf, .gemini, .claude_desktop, .opencode => true,
+        .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_ => true,
         else => false,
     };
 }
@@ -515,7 +524,8 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
         .gemini => try std.fmt.allocPrint(arena, "{s}/.gemini/settings.json", .{home}),
         .claude_desktop => try std.fmt.allocPrint(arena, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
         .opencode => try std.fmt.allocPrint(arena, "{s}/.config/opencode/opencode.json", .{home}),
-        .nvim, .emacs => null,
+        .cline => try std.fmt.allocPrint(arena, "{s}/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", .{home}),
+        .nvim, .emacs, .goose, .continue_ => null,
     };
 }
 
@@ -535,6 +545,11 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
         // ~/.emacs.d is what an agent-shell user almost always has.
         .emacs => std.fmt.allocPrint(arena, "{s}/.emacs.d", .{home}),
         .opencode => std.fmt.allocPrint(arena, "{s}/.config/opencode", .{home}),
+        // Cline is a VS Code extension — its per-extension globalStorage
+        // dir is what exists once Cline has run.
+        .cline => std.fmt.allocPrint(arena, "{s}/.config/Code/User/globalStorage/saoudrizwan.claude-dev", .{home}),
+        .goose => std.fmt.allocPrint(arena, "{s}/.config/goose", .{home}),
+        .continue_ => std.fmt.allocPrint(arena, "{s}/.continue", .{home}),
     };
 }
 
@@ -545,11 +560,11 @@ fn clientSectionKey(k: ClientKind) []const u8 {
     return switch (k) {
         .zed, .jetbrains => "agent_servers",
         .vscode, .cursor => "acp.agents",
-        .windsurf, .gemini, .claude_desktop => "mcpServers",
+        .windsurf, .gemini, .claude_desktop, .cline => "mcpServers",
         // OpenCode's MCP servers live under the top-level "mcp" object —
         // mcp.<name> entries, not mcpServers.<name>.
         .opencode => "mcp",
-        .nvim, .emacs => unreachable,
+        .nvim, .emacs, .goose, .continue_ => unreachable,
     };
 }
 
@@ -565,6 +580,9 @@ fn clientNextStep(k: ClientKind) []const u8 {
         .gemini => "install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools",
         .claude_desktop => "install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server",
         .opencode => "install mcacp (npm i -g mcacp or npx), restart OpenCode, and check the mcacp server with 'opencode mcp list'",
+        .cline => "install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Cline pane",
+        .goose => "install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.config/goose/config.yaml, then run 'goose session' and ask about the mcacp tools",
+        .continue_ => "install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.continue/config.yaml, restart Continue, and use agent mode to see tau's tools",
         .nvim => "pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)",
         .emacs => "paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau",
     };
@@ -582,6 +600,8 @@ fn snippetPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 
     const ext: []const u8 = switch (k) {
         .nvim => "lua",
         .emacs => "el",
+        .goose => "yaml",
+        .continue_ => "yaml",
         else => "jsonc",
     };
     return std.fmt.allocPrint(arena, "{s}/.config/tau/snippets/{s}.{s}", .{ home, clientName(k), ext });
@@ -646,7 +666,7 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
         , .{cmd}),
         // MCP-bridge clients launch the mcacp bridge, never tau directly —
         // their file carries no tau command path at all.
-        .windsurf, .gemini, .claude_desktop => std.fmt.allocPrint(arena,
+        .windsurf, .gemini, .claude_desktop, .cline => std.fmt.allocPrint(arena,
             \\{{
             \\  "mcpServers": {{
             \\    "mcacp": {{
@@ -671,7 +691,7 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
             \\}}
             \\
         , .{}),
-        .nvim, .emacs => unreachable,
+        .nvim, .emacs, .goose, .continue_ => unreachable,
     };
 }
 
@@ -698,6 +718,9 @@ fn renderMcacpJson(arena: std.mem.Allocator, command: []const u8) ![]u8 {
 /// whole document — it splices into the top-level object by hand.
 fn renderClientSnippet(arena: std.mem.Allocator, k: ClientKind, command: []const u8) ![]u8 {
     if (clientUsesBridge(k)) {
+        // YAML-configured MCP clients get a YAML fragment — the JSONC
+        // splice shapes below don't apply to config.yaml files.
+        if (k == .goose or k == .continue_) return renderYamlBridgeSnippet(arena, k);
         if (k == .opencode) {
             return std.fmt.allocPrint(arena,
                 \\// tau via the mcacp MCP->ACP bridge — merge into your {s} settings file.
@@ -747,6 +770,47 @@ fn renderClientSnippet(arena: std.mem.Allocator, k: ClientKind, command: []const
         \\}}
         \\
     , .{ clientName(k), section, section, type_line, esc.items });
+}
+
+/// The ready-to-paste YAML fragment for MCP clients whose config is YAML —
+/// Goose's `extensions:` map (~/.config/goose/config.yaml) and Continue's
+/// `mcpServers:` list (~/.continue/config.yaml). Written to
+/// ~/.config/tau/snippets/<client>.yaml; the bridge half of the wiring is
+/// configured separately (see snippets/mcacp.jsonc).
+fn renderYamlBridgeSnippet(arena: std.mem.Allocator, k: ClientKind) ![]u8 {
+    return switch (k) {
+        .goose => std.fmt.allocPrint(arena,
+            \\# tau via the mcacp MCP->ACP bridge — merge into ~/.config/goose/config.yaml.
+            \\# If an "extensions:" map already exists, add just the inner "mcacp"
+            \\# entry to it; otherwise add the whole block. The bridge itself is
+            \\# configured separately — see snippets/mcacp.jsonc.
+            \\extensions:
+            \\  mcacp:
+            \\    type: stdio
+            \\    name: mcacp
+            \\    enabled: true
+            \\    cmd: npx
+            \\    args: ["-y", "mcacp"]
+            \\    envs: {{}}
+            \\    timeout: 300
+            \\
+        , .{}),
+        .continue_ => std.fmt.allocPrint(arena,
+            \\# tau via the mcacp MCP->ACP bridge — merge into ~/.continue/config.yaml.
+            \\# If a top-level "mcpServers:" list already exists, append just the
+            \\# list item to it; otherwise add the whole block. The bridge itself
+            \\# is configured separately — see snippets/mcacp.jsonc.
+            \\mcpServers:
+            \\  - name: mcacp
+            \\    command: npx
+            \\    args:
+            \\      - "-y"
+            \\      - "mcacp"
+            \\    env: {{}}
+            \\
+        , .{}),
+        else => unreachable,
+    };
 }
 
 /// The paste-ready fragment for an existing ~/.config/mcacp/mcacp.json that
@@ -894,13 +958,14 @@ fn bridgeHasTau(arena: std.mem.Allocator, bytes: []const u8) ?bool {
     return sectionHasEntry(arena, "agent_servers", "tau", bytes);
 }
 
-/// How one client's `tau acp serve` wiring looks to `tau doctor`. nvim
-/// always reports .manual_only — its plugin config is Lua and can't be
-/// introspected safely; the JSON clients classify their settings file.
+/// How one client's `tau acp serve` wiring looks to `tau doctor`. Snippet-
+/// only clients (nvim/emacs — Lua and elisp; goose/continue — YAML) always
+/// report .manual_only; the JSON clients classify their settings file.
 pub const WiringState = enum {
     /// No editor config dir — the client isn't installed here.
     not_detected,
-    /// nvim: wiring lives in Lua; doctor can only point at the snippet.
+    /// Snippet-only client (Lua/elisp/YAML config); doctor can only point
+    /// at the snippet.
     manual_only,
     /// Settings file absent — the fix writes a fresh minimal one.
     missing_file,
@@ -919,7 +984,8 @@ pub const WiringState = enum {
 
 pub const ClientWiring = struct {
     state: WiringState,
-    /// Settings-file path for JSON clients (null for nvim/not_detected).
+    /// Settings-file path for JSON clients (null for manual_only clients
+    /// and not_detected).
     path: ?[]const u8 = null,
     /// What makes a .stale entry broken.
     reason: ?[]const u8 = null,
@@ -944,7 +1010,7 @@ fn acpServeArgs(e: std.json.ObjectMap) bool {
 /// command can't be disproved offline and stays ok.
 pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind) !ClientWiring {
     if (!dirExists(io, try clientConfigDir(arena, home, k))) return .{ .state = .not_detected };
-    if (k == .nvim or k == .emacs) return .{ .state = .manual_only };
+    if (k == .nvim or k == .emacs or k == .goose or k == .continue_) return .{ .state = .manual_only };
     const path = (try clientSettingsPath(arena, home, k)).?;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
         if (err == error.FileNotFound) return .{ .state = .missing_file, .path = path };
@@ -1197,7 +1263,7 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     var list: std.ArrayList(ClientKind) = .empty;
     if (cfg.setup_client) |s| {
         if (std.mem.eql(u8, s, "all")) {
-            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode });
+            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_ });
         } else if (parseClientName(s)) |k| {
             try list.append(arena, k);
         }
@@ -1235,14 +1301,17 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         }
     }.f;
 
-    if (k == .nvim or k == .emacs) {
-        // Snippet-only clients — Neovim ACP plugins are configured in Lua
-        // and Emacs agent-shell in elisp; splicing arbitrary user config is
-        // unsafe, so always emit a paste-ready snippet.
-        const body = if (k == .nvim)
-            try renderNvimSnippet(arena, command)
-        else
-            try renderEmacsSnippet(arena, command);
+    if (k == .nvim or k == .emacs or k == .goose or k == .continue_) {
+        // Snippet-only clients — Neovim ACP plugins are configured in Lua,
+        // Emacs agent-shell in elisp, and Goose/Continue MCP servers in
+        // YAML config files; splicing arbitrary user config is unsafe, so
+        // always emit a paste-ready snippet. (Goose and Continue still get
+        // the shared mcacp bridge file — closeClientEntry handles it.)
+        const body = switch (k) {
+            .nvim => try renderNvimSnippet(arena, command),
+            .emacs => try renderEmacsSnippet(arena, command),
+            else => try renderYamlBridgeSnippet(arena, k),
+        };
         const snip = try snippetPath(arena, home, k);
         _ = writeIfChanged(io, arena, snip, body, dry) catch |err| {
             try fail(arena, entries, snip, err);
@@ -1252,6 +1321,10 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         try js(arena, entries, snip);
         try entries.appendSlice(arena, ",\"editor_detected\":");
         try entries.appendSlice(arena, if (dirExists(io, try clientConfigDir(arena, home, k))) "true" else "false");
+        // --import can't splice YAML — a bridge client taking the
+        // snippet path reports the same empty import list as any other
+        // manual outcome.
+        if (imp and clientUsesBridge(k)) try entries.appendSlice(arena, ",\"imported\":[]");
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
         return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
@@ -1442,7 +1515,9 @@ fn collectImportable(io: std.Io, arena: std.mem.Allocator, home: []const u8, tar
     var seen = std.StringHashMap(ClientKind).init(arena);
     for (all_clients) |src| {
         if (src == target or !clientUsesBridge(src)) continue;
-        const path = (try clientSettingsPath(arena, home, src)).?;
+        // YAML-configured bridge clients (Goose, Continue) have no
+        // settings file to import from.
+        const path = (try clientSettingsPath(arena, home, src)) orelse continue;
         const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
             switch (err) {
                 error.FileNotFound => continue,
@@ -1672,7 +1747,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
             }
         }
         try buf.appendSlice(arena, "],\"hint\":");
-        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all to write editor ACP config");
+        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|all to write editor ACP config");
         try buf.appendSlice(arena, "}");
         emit(&buf);
         return true;
@@ -1787,7 +1862,9 @@ fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k:
     var first = true;
     for (all_clients) |c| {
         if (c == k or !clientUsesBridge(c) or inSet(set, c)) continue;
-        const cpath = (try clientSettingsPath(arena, home, c)).?;
+        // YAML-configured bridge clients (Goose, Continue) carry no
+        // inspectable settings file — they can't vouch for the bridge.
+        const cpath = (try clientSettingsPath(arena, home, c)) orelse continue;
         const b = std.Io.Dir.cwd().readFileAlloc(io, cpath, arena, .unlimited) catch continue;
         if (hasTauEntry(arena, c, b) orelse false) {
             if (!first) try others.appendSlice(arena, ", ");
@@ -1900,16 +1977,24 @@ fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8
     try entries.appendSlice(arena, "{\"client\":");
     try js(arena, entries, clientName(k));
 
-    if (k == .nvim or k == .emacs) {
-        // Init-file wiring (Lua/elisp) can't be introspected or safely
-        // spliced — clean the setup-generated snippet and hand the rest off.
+    if (k == .nvim or k == .emacs or k == .goose or k == .continue_) {
+        // Init-file (Lua/elisp) and YAML wiring can't be introspected or
+        // safely spliced — clean the setup-generated snippet and hand the
+        // rest off. Goose/Continue still close through closeRemoveEntry so
+        // the shared mcacp bridge entry is reverted like any MCP client.
         try removeSnippetFields(io, arena, entries, home, k, dry);
         try entries.appendSlice(arena, ",\"status\":\"manual\",\"reason\":");
-        try js(arena, entries, "init-file wiring cannot be inspected — remove the pasted tau block by hand");
+        try js(arena, entries, switch (k) {
+            .goose, .continue_ => "YAML wiring cannot be inspected — remove the pasted mcacp block by hand",
+            else => "init-file wiring cannot be inspected — remove the pasted tau block by hand",
+        });
         try entries.appendSlice(arena, ",\"next\":");
-        try js(arena, entries, "delete the tau block from your editor init file and restart");
-        try entries.append(arena, '}');
-        return .manual;
+        try js(arena, entries, switch (k) {
+            .goose => "delete the mcacp extension block from ~/.config/goose/config.yaml and restart Goose",
+            .continue_ => "delete the mcacp list item from mcpServers in ~/.continue/config.yaml and restart Continue",
+            else => "delete the tau block from your editor init file and restart",
+        });
+        return closeRemoveEntry(io, arena, entries, home, k, set, dry, .manual);
     }
 
     const path = (try clientSettingsPath(arena, home, k)).?;
@@ -2847,7 +2932,7 @@ test "docs/clients per-client guides mirror the client renderers" {
     // ACP clients verify the two client-* slots; MCP-bridge clients verify
     // all four; snippet-only clients (no JSON settings file) verify just
     // their paste-ready snippet.
-    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false, snippet_only: bool = false };
+    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false, snippet_only: bool = false, yaml: bool = false };
     const guides = [_]Guide{
         .{ .file = "docs/clients/zed.md", .kind = .zed, .direct = true },
         .{ .file = "docs/clients/vscode.md", .kind = .vscode, .direct = true },
@@ -2859,6 +2944,9 @@ test "docs/clients per-client guides mirror the client renderers" {
         .{ .file = "docs/clients/gemini-cli.md", .kind = .gemini },
         .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
         .{ .file = "docs/clients/opencode.md", .kind = .opencode },
+        .{ .file = "docs/clients/cline.md", .kind = .cline },
+        .{ .file = "docs/clients/goose.md", .kind = .goose, .yaml = true },
+        .{ .file = "docs/clients/continue.md", .kind = .continue_, .yaml = true },
     };
     // Marker -> renderer output it must equal ("tau" stands in for the
     // absolute command path, like the smoke group's normalization).
@@ -2883,6 +2971,7 @@ test "docs/clients per-client guides mirror the client renderers" {
                 return switch (k) {
                     .nvim => renderNvimSnippet(al, "tau"),
                     .emacs => renderEmacsSnippet(al, "tau"),
+                    .goose, .continue_ => renderYamlBridgeSnippet(al, k),
                     else => renderClientSnippet(al, k, "tau"),
                 };
             }
@@ -2900,6 +2989,9 @@ test "docs/clients per-client guides mirror the client renderers" {
         for (slots) |s| {
             if (g.direct and std.mem.startsWith(u8, s.marker, "bridge")) continue;
             if (g.snippet_only and !std.mem.eql(u8, s.marker, "client-snippet")) continue;
+            // YAML bridge clients carry no client-file slot (their config
+            // can't be written) but do verify the shared bridge slots.
+            if (g.yaml and std.mem.eql(u8, s.marker, "client-file")) continue;
             const marker = try std.fmt.allocPrint(a, "<!-- setup-verify: {s} -->", .{s.marker});
             const mpos = std.mem.indexOf(u8, doc, marker) orelse {
                 std.debug.print("{s} missing marker '{s}'\n", .{ g.file, marker });

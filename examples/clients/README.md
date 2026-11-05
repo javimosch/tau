@@ -7,9 +7,10 @@ client sees, and restart the client.
 
 `tau setup --client` writes these same files for you (`zed`, `vscode`,
 `cursor`, `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`,
-`all`; `nvim`
-gets a paste-ready Lua snippet and `emacs` a paste-ready elisp snippet
-instead). MCP-only clients also get the shared
+`cline`, `all`; `nvim`
+gets a paste-ready Lua snippet, `emacs` a paste-ready elisp snippet, and
+`goose`/`continue` paste-ready YAML snippets instead). MCP-only clients
+also get the shared
 bridge config `~/.config/mcacp/mcacp.json` written in the same pass:
 
 ```bash
@@ -35,6 +36,7 @@ normalized to `tau`), validates the tau config that setup writes with
 | `gemini.json` + `mcacp.json` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) via the same mcacp bridge | `~/.gemini/settings.json` + `~/.config/mcacp/mcacp.json` |
 | `claude-desktop.json` + `mcacp.json` | Claude Desktop via the [mcacp](https://github.com/Oortonaut/mcacp) MCP↔ACP bridge | `claude_desktop_config.json` (`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows) + `~/.config/mcacp/mcacp.json` |
 | `opencode.json` + `mcacp.json` | [OpenCode](https://opencode.ai) via the same mcacp bridge | `~/.config/opencode/opencode.json` + `~/.config/mcacp/mcacp.json` |
+| `cline.json` + `mcacp.json` | [Cline](https://cline.bot) via the same mcacp bridge | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` + `~/.config/mcacp/mcacp.json` |
 
 If the target file already exists, merge the `"tau"` entry into the existing
 section instead of replacing the file — `tau setup --client` never rewrites an
@@ -57,17 +59,23 @@ existing settings file and drops a paste-ready snippet in
 
 ## MCP clients are a bridge, not a direct connection
 
-Windsurf, Gemini CLI, and Claude Desktop speak MCP, not ACP — they can't
+Windsurf, Gemini CLI, Claude Desktop, OpenCode, Cline, Goose, and
+Continue speak MCP, not ACP — they can't
 spawn `tau acp serve` directly.
 The [mcacp](https://github.com/Oortonaut/mcacp) bridge sits in the middle:
 
 ```
-Windsurf / Gemini CLI / Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+Windsurf / Gemini CLI / Claude Desktop / OpenCode / Cline / Goose / Continue ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
 ```
 
 1. Merge the client's file into its settings path (`windsurf.json`,
-   `gemini.json`, `claude-desktop.json`, or `opencode.json`) — each adds the `mcacp` MCP
-   server, launched with `npx`.
+   `gemini.json`, `claude-desktop.json`, `opencode.json`, or
+   `cline.json`) — each adds the `mcacp` MCP
+   server, launched with `npx`. Goose and Continue keep config in YAML —
+   paste the snippet `tau setup --client goose|continue` drops under
+   `~/.config/tau/snippets/` instead (see
+   [docs/clients/goose.md](../../docs/clients/goose.md) and
+   [docs/clients/continue.md](../../docs/clients/continue.md)).
 2. Copy `mcacp.json` to `~/.config/mcacp/mcacp.json` — this is where the
    bridge learns that `tau` means `tau acp serve`. The `agent_servers` shape
    matches Zed/JetBrains, so the same entry can be copied between them. One
@@ -93,6 +101,9 @@ work the same way — only the agent-declaration file differs.
   [Windsurf](../../docs/clients/windsurf.md),
   [Gemini CLI](../../docs/clients/gemini-cli.md),
   [Claude Desktop](../../docs/clients/claude-desktop.md),
-  [OpenCode](../../docs/clients/opencode.md).
+  [OpenCode](../../docs/clients/opencode.md),
+  [Cline](../../docs/clients/cline.md),
+  [Goose](../../docs/clients/goose.md),
+  [Continue](../../docs/clients/continue.md).
 - [docs/configuration.md](../../docs/configuration.md) — provider, model, and
   API-key resolution for the spawned `tau` process.

@@ -29,7 +29,7 @@ entry plus your imported servers in one fresh write.
 
 ## Which clients participate
 
-`--import` reads from and writes to the four MCP-bridge clients:
+`--import` reads from and writes to the five file-backed MCP-bridge clients:
 
 | `--client` | Settings file | Server section |
 |---|---|---|
@@ -37,6 +37,11 @@ entry plus your imported servers in one fresh write.
 | `gemini` | `~/.gemini/settings.json` | `"mcpServers"` |
 | `claude-desktop` | `~/.config/Claude/claude_desktop_config.json` | `"mcpServers"` |
 | `opencode` | `~/.config/opencode/opencode.json` | `"mcp"` |
+| `cline` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `"mcpServers"` |
+
+Goose and Continue are MCP-bridge clients too, but their config is YAML —
+setup never splices it, so they are neither sources nor targets for
+`--import` (paste the `mcacp` block from their per-client guides instead).
 
 The direct-ACP clients — `zed`, `nvim`, `emacs`, `vscode`, `cursor`,
 `jetbrains` — spawn `tau acp serve` themselves, so they aren't sources or
@@ -94,7 +99,7 @@ Skipped entries are never dropped silently — each lands in
 | Remote servers (`"url"`/`"serverUrl"`-keyed entries, OpenCode `"type":"remote"`) | `remote servers are not imported` — no stdio spawn line to translate to |
 | Entries with no `"command"` string/array | not a stdio/local server entry |
 | `"args"` or `"command"` that isn't a string array | malformed entry shape |
-| A name already imported from another client | `same name already imported from <client>` — first source wins, in windsurf → gemini → claude-desktop → opencode order |
+| A name already imported from another client | `same name already imported from <client>` — first source wins, in windsurf → gemini → claude-desktop → opencode → cline order |
 | Unreadable or unparseable source files | file-level `import_skipped` entry naming the path |
 
 And by design:

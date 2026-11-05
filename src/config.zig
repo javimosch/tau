@@ -247,7 +247,7 @@ pub const Config = struct {
     /// absent.
     setup_shell: ?[]const u8 = null,
     /// `tau setup --client <name>` — ACP editor client to configure
-    /// (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all). Null
+    /// (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|all). Null
     /// skips the clients step.
     /// `TAU_SETUP_CLIENT` is the env fallback when the flag is absent.
     setup_client: ?[]const u8 = null,

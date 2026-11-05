@@ -19,9 +19,11 @@ Slots:
                   mcacp.json (bridge clients only)
 
 Direct ACP clients (zed, vscode, cursor, jetbrains) verify the two client
-slots; MCP-bridge clients (windsurf, gemini, claude-desktop, opencode)
-verify all four. Snippet-only clients (nvim's Lua plugin config, emacs'
-agent-shell elisp) verify just client-snippet. Blocks whose bytes embed
+slots; MCP-bridge clients (windsurf, gemini, claude-desktop, opencode,
+cline) verify all four. YAML bridge clients (goose, continue) verify
+client-snippet + both bridge slots — their YAML config is never written.
+Snippet-only clients (nvim's Lua plugin config, emacs' agent-shell elisp)
+verify just client-snippet. Blocks whose bytes embed
 the absolute path of the tau binary — client-file/client-snippet for
 direct clients, bridge-file/bridge-snippet — get their "command" value
 normalized to "tau" before comparison (`:command` for the elisp snippet,
@@ -58,34 +60,46 @@ GUIDES = {
     "gemini-cli.md": "gemini",
     "claude-desktop.md": "claude-desktop",
     "opencode.md": "opencode",
+    "cline.md": "cline",
+    "goose.md": "goose",
+    "continue.md": "continue",
 }
 
 # MCP-bridge clients wire two files — the client's mcpServers entry plus the
 # shared ~/.config/mcacp/mcacp.json — so their guides carry four verified
 # blocks. Direct ACP clients carry two (their own file + snippet only).
 BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop",
-                            "opencode"))
+                            "opencode", "cline"))
 
-# Snippet-only clients have no JSON settings file — setup always reports
+# YAML-configured bridge clients (Goose's extensions: map, Continue's
+# mcpServers: list) can't be written or spliced — setup always reports
+# "manual" with a YAML snippet but still wires the shared mcacp.json. Their
+# guides carry three verified blocks: client-snippet + both bridge slots.
+YAML_BRIDGE = frozenset(("goose", "continue"))
+
+# Snippet-only clients have no settings file at all — setup always reports
 # "manual" and writes the paste-ready snippet (elisp for emacs, lua for
 # nvim). Their guides carry one verified block.
 SNIPPET_ONLY = frozenset(("emacs", "nvim"))
 
 DIRECT_SLOTS = ("client-file", "client-snippet")
 BRIDGE_SLOTS = ("client-file", "bridge-file", "client-snippet", "bridge-snippet")
+YAML_SLOTS = ("client-snippet", "bridge-file", "bridge-snippet")
 SNIPPET_SLOTS = ("client-snippet",)
 
 
 def slots_for(client):
     if client in BRIDGE_CLIENTS:
         return BRIDGE_SLOTS
+    if client in YAML_BRIDGE:
+        return YAML_SLOTS
     if client in SNIPPET_ONLY:
         return SNIPPET_SLOTS
     return DIRECT_SLOTS
 
 MARKER = re.compile(
     r"<!--\s*setup-verify:\s*(client-file|bridge-file|client-snippet|bridge-snippet)\s*-->"
-    r"\s*```(?:json|jsonc|elisp|lua)\n(.*?)```",
+    r"\s*```(?:json|jsonc|elisp|lua|yaml)\n(.*?)```",
     re.DOTALL,
 )
 
@@ -159,12 +173,21 @@ def collect(tau):
             if entry is None:
                 fail(f"clients step has no entry for {client}")
             slots = out.setdefault(client, {})
-            if client in SNIPPET_ONLY:
+            if client in SNIPPET_ONLY or client in YAML_BRIDGE:
                 if entry.get("status") != "manual":
                     fail(f"{client}: expected status manual, got "
                          f"{entry.get('status')} — {json.dumps(entry)}")
                 with open(entry["snippet_path"], encoding="utf-8") as f:
                     slots["client-snippet"] = norm_snippet(client, f.read())
+                if client in SNIPPET_ONLY:
+                    continue
+                # YAML bridge clients still get the shared mcacp.json.
+                if entry.get("bridge_status") not in ("installed",
+                                                      "already_installed"):
+                    fail(f"{client}: unexpected bridge_status "
+                         f"{entry.get('bridge_status')}")
+                with open(entry["bridge_path"], encoding="utf-8") as f:
+                    slots["bridge-file"] = norm_command(f.read())
                 continue
             if entry.get("status") != "installed":
                 fail(f"{client}: expected status installed, got "
@@ -205,6 +228,8 @@ def collect(tau):
                 '{"mcpServers":{"other":{"command":"x"}}}',
             ".config/opencode/opencode.json":
                 '{"mcp":{"other":{"type":"local","command":["x"]}}}',
+            ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json":
+                '{"mcpServers":{"other":{"command":"x"}}}',
             ".config/mcacp/mcacp.json":
                 '{"agent_servers":{"other":{"command":"y","args":[]}}}',
         }
@@ -228,7 +253,7 @@ def collect(tau):
             slots["client-snippet"] = (norm_command(body)
                                        if client not in BRIDGE_CLIENTS
                                        else body)
-            if client in BRIDGE_CLIENTS:
+            if client in BRIDGE_CLIENTS or client in YAML_BRIDGE:
                 if "bridge_snippet_path" not in entry:
                     fail(f"{client}: no bridge_snippet_path on seeded run")
                 with open(entry["bridge_snippet_path"],

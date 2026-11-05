@@ -12,13 +12,15 @@ full agentic tool loop and streams back `session/update` notifications
 `session/prompt` response carrying a `stopReason`.
 
 > **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `cursor`,
-> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`, `all`)
+> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`,
+> `goose`, `continue`, `all`)
 > writes these
 > configs for you
 > during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
-> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode)
+> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode,
+> Cline, Goose, Continue)
 > also get the
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
 > without `--client` to see which editors were detected. To undo the wiring,
@@ -34,7 +36,8 @@ full agentic tool loop and streams back `session/update` notifications
 > [Neovim](clients/nvim.md), [Emacs](clients/emacs.md),
 > [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
 > [Claude Desktop](clients/claude-desktop.md),
-> [OpenCode](clients/opencode.md)).
+> [OpenCode](clients/opencode.md), [Cline](clients/cline.md),
+> [Goose](clients/goose.md), [Continue](clients/continue.md)).
 
 ## Quick start: tau in Zed
 
@@ -385,6 +388,26 @@ tau setup --client opencode
 
 Both files ship as [`examples/clients/opencode.json`](../examples/clients/opencode.json)
 and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json).
+
+### Cline, Goose, and Continue (via the same MCP↔ACP bridge)
+
+Three more MCP clients wire the same way:
+
+- **Cline** (the `saoudrizwan.claude-dev` VS Code extension) — `tau setup
+  --client cline` writes the standard `mcpServers.mcacp` entry into
+  `cline_mcp_settings.json` plus the shared bridge config; see
+  [docs/clients/cline.md](clients/cline.md).
+- **Goose** — `~/.config/goose/config.yaml` is YAML, so
+  `tau setup --client goose` writes the shared bridge config and drops a
+  paste-ready `extensions:` YAML snippet; see
+  [docs/clients/goose.md](clients/goose.md).
+- **Continue** — `~/.continue/config.yaml` is YAML too;
+  `tau setup --client continue` writes the bridge config plus a
+  `mcpServers:` snippet; see [docs/clients/continue.md](clients/continue.md).
+
+All three launch the bridge (`npx -y mcacp`); the shared
+`~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau` entry
+for every MCP client.
 
 ## Other ACP clients
 

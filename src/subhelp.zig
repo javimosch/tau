@@ -266,7 +266,8 @@ const setup_help =
     \\                         (default: detect $SHELL; env TAU_SETUP_SHELL)
     \\      --client <name>    Editor/ACP client config to write:
     \\                         zed|nvim|emacs|vscode|cursor|jetbrains|
-    \\                         windsurf|gemini|claude-desktop|opencode|all
+    \\                         windsurf|gemini|claude-desktop|opencode|
+    \\                         cline|goose|continue|all
     \\                         (env TAU_SETUP_CLIENT)
     \\      --provider <name>  Seed the config scaffold for a provider
     \\      --model <id>       Passed through to the doctor step
@@ -281,8 +282,9 @@ const setup_help =
     \\      --import           Merge your existing MCP server entries from
     \\                         the other supported clients' settings files
     \\                         into each wired MCP client (windsurf|gemini|
-    \\                         claude-desktop|opencode): the mcacp entry and
-    \\                         your servers are spliced into existing files
+    \\                         claude-desktop|opencode|cline): the mcacp entry
+    \\                         and your servers are spliced into existing
+    \\                         files
     \\                         — comments and current entries survive
     \\                         byte-for-byte, nothing is overwritten.
     \\                         (env TAU_SETUP_IMPORT; not with --remove)
