@@ -99,7 +99,7 @@ added; existing fields keep their names, types, and meaning):
 | `tau init [--json]` | `{"config_path","provider","created","overwritten","detected_env_keys"}` result object (`--stdout` prints the JSONC scaffold instead and is mutex with `--json`) | [schema/tau-init.schema.json](../schema/tau-init.schema.json) |
 | `tau setup [--json]` | one NDJSON object per step + terminal `{"step":"setup",...,"done":true}` verdict (`"dry_run":true` under `--dry-run`, `"yes"`/`"non_interactive"` markers); `--remove`/`--uninstall` emits the `remove_clients` step + verdict (`"remove":true`) instead | [schema/tau-setup.schema.json](../schema/tau-setup.schema.json) |
 | `tau bug [--json]` | `{"title","labels","url","body","report","url_truncated","out","opened","done":true}`; always exit 0 | [schema/tau-bug.schema.json](../schema/tau-bug.schema.json) |
-| `tau upgrade [--json]` | `{"name","version","checked","status","detail",...}` report object; `changelog` entries appear when the release notes fetch succeeds; POSIX-only (exit 111 elsewhere) | [schema/tau-upgrade.schema.json](../schema/tau-upgrade.schema.json) |
+| `tau upgrade [--json]` | `{"name","version","checked","status","detail",...}` report object; `"hint"` appears on failed reports with actionable remediation; `changelog` entries appear when the release notes fetch succeeds; POSIX-only (exit 111 elsewhere) | [schema/tau-upgrade.schema.json](../schema/tau-upgrade.schema.json) |
 | `tau fleet` | manifests + status as pretty-printed JSON on stdout | this file |
 
 These cross-cutting conventions are part of the contract:

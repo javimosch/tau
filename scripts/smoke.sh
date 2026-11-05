@@ -449,11 +449,14 @@ EOF
   contains "opt-out status skipped" "$ug_off_out" '"status":"skipped"'
   contains "opt-out detail names the var" "$ug_off_out" 'TAU_NO_UPDATE_CHECK'
 
-  # 5. Lookup failure -> checked:false, status failed, exit 1.
+  # 5. Lookup failure -> checked:false, status failed, exit 1 — the
+  #    remediation hint names the reachable-mirror override.
   capture ug_miss env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-missing.json" "$BIN" upgrade --yes
   ok "upgrade lookup-failure exit 1" "$ug_miss_rc" 1
   contains "lookup-failure checked:false" "$ug_miss_out" '"checked":false'
   contains "lookup-failure status failed" "$ug_miss_out" '"status":"failed"'
+  contains "lookup-failure carries hint" "$ug_miss_out" '"hint":"'
+  contains "lookup-failure hint names TAU_UPDATE_URL" "$ug_miss_out" 'TAU_UPDATE_URL'
 
   # 6. --dry-run resolves the plan (installer URL + install dir + release
   #    notes) without touching anything — status dry_run, exit 0.
@@ -485,6 +488,7 @@ EOF
   ok "upgrade missing-installer exit 1" "$ug_noinst_rc" 1
   contains "missing-installer status failed" "$ug_noinst_out" '"status":"failed"'
   contains "missing-installer detail" "$ug_noinst_out" 'installer download failed'
+  contains "missing-installer hint names TAU_INSTALL_URL" "$ug_noinst_out" 'TAU_INSTALL_URL'
   contains "missing-installer keeps changelog" "$ug_noinst_out" '"changelog":[{"version":"99.9.9"'
   contains "missing-installer summary on stderr" "$ug_noinst_err" 'changes in tau 0.4.0 -> 99.9.9:'
 
@@ -4201,6 +4205,121 @@ EOF
     TAU_CHANGELOG_URL="file://$stubs/changelog.md" \
     TAU_INSTALL_URL="file://$stubs/no-such-install.sh" \
     TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
+
+  # ── tau upgrade — failure-path goldens carrying the remediation "hint" ──
+  # POSIX-only: these run the real install.sh via `sh`; on Windows
+  # `tau upgrade` exits 111 (unimplemented) before reaching them.
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      for _ug_skip in ug-offline ug-checksum-mismatch ug-asset-missing ug-truncated-asset; do
+        skip_test "golden $_ug_skip" "tau upgrade is POSIX-only (exits 111 here)"
+      done
+      ;;
+    *)
+      # golden_ug <name> <want-exit> <cmd...> — golden_check_n plus two
+      # extra normalizations: the installer's messages embed the
+      # platform asset name (tau-<os>-<arch>.tar.gz differs across the
+      # matrix) and a failed file:// curl echoes a version-dependent
+      # "curl: (NN) ..." line before install.sh's own message.
+      golden_ug() {
+        local name="$1" want="$2"; shift 2
+        local of ef rc
+        of="$(mktemp)"; ef="$(mktemp)"
+        register_temp_file "$of"; register_temp_file "$ef"
+        _golden_env "$@" >"$of" 2>"$ef"; rc=$?
+        _golden_norm "$of"; _golden_norm "$ef"
+        sed -i \
+          -e 's|tau-[a-z0-9_]*-[a-z0-9_]*\.tar\.gz|tau-<OS>-<ARCH>.tar.gz|g' \
+          -e 's|platform=[a-z0-9_]*-[a-z0-9_]*|platform=<OS>-<ARCH>|' \
+          -e 's|^curl: ([0-9][0-9]*) .*|curl: (<RC>) <MSG>|' \
+          -e 's|^tar: .*|tar: <MSG>|' \
+          -e 's|^gzip: .*|gzip: <MSG>|' \
+          -e 's|^sha256sum: .*|checksum-tool: <MSG>|' \
+          -e 's|^shasum: .*|checksum-tool: <MSG>|' \
+          "$of" "$ef"
+        ok "golden $name exit" "$rc" "$want"
+        _golden_stream "$name.stdout" "$of"
+        _golden_stream "$name.stderr" "$ef"
+      }
+
+      # Offline: the lookup host refuses the connection — port 1 is
+      # privileged and never serves, so refusal is instant and
+      # deterministic without reserving a port.
+      golden_ug ug-offline 1 env TAU_UPDATE_URL="http://127.0.0.1:1/release.json" \
+        "$BIN" upgrade --yes
+
+      # Installer-path failures need a release asset name and the real
+      # install.sh, staged under <HOME> so the echoed file:// URLs
+      # normalize. The changelog stub is a missing file on purpose — the
+      # summary must not leak into these failure goldens.
+      local ug_os ug_arch ug_asset
+      case "$(uname -s)" in
+        Linux)  ug_os=linux ;;
+        Darwin) ug_os=macos ;;
+        *)      ug_os="" ;;
+      esac
+      ug_arch="$(uname -m)"
+      case "$ug_arch" in
+        amd64) ug_arch=x86_64 ;;
+        arm64) ug_arch=aarch64 ;;
+      esac
+      ug_asset="tau-$ug_os-$ug_arch.tar.gz"
+
+      if [ -z "$ug_os" ]; then
+        for _ug_skip in ug-checksum-mismatch ug-asset-missing ug-truncated-asset; do
+          skip_test "golden $_ug_skip" "no release asset for this platform"
+        done
+      elif ! { command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; }; then
+        for _ug_skip in ug-checksum-mismatch ug-asset-missing ug-truncated-asset; do
+          skip_test "golden $_ug_skip" "no sha256sum/shasum to stage the manifest"
+        done
+      else
+        cp "$ROOT/install.sh" "$_GOLDEN_HOME/ug-install.sh"
+        mkdir -p "$_GOLDEN_HOME/ug-pkg"
+        printf '#!/bin/sh\necho "tau 99.9.9"\n' > "$_GOLDEN_HOME/ug-pkg/tau"
+
+        # Checksum mismatch: manifest digest intentionally wrong — the
+        # installer fails closed and the report's hint points at the
+        # mirror, not at TAU_SKIP_CHECKSUM.
+        local ug_ck="$_GOLDEN_HOME/ug-srv-ck"
+        mkdir -p "$ug_ck/download/v99.9.9"
+        tar -czf "$ug_ck/download/v99.9.9/$ug_asset" -C "$_GOLDEN_HOME/ug-pkg" tau
+        printf '%064d  %s\n' 0 "$ug_asset" > "$ug_ck/download/v99.9.9/SHA256SUMS.txt"
+        golden_ug ug-checksum-mismatch 1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+          TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
+          TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
+          TAU_BASE_URL="file://$ug_ck" \
+          TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
+
+        # Missing asset (interrupted/absent download): the manifest lists
+        # it but the file isn't there — curl fails before any checksum.
+        local ug_miss="$_GOLDEN_HOME/ug-srv-miss"
+        mkdir -p "$ug_miss/download/v99.9.9"
+        printf '%064d  %s\n' 0 "$ug_asset" > "$ug_miss/download/v99.9.9/SHA256SUMS.txt"
+        golden_ug ug-asset-missing 1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+          TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
+          TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
+          TAU_BASE_URL="file://$ug_miss" \
+          TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
+
+        # Truncated download: a cut-short tarball whose (poisoned) manifest
+        # matches its truncated bytes — verification passes, extraction
+        # fails. Exercises the corrupt-archive hint.
+        local ug_tr="$_GOLDEN_HOME/ug-srv-trunc"
+        mkdir -p "$ug_tr/download/v99.9.9"
+        tar -czf "$ug_tr/full.tar.gz" -C "$_GOLDEN_HOME/ug-pkg" tau
+        head -c 32 "$ug_tr/full.tar.gz" > "$ug_tr/download/v99.9.9/$ug_asset"
+        rm -f "$ug_tr/full.tar.gz"
+        (cd "$ug_tr/download/v99.9.9" && \
+          { sha256sum "$ug_asset" 2>/dev/null || shasum -a 256 "$ug_asset"; } > SHA256SUMS.txt)
+        golden_ug ug-truncated-asset 1 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+          TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
+          TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
+          TAU_BASE_URL="file://$ug_tr" \
+          TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
+      fi
+      ;;
+  esac
 }
 
 # Group: generated docs/errors.md drift check

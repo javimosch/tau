@@ -101,7 +101,12 @@ Installer failures print `install.sh: <message>` (or `install.ps1:
 `{"err"}` envelope, because tau itself never ran. The same messages surface
 when `tau upgrade` fails: it downloads `install.sh` from the release tag and
 runs it in place, relaying the installer log to stderr while stdout stays a
-single JSON result (`{"status":"failed","detail":…}`, exit 1).
+single JSON result (`{"status":"failed","detail":…}`, exit 1). Failed
+reports carry a `"hint"` field with the matching remediation — the same
+one-line guidance as the table below (checksum mismatch → distrust the
+mirror; download failed → check the network/`TAU_BASE_URL`; unwritable
+destination → `--dir`/`TAU_INSTALL_DIR`), so agents can branch on it
+without scraping the installer log.
 
 | Installer message | Cause | Fix |
 |-------------------|-------|-----|

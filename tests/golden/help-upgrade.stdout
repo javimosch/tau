@@ -17,6 +17,9 @@ Options:
 The release notes between your version and the target print before
 any install. POSIX-only; on Windows re-run install.ps1.
 
+Failed runs exit 1 with "status":"failed" plus a "hint" field
+naming the fix (checksum mismatch, download failed, offline ...).
+
 Examples:
   tau upgrade --dry-run
   tau upgrade --yes
