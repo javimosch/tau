@@ -247,6 +247,19 @@ pub fn clearSecretsForTest() void {
     g_secrets = .empty;
 }
 
+/// Test-only counterpart of open(): closes the log file and drops the
+/// open-log globals so a later test can't write through an allocator whose
+/// arena already died, and path() reports the no-log state again.
+pub fn closeForTest() void {
+    if (g_file) |f| {
+        if (g_io) |fio| f.close(fio);
+    }
+    g_file = null;
+    g_io = null;
+    g_alloc = null;
+    g_path = null;
+}
+
 /// Provenance header at the top of every log: what version/config produced
 /// it. Values pass through writeRedacted like everything else.
 fn writeHeader(a: std.mem.Allocator, cfg: cfgmod.Config, p: []const u8, epoch_secs: u64, key_resolved: bool) void {
