@@ -295,7 +295,8 @@ def render(members, clients, fixes, version, acp_since):
     a("[Neovim](clients/nvim.md), [Emacs](clients/emacs.md),")
     a("[Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),")
     a("[Claude Desktop](clients/claude-desktop.md),")
-    a("[OpenCode](clients/opencode.md).")
+    a("[OpenCode](clients/opencode.md), [Cline](clients/cline.md),")
+    a("[Goose](clients/goose.md), [Continue](clients/continue.md).")
     a("")
     a("## Supported editor clients")
     a("")
@@ -305,7 +306,13 @@ def render(members, clients, fixes, version, acp_since):
         c = clients[k]
         cli = f"`{c['cli_names'][0]}`" + "".join(
             f" (alias `{n}`)" for n in c["cli_names"][1:])
-        label = {"nvim": "Lua plugin", "emacs": "elisp"}.get(k, "manual")
+        label = {"nvim": "Lua plugin", "emacs": "elisp",
+                 "goose": "YAML", "continue_": "YAML"}.get(k, "manual")
+        # The human/CLI-visible name is the clientName() string, not the
+        # enum member (continue_ is a Zig keyword-safe spelling of
+        # "continue").
+        disp = c.get("display", k)
+        check_name = "client_" + disp.replace("-", "_")
         settings = f"`{c['settings']}`" if c.get("settings") else f"— ({label} config)"
         section = f"`{c['section']}`" if c.get("section") else "—"
         if not c.get("settings"):
@@ -314,11 +321,11 @@ def render(members, clients, fixes, version, acp_since):
             extra = '`"type": "custom"`' if c.get("needs_type_custom") else "none"
         snippet = f"`{c['snippet']}`"
         if c.get("doctor_state") == "manual_only":
-            doctor = f"`client_{k}` (manual only — {label} config)"
+            doctor = f"`{check_name}` (manual only — {label} config)"
         else:
             fix = fixes.get(k)
-            doctor = f"`client_{k}`" + (f" / `{fix}`" if fix else "")
-        client_cell = f"`{k}`" + (" (mcacp)" if c.get("bridge") else "")
+            doctor = f"`{check_name}`" + (f" / `{fix}`" if fix else "")
+        client_cell = f"`{disp}`" + (" (mcacp)" if c.get("bridge") else "")
         a(f"| {client_cell} | {cli} | `{c['config_dir']}` | {settings} | {section} | {extra} | {snippet} | {doctor} |")
     a("")
     a("`tau setup --client all` expands to every row. Detection (setup with no")
@@ -343,7 +350,11 @@ def render(members, clients, fixes, version, acp_since):
     a("")
     bridge_clients = [k for k in members if clients[k].get("bridge")]
     if bridge_clients:
-        names = ", ".join(f"`{k}`" for k in bridge_clients)
+        json_bridge = [k for k in bridge_clients
+                       if clients[k].get("section")]
+        yaml_bridge = [k for k in bridge_clients
+                       if not clients[k].get("section")]
+        names = ", ".join(f"`{clients[k]['display']}`" for k in bridge_clients)
         a("MCP-bridge clients (" + names + ") speak MCP, not ACP — they can't")
         a("spawn `tau acp serve` directly. Their server entry launches")
         a("the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:")
@@ -375,6 +386,14 @@ def render(members, clients, fixes, version, acp_since):
             a("}")
             a("```")
             a("")
+        if yaml_bridge:
+            names = ", ".join(f"`{clients[k]['display']}`" for k in yaml_bridge)
+            a("Goose and Continue (" + names + ") speak MCP too but keep")
+            a("their config in YAML, not JSON — `tau setup` can't splice a")
+            a("YAML file, so it wires the shared bridge config and drops a")
+            a("paste-ready YAML snippet (the `extensions:` / `mcpServers:`")
+            a("block from each client's guide) for the user to merge.")
+            a("")
         a("`tau setup --client` writes the matching bridge config too —")
         a("`~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau`")
         a("entry in the direct-ACP shape above (one file, shared by every")
@@ -385,7 +404,7 @@ def render(members, clients, fixes, version, acp_since):
     a("| Client settings files (matrix above) | JSONC — `//` and `/* */` comments are tolerated and preserved: existing files are never rewritten, setup emits a paste-ready snippet instead |")
     if bridge_clients:
         a("| `~/.config/mcacp/mcacp.json` | JSONC — the mcacp MCP→ACP bridge's `agent_servers.tau` entry, shared by every bridge client |")
-    a("| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell |")
+    a("| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell; `.yaml` for Goose/Continue (YAML MCP config) |")
     a("| `~/.config/tau/config.json` | JSONC — see [docs/config.md](config.md) and `schema/tau-config.schema.json` |")
     a("")
     a("## Required tau versions")
@@ -409,7 +428,7 @@ def render(members, clients, fixes, version, acp_since):
     a("| Client | Last step |")
     a("|--------|-----------|")
     for k in members:
-        a(f"| `{k}` | {md_cell(clients[k]['next_step'])} |")
+        a(f"| `{clients[k].get('display', k)}` | {md_cell(clients[k]['next_step'])} |")
     a("")
     return "\n".join(lines)
 

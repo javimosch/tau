@@ -23,6 +23,9 @@ tau setup --client nvim        # writes a paste-ready Lua snippet
 tau setup --client emacs       # writes a paste-ready elisp snippet
 tau setup --client windsurf    # MCP client — also writes mcacp.json
 tau setup --client opencode    # MCP client — same bridge, opencode.json
+tau setup --client cline       # MCP client — same bridge, cline_mcp_settings.json
+tau setup --client goose       # MCP client — YAML snippet + mcacp.json
+tau setup --client continue    # MCP client — YAML snippet + mcacp.json
 tau setup --client all         # every supported client at once
 tau setup --client all --dry-run  # preview every write, change nothing
 ```
@@ -35,7 +38,7 @@ touch before letting it.
 Anything else is rejected before setup runs:
 
 ```json
-{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all)","recoverable":false}}
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|all)","recoverable":false}}
 ```
 
 Setup emits one NDJSON object per step. The `clients` step is the one this
@@ -45,7 +48,7 @@ guide covers:
   installed (their config directories exist) — detection alone never writes:
 
 ```json
-{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|all to write editor ACP config"}
+{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|all to write editor ACP config"}
 ```
 
 - **With `--client`** each requested editor gets a `clients[]` entry carrying
@@ -267,7 +270,7 @@ init file (`~/.emacs.d/init.el` or `~/.config/emacs/init.el`), restart
 Emacs, and run `M-x agent-shell` to pick tau. The step-by-step guide is
 [docs/clients/emacs.md](clients/emacs.md).
 
-## MCP clients: Windsurf, Gemini CLI, Claude Desktop, OpenCode
+## MCP clients: Windsurf, Gemini CLI, Claude Desktop, OpenCode, Cline
 
 These clients speak MCP, not ACP — they can't spawn `tau acp serve`
 directly (OpenCode *serves* ACP via `opencode acp` but consumes MCP
@@ -276,12 +279,13 @@ servers). Setup wires them through the
 files in one pass:
 
 ```bash
-tau setup --client windsurf        # or gemini, claude-desktop, opencode
+tau setup --client windsurf        # or gemini, claude-desktop, opencode, cline
 ```
 
 1. The client's `mcpServers` entry launches the bridge — at
-   `~/.codeium/windsurf/mcp_config.json`, `~/.gemini/settings.json`, or
-   `~/.config/Claude/claude_desktop_config.json`
+   `~/.codeium/windsurf/mcp_config.json`, `~/.gemini/settings.json`,
+   `~/.config/Claude/claude_desktop_config.json`, or Cline's
+   `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
    (OpenCode keeps its servers under `"mcp"` with the local-server shape —
    `{"type":"local","command":["npx","-y","mcacp"],"enabled":true}` — in
    `~/.config/opencode/opencode.json`):
@@ -314,6 +318,16 @@ merge):
 creates `mcacp.json` once — the later clients report
 `"bridge_status":"already_installed"`.
 
+Goose and Continue are MCP clients too, but their config files are YAML
+(`~/.config/goose/config.yaml`, `~/.continue/config.yaml`) — setup can't
+splice a YAML file, so it writes the shared `mcacp.json` and drops a
+paste-ready YAML snippet under `~/.config/tau/snippets/` for you to merge
+into the client's `extensions:` map or `mcpServers:` list by hand. The
+step reports `"status":"manual"` with the `"snippet_path"`; the bridge
+half still reports `"bridge_status":"installed"`. See
+[docs/clients/goose.md](clients/goose.md) and
+[docs/clients/continue.md](clients/continue.md).
+
 Dedicated per-client guides — each with the exact file contents
 `tau setup --client` writes (drift-checked in CI against the real output):
 
@@ -327,6 +341,9 @@ Dedicated per-client guides — each with the exact file contents
 - [Gemini CLI](clients/gemini-cli.md)
 - [Claude Desktop](clients/claude-desktop.md)
 - [OpenCode](clients/opencode.md)
+- [Cline](clients/cline.md)
+- [Goose](clients/goose.md)
+- [Continue](clients/continue.md)
 
 ## Removing the integration
 
@@ -335,9 +352,13 @@ Setup is additive and never deletes:
 - **Zed / VS Code / Cursor / JetBrains:** delete the `"tau"` entry from your
   settings file (or the whole file if setup created a minimal one just for
   tau).
-- **Windsurf / Gemini CLI / Claude Desktop:** delete the `"mcacp"` entry from
-  the client's `mcpServers` section; delete `~/.config/mcacp/mcacp.json` when
-  no other MCP client still uses it.
+- **Windsurf / Gemini CLI / Claude Desktop / OpenCode / Cline:** delete the
+  `"mcacp"` entry from the client's settings file (`mcpServers`, or `"mcp"`
+  for OpenCode); delete `~/.config/mcacp/mcacp.json` when no other MCP
+  client still uses it.
+- **Goose / Continue:** delete the pasted `mcacp` block from the client's
+  YAML config (`extensions:` or `mcpServers:`); the same bridge-file rule
+  applies.
 - **Neovim / Emacs:** remove the pasted block from your config.
 - Generated snippets under `~/.config/tau/snippets/` are inert leftovers —
   delete them freely.

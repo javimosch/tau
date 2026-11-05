@@ -86,7 +86,7 @@
             "required": ["client", "status"],
             "additionalProperties": false,
             "properties": {
-              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode"] },
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue"] },
               "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"] },
               "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
               "command": { "type": "string", "description": "Absolute tau path written into the client config." },
@@ -108,7 +108,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "name": { "type": "string", "description": "Server entry name as written into the client's server section." },
-                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode"], "description": "Supported client whose settings file supplied the entry." }
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue"], "description": "Supported client whose settings file supplied the entry." }
                   }
                 }
               },
@@ -121,7 +121,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "name": { "type": "string", "description": "Server entry name; absent on file-level findings." },
-                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode"], "description": "Supported client whose settings file the entry or finding came from." },
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue"], "description": "Supported client whose settings file the entry or finding came from." },
                     "reason": { "type": "string", "description": "Why the entry or file was not imported." }
                   }
                 }
@@ -149,7 +149,7 @@
             "required": ["client", "status"],
             "additionalProperties": false,
             "properties": {
-              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode"] },
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue"] },
               "status": { "type": "string", "enum": ["removed", "would_remove", "absent", "manual", "failed"] },
               "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
               "file_deleted": { "const": true, "description": "The settings file was (or, under --dry-run, would be) deleted entirely — it held no settings besides the tau wiring." },
