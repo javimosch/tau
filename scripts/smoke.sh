@@ -6191,12 +6191,20 @@ test_group_first_run() {
   contains "e2e driver scrubs provider keys" "$(cat "$shdrv")" "XIAOMI_API_KEY"
   contains "e2e driver uses a scratch HOME" "$(cat "$shdrv")" 'HOME="$FH"'
   contains "e2e driver asserts the selftest check row" "$(cat "$shdrv")" '"name":"selftest","status":"ok"'
+  contains "e2e driver wires a direct-ACP client" "$(cat "$shdrv")" "--client zed"
+  contains "e2e driver wires an MCP-bridge client" "$(cat "$shdrv")" "--client claude-desktop"
+  contains "e2e driver asserts the zed wiring row" "$(cat "$shdrv")" '"name":"client_zed","status":"ok"'
+  contains "e2e driver asserts the bridge wiring row" "$(cat "$shdrv")" '"name":"client_claude_desktop","status":"ok"'
 
   # ── PowerShell driver surface ──
   [ -f "$psdrv" ]; ok "e2e-first-run.ps1 exists" "$?" 0
   contains "ps1 driver runs unattended setup" "$(cat "$psdrv")" "setup --yes --offline"
   contains "ps1 driver runs selftest" "$(cat "$psdrv")" "doctor --offline --selftest"
   contains "ps1 driver asserts the selftest check row" "$(cat "$psdrv")" '"name":"selftest","status":"ok"'
+  contains "ps1 driver wires a direct-ACP client" "$(cat "$psdrv")" "--client zed"
+  contains "ps1 driver wires an MCP-bridge client" "$(cat "$psdrv")" "--client claude-desktop"
+  contains "ps1 driver asserts the zed wiring row" "$(cat "$psdrv")" '"name":"client_zed","status":"ok"'
+  contains "ps1 driver asserts the bridge wiring row" "$(cat "$psdrv")" '"name":"client_claude_desktop","status":"ok"'
   if command -v pwsh >/dev/null 2>&1; then
     pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -LiteralPath '$psdrv' -Raw)) | Out-Null" 2>/dev/null
     ok "e2e-first-run.ps1 parses under pwsh" "$?" 0
@@ -6226,6 +6234,8 @@ test_group_first_run() {
     ok "e2e-first-run.sh exit" "$rc" 0
     contains "e2e-first-run reports PASS" "$out" "e2e-first-run: PASS"
     contains "e2e scaffolded config via setup --yes" "$out" "setup --yes --offline ok"
+    contains "e2e wired a direct-ACP client" "$out" "setup --client zed ok"
+    contains "e2e wired an MCP-bridge client" "$out" "setup --client claude-desktop ok"
     contains "e2e keyless selftest reported ok" "$out" "credential-free doctor --selftest reports ok"
     rm -rf "$fh"
   else
