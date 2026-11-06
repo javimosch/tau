@@ -13,14 +13,14 @@ full agentic tool loop and streams back `session/update` notifications
 
 > **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `cursor`,
 > `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`,
-> `goose`, `continue`, `all`)
+> `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`, `all`)
 > writes these
 > configs for you
 > during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
 > preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode,
-> Cline, Goose, Continue)
+> Cline, Goose, Continue, Roo Code, Kilo Code, Amazon Q Developer)
 > also get the
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
 > without `--client` to see which editors were detected. To undo the wiring,
@@ -37,7 +37,9 @@ full agentic tool loop and streams back `session/update` notifications
 > [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
 > [Claude Desktop](clients/claude-desktop.md),
 > [OpenCode](clients/opencode.md), [Cline](clients/cline.md),
-> [Goose](clients/goose.md), [Continue](clients/continue.md)).
+> [Goose](clients/goose.md), [Continue](clients/continue.md),
+> [Roo Code](clients/roo-code.md), [Kilo Code](clients/kilo-code.md),
+> [Amazon Q Developer](clients/amazonq.md)).
 
 ## Quick start: tau in Zed
 
@@ -405,7 +407,24 @@ Three more MCP clients wire the same way:
   `tau setup --client continue` writes the bridge config plus a
   `mcpServers:` snippet; see [docs/clients/continue.md](clients/continue.md).
 
-All three launch the bridge (`npx -y mcacp`); the shared
+### Roo Code, Kilo Code, and Amazon Q Developer (via the same MCP↔ACP bridge)
+
+Three more MCP clients wire through the same bridge:
+
+- **Roo Code** (the `rooveterinaryinc.roo-cline` VS Code extension) —
+  `tau setup --client roo-code` writes the standard `mcpServers.mcacp`
+  entry into its extension-global `mcp_settings.json` plus the shared
+  bridge config; see [docs/clients/roo-code.md](clients/roo-code.md).
+- **Kilo Code** — `tau setup --client kilo-code` writes a `mcp.mcacp`
+  local-server entry into `~/.config/kilo/kilo.jsonc` (the same
+  command-array shape as OpenCode) plus the shared bridge config; see
+  [docs/clients/kilo-code.md](clients/kilo-code.md).
+- **Amazon Q Developer** — `tau setup --client amazonq` writes the
+  standard `mcpServers.mcacp` entry into `~/.aws/amazonq/mcp.json` plus
+  the shared bridge config; see
+  [docs/clients/amazonq.md](clients/amazonq.md).
+
+All of them launch the bridge (`npx -y mcacp`); the shared
 `~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau` entry
 for every MCP client.
 

@@ -29,7 +29,7 @@ entry plus your imported servers in one fresh write.
 
 ## Which clients participate
 
-`--import` reads from and writes to the five file-backed MCP-bridge clients:
+`--import` reads from and writes to the eight file-backed MCP-bridge clients:
 
 | `--client` | Settings file | Server section |
 |---|---|---|
@@ -38,6 +38,9 @@ entry plus your imported servers in one fresh write.
 | `claude-desktop` | `~/.config/Claude/claude_desktop_config.json` | `"mcpServers"` |
 | `opencode` | `~/.config/opencode/opencode.json` | `"mcp"` |
 | `cline` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `"mcpServers"` |
+| `roo-code` | `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json` | `"mcpServers"` |
+| `kilo-code` | `~/.config/kilo/kilo.jsonc` | `"mcp"` |
+| `amazonq` | `~/.aws/amazonq/mcp.json` | `"mcpServers"` |
 
 Goose and Continue are MCP-bridge clients too, but their config is YAML —
 setup never splices it, so they are neither sources nor targets for

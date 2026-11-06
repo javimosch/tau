@@ -2340,6 +2340,9 @@ test_group_setup() {
   contains "--client all covers cline" "$s12_out" '"client":"cline"'
   contains "--client all covers goose" "$s12_out" '"client":"goose"'
   contains "--client all covers continue" "$s12_out" '"client":"continue"'
+  contains "--client all covers roo-code" "$s12_out" '"client":"roo-code"'
+  contains "--client all covers kilo-code" "$s12_out" '"client":"kilo-code"'
+  contains "--client all covers amazonq" "$s12_out" '"client":"amazonq"'
   [ -f "$mock_home10/.config/Code/User/settings.json" ]; ok "vscode settings written" "$?" 0
   grep -q '"acp.agents"' "$mock_home10/.config/Code/User/settings.json"; ok "vscode uses acp.agents key" "$?" 0
   [ -f "$mock_home10/.config/Cursor/User/settings.json" ]; ok "cursor settings written" "$?" 0
@@ -2358,6 +2361,12 @@ test_group_setup() {
   grep -q 'cmd: npx' "$mock_home10/.config/tau/snippets/goose.yaml"; ok "goose snippet uses cmd/args YAML shape" "$?" 0
   [ -f "$mock_home10/.config/tau/snippets/continue.yaml" ]; ok "continue.yaml snippet written" "$?" 0
   grep -q 'mcpServers:' "$mock_home10/.config/tau/snippets/continue.yaml"; ok "continue snippet uses mcpServers list" "$?" 0
+  [ -f "$mock_home10/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json" ]; ok "roo mcp_settings.json written" "$?" 0
+  grep -q '"mcpServers"' "$mock_home10/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"; ok "roo-code uses mcpServers key" "$?" 0
+  [ -f "$mock_home10/.config/kilo/kilo.jsonc" ]; ok "kilo.jsonc written" "$?" 0
+  grep -q '"type": "local"' "$mock_home10/.config/kilo/kilo.jsonc"; ok "kilo-code uses mcp local-server shape" "$?" 0
+  [ -f "$mock_home10/.aws/amazonq/mcp.json" ]; ok "amazonq mcp.json written" "$?" 0
+  grep -q '"mcpServers"' "$mock_home10/.aws/amazonq/mcp.json"; ok "amazonq uses mcpServers key" "$?" 0
   [ -f "$mock_home10/.config/mcacp/mcacp.json" ]; ok "shared mcacp bridge config written" "$?" 0
   grep -q '"acp", "serve"' "$mock_home10/.config/mcacp/mcacp.json"; ok "mcacp.json wires tau acp serve" "$?" 0
 
@@ -2681,13 +2690,16 @@ test_group_client_examples() {
 
   # MCP-bridge client files carry no tau path — they launch `npx mcacp` — so
   # they diff byte-for-byte with no normalization.
-  for spec in windsurf gemini claude-desktop opencode cline; do
+  for spec in windsurf gemini claude-desktop opencode cline roo-code kilo-code amazonq; do
     case "$spec" in
       windsurf)       want="$h/.codeium/windsurf/mcp_config.json" ;;
       gemini)         want="$h/.gemini/settings.json" ;;
       claude-desktop) want="$h/.config/Claude/claude_desktop_config.json" ;;
       opencode)       want="$h/.config/opencode/opencode.json" ;;
       cline)          want="$h/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" ;;
+      roo-code)       want="$h/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json" ;;
+      kilo-code)      want="$h/.config/kilo/kilo.jsonc" ;;
+      amazonq)        want="$h/.aws/amazonq/mcp.json" ;;
     esac
     cmp -s "$want" "$ex/$spec.json"
     ok "$spec.json matches setup --client output" "$?" 0
@@ -2728,18 +2740,21 @@ sys.exit(0 if found >= 3 else 1)' "$ex" 2>/dev/null
   # `tau acp serve`.
   python3 -c 'import json,sys
 ok = True
-for p in sys.argv[1:-2]:
+for p in sys.argv[1:-3]:
     d = json.load(open(p))
     ok = ok and "mcacp" in d.get("mcpServers", {})
-# opencode keeps MCP servers under "mcp" (local-server shape), not mcpServers.
-oc = json.load(open(sys.argv[-2]))
-ok = ok and oc.get("mcp", {}).get("mcacp", {}).get("type") == "local"
+# opencode + kilo-code keep MCP servers under "mcp" (local-server shape),
+# not mcpServers.
+for p in sys.argv[-3:-1]:
+    oc = json.load(open(p))
+    ok = ok and oc.get("mcp", {}).get("mcacp", {}).get("type") == "local"
 mc = json.load(open(sys.argv[-1]))
 tau = mc.get("agent_servers", {}).get("tau", {})
 sys.exit(0 if ok and tau.get("args") == ["acp", "serve"] else 1)' \
     "$ex/claude-desktop.json" "$ex/windsurf.json" "$ex/gemini.json" \
-    "$ex/cline.json" "$ex/opencode.json" "$ex/mcacp.json" 2>/dev/null
-  ok "claude-desktop/windsurf/gemini/opencode/cline + mcacp.json wire the bridge to tau" "$?" 0
+    "$ex/cline.json" "$ex/roo-code.json" "$ex/amazonq.json" \
+    "$ex/opencode.json" "$ex/kilo-code.json" "$ex/mcacp.json" 2>/dev/null
+  ok "claude-desktop/windsurf/gemini/cline/roo-code/amazonq/opencode/kilo-code + mcacp.json wire the bridge to tau" "$?" 0
 }
 
 # Group: per-client setup guides drift check — docs/clients/*.md embed
@@ -3926,6 +3941,18 @@ test_group_golden_onboarding() {
     _golden_fresh_home
     golden_check_n ob-setup-client-continue 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client continue
     golden_file    ob-setup-continue.yaml "$_GOLDEN_HOME/.config/tau/snippets/continue.yaml"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-roo-code 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client roo-code
+    golden_file    ob-setup-roo-code.json "$_GOLDEN_HOME/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-kilo-code 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client kilo-code
+    golden_file    ob-setup-kilo-code.json "$_GOLDEN_HOME/.config/kilo/kilo.jsonc"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-amazonq 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client amazonq
+    golden_file    ob-setup-amazonq.json "$_GOLDEN_HOME/.aws/amazonq/mcp.json"
 
     # --import: merge the user's MCP servers into the wired bridge client —
     # a fresh file carries mcacp plus every imported entry; the remote one

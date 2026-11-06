@@ -26,6 +26,9 @@ tau setup --client opencode    # MCP client — same bridge, opencode.json
 tau setup --client cline       # MCP client — same bridge, cline_mcp_settings.json
 tau setup --client goose       # MCP client — YAML snippet + mcacp.json
 tau setup --client continue    # MCP client — YAML snippet + mcacp.json
+tau setup --client roo-code    # MCP client — same bridge, Roo's mcp_settings.json
+tau setup --client kilo-code   # MCP client — mcp-shape entry in kilo.jsonc
+tau setup --client amazonq     # MCP client — same bridge, ~/.aws/amazonq/mcp.json
 tau setup --client all         # every supported client at once
 tau setup --client all --dry-run  # preview every write, change nothing
 ```
@@ -38,7 +41,7 @@ touch before letting it.
 Anything else is rejected before setup runs:
 
 ```json
-{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|all)","recoverable":false}}
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all)","recoverable":false}}
 ```
 
 Setup emits one NDJSON object per step. The `clients` step is the one this
@@ -48,7 +51,7 @@ guide covers:
   installed (their config directories exist) — detection alone never writes:
 
 ```json
-{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|all to write editor ACP config"}
+{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all to write editor ACP config"}
 ```
 
 - **With `--client`** each requested editor gets a `clients[]` entry carrying
@@ -279,16 +282,21 @@ servers). Setup wires them through the
 files in one pass:
 
 ```bash
-tau setup --client windsurf        # or gemini, claude-desktop, opencode, cline
+tau setup --client windsurf        # or gemini, claude-desktop, opencode, cline,
+                                   # roo-code, kilo-code, amazonq
 ```
 
 1. The client's `mcpServers` entry launches the bridge — at
    `~/.codeium/windsurf/mcp_config.json`, `~/.gemini/settings.json`,
-   `~/.config/Claude/claude_desktop_config.json`, or Cline's
-   `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-   (OpenCode keeps its servers under `"mcp"` with the local-server shape —
+   `~/.config/Claude/claude_desktop_config.json`, Cline's
+   `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`,
+   Roo Code's
+   `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json`,
+   or Amazon Q's `~/.aws/amazonq/mcp.json`
+   (OpenCode and Kilo Code keep their servers under `"mcp"` with the
+   local-server shape —
    `{"type":"local","command":["npx","-y","mcacp"],"enabled":true}` — in
-   `~/.config/opencode/opencode.json`):
+   `~/.config/opencode/opencode.json` and `~/.config/kilo/kilo.jsonc`):
 
    ```json
    {
@@ -344,6 +352,9 @@ Dedicated per-client guides — each with the exact file contents
 - [Cline](clients/cline.md)
 - [Goose](clients/goose.md)
 - [Continue](clients/continue.md)
+- [Roo Code](clients/roo-code.md)
+- [Kilo Code](clients/kilo-code.md)
+- [Amazon Q Developer](clients/amazonq.md)
 
 ## Removing the integration
 

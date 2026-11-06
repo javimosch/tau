@@ -40,7 +40,7 @@ $TauArgumentCompleter = {
         'keys.xiaomi', 'keys.openai', 'keys.deepseek', 'keys.opencode-go',
         '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
-    $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'all')
+    $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
         '--print', '-p',
@@ -131,7 +131,7 @@ $TauArgumentCompleter = {
         '--force'             = 'overwrite an existing config file'
         '--stdout'            = 'print the starter config without writing it'
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
-        '--client'            = 'editor ACP client (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|all)'
+        '--client'            = 'editor ACP client (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
         '--probe'             = 'live-verify connectivity and credentials for every provider'
