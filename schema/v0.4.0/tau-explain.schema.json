@@ -2,10 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-explain.schema.json",
   "title": "tau explain --json output",
-  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key> query the output is a single entry object — an error entry for a code/type query or a config-key entry for a key query (including dotted keys.<provider> member paths); with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. New keys may be added (additive); existing keys keep their names and types.",
+  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key|doctor.<check>> query the output is a single entry object — an error entry for a code/type query, a config-key entry for a key query (including dotted keys.<provider> member paths), or a doctor-check entry for a `doctor.<check>` or bare check-id query; with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...],\"doctor_checks\":[check_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. Doctor-check entries mirror one row of the generated check table in docs/troubleshooting.md: check is the `tau doctor` report row id, fails_when the condition that warns/fails, remediation the fix, docs the troubleshooting-section link. New keys may be added (additive); existing keys keep their names and types.",
   "oneOf": [
     { "$ref": "#/$defs/entry" },
     { "$ref": "#/$defs/config_entry" },
+    { "$ref": "#/$defs/check_entry" },
     { "$ref": "#/$defs/catalog" }
   ],
   "$defs": {
@@ -34,9 +35,20 @@
         "docs": { "type": "string", "minLength": 1, "description": "Link to the generated config-key reference (docs/config.md)." }
       }
     },
+    "check_entry": {
+      "type": "object",
+      "required": ["check", "fails_when", "remediation", "docs"],
+      "additionalProperties": false,
+      "properties": {
+        "check": { "type": "string", "minLength": 1, "description": "Check id as it appears in the `tau doctor` report's \"name\" field (e.g. \"tls_ca\", \"client_zed\", \"probe_openai_auth\"); queried as `doctor.<check>` or bare." },
+        "fails_when": { "type": "string", "minLength": 1, "description": "The condition that makes the check warn or fail — the same cell text the generated docs/troubleshooting.md check table renders; informational, may be reworded." },
+        "remediation": { "type": "string", "minLength": 1, "description": "The fix that resolves the check — flag, env var, or command; informational, may be reworded." },
+        "docs": { "type": "string", "minLength": 1, "description": "Link to the doctor-checks section of docs/troubleshooting.md." }
+      }
+    },
     "catalog": {
       "type": "object",
-      "required": ["errors", "config_keys"],
+      "required": ["errors", "config_keys", "doctor_checks"],
       "additionalProperties": false,
       "properties": {
         "errors": {
@@ -48,6 +60,11 @@
           "type": "array",
           "items": { "$ref": "#/$defs/config_entry" },
           "description": "Every resolvable config key — each generated docs/config.md key row plus each keys.<provider> member path."
+        },
+        "doctor_checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/check_entry" },
+          "description": "Every resolvable `tau doctor` check id — each row of the generated docs/troubleshooting.md check table."
         }
       }
     }
@@ -55,11 +72,15 @@
   "examples": [
     { "code": 106, "type": "AuthFailed", "recoverable": false, "cause": "the provider rejected the API key, or no key was found anywhere in the resolution chain", "hint": "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY", "docs": "https://github.com/javimosch/tau/blob/master/docs/providers.md" },
     { "key": "timeout_ms", "type": "integer", "constraints": "`>= 0`", "description": "HTTP request timeout in milliseconds.", "docs": "https://github.com/javimosch/tau/blob/master/docs/config.md" },
+    { "check": "tls_ca", "fails_when": "CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline)", "remediation": "set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#setup--config-problems--tau-doctor" },
     { "errors": [
       { "code": 1, "type": "not_found", "recoverable": false, "cause": "a named resource is missing — the message identifies the file, skill, or session", "hint": "the message names what was not found — check the name/path and retry", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md" }
     ],
     "config_keys": [
       { "key": "provider", "type": "string", "constraints": "one of `xiaomi` | `openai` | `deepseek` | `opencode-go`", "description": "Active provider name — selects the API endpoint and default model. TAU_ENDPOINT overrides the endpoint.", "docs": "https://github.com/javimosch/tau/blob/master/docs/config.md" }
+    ],
+    "doctor_checks": [
+      { "check": "tls_ca", "fails_when": "CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline)", "remediation": "set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#setup--config-problems--tau-doctor" }
     ] }
   ]
 }

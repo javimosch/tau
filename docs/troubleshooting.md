@@ -75,10 +75,14 @@ form, `--human` renders prose), and bare `tau explain` lists the whole
 catalog. A config key works the same way: `tau explain timeout_ms` prints
 the key's type, constraints, and description from the generated
 [config.md](config.md) table, and `tau explain keys.openai` resolves a
-dotted `keys.<provider>` member path. A mistyped code, `type`, or key exits
-1 with a `not_found` envelope whose message suggests the nearest catalog
-entry — `did you mean "tau explain <code|type|key>"?` — when the query is
-within two case-insensitive edits of one.
+dotted `keys.<provider>` member path. A `tau doctor` check id resolves too:
+`tau explain doctor.tls_ca` prints when that check fails and the
+remediation that resolves it — the same rows as the generated check table
+below (bare `tls_ca` also works; `api_key` stays the config key — prefix it
+`doctor.api_key` for the check). A mistyped code, `type`, key, or check id
+exits 1 with a `not_found` envelope whose message suggests the nearest
+catalog entry — `did you mean "tau explain <code|type|key|doctor.<check>>"?`
+— when the query is within two case-insensitive edits of one.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
 run continues.
@@ -151,25 +155,60 @@ failing step.
 stdout; exit 0 when nothing failed, 1 otherwise. `--json` streams one
 NDJSON `{"check":{...}}` event per check plus a terminal `done:true` verdict
 for CI/support tooling; `--offline` skips every check that would touch the
-network. Rows:
+network. Every row's meaning and remediation is also readable offline via
+`tau explain doctor.<check>` (e.g. `tau explain doctor.tls_ca`). Rows:
 
-| Check | Fails or warns when |
-|-------|---------------------|
-| `config_file` | `~/.config/tau/config.json` doesn't parse (**fail**), or names an unregistered provider (**warn**). Missing file is ok — config is optional |
-| `config_permissions` | Config dir/file is readable by group/other (POSIX only — the file can hold API keys) |
-| `plaintext_secrets` | Credentials sit on disk as plaintext — `api_key`/`keys.*` values in the config file, or `env` blocks inside client settings files. Warn only; reports key names/counts, never values. Not auto-fixable — the hint names `tau config unset` + env vars |
-| `shell_completions` | Completion scripts are missing or stale for the detected shells |
-| `provider_resolution` | The configured/`--provider` provider isn't registered |
-| `api_key` | No key resolves at any level of the precedence chain |
-| `curl` | `curl` is missing or `curl --version` fails — all LLM HTTP needs it |
-| `proxy_env` | A `*_proxy`/`*_PROXY` variable looks wrong for the resolved endpoint: unparseable URL, credentials embedded in the URL (always redacted in output), `HTTP_PROXY` alone for an HTTPS endpoint (silent no-op), or `NO_PROXY` covering the endpoint host (proxy bypassed). Warn only; runs under `--offline` |
-| `tls_ca` | `CURL_CA_BUNDLE`/`SSL_CERT_FILE` points at a missing or non-file path, or an `SSL_CERT_DIR` entry is missing (**fail** — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case needs `CURL_CA_BUNDLE` set to the org's PEM bundle. Runs under `--offline` |
-| `endpoint_reachable` | The provider endpoint doesn't answer (skipped under `--offline`) |
-| `auth_probe` (`--deep` only) | A one-token authenticated completion fails — the resolved key is rejected |
-| `client_permissions` | A detected client settings file (or the mcacp bridge config) grants group/other access — env blocks inside it can hold API keys (POSIX only) |
-| `update_available` | A newer release exists (warn only; opt out via `TAU_NO_UPDATE_CHECK=1`) |
-| `provider_probes` (`--probe` only) | Per-provider sweep: connectivity + credential pass/fail rows for *every* registered provider — reports key sources, never key material |
-| `selftest` (`--selftest` only) | Credential-free end-to-end run against a loopback stub provider fails — proves the installed binary works without real credentials or network |
+<!-- BEGIN GENERATED DOCTOR CHECKS — do not edit between the markers.
+     Source of truth: the CheckSpec catalog in src/doctorcatalog.zig —
+     the same registry `tau explain doctor.<check>` reads.
+     Regenerate:  python3 scripts/gen-doctor-checks-doc.py
+     Drift check: python3 scripts/gen-doctor-checks-doc.py --check
+     (the doctor-checks smoke group runs the drift check) -->
+
+| Check | Fails or warns when | Remediate |
+|-------|---------------------|-----------|
+| `config_file` | ~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional | fix the JSON or delete the file — `tau config validate` pinpoints the error with line/column; `tau doctor --fix` moves a broken config to config.json.bak and writes a starter |
+| `config_permissions` | the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys) | run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself |
+| `plaintext_secrets` | credentials sit on disk as plaintext — api_key/keys.* values in the config file, or `env` blocks inside client settings files (warn only; reports key names and counts, never values) | move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable |
+| `shell_completions` | completion scripts are missing or stale for the detected shells | run `tau doctor --fix` or `tau setup --yes` to (re)install them |
+| `provider_resolution` | the configured or --provider provider isn't registered | pick a registered provider — `tau models` lists them; `tau config set provider <name>` persists it |
+| `api_key` | no API key resolves at any level of the precedence chain | pass --api-key, set the provider env var or TAU_API_KEY, or add api_key/keys.<provider> to config.json — `tau init` scaffolds a starter |
+| `curl` | curl is missing or `curl --version` fails — every LLM request goes through curl | install curl via your package manager and re-run `tau doctor` |
+| `proxy_env` | a *_proxy/*_PROXY variable looks wrong for the resolved endpoint — unparseable URL, credentials embedded in the URL (always redacted in output), HTTP_PROXY alone for an HTTPS endpoint (silent no-op), or NO_PROXY covering the endpoint host (warn only; runs under --offline) | export HTTPS_PROXY for https:// endpoints, drop credentials from the proxy URL, and make sure NO_PROXY doesn't cover the provider host — see "Behind a corporate proxy" below |
+| `tls_ca` | CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline) | set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path |
+| `endpoint_reachable` | the provider endpoint doesn't answer within the probe timeout (skipped under --offline or without curl) | check the network, DNS, and the proxy_env/tls_ca rows — TAU_ENDPOINT overrides the endpoint |
+| `auth_probe` | a one-token authenticated completion fails — the resolved key is rejected (--deep only; skipped under --offline, without curl, or with no key resolved) | re-issue or rotate the key — the check names which source it resolved from (env var, config, or TAU_API_KEY) |
+| `client_wiring` | placeholder row — HOME is unset or no editor config dir was detected, so no per-client rows ran | install the editor you want wired, then run `tau setup --client <name>` |
+| `client_permissions` | a detected client settings file (or the mcacp bridge config) grants group/other access — `env` blocks inside it can hold API keys (POSIX only) | run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself |
+| `provider_probes` | placeholder row for the opt-in sweep — skipped unless --probe is passed | run `tau doctor --probe` to live-verify connectivity and credentials for every registered provider |
+| `update_available` | a newer release exists upstream (warn only; skipped under --offline, TAU_NO_UPDATE_CHECK=1, or without curl) | run `tau upgrade` — TAU_NO_UPDATE_CHECK=1 silences the row |
+| `selftest` | the credential-free end-to-end run against a loopback stub provider fails (--selftest only) — the installed binary can't complete a session | re-run `tau doctor --selftest --debug` and attach the redacted log to `tau bug` |
+| `client_zed` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client zed` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/zed.md |
+| `client_nvim` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client nvim` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/nvim.md |
+| `client_emacs` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client emacs` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/emacs.md |
+| `client_vscode` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client vscode` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/vscode.md |
+| `client_cursor` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client cursor` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/cursor.md |
+| `client_jetbrains` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client jetbrains` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/jetbrains.md |
+| `client_windsurf` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client windsurf` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/windsurf.md |
+| `client_gemini` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client gemini` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/gemini-cli.md |
+| `client_claude_desktop` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client claude-desktop` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/claude-desktop.md |
+| `client_opencode` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client opencode` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/opencode.md |
+| `client_cline` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client cline` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/cline.md |
+| `client_goose` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client goose` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/goose.md |
+| `client_continue` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client continue` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/continue.md |
+| `client_roo_code` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client roo-code` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/roo-code.md |
+| `client_kilo_code` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client kilo-code` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/kilo-code.md |
+| `client_amazonq` | tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed | run `tau setup --client amazonq` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/amazonq.md |
+| `probe_xiaomi` | the `--probe` connectivity check against that provider's endpoint failed or timed out | verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models` |
+| `probe_xiaomi_auth` | the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion | re-issue or rotate the key — it resolves from the provider's env var, keys.xiaomi in config.json, TAU_API_KEY, or --api-key |
+| `probe_openai` | the `--probe` connectivity check against that provider's endpoint failed or timed out | verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models` |
+| `probe_openai_auth` | the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion | re-issue or rotate the key — it resolves from the provider's env var, keys.openai in config.json, TAU_API_KEY, or --api-key |
+| `probe_deepseek` | the `--probe` connectivity check against that provider's endpoint failed or timed out | verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models` |
+| `probe_deepseek_auth` | the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion | re-issue or rotate the key — it resolves from the provider's env var, keys.deepseek in config.json, TAU_API_KEY, or --api-key |
+| `probe_opencode-go` | the `--probe` connectivity check against that provider's endpoint failed or timed out | verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models` |
+| `probe_opencode-go_auth` | the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion | re-issue or rotate the key — it resolves from the provider's env var, keys.opencode-go in config.json, TAU_API_KEY, or --api-key |
+
+<!-- END GENERATED DOCTOR CHECKS -->
 
 #### Behind a corporate proxy
 

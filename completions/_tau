@@ -288,7 +288,9 @@ _tau() {
 
                 explain)
                     # Exit codes mirror the stable catalog in src/errors.zig;
-                    # config keys mirror the generated docs/config.md table.
+                    # config keys mirror the generated docs/config.md table;
+                    # doctor.* ids mirror the CheckSpec catalog in
+                    # src/doctorcatalog.zig.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -310,8 +312,50 @@ _tau() {
                         'keys.xiaomi:config key' 'keys.openai:config key'
                         'keys.deepseek:config key' 'keys.opencode-go:config key'
                     )
+                    local -a checks=(
+                        'doctor.config_file:doctor check'
+                        'doctor.config_permissions:doctor check'
+                        'doctor.plaintext_secrets:doctor check'
+                        'doctor.shell_completions:doctor check'
+                        'doctor.provider_resolution:doctor check'
+                        'doctor.api_key:doctor check'
+                        'doctor.curl:doctor check'
+                        'doctor.proxy_env:doctor check'
+                        'doctor.tls_ca:doctor check'
+                        'doctor.endpoint_reachable:doctor check'
+                        'doctor.auth_probe:doctor check'
+                        'doctor.client_wiring:doctor check'
+                        'doctor.client_permissions:doctor check'
+                        'doctor.provider_probes:doctor check'
+                        'doctor.update_available:doctor check'
+                        'doctor.selftest:doctor check'
+                        'doctor.client_zed:doctor check'
+                        'doctor.client_nvim:doctor check'
+                        'doctor.client_emacs:doctor check'
+                        'doctor.client_vscode:doctor check'
+                        'doctor.client_cursor:doctor check'
+                        'doctor.client_jetbrains:doctor check'
+                        'doctor.client_windsurf:doctor check'
+                        'doctor.client_gemini:doctor check'
+                        'doctor.client_claude_desktop:doctor check'
+                        'doctor.client_opencode:doctor check'
+                        'doctor.client_cline:doctor check'
+                        'doctor.client_goose:doctor check'
+                        'doctor.client_continue:doctor check'
+                        'doctor.client_roo_code:doctor check'
+                        'doctor.client_kilo_code:doctor check'
+                        'doctor.client_amazonq:doctor check'
+                        'doctor.probe_xiaomi:doctor check'
+                        'doctor.probe_xiaomi_auth:doctor check'
+                        'doctor.probe_openai:doctor check'
+                        'doctor.probe_openai_auth:doctor check'
+                        'doctor.probe_deepseek:doctor check'
+                        'doctor.probe_deepseek_auth:doctor check'
+                        'doctor.probe_opencode-go:doctor check'
+                        'doctor.probe_opencode-go_auth:doctor check'
+                    )
                     _arguments \
-                        '1: :_describe "error code/type or config key" err_codes cfg_keys' \
+                        '1: :_describe "error code/type, config key, or doctor check" err_codes cfg_keys checks' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]'
                     ;;

@@ -56,6 +56,15 @@ KEYS_SECTION = re.compile(r"^## Keys\b.*?(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 MEMBER_CLAUSE = re.compile(r"member names:([^;]+)")
 MEMBER_TOKEN = re.compile(r"`([^`]+)`")
 
+# The generated doctor-check table in docs/troubleshooting.md lives between
+# markers; every backticked token in a row's first cell is a resolvable id
+# (static ids, client_<name>, probe_<provider>, probe_<provider>_auth).
+CHECKS_SECTION = re.compile(
+    r"<!-- BEGIN GENERATED DOCTOR CHECKS.*?<!-- END GENERATED DOCTOR CHECKS -->",
+    re.DOTALL)
+CHECK_ROW = re.compile(r"^\|([^|\n]+)\|", re.MULTILINE)
+BACKTICK = re.compile(r"`([^`]+)`")
+
 
 def error_entries(catalog: Path):
     """{(code, type)} pairs from the docs/errors.md catalog table."""
@@ -87,6 +96,23 @@ def config_entries(doc: Path):
     return keys, members
 
 
+def check_entries(doc: Path):
+    """Check ids from the generated check table in troubleshooting.md."""
+    if not doc.is_file():
+        raise OSError(f"doctor doc not found: {doc}")
+    text = doc.read_text(encoding="utf-8")
+    section = CHECKS_SECTION.search(text)
+    if not section:
+        raise OSError(f"no GENERATED DOCTOR CHECKS region parsed from {doc}")
+    ids = []
+    for cell in CHECK_ROW.findall(section.group(0)):
+        ids.extend(BACKTICK.findall(cell))
+    if not ids:
+        raise OSError(f"no check-id rows parsed from {doc} "
+                      "GENERATED DOCTOR CHECKS region")
+    return ids
+
+
 def explain(tau: str, *args):
     """(returncode, stdout) of `tau explain <args>` — pure catalog lookup."""
     proc = subprocess.run([tau, "explain", *args], capture_output=True, text=True)
@@ -99,6 +125,8 @@ def main(argv=None):
                     help="path to the tau binary")
     ap.add_argument("--errors-doc", type=Path, default=ROOT / "docs" / "errors.md")
     ap.add_argument("--config-doc", type=Path, default=ROOT / "docs" / "config.md")
+    ap.add_argument("--doctor-doc", type=Path,
+                    default=ROOT / "docs" / "troubleshooting.md")
     args = ap.parse_args(argv)
 
     if not Path(args.tau).is_file():
@@ -109,6 +137,7 @@ def main(argv=None):
     try:
         errors = error_entries(args.errors_doc)
         keys, members = config_entries(args.config_doc)
+        checks = check_entries(args.doctor_doc)
     except OSError as e:
         print(f"check-explain-coverage: {e}", file=sys.stderr)
         return 2
@@ -145,6 +174,13 @@ def main(argv=None):
                 f"config.md member path `{path}` does not resolve via "
                 f"`tau explain {path}` (exit {rc})"
             )
+    for cid in sorted(set(checks)):
+        rc, out = explain(args.tau, f"doctor.{cid}")
+        if rc != 0 or f'"check":"{cid}"' not in out:
+            problems.append(
+                f"troubleshooting.md check `{cid}` does not resolve via "
+                f"`tau explain doctor.{cid}` (exit {rc})"
+            )
 
     # Reverse: every entry the live catalog lists is documented.
     rc, out = explain(args.tau)
@@ -169,6 +205,14 @@ def main(argv=None):
                     problems.append(
                         f"`tau explain` lists key `{entry.get('key')}` but it is "
                         "absent from docs/config.md — regenerate the catalog"
+                    )
+            documented_checks = set(checks)
+            for entry in live.get("doctor_checks", []):
+                if entry.get("check") not in documented_checks:
+                    problems.append(
+                        f"`tau explain` lists check `{entry.get('check')}` but "
+                        "it is absent from the generated check table in "
+                        "docs/troubleshooting.md — regenerate the catalog"
                     )
 
     for p in problems:

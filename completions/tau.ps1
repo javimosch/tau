@@ -31,13 +31,31 @@ $TauArgumentCompleter = {
                      '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--json')
-    # Codes mirror src/errors.zig; config keys mirror docs/config.md.
+    # Codes mirror src/errors.zig; config keys mirror docs/config.md;
+    # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
         '$schema', 'provider', 'model', 'api_key', 'keys', 'mode', 'stream',
         'thinking', 'debug', 'temperature', 'max_tokens', 'timeout_ms',
         'context_window', 'auto_compact', 'compact_threshold',
         'compact_keep_recent_tokens', 'goal_max_iterations', 'goal_max_continues',
         'keys.xiaomi', 'keys.openai', 'keys.deepseek', 'keys.opencode-go',
+        'doctor.config_file', 'doctor.config_permissions',
+        'doctor.plaintext_secrets', 'doctor.shell_completions',
+        'doctor.provider_resolution', 'doctor.api_key', 'doctor.curl',
+        'doctor.proxy_env', 'doctor.tls_ca', 'doctor.endpoint_reachable',
+        'doctor.auth_probe', 'doctor.client_wiring', 'doctor.client_permissions',
+        'doctor.provider_probes', 'doctor.update_available', 'doctor.selftest',
+        'doctor.client_zed', 'doctor.client_nvim', 'doctor.client_emacs',
+        'doctor.client_vscode', 'doctor.client_cursor', 'doctor.client_jetbrains',
+        'doctor.client_windsurf', 'doctor.client_gemini',
+        'doctor.client_claude_desktop', 'doctor.client_opencode',
+        'doctor.client_cline', 'doctor.client_goose', 'doctor.client_continue',
+        'doctor.client_roo_code', 'doctor.client_kilo_code',
+        'doctor.client_amazonq',
+        'doctor.probe_xiaomi', 'doctor.probe_xiaomi_auth', 'doctor.probe_openai',
+        'doctor.probe_openai_auth', 'doctor.probe_deepseek',
+        'doctor.probe_deepseek_auth', 'doctor.probe_opencode-go',
+        'doctor.probe_opencode-go_auth',
         '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'all')

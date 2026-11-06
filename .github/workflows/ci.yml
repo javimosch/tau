@@ -112,6 +112,17 @@ jobs:
         shell: bash
         run: python3 scripts/gen-compat-doc.py --check
 
+      - name: Doctor checks doc drift check
+        # The GENERATED DOCTOR CHECKS table in docs/troubleshooting.md is
+        # spliced from the CheckSpec catalog in src/doctorcatalog.zig (the
+        # same registry `tau explain doctor.<check>` reads) by
+        # scripts/gen-doctor-checks-doc.py — this proves the doc is in sync
+        # (the doctor-checks smoke group and the doctorcatalog.zig
+        # doc-mirror unit test pin the same invariant).
+        # Regenerate: python3 scripts/gen-doctor-checks-doc.py
+        shell: bash
+        run: python3 scripts/gen-doctor-checks-doc.py --check
+
       - name: Doctor stream schema + doc drift check
         # schema/tau-doctor.schema.json describes every NDJSON line
         # `tau doctor --json` emits — validate real shipped-binary output
