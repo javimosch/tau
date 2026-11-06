@@ -296,7 +296,10 @@ def render(members, clients, fixes, version, acp_since):
     a("[Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),")
     a("[Claude Desktop](clients/claude-desktop.md),")
     a("[OpenCode](clients/opencode.md), [Cline](clients/cline.md),")
-    a("[Goose](clients/goose.md), [Continue](clients/continue.md).")
+    a("[Goose](clients/goose.md), [Continue](clients/continue.md),")
+    a("[Roo Code](clients/roo-code.md),")
+    a("[Kilo Code](clients/kilo-code.md),")
+    a("[Amazon Q Developer](clients/amazonq.md).")
     a("")
     a("## Supported editor clients")
     a("")
@@ -371,10 +374,11 @@ def render(members, clients, fixes, version, acp_since):
         mcp_shape = [k for k in bridge_clients
                      if clients[k].get("section") == "mcp"]
         if mcp_shape:
-            names = ", ".join(f"`{k}`" for k in mcp_shape)
-            a("OpenCode (" + names + ") keeps MCP servers under `mcp` (not")
-            a("`mcpServers`) and packs the whole spawn line into a `command`")
-            a("array — the same bridge, a different entry shape:")
+            names = ", ".join(f"`{clients[k]['display']}`" for k in mcp_shape)
+            a("The `mcp`-section clients (" + names + ") keep MCP servers")
+            a("under `mcp` (not `mcpServers`) and pack the whole spawn line")
+            a("into a `command` array — the same bridge, a different entry")
+            a("shape:")
             a("")
             a("```jsonc")
             a('"mcp": {')

@@ -20,7 +20,8 @@ Slots:
 
 Direct ACP clients (zed, vscode, cursor, jetbrains) verify the two client
 slots; MCP-bridge clients (windsurf, gemini, claude-desktop, opencode,
-cline) verify all four. YAML bridge clients (goose, continue) verify
+cline, roo-code, kilo-code, amazonq) verify all four. YAML bridge clients
+(goose, continue) verify
 client-snippet + both bridge slots — their YAML config is never written.
 Snippet-only clients (nvim's Lua plugin config, emacs' agent-shell elisp)
 verify just client-snippet. Blocks whose bytes embed
@@ -63,13 +64,17 @@ GUIDES = {
     "cline.md": "cline",
     "goose.md": "goose",
     "continue.md": "continue",
+    "roo-code.md": "roo-code",
+    "kilo-code.md": "kilo-code",
+    "amazonq.md": "amazonq",
 }
 
 # MCP-bridge clients wire two files — the client's mcpServers entry plus the
 # shared ~/.config/mcacp/mcacp.json — so their guides carry four verified
 # blocks. Direct ACP clients carry two (their own file + snippet only).
 BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop",
-                            "opencode", "cline"))
+                            "opencode", "cline", "roo-code", "kilo-code",
+                            "amazonq"))
 
 # YAML-configured bridge clients (Goose's extensions: map, Continue's
 # mcpServers: list) can't be written or spliced — setup always reports
@@ -229,6 +234,12 @@ def collect(tau):
             ".config/opencode/opencode.json":
                 '{"mcp":{"other":{"type":"local","command":["x"]}}}',
             ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json":
+                '{"mcpServers":{"other":{"command":"x"}}}',
+            ".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json":
+                '{"mcpServers":{"other":{"command":"x"}}}',
+            ".config/kilo/kilo.jsonc":
+                '{"mcp":{"other":{"type":"local","command":["x"]}}}',
+            ".aws/amazonq/mcp.json":
                 '{"mcpServers":{"other":{"command":"x"}}}',
             ".config/mcacp/mcacp.json":
                 '{"agent_servers":{"other":{"command":"y","args":[]}}}',

@@ -19,7 +19,10 @@ dedicated per-client guide for each client with verified snippets:
 [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
 [Claude Desktop](clients/claude-desktop.md),
 [OpenCode](clients/opencode.md), [Cline](clients/cline.md),
-[Goose](clients/goose.md), [Continue](clients/continue.md).
+[Goose](clients/goose.md), [Continue](clients/continue.md),
+[Roo Code](clients/roo-code.md),
+[Kilo Code](clients/kilo-code.md),
+[Amazon Q Developer](clients/amazonq.md).
 
 ## Supported editor clients
 
@@ -38,6 +41,9 @@ dedicated per-client guide for each client with verified snippets:
 | `cline` (mcacp) | `cline` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `mcpServers` | none | `~/.config/tau/snippets/cline.jsonc` | `client_cline` / `wire_client_cline` |
 | `goose` (mcacp) | `goose` | `~/.config/goose` | — (YAML config) | — | — | `~/.config/tau/snippets/goose.yaml` | `client_goose` (manual only — YAML config) |
 | `continue` (mcacp) | `continue` | `~/.continue` | — (YAML config) | — | — | `~/.config/tau/snippets/continue.yaml` | `client_continue` (manual only — YAML config) |
+| `roo-code` (mcacp) | `roo-code` (alias `roo`) | `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline` | `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json` | `mcpServers` | none | `~/.config/tau/snippets/roo-code.jsonc` | `client_roo_code` / `wire_client_roo` |
+| `kilo-code` (mcacp) | `kilo-code` (alias `kilo`) | `~/.config/kilo` | `~/.config/kilo/kilo.jsonc` | `mcp` | none | `~/.config/tau/snippets/kilo-code.jsonc` | `client_kilo_code` / `wire_client_kilo` |
+| `amazonq` (mcacp) | `amazonq` (alias `amazon-q`) | `~/.aws/amazonq` | `~/.aws/amazonq/mcp.json` | `mcpServers` | none | `~/.config/tau/snippets/amazonq.jsonc` | `client_amazonq` / `wire_client_amazonq` |
 
 `tau setup --client all` expands to every row. Detection (setup with no
 `--client`, or `tau doctor`) only *reports* clients whose config dir
@@ -59,7 +65,7 @@ the editor runs `command` + `args`, and `args` must be exactly
 }
 ```
 
-MCP-bridge clients (`windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`, `goose`, `continue`) speak MCP, not ACP — they can't
+MCP-bridge clients (`windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`, `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`) speak MCP, not ACP — they can't
 spawn `tau acp serve` directly. Their server entry launches
 the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:
 
@@ -72,9 +78,10 @@ the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:
 }
 ```
 
-OpenCode (`opencode`) keeps MCP servers under `mcp` (not
-`mcpServers`) and packs the whole spawn line into a `command`
-array — the same bridge, a different entry shape:
+The `mcp`-section clients (`opencode`, `kilo-code`) keep MCP servers
+under `mcp` (not `mcpServers`) and pack the whole spawn line
+into a `command` array — the same bridge, a different entry
+shape:
 
 ```jsonc
 "mcp": {
@@ -137,3 +144,6 @@ After tau writes (or previews) the config, one in-editor step remains:
 | `cline` | install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Cline pane |
 | `goose` | install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.config/goose/config.yaml, then run 'goose session' and ask about the mcacp tools |
 | `continue` | install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.continue/config.yaml, restart Continue, and use agent mode to see tau's tools |
+| `roo-code` | install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Roo Code pane |
+| `kilo-code` | install mcacp (npm i -g mcacp or npx), restart Kilo Code, and confirm the mcacp server under Agent Behaviour > MCP Servers (or run 'kilo mcp list') |
+| `amazonq` | install mcacp (npm i -g mcacp or npx), then run 'q chat' (or restart the IDE plugin) and check the mcacp server with /mcp |
