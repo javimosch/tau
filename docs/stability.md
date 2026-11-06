@@ -249,6 +249,10 @@ Special rules:
   envelopes, onboarding flows, and color policy under `tests/golden/`;
   `scripts/check-error-golden-coverage.py` gates that every catalog exit
   code is exercised by at least one of them.
+- `scripts/check-explain-coverage.py` gates that every catalog row in
+  [docs/errors.md](errors.md) and [docs/config.md](config.md) resolves to
+  a real `tau explain` entry — the docs an agent reaches via the
+  envelope's `explain`/`catalog` footer can never outrun the lookup.
 - `schema/tau-config.schema.json` is byte-compared against
   `tau config schema` output in CI; `schema/tau-doctor.schema.json` is
   validated against real NDJSON streams by
