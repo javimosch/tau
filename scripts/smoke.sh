@@ -100,6 +100,7 @@ ALL_TEST_GROUPS=(
   "error-coverage:test_group_error_coverage"
   "config-doc:test_group_config_doc"
   "doctor-schema:test_group_doctor_schema"
+  "doctor-checks:test_group_doctor_checks"
   "cli-schemas:test_group_cli_schemas"
   "compat-doc:test_group_compat_doc"
   "stability-doc:test_group_stability_doc"
@@ -4261,6 +4262,17 @@ test_group_golden_maintenance() {
   golden_check ex-dym-key          1 "$BIN" explain timout_ms
   golden_check ex-dym-dotted       1 "$BIN" explain keys.openia
 
+  # Doctor-check lookups — mirror rows of the generated check table in
+  # docs/troubleshooting.md.
+  golden_check ex-doctor           0 "$BIN" explain doctor.tls_ca
+  golden_check ex-doctor-bare      0 "$BIN" explain tls_ca
+  golden_check ex-doctor-shared    0 "$BIN" explain doctor.api_key
+  golden_check ex-doctor-client    0 "$BIN" explain doctor.client_zed
+  golden_check ex-doctor-probe     0 "$BIN" explain doctor.probe_openai_auth
+  golden_check ex-doctor-human     0 "$BIN" explain --human doctor.api_key
+  golden_check ex-doctor-unknown   1 "$BIN" explain doctor.bogus
+  golden_check ex-dym-doctor       1 "$BIN" explain doctor.tls-ca
+
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
   mkdir -p "$stubs"
@@ -5336,9 +5348,64 @@ test_group_explain() {
   capture k7 "$BIN" explain agent.timeout
   ok "explain: unknown dotted path exits 1" "$k7_rc" 1
   contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
-  contains "explain: message now names config keys" "$k7_err" 'unknown error code, type, or config key'
+  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, or doctor check'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
+
+  # Doctor-check lookups — mirror rows of the generated check table in
+  # docs/troubleshooting.md: `doctor.<id>` for the namespaced spelling,
+  # bare ids where nothing else owns the name, `doctor.<shared>` for
+  # collisions with config keys.
+  capture d1 "$BIN" explain doctor.tls_ca
+  ok "explain: doctor check exits 0" "$d1_rc" 0
+  contains "explain: check entry carries id" "$d1_out" '"check":"tls_ca"'
+  contains "explain: check entry carries fails_when" "$d1_out" '"fails_when":"CURL_CA_BUNDLE/SSL_CERT_FILE'
+  contains "explain: check entry carries remediation" "$d1_out" '"remediation":"set CURL_CA_BUNDLE'
+  contains "explain: check entry anchors doctor section" "$d1_out" 'troubleshooting.md#setup--config-problems--tau-doctor'
+
+  capture d2 "$BIN" explain tls_ca
+  ok "explain: bare check id exits 0" "$d2_rc" 0
+  contains "explain: bare id resolves the check" "$d2_out" '"check":"tls_ca"'
+
+  capture d3 "$BIN" explain doctor.api_key
+  ok "explain: shared name prefixed exits 0" "$d3_rc" 0
+  contains "explain: prefixed shared name is the check" "$d3_out" '"check":"api_key"'
+  capture d3b "$BIN" explain api_key
+  ok "explain: shared name bare exits 0" "$d3b_rc" 0
+  contains "explain: bare shared name is the config key" "$d3b_out" '"key":"api_key"'
+
+  capture d4 "$BIN" explain doctor.client_zed
+  ok "explain: client check exits 0" "$d4_rc" 0
+  contains "explain: client check names the id" "$d4_out" '"check":"client_zed"'
+  contains "explain: client remediation runs setup --client" "$d4_out" 'tau setup --client zed'
+
+  capture d5 "$BIN" explain doctor.probe_openai_auth
+  ok "explain: probe auth check exits 0" "$d5_rc" 0
+  contains "explain: probe check names the id" "$d5_out" '"check":"probe_openai_auth"'
+  contains "explain: probe remediation names the member path" "$d5_out" 'keys.openai'
+
+  capture d6 "$BIN" explain --human doctor.tls_ca
+  ok "explain: --human check exits 0" "$d6_rc" 0
+  contains "explain: --human prints check id" "$d6_out" 'doctor check  tls_ca'
+  contains "explain: --human prints fails when" "$d6_out" 'fails when: CURL_CA_BUNDLE'
+  contains "explain: --human prints fix" "$d6_out" 'fix:'
+
+  # The no-query catalog carries the third slice.
+  contains "explain: catalog lists doctor checks" "$r3_out" '"doctor_checks":['
+  contains "explain: catalog includes a static check" "$r3_out" '"check":"tls_ca"'
+  contains "explain: catalog includes a client check" "$r3_out" '"check":"client_zed"'
+  contains "explain: catalog includes a probe check" "$r3_out" '"check":"probe_openai_auth"'
+
+  # Check-id typos get the same did-you-mean — namespaced and bare.
+  capture d7 "$BIN" explain doctor.tls-ca
+  ok "explain: check typo exits 1" "$d7_rc" 1
+  contains "explain: check typo suggests doctor.tls_ca" "$d7_err" 'did you mean \"tau explain doctor.tls_ca\"?'
+  capture d8 "$BIN" explain tls-ca
+  ok "explain: bare check typo exits 1" "$d8_rc" 1
+  contains "explain: bare check typo suggests tls_ca" "$d8_err" 'did you mean \"tau explain tls_ca\"?'
+  capture d9 "$BIN" explain doctor.bogus
+  ok "explain: unknown check exits 1" "$d9_rc" 1
+  contains "explain: unknown check emits not_found" "$d9_err" '"type":"not_found"'
 
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
@@ -5404,6 +5471,12 @@ test_group_explain() {
     else
       ok "explain: dotted key entry validates against schema" 1 0
     fi
+    # A doctor-check entry validates against the same schema.
+    if printf '%s' "$d1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: check entry validates against schema" 0 0
+    else
+      ok "explain: check entry validates against schema" 1 0
+    fi
   else
     skip_test "explain: schema validation" "python3 not on PATH"
   fi
@@ -5465,6 +5538,90 @@ PYEOF
   else
     ok "explain-coverage: checker detects an unresolvable config key" 0 0
   fi
+
+  # And a check row with no matching CheckSpec — spliced inside the marked
+  # GENERATED DOCTOR CHECKS region the checker scopes to (a row appended
+  # outside it is invisible to the section-scoped parser).
+  cp "$ROOT/docs/troubleshooting.md" "$stage/troubleshooting.md"
+  python3 - "$stage/troubleshooting.md" <<'PYEOF'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+t = t.replace("| `tls_ca` |", "| `bogus_check` | staged | staged |\n| `tls_ca` |", 1)
+open(p, "w").write(t)
+PYEOF
+  if python3 "$check" --tau "$BIN" --doctor-doc "$stage/troubleshooting.md" >/dev/null 2>&1; then
+    ok "explain-coverage: checker detects an unresolvable doctor check" 0 1
+  else
+    ok "explain-coverage: checker detects an unresolvable doctor check" 0 0
+  fi
+}
+
+# Group: generated `tau doctor` check table in docs/troubleshooting.md —
+# the GENERATED DOCTOR CHECKS region is spliced by
+# scripts/gen-doctor-checks-doc.py from the CheckSpec catalog in
+# src/doctorcatalog.zig (the same registry `tau explain doctor.<check>`
+# reads); --check fails on drift. Fully offline.
+test_group_doctor_checks() {
+  note "generated doctor check table drift check"
+
+  local doc="$ROOT/docs/troubleshooting.md"
+  local gen="$ROOT/scripts/gen-doctor-checks-doc.py"
+
+  if grep -q "GENERATED DOCTOR CHECKS" "$doc" 2>/dev/null; then
+    ok "doctor-checks: troubleshooting.md carries the generated region" 0 0
+  else
+    ok "doctor-checks: troubleshooting.md carries the generated region" 1 0
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "doctor-checks: --check passes (no drift)" "python3 not on PATH"
+    skip_test "doctor-checks: --check detects a stale doc" "python3 not on PATH"
+    skip_test "doctor-checks: rows match the live catalog" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "doctor-checks: --check passes (no drift)" 0 0
+  else
+    ok "doctor-checks: --check passes (no drift)" 1 0
+  fi
+
+  # The generated rows must match the live `tau explain` catalog exactly —
+  # one row per doctor_checks entry, same id order.
+  "$BIN" explain --json > "$SMOKE_TEMP/explain-catalog.json" 2>/dev/null
+  if python3 - "$doc" "$SMOKE_TEMP/explain-catalog.json" <<'PYEOF'
+import json, re, sys
+doc = open(sys.argv[1]).read()
+region = re.search(r"<!-- BEGIN GENERATED DOCTOR CHECKS.*?<!-- END GENERATED DOCTOR CHECKS -->", doc, re.S).group(0)
+doc_ids = [m.group(1) for m in re.finditer(r"^\| `([^`]+)` \|", region, re.M)]
+live = [e["check"] for e in json.load(open(sys.argv[2]))["doctor_checks"]]
+sys.exit(0 if doc_ids == live else 1)
+PYEOF
+  then
+    ok "doctor-checks: rows match the live catalog" 0 0
+  else
+    ok "doctor-checks: rows match the live catalog" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: splice a bogus row inside the
+  # marked region, expect failure, restore.
+  cp "$doc" "$SMOKE_TEMP/troubleshooting.md.bak"
+  python3 - "$doc" <<'PYEOF'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+t = t.replace("| `tls_ca` |", "| `bogus_check` | staged | staged |\n| `tls_ca` |", 1)
+open(p, "w").write(t)
+PYEOF
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "doctor-checks: --check detects a stale doc" 0 1
+  else
+    ok "doctor-checks: --check detects a stale doc" 0 0
+  fi
+  cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
+  # Leave the tree clean even if a later check fails.
+  python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
 }
 
 # Group: --bench regression guard
