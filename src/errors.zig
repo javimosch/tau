@@ -14,6 +14,7 @@ const std = @import("std");
 const json = @import("json.zig");
 const term = @import("term.zig");
 const debuglog = @import("debuglog.zig");
+const suggest = @import("suggest.zig");
 
 const doc_url = @import("version.zig").troubleshooting_doc_url;
 const providers_doc_url = @import("version.zig").providers_doc_url;
@@ -176,6 +177,63 @@ pub fn findSpec(query: []const u8) ?Spec {
         if (std.ascii.eqlIgnoreCase(q, s.type_name)) return s;
     }
     return null;
+}
+
+/// Every query `tau explain` resolves — each catalog `type_name` plus each
+/// decimal code — derived from the same Spec table that generates
+/// docs/errors.md, so a suggestion always resolves on retry.
+const explain_candidates = blk: {
+    var c: [specs.len * 2][]const u8 = undefined;
+    for (specs, 0..) |s, i| {
+        c[i * 2] = s.type_name;
+        c[i * 2 + 1] = std.fmt.comptimePrint("{d}", .{s.code});
+    }
+    break :blk c;
+};
+
+/// Lowercase mirrors of explain_candidates — findSpec matches `type` tags
+/// case-insensitively, so the typo distance ignores case too ("authfaild"
+/// is one edit from "authfailed", not three from "AuthFailed").
+const explain_candidates_lower = blk: {
+    var c: [explain_candidates.len][]const u8 = undefined;
+    for (explain_candidates, 0..) |cand, i| {
+        c[i] = lower: {
+            var out: [cand.len]u8 = undefined;
+            for (cand, 0..) |ch, j| out[j] = std.ascii.toLower(ch);
+            const s = out;
+            break :lower &s;
+        };
+    }
+    break :blk c;
+};
+
+/// A ` — did you mean "tau explain <x>"?` fragment for a query findSpec
+/// rejected — <x> is the nearest catalog code or `type` tag within two
+/// case-insensitive edits (`authfaild` → `"tau explain AuthFailed"`, `1066`
+/// → `"tau explain 106"`), phrased as a ready-to-run command like the
+/// envelope's `explain` footer. Queries that parse as decimal get no guess:
+/// uncataloged codes resolve via specFor before this runs and `0` is
+/// success — never an error — so only numeric overflow reaches the
+/// suggestion path. Caller owns the returned slice; null on OOM or when
+/// nothing is close.
+pub fn suggestQuery(a: std.mem.Allocator, query: []const u8) ?[]const u8 {
+    const q = std.mem.trim(u8, query, " \t");
+    if (q.len == 0) return null;
+    if (std.fmt.parseInt(u8, q, 10)) |_| return null else |_| {}
+    const q_lower = std.ascii.allocLowerString(a, q) catch return null;
+    // suggest.suggest's best-within-2 loop, over the lowercase mirrors so the
+    // index maps back to the canonical spelling (or the code).
+    var best: ?usize = null;
+    var best_d: usize = std.math.maxInt(usize);
+    for (explain_candidates_lower, 0..) |cand, i| {
+        const d = suggest.editDistance(a, q_lower, cand) orelse continue;
+        if (d <= 2 and d < best_d) {
+            best = i;
+            best_d = d;
+        }
+    }
+    const i = best orelse return null;
+    return std.fmt.allocPrint(a, " — did you mean \"tau explain {s}\"?", .{explain_candidates[i]}) catch null;
 }
 
 /// Serialize one catalog entry for `tau explain` (no trailing newline — the
@@ -354,6 +412,36 @@ test "findSpec resolves codes, type tags, and uncataloged codes" {
     try testing.expect(findSpec("bogus") == null);
     try testing.expect(findSpec("") == null);
     try testing.expect(findSpec("999") == null);
+}
+
+test "suggestQuery names the nearest catalog entry as a ready-to-run command" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const gpa = ar.allocator();
+    // Type-tag typo resolves to the tag — distance ignores case, like
+    // findSpec's eqlIgnoreCase lookup (the suggestion keeps canonical case).
+    const t1 = suggestQuery(gpa, "authfaild").?;
+    try testing.expectEqualStrings(" — did you mean \"tau explain AuthFailed\"?", t1);
+    const t2 = suggestQuery(gpa, "timout").?;
+    try testing.expectEqualStrings(" — did you mean \"tau explain Timeout\"?", t2);
+    // Decimal overflow never parses, so a code typo still gets a guess.
+    const c1 = suggestQuery(gpa, "1066").?;
+    try testing.expectEqualStrings(" — did you mean \"tau explain 106\"?", c1);
+    // Parseable decimals (only 0 reaches here — success is never an error),
+    // empty input, and unrelated names get no suggestion.
+    try testing.expect(suggestQuery(gpa, "0") == null);
+    try testing.expect(suggestQuery(gpa, "00") == null);
+    try testing.expect(suggestQuery(gpa, "") == null);
+    try testing.expect(suggestQuery(gpa, "bogus") == null);
+    try testing.expect(suggestQuery(gpa, "999") == null);
+}
+
+test "every explain suggestion candidate resolves via findSpec" {
+    // The candidates are the catalog itself, so a suggestion can never name
+    // a query that findSpec would reject again.
+    for (explain_candidates) |c| {
+        try testing.expect(findSpec(c) != null);
+    }
 }
 
 test "formatEntryJson emits the explain entry shape" {

@@ -67,6 +67,9 @@ tau explain --human 80   # prose instead of JSON
 Numeric codes outside the table still resolve to the generic
 `internal_error` entry (code preserved), mirroring the envelope rule
 above; `0` and unrecognized names exit `1` with a `not_found` envelope.
+A query within two case-insensitive edits of a catalog code or `type`
+tag gets a ready-to-run suggestion in the message — `tau explain
+authfaild` prints `did you mean "tau explain AuthFailed"?`.
 
 ## Silent exit paths
 

@@ -97,6 +97,7 @@ ALL_TEST_GROUPS=(
   "update:test_group_update"
   "upgrade:test_group_upgrade"
   "errors-doc:test_group_errors_doc"
+  "error-coverage:test_group_error_coverage"
   "config-doc:test_group_config_doc"
   "doctor-schema:test_group_doctor_schema"
   "cli-schemas:test_group_cli_schemas"
@@ -4162,6 +4163,8 @@ test_group_golden_maintenance() {
   golden_check ex-uncataloged      0 "$BIN" explain 42
   golden_check ex-unknown-name     1 "$BIN" explain bogus
   golden_check ex-code-zero        1 "$BIN" explain 0
+  golden_check ex-dym-type         1 "$BIN" explain authfaild
+  golden_check ex-dym-code         1 "$BIN" explain 1066
   golden_check ex-bad-flag        80 "$BIN" explain --nope
   golden_check ex-json-human-mutex 80 "$BIN" explain --json --human 80
 
@@ -4387,6 +4390,53 @@ test_group_errors_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/errors.md.bak" "$doc"
   else
     skip_test "errors-doc: --check detects a stale doc" "docs/errors.md missing"
+  fi
+}
+
+# Group: error-catalog golden coverage gate
+# docs/errors.md declares the stable exit-code contract; scripts/
+# check-error-golden-coverage.py fails when a catalog code is exercised by
+# no golden test (a tests/golden {"err"} envelope or a golden_check*
+# want-exit). Windows-only codes (111) are pinned by the platform-gated
+# contract assertions in the acp/upgrade groups — the checker requires
+# those "code":N greps too, so that coverage can't silently rot either.
+test_group_error_coverage() {
+  note "error-catalog golden coverage gate"
+
+  local check="$ROOT/scripts/check-error-golden-coverage.py"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "error-coverage: every catalog code is golden-exercised" "python3 not on PATH"
+    skip_test "error-coverage: checker detects an unexercised code" "python3 not on PATH"
+    skip_test "error-coverage: platform-gated codes still require assertions" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$check" >/dev/null 2>&1; then
+    ok "error-coverage: every catalog code is golden-exercised" 0 0
+  else
+    ok "error-coverage: every catalog code is golden-exercised" 1 0
+  fi
+
+  # Prove the gate isn't vacuous: a catalog carrying a code no golden
+  # exercises must fail against the real golden set + smoke script.
+  local stage="$SMOKE_TEMP/error-coverage"
+  mkdir -p "$stage"
+  cp "$ROOT/docs/errors.md" "$stage/errors.md"
+  printf '| `199` | `ghost` | `false` | staged | staged | [x](y) |\n' >> "$stage/errors.md"
+  if python3 "$check" --catalog "$stage/errors.md" >/dev/null 2>&1; then
+    ok "error-coverage: checker detects an unexercised code" 0 1
+  else
+    ok "error-coverage: checker detects an unexercised code" 0 0
+  fi
+
+  # A platform-only code with its contract grep stripped must fail too —
+  # the exemption can't be a silent escape hatch.
+  : > "$stage/no-contract-smoke.sh"
+  if python3 "$check" --smoke "$stage/no-contract-smoke.sh" >/dev/null 2>&1; then
+    ok "error-coverage: platform-gated codes still require assertions" 0 1
+  else
+    ok "error-coverage: platform-gated codes still require assertions" 0 0
   fi
 }
 
@@ -5138,6 +5188,18 @@ test_group_explain() {
   capture r7 "$BIN" explain 0
   ok "explain: code 0 exits 1" "$r7_rc" 1
   contains "explain: code 0 emits not_found" "$r7_err" '"type":"not_found"'
+
+  # Did-you-mean: a mistyped type tag or overflowing code names the nearest
+  # catalog entry as a ready-to-run command; unrelated names and `0` get
+  # no guess (r6/r7 envelopes above stay suggestion-free).
+  capture r7b "$BIN" explain authfaild
+  ok "explain: type-tag typo exits 1" "$r7b_rc" 1
+  contains "explain: type-tag typo suggests AuthFailed" "$r7b_err" 'did you mean \"tau explain AuthFailed\"?'
+  capture r7c "$BIN" explain 1066
+  ok "explain: code typo exits 1" "$r7c_rc" 1
+  contains "explain: code typo suggests 106" "$r7c_err" 'did you mean \"tau explain 106\"?'
+  lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
+  lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
@@ -6129,12 +6191,20 @@ test_group_first_run() {
   contains "e2e driver scrubs provider keys" "$(cat "$shdrv")" "XIAOMI_API_KEY"
   contains "e2e driver uses a scratch HOME" "$(cat "$shdrv")" 'HOME="$FH"'
   contains "e2e driver asserts the selftest check row" "$(cat "$shdrv")" '"name":"selftest","status":"ok"'
+  contains "e2e driver wires a direct-ACP client" "$(cat "$shdrv")" "--client zed"
+  contains "e2e driver wires an MCP-bridge client" "$(cat "$shdrv")" "--client claude-desktop"
+  contains "e2e driver asserts the zed wiring row" "$(cat "$shdrv")" '"name":"client_zed","status":"ok"'
+  contains "e2e driver asserts the bridge wiring row" "$(cat "$shdrv")" '"name":"client_claude_desktop","status":"ok"'
 
   # ── PowerShell driver surface ──
   [ -f "$psdrv" ]; ok "e2e-first-run.ps1 exists" "$?" 0
   contains "ps1 driver runs unattended setup" "$(cat "$psdrv")" "setup --yes --offline"
   contains "ps1 driver runs selftest" "$(cat "$psdrv")" "doctor --offline --selftest"
   contains "ps1 driver asserts the selftest check row" "$(cat "$psdrv")" '"name":"selftest","status":"ok"'
+  contains "ps1 driver wires a direct-ACP client" "$(cat "$psdrv")" "--client zed"
+  contains "ps1 driver wires an MCP-bridge client" "$(cat "$psdrv")" "--client claude-desktop"
+  contains "ps1 driver asserts the zed wiring row" "$(cat "$psdrv")" '"name":"client_zed","status":"ok"'
+  contains "ps1 driver asserts the bridge wiring row" "$(cat "$psdrv")" '"name":"client_claude_desktop","status":"ok"'
   if command -v pwsh >/dev/null 2>&1; then
     pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -LiteralPath '$psdrv' -Raw)) | Out-Null" 2>/dev/null
     ok "e2e-first-run.ps1 parses under pwsh" "$?" 0
@@ -6164,6 +6234,8 @@ test_group_first_run() {
     ok "e2e-first-run.sh exit" "$rc" 0
     contains "e2e-first-run reports PASS" "$out" "e2e-first-run: PASS"
     contains "e2e scaffolded config via setup --yes" "$out" "setup --yes --offline ok"
+    contains "e2e wired a direct-ACP client" "$out" "setup --client zed ok"
+    contains "e2e wired an MCP-bridge client" "$out" "setup --client claude-desktop ok"
     contains "e2e keyless selftest reported ok" "$out" "credential-free doctor --selftest reports ok"
     rm -rf "$fh"
   else

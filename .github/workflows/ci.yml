@@ -222,9 +222,11 @@ jobs:
     # layout the installers fetch), installs it through the shipped installer
     # (install.sh on POSIX, install.ps1 on Windows) against a file://
     # TAU_BASE_URL so nothing touches the network, then drives the documented
-    # first-run path — `tau setup --yes` and `tau doctor --selftest` — in a
-    # scratch HOME with every credential source scrubbed. Locks the
-    # install → onboard → self-verify chain for every released platform.
+    # first-run path — `tau setup --yes`, `tau setup --client` for both the
+    # direct-ACP (zed) and MCP-bridge (claude-desktop) wiring paths, and
+    # `tau doctor --selftest` — in a scratch HOME with every credential
+    # source scrubbed. Locks the install → onboard → wire → self-verify
+    # chain for every released platform, Windows included.
     name: first-run (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
