@@ -157,8 +157,8 @@ _tau_complete() {
             ;;
 
         explain)
-            # Exit codes mirror the stable catalog in src/errors.zig.
-            COMPREPLY=($(compgen -W "1 80 82 105 106 110 111 --human --json" -- "$cur"))
+            # Codes mirror src/errors.zig; config keys mirror docs/config.md.
+            COMPREPLY=($(compgen -W '1 80 82 105 106 110 111 $schema provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues keys.xiaomi keys.openai keys.deepseek keys.opencode-go --human --json' -- "$cur"))
             ;;
 
         *)

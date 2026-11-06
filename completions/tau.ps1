@@ -31,8 +31,14 @@ $TauArgumentCompleter = {
                      '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--json')
-    # Exit codes mirror the stable catalog in src/errors.zig.
-    $explainArgs = @('1', '80', '82', '105', '106', '110', '111', '--human', '--json')
+    # Codes mirror src/errors.zig; config keys mirror docs/config.md.
+    $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
+        '$schema', 'provider', 'model', 'api_key', 'keys', 'mode', 'stream',
+        'thinking', 'debug', 'temperature', 'max_tokens', 'timeout_ms',
+        'context_window', 'auto_compact', 'compact_threshold',
+        'compact_keep_recent_tokens', 'goal_max_iterations', 'goal_max_continues',
+        'keys.xiaomi', 'keys.openai', 'keys.deepseek', 'keys.opencode-go',
+        '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'all')
     $globalFlags = @(

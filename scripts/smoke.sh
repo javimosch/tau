@@ -4154,7 +4154,7 @@ test_group_golden_maintenance() {
   _GOLDEN_BIN="$(realpath "$BIN" 2>/dev/null || printf '%s' "$BIN")"
   _golden_fresh_home
 
-  # ── tau explain — rendered from src/errors.zig, fully offline ──
+  # ── tau explain — rendered from src/errors.zig + the config-key catalog ──
   golden_check ex-catalog          0 "$BIN" explain
   golden_check ex-code             0 "$BIN" explain 106
   golden_check ex-type-tag         0 "$BIN" explain authfailed
@@ -4167,6 +4167,17 @@ test_group_golden_maintenance() {
   golden_check ex-dym-code         1 "$BIN" explain 1066
   golden_check ex-bad-flag        80 "$BIN" explain --nope
   golden_check ex-json-human-mutex 80 "$BIN" explain --json --human 80
+
+  # Config-key lookups — mirror rows of the generated docs/config.md table.
+  golden_check ex-key              0 "$BIN" explain timeout_ms
+  golden_check ex-key-enum         0 "$BIN" explain provider
+  golden_check ex-key-dotted       0 "$BIN" explain keys.openai
+  golden_check ex-key-schema       0 "$BIN" explain '$schema'
+  golden_check ex-key-json         0 "$BIN" explain --json compact_threshold
+  golden_check ex-key-human        0 "$BIN" explain --human stream
+  golden_check ex-key-unknown      1 "$BIN" explain agent.timeout
+  golden_check ex-dym-key          1 "$BIN" explain timout_ms
+  golden_check ex-dym-dotted       1 "$BIN" explain keys.openia
 
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
@@ -5198,6 +5209,52 @@ test_group_explain() {
   capture r7c "$BIN" explain 1066
   ok "explain: code typo exits 1" "$r7c_rc" 1
   contains "explain: code typo suggests 106" "$r7c_err" 'did you mean \"tau explain 106\"?'
+
+  # Config keys resolve from the generated docs/config.md catalog — a flat
+  # key, an enum'd key, and a dotted keys.<provider> member path.
+  capture k1 "$BIN" explain timeout_ms
+  ok "explain: config key exits 0" "$k1_rc" 0
+  contains "explain: key entry carries key name" "$k1_out" '"key":"timeout_ms"'
+  contains "explain: key entry carries type" "$k1_out" '"type":"integer"'
+  contains "explain: key entry carries constraints" "$k1_out" '"constraints":"`>= 0`"'
+  contains "explain: key entry links config.md" "$k1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/config.md"'
+
+  capture k2 "$BIN" explain provider
+  ok "explain: enum'd key exits 0" "$k2_rc" 0
+  contains "explain: enum key lists provider choices" "$k2_out" 'one of `xiaomi` | `openai`'
+
+  capture k3 "$BIN" explain keys.openai
+  ok "explain: dotted member path exits 0" "$k3_rc" 0
+  contains "explain: dotted entry names the member path" "$k3_out" '"key":"keys.openai"'
+  contains "explain: dotted entry is a non-empty string" "$k3_out" '"constraints":"non-empty"'
+
+  capture k3b "$BIN" explain --human stream
+  ok "explain: --human key exits 0" "$k3b_rc" 0
+  contains "explain: --human prints key+type" "$k3b_out" 'config key  stream (boolean)'
+  contains "explain: --human prints description" "$k3b_out" 'description: Stream responses token-by-token'
+
+  # Error catalog wins on the shared namespace — `timeout` stays the error.
+  capture k4 "$BIN" explain timeout
+  ok "explain: timeout resolves the error" "$k4_rc" 0
+  contains "explain: timeout is code 105 not a key" "$k4_out" '"code":105'
+
+  # The no-query catalog carries both slices.
+  contains "explain: catalog lists config keys" "$r3_out" '"config_keys":['
+  contains "explain: catalog includes a flat key" "$r3_out" '"key":"timeout_ms"'
+  contains "explain: catalog includes a member path" "$r3_out" '"key":"keys.openai"'
+
+  # Key typos get the same did-you-mean; unknown dotted paths stay
+  # suggestion-free when nothing is within two edits.
+  capture k5 "$BIN" explain timout_ms
+  ok "explain: key typo exits 1" "$k5_rc" 1
+  contains "explain: key typo suggests timeout_ms" "$k5_err" 'did you mean \"tau explain timeout_ms\"?'
+  capture k6 "$BIN" explain keys.openia
+  ok "explain: member-path typo exits 1" "$k6_rc" 1
+  contains "explain: member typo suggests keys.openai" "$k6_err" 'did you mean \"tau explain keys.openai\"?'
+  capture k7 "$BIN" explain agent.timeout
+  ok "explain: unknown dotted path exits 1" "$k7_rc" 1
+  contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
+  contains "explain: message now names config keys" "$k7_err" 'unknown error code, type, or config key'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
@@ -5253,6 +5310,17 @@ test_group_explain() {
       ok "explain: bare catalog validates against schema" 0 0
     else
       ok "explain: bare catalog validates against schema" 1 0
+    fi
+    # Config-key entries (flat + dotted) validate against the same schema.
+    if printf '%s' "$k1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: key entry validates against schema" 0 0
+    else
+      ok "explain: key entry validates against schema" 1 0
+    fi
+    if printf '%s' "$k3_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: dotted key entry validates against schema" 0 0
+    else
+      ok "explain: dotted key entry validates against schema" 1 0
     fi
   else
     skip_test "explain: schema validation" "python3 not on PATH"

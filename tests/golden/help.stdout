@@ -199,9 +199,10 @@ Version:
 Models:
   tau models                    List available providers and models
 
-Error catalog (offline — no API key needed):
-  tau explain                   List the stable error catalog as JSON
-  tau explain <code|type>       Print an error's cause + remediation hint
+Explain catalog (offline — no API key needed):
+  tau explain                   List the error + config-key catalog as JSON
+  tau explain <code|type|key>   Print an error's cause + remediation hint,
+                                or a config key's type/constraints/description
       --json                    ...pin the schema-checked JSON form (default)
       --human                   ...as prose (e.g. `tau explain --human 106`)
 

@@ -2,9 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-explain.schema.json",
   "title": "tau explain --json output",
-  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type> query the output is a single catalog-entry object; with no query it is a catalog object {\"errors\":[entry, ...]} holding every entry. Entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. New keys may be added (additive); existing keys keep their names and types.",
+  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key> query the output is a single entry object — an error entry for a code/type query or a config-key entry for a key query (including dotted keys.<provider> member paths); with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. New keys may be added (additive); existing keys keep their names and types.",
   "oneOf": [
     { "$ref": "#/$defs/entry" },
+    { "$ref": "#/$defs/config_entry" },
     { "$ref": "#/$defs/catalog" }
   ],
   "$defs": {
@@ -21,23 +22,44 @@
         "docs": { "type": "string", "minLength": 1, "description": "Guide link for this error class." }
       }
     },
+    "config_entry": {
+      "type": "object",
+      "required": ["key", "type", "constraints", "description", "docs"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "description": "Config-file key this entry documents — a flat key (e.g. \"timeout_ms\") or a dotted keys.<provider> member path (e.g. \"keys.openai\")." },
+        "type": { "type": "string", "enum": ["string", "boolean", "integer", "number", "object"], "description": "JSON type the config key accepts." },
+        "constraints": { "type": "string", "description": "Constraint cell text identical to the generated docs/config.md Constraints column (enum members, ranges, non-empty, member-name rules; \"—\" when unconstrained); informational, may be reworded." },
+        "description": { "type": "string", "minLength": 1, "description": "One line describing what the key controls; informational, may be reworded." },
+        "docs": { "type": "string", "minLength": 1, "description": "Link to the generated config-key reference (docs/config.md)." }
+      }
+    },
     "catalog": {
       "type": "object",
-      "required": ["errors"],
+      "required": ["errors", "config_keys"],
       "additionalProperties": false,
       "properties": {
         "errors": {
           "type": "array",
           "items": { "$ref": "#/$defs/entry" },
           "description": "Every entry in the stable error catalog, ordered by exit code."
+        },
+        "config_keys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/config_entry" },
+          "description": "Every resolvable config key — each generated docs/config.md key row plus each keys.<provider> member path."
         }
       }
     }
   },
   "examples": [
     { "code": 106, "type": "AuthFailed", "recoverable": false, "cause": "the provider rejected the API key, or no key was found anywhere in the resolution chain", "hint": "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY", "docs": "https://github.com/javimosch/tau/blob/master/docs/providers.md" },
+    { "key": "timeout_ms", "type": "integer", "constraints": "`>= 0`", "description": "HTTP request timeout in milliseconds.", "docs": "https://github.com/javimosch/tau/blob/master/docs/config.md" },
     { "errors": [
       { "code": 1, "type": "not_found", "recoverable": false, "cause": "a named resource is missing — the message identifies the file, skill, or session", "hint": "the message names what was not found — check the name/path and retry", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md" }
+    ],
+    "config_keys": [
+      { "key": "provider", "type": "string", "constraints": "one of `xiaomi` | `openai` | `deepseek` | `opencode-go`", "description": "Active provider name — selects the API endpoint and default model. TAU_ENDPOINT overrides the endpoint.", "docs": "https://github.com/javimosch/tau/blob/master/docs/config.md" }
     ] }
   ]
 }

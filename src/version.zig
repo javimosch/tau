@@ -18,6 +18,10 @@ pub const providers_doc_url = "https://github.com/javimosch/tau/blob/master/docs
 /// `catalog` so the full code/type/cause/hint table is one hop away.
 pub const errors_doc_url = "https://github.com/javimosch/tau/blob/master/docs/errors.md";
 
+/// Generated config-key reference URL. `tau explain <key>` entries link here
+/// so a key lookup lands on the full Key|Type|Constraints|Description table.
+pub const config_doc_url = "https://github.com/javimosch/tau/blob/master/docs/config.md";
+
 /// GitHub "latest release" API endpoint queried by the update check
 /// (`tau version --check`, `tau doctor` update_available). TAU_UPDATE_URL
 /// overrides it.

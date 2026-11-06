@@ -287,7 +287,8 @@ _tau() {
                     ;;
 
                 explain)
-                    # Exit codes mirror the stable catalog in src/errors.zig.
+                    # Exit codes mirror the stable catalog in src/errors.zig;
+                    # config keys mirror the generated docs/config.md table.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -297,8 +298,20 @@ _tau() {
                         '110:internal_error'
                         '111:unimplemented'
                     )
+                    local -a cfg_keys=(
+                        '$schema:config key' 'provider:config key' 'model:config key'
+                        'api_key:config key' 'keys:config key' 'mode:config key'
+                        'stream:config key' 'thinking:config key' 'debug:config key'
+                        'temperature:config key' 'max_tokens:config key'
+                        'timeout_ms:config key' 'context_window:config key'
+                        'auto_compact:config key' 'compact_threshold:config key'
+                        'compact_keep_recent_tokens:config key'
+                        'goal_max_iterations:config key' 'goal_max_continues:config key'
+                        'keys.xiaomi:config key' 'keys.openai:config key'
+                        'keys.deepseek:config key' 'keys.opencode-go:config key'
+                    )
                     _arguments \
-                        '1: :_describe "error code or type" err_codes' \
+                        '1: :_describe "error code/type or config key" err_codes cfg_keys' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]'
                     ;;

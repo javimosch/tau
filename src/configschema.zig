@@ -21,6 +21,8 @@ const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const json = @import("json.zig");
 
+const config_doc_url = @import("version.zig").config_doc_url;
+
 /// Stable published URL for the checked-in schema copy. `tau init` writes
 /// this as the "$schema" key so editors get autocomplete out of the box.
 pub const schema_url = "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json";
@@ -247,6 +249,187 @@ pub fn schemaHint(arena: std.mem.Allocator) ![]u8 {
 }
 
 // ---------------------------------------------------------------------------
+// `tau explain <key>` config catalog — every row of the generated
+// docs/config.md keys table, derived from the same FileConfig fields +
+// fieldMeta + fieldKind that emit the schema. A key added to FileConfig
+// cannot ship without a fieldMeta entry (compile error above), so this
+// catalog can never drift from the keys tau accepts — and the doc-mirror
+// test below pins name/type/constraints/description against config.md.
+// ---------------------------------------------------------------------------
+
+/// One row of the `tau explain <key>` catalog — mirrors a line of the
+/// generated docs/config.md table (Key | Type | Constraints | Description).
+/// `constraints` is the same cell text docs/config.md renders (`|`
+/// separators unescaped); `docs` links back to the reference.
+pub const KeySpec = struct {
+    name: []const u8,
+    type_name: []const u8,
+    constraints: []const u8,
+    desc: []const u8,
+    docs: []const u8 = config_doc_url,
+};
+
+/// Live provider names as a comptime string set — the enum source for both
+/// `provider` and `keys.<member>` cells.
+const provider_names = blk: {
+    var n: [cfgmod.providers.len][]const u8 = undefined;
+    for (cfgmod.providers, 0..) |p, i| n[i] = p.name;
+    break :blk n;
+};
+
+fn kindName(comptime k: Kind) []const u8 {
+    return switch (k) {
+        .string => "string",
+        .boolean => "boolean",
+        .integer => "integer",
+        .number => "number",
+        .any_json => "object",
+    };
+}
+
+/// Backticked `a` | `b` | ... join for enum-style constraint clauses.
+fn joinEnum(comptime vals: []const []const u8) []const u8 {
+    var joined: []const u8 = "";
+    for (vals, 0..) |v, i| {
+        if (i != 0) joined = joined ++ " | ";
+        joined = joined ++ "`" ++ v ++ "`";
+    }
+    return joined;
+}
+
+/// The `keys` row's cell — emitted by hand in schemaJson too, since
+/// propertyNames/additionalProperties don't fit the generic field shape.
+fn keysConstraintCell() []const u8 {
+    return "member names: " ++ comptime joinEnum(&provider_names) ++ "; values: non-empty strings";
+}
+
+/// Render one key's Constraints cell exactly as docs/config.md does
+/// (gen-config-doc.py's constraints()): backticked enum members and ranges,
+/// `|`-separated alternatives, `;`-separated clauses, `—` when unconstrained.
+fn constraintCell(comptime f: std.builtin.Type.StructField, comptime meta: Meta) []const u8 {
+    if (comptime std.mem.eql(u8, f.name, "keys")) return comptime keysConstraintCell();
+    var cell: []const u8 = "";
+    var sep: []const u8 = "";
+    if (comptime (meta.provider_enum or meta.str_enum != null)) {
+        const vals = if (comptime meta.provider_enum) &provider_names else meta.str_enum.?;
+        cell = cell ++ sep ++ "one of " ++ comptime joinEnum(vals);
+        sep = "; ";
+    }
+    if (comptime meta.non_empty) {
+        cell = cell ++ sep ++ "non-empty";
+        sep = "; ";
+    }
+    switch (comptime fieldKind(f.type)) {
+        .integer => {
+            // Mirror appendFieldSchema: integers always floor at 0; fields
+            // narrower than 64 bits also carry their maxInt ceiling.
+            const inner = comptime innerType(f.type);
+            if (comptime @typeInfo(inner).int.bits < 64) {
+                cell = cell ++ sep ++ std.fmt.comptimePrint("`0..{d}`", .{std.math.maxInt(inner)});
+            } else {
+                cell = cell ++ sep ++ "`>= 0`";
+            }
+        },
+        .number => {
+            if (comptime (meta.min != null and meta.max != null)) {
+                cell = cell ++ sep ++ std.fmt.comptimePrint("`{d}..{d}`", .{ meta.min.?, meta.max.? });
+            } else if (comptime meta.min != null) {
+                cell = cell ++ sep ++ std.fmt.comptimePrint("`>= {d}`", .{meta.min.?});
+            } else if (comptime meta.max != null) {
+                cell = cell ++ sep ++ std.fmt.comptimePrint("`<= {d}`", .{meta.max.?});
+            }
+        },
+        else => {},
+    }
+    if (cell.len == 0) return "—";
+    return cell;
+}
+
+/// The flat key rows — `$schema` first, then every FileConfig field in
+/// declaration order (the same order docs/config.md prints).
+pub const key_specs = blk: {
+    var ks: [file_fields.len + 1]KeySpec = undefined;
+    ks[0] = .{
+        .name = "$schema",
+        .type_name = "string",
+        .constraints = "—",
+        .desc = "Editor hint pointing at this schema. Written by `tau init`; accepted but ignored by the loader.",
+    };
+    for (file_fields, 0..) |f, i| {
+        const meta = fieldMeta(f.name);
+        ks[i + 1] = .{
+            .name = f.name,
+            .type_name = kindName(fieldKind(f.type)),
+            .constraints = constraintCell(f, meta),
+            .desc = meta.desc,
+        };
+    }
+    break :blk ks;
+};
+
+/// The `keys.<provider>` member paths — the only dotted key form the config
+/// file accepts. One entry per live provider so `tau explain keys.openai`
+/// resolves like any flat key.
+pub const key_member_specs = blk: {
+    var ks: [cfgmod.providers.len]KeySpec = undefined;
+    for (cfgmod.providers, 0..) |p, i| {
+        ks[i] = .{
+            .name = "keys." ++ p.name,
+            .type_name = "string",
+            .constraints = "non-empty",
+            .desc = "API key for the `" ++ p.name ++ "` provider — a keys[] entry outranks that provider's env var and the global api_key.",
+        };
+    }
+    break :blk ks;
+};
+
+/// Everything `tau explain <key>` can resolve: flat catalog rows plus the
+/// dotted keys.<provider> members.
+pub const key_catalog = key_specs ++ key_member_specs;
+
+/// Resolve a `tau explain <key>` query. Flat keys match exactly (config keys
+/// are case-sensitive); dotted queries only resolve `keys.<provider>` member
+/// paths. Returns null when nothing matches.
+pub fn findKey(query: []const u8) ?KeySpec {
+    const q = std.mem.trim(u8, query, " \t");
+    if (q.len == 0) return null;
+    if (std.mem.indexOfScalar(u8, q, '.') != null) {
+        for (key_member_specs) |ks| {
+            if (std.mem.eql(u8, q, ks.name)) return ks;
+        }
+        return null;
+    }
+    for (key_specs) |ks| {
+        if (std.mem.eql(u8, q, ks.name)) return ks;
+    }
+    return null;
+}
+
+/// Serialize one config-key entry for `tau explain` (no trailing newline —
+/// the caller owns framing, like errors.zig's formatEntryJson):
+/// {"key":"K","type":"T","constraints":"C","description":"D","docs":"U"}
+/// Caller owns the returned slice.
+pub fn formatKeyJson(a: std.mem.Allocator, ks: KeySpec) ![]u8 {
+    const ke = try json.escapeAlloc(a, ks.name);
+    defer a.free(ke);
+    const te = try json.escapeAlloc(a, ks.type_name);
+    defer a.free(te);
+    const ce = try json.escapeAlloc(a, ks.constraints);
+    defer a.free(ce);
+    const de = try json.escapeAlloc(a, ks.desc);
+    defer a.free(de);
+    const ue = try json.escapeAlloc(a, ks.docs);
+    defer a.free(ue);
+    return std.fmt.allocPrint(a, "{{\"key\":\"{s}\",\"type\":\"{s}\",\"constraints\":\"{s}\",\"description\":\"{s}\",\"docs\":\"{s}\"}}", .{ ke, te, ce, de, ue });
+}
+
+/// Human-readable `tau explain --human <key>` rendering — drawn from the
+/// same KeySpec so the prose and JSON forms can never drift apart.
+pub fn formatKeyHuman(a: std.mem.Allocator, ks: KeySpec) ![]u8 {
+    return std.fmt.allocPrint(a, "config key  {s} ({s})\n  constraints: {s}\n  description: {s}\n  docs:  {s}\n", .{ ks.name, ks.type_name, ks.constraints, ks.desc, ks.docs });
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 const testing = std.testing;
@@ -409,4 +592,86 @@ test "docs/config.md generated reference mirrors the schema" {
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "explain: key catalog rows mirror the docs/config.md table verbatim" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/config.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    for (key_specs) |ks| {
+        // Full-row pin: `| `name` | `type` | <cell> |` — the cell carries the
+        // doc's `|` separators escaped (`\|`), so re-escape before comparing.
+        var esc: std.ArrayList(u8) = .empty;
+        defer esc.deinit(gpa);
+        for (ks.constraints) |ch| {
+            if (ch == '|') try esc.append(gpa, '\\');
+            try esc.append(gpa, ch);
+        }
+        var buf: [600]u8 = undefined;
+        const row = std.fmt.bufPrint(&buf, "| `{s}` | `{s}` | {s} |", .{ ks.name, ks.type_name, esc.items }) catch unreachable;
+        if (std.mem.indexOf(u8, doc, row) == null) {
+            std.debug.print("docs/config.md missing key row '{s}'\n", .{row});
+            return error.TestUnexpectedResult;
+        }
+        if (std.mem.indexOf(u8, doc, ks.desc) == null) {
+            std.debug.print("docs/config.md missing description for key '{s}'\n", .{ks.name});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "explain: every key-catalog entry resolves via findKey" {
+    for (key_catalog) |ks| {
+        const got = findKey(ks.name) orelse {
+            std.debug.print("findKey failed to resolve catalog key '{s}'\n", .{ks.name});
+            return error.TestUnexpectedResult;
+        };
+        try testing.expectEqualStrings(ks.name, got.name);
+        try testing.expectEqualStrings(ks.desc, got.desc);
+    }
+}
+
+test "explain: findKey resolves keys.<provider> member paths only" {
+    const member = findKey("keys.openai").?;
+    try testing.expectEqualStrings("keys.openai", member.name);
+    try testing.expectEqualStrings("string", member.type_name);
+    try testing.expectEqualStrings("non-empty", member.constraints);
+    // Unknown members and other dotted paths are not config keys.
+    try testing.expect(findKey("keys.bogus") == null);
+    try testing.expect(findKey("agent.timeout") == null);
+    try testing.expect(findKey("keys.openai.extra") == null);
+    try testing.expect(findKey("keys.") == null);
+    // Keys are case-sensitive — a case typo resolves via did-you-mean instead.
+    try testing.expect(findKey("Provider") == null);
+    try testing.expect(findKey("") == null);
+}
+
+test "explain: formatKeyJson emits the config-key entry shape" {
+    const gpa = testing.allocator;
+    const ks = findKey("timeout_ms").?;
+    const got = try formatKeyJson(gpa, ks);
+    defer gpa.free(got);
+    try testing.expectEqualStrings(
+        "{\"key\":\"timeout_ms\",\"type\":\"integer\",\"constraints\":\"`>= 0`\",\"description\":\"HTTP request timeout in milliseconds.\",\"docs\":\"" ++ config_doc_url ++ "\"}",
+        got,
+    );
+}
+
+test "explain: formatKeyJson escapes and links config.md" {
+    const gpa = testing.allocator;
+    const got = try formatKeyJson(gpa, findKey("provider").?);
+    defer gpa.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "\"docs\":\"" ++ config_doc_url ++ "\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"key\":\"provider\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "one of `xiaomi` | `openai`") != null);
+}
+
+test "explain: formatKeyHuman renders the prose form" {
+    const gpa = testing.allocator;
+    const got = try formatKeyHuman(gpa, findKey("compact_threshold").?);
+    defer gpa.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "config key  compact_threshold (number)") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "constraints: `0..1`") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "description: Fraction of context_window") != null);
+    try testing.expect(std.mem.endsWith(u8, got, "\n"));
 }

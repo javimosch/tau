@@ -245,8 +245,8 @@ complete -c tau -n $upgrade -f -l dry-run -d 'print the resolved plan; install n
 complete -c tau -n $upgrade -f -l json -d 'emit the stable schema-checked report object'
 
 set -l explain '__tau_using_subcommand explain'
-# Exit codes mirror the stable catalog in src/errors.zig.
-complete -c tau -n $explain -f -a '1 80 82 105 106 110 111' -d 'error code or type'
+# Codes mirror src/errors.zig; config keys mirror docs/config.md.
+complete -c tau -n $explain -f -a '1 80 82 105 106 110 111 $schema provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues keys.xiaomi keys.openai keys.deepseek keys.opencode-go' -d 'error code/type or config key'
 complete -c tau -n $explain -f -l json -d 'emit the stable schema-checked JSON form'
 complete -c tau -n $explain -f -l human -d 'render the entry as prose instead of JSON'
 

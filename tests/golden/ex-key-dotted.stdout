@@ -1,0 +1,1 @@
+{"key":"keys.openai","type":"string","constraints":"non-empty","description":"API key for the `openai` provider — a keys[] entry outranks that provider's env var and the global api_key.","docs":"https://github.com/javimosch/tau/blob/master/docs/config.md"}

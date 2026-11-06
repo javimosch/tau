@@ -145,14 +145,15 @@ const doctor_help =
 ;
 
 const explain_help =
-    \\tau explain - offline error catalog lookup (no API key needed)
+    \\tau explain - offline error + config-key catalog lookup (no API key needed)
     \\
     \\Usage:
-    \\  tau explain [<code|type>] [--json|--human]
+    \\  tau explain [<code|type|key>] [--json|--human]
     \\
     \\Arguments:
-    \\  <code|type>   Exit code (e.g. 106) or error type (e.g. authfailed);
-    \\                omit to list the whole catalog
+    \\  <code|type|key>   Exit code (e.g. 106), error type (e.g. authfailed),
+    \\                    or config key (e.g. timeout_ms, keys.openai);
+    \\                    omit to list the whole catalog
     \\
     \\Options:
     \\      --json   Stable schema-checked JSON form (default;
@@ -163,6 +164,8 @@ const explain_help =
     \\  tau explain
     \\  tau explain 106
     \\  tau explain authfailed
+    \\  tau explain timeout_ms
+    \\  tau explain keys.openai
     \\  tau explain --human 105
     \\
 ;

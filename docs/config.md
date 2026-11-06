@@ -72,6 +72,10 @@ environment variables, CLI-flag equivalents, and precedence rules — see
 
 - `tau config validate [file]` — reports unknown keys, wrong types, and
   out-of-range values against this schema (defaults to the real config).
+- `tau explain <key>` — prints one row of this table as JSON (key, type,
+  constraints, description); `tau explain keys.<provider>` resolves a
+  dotted member path, and bare `tau explain` lists every key under
+  `config_keys`.
 - `tau config schema` — prints the JSON Schema this table is generated
   from. The canonical copy editors fetch is checked in at
   [schema/tau-config.schema.json](../schema/tau-config.schema.json);

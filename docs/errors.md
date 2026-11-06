@@ -71,6 +71,11 @@ A query within two case-insensitive edits of a catalog code or `type`
 tag gets a ready-to-run suggestion in the message — `tau explain
 authfaild` prints `did you mean "tau explain AuthFailed"?`.
 
+Config keys resolve the same way from the generated
+[docs/config.md](config.md) table — `tau explain timeout_ms` or
+`tau explain keys.openai` prints the key's type, constraints, and
+description, and bare `tau explain` lists them under `config_keys`.
+
 ## Silent exit paths
 
 Not every failure prints an envelope. These paths exit with a bare status

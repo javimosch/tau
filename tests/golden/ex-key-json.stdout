@@ -1,0 +1,1 @@
+{"key":"compact_threshold","type":"number","constraints":"`0..1`","description":"Fraction of context_window that triggers auto-compaction.","docs":"https://github.com/javimosch/tau/blob/master/docs/config.md"}

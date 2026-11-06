@@ -69,13 +69,16 @@ Some emitters override `type` with the underlying Zig error name (e.g.
 [docs/errors.md](errors.md) is a **generated** mirror of this catalog (with
 per-code causes and the silent-exit paths) rendered from the registry in
 `src/errors.zig` — CI fails if it drifts. The same registry is readable
-offline from the CLI: `tau explain <code|type>` prints one entry's cause,
+offline from the CLI: `tau explain <code|type|key>` prints one entry's cause,
 hint, and docs link (JSON by default — `--json` pins the schema-checked
 form, `--human` renders prose), and bare `tau explain` lists the whole
-catalog. A mistyped code or `type` exits 1 with a `not_found` envelope
-whose message suggests the nearest catalog entry — `did you mean "tau
-explain <code|type>"?` — when the query is within two case-insensitive
-edits of one.
+catalog. A config key works the same way: `tau explain timeout_ms` prints
+the key's type, constraints, and description from the generated
+[config.md](config.md) table, and `tau explain keys.openai` resolves a
+dotted `keys.<provider>` member path. A mistyped code, `type`, or key exits
+1 with a `not_found` envelope whose message suggests the nearest catalog
+entry — `did you mean "tau explain <code|type|key>"?` — when the query is
+within two case-insensitive edits of one.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
 run continues.
