@@ -532,8 +532,11 @@ regressions are caught before a release is cut. Its `first-run` job adds a
 clean-environment e2e per platform: the built binary is staged as a local
 release tree, installed through `install.sh` (POSIX) / `install.ps1`
 (Windows) via `TAU_BASE_URL=file://…`, then `scripts/e2e-first-run.{sh,ps1}`
-drives `tau setup --yes` + `tau doctor --selftest` in a scratch HOME with all
-credentials scrubbed. The same driver runs standalone:
+drives `tau setup --yes` + `tau setup --client zed|claude-desktop` +
+`tau doctor --selftest` in a scratch HOME with all credentials scrubbed —
+the direct-ACP (zed) and MCP-bridge (claude-desktop → mcacp.json) wiring
+paths are asserted end to end on every platform, Windows included. The same
+driver runs standalone:
 
 ```bash
 ./scripts/e2e-first-run.sh ./zig-out/bin/tau   # local first-run e2e (offline)

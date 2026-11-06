@@ -246,7 +246,9 @@ Special rules:
   [docs/errors.md](errors.md) (drift-checked by
   `scripts/gen-errors-doc.py --check`).
 - Golden tests byte-lock the `--help`/completions surface, error
-  envelopes, onboarding flows, and color policy under `tests/golden/`.
+  envelopes, onboarding flows, and color policy under `tests/golden/`;
+  `scripts/check-error-golden-coverage.py` gates that every catalog exit
+  code is exercised by at least one of them.
 - `schema/tau-config.schema.json` is byte-compared against
   `tau config schema` output in CI; `schema/tau-doctor.schema.json` is
   validated against real NDJSON streams by

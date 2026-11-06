@@ -98,6 +98,14 @@ resulting golden diff in your PR so reviewers can see the contract change:
 GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-errors
 ```
 
+The `error-coverage` group keeps that table honest:
+`scripts/check-error-golden-coverage.py` fails when an exit code listed in
+`docs/errors.md` is exercised by no golden test — so adding a catalog entry
+means adding (or pointing at) a `golden_check` case or a pinned
+`{"err":...}` snapshot for it. Platform-only codes (e.g. 111, emitted only
+on Windows) are covered by the platform-gated contract assertions in the
+smoke script instead.
+
 The `golden-onboarding` group applies the same technique to the first-run
 surface — `tau init`, `tau setup` (incl. `--client`), and `tau config edit`.
 In addition to stdout/stderr/exit-code snapshots it byte-locks generated
