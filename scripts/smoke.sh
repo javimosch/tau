@@ -106,6 +106,7 @@ ALL_TEST_GROUPS=(
   "changelog:test_group_changelog"
   "versioned-schemas:test_group_versioned_schemas"
   "explain:test_group_explain"
+  "explain-coverage:test_group_explain_coverage"
   "golden-maintenance:test_group_golden_maintenance"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
@@ -5405,6 +5406,64 @@ test_group_explain() {
     fi
   else
     skip_test "explain: schema validation" "python3 not on PATH"
+  fi
+}
+
+# Group: explain catalog coverage gate
+# docs/errors.md and docs/config.md are the generated catalogs an agent
+# reaches via the envelope's `explain`/`catalog` footer; scripts/
+# check-explain-coverage.py gates that every catalog code + type tag,
+# every config key, and every keys.<member> path resolves to a real
+# `tau explain` entry (a missing Spec emits the internal_error fallback,
+# so resolution is asserted on the catalog `type` tag, not exit 0 alone)
+# — and that nothing the live `tau explain` catalog lists is absent from
+# the docs. Runs in CI on every platform leg via the offline group sweep.
+test_group_explain_coverage() {
+  note "explain catalog coverage gate"
+
+  local check="$ROOT/scripts/check-explain-coverage.py"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "explain-coverage: every catalog entry resolves via tau explain" "python3 not on PATH"
+    skip_test "explain-coverage: checker detects an unresolvable error row" "python3 not on PATH"
+    skip_test "explain-coverage: checker detects an unresolvable config key" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$check" --tau "$BIN" >/dev/null 2>&1; then
+    ok "explain-coverage: every catalog entry resolves via tau explain" 0 0
+  else
+    ok "explain-coverage: every catalog entry resolves via tau explain" 1 0
+  fi
+
+  # Prove the gate isn't vacuous: a catalog row for a Spec that doesn't
+  # exist must fail — `tau explain 199` exits 0 through the internal_error
+  # fallback but can never emit `"type":"ghost"`, and the `ghost` tag
+  # itself resolves nowhere.
+  local stage="$SMOKE_TEMP/explain-coverage"
+  mkdir -p "$stage"
+  cp "$ROOT/docs/errors.md" "$stage/errors.md"
+  printf '| `199` | `ghost` | `false` | staged | staged | [x](y) |\n' >> "$stage/errors.md"
+  if python3 "$check" --tau "$BIN" --errors-doc "$stage/errors.md" >/dev/null 2>&1; then
+    ok "explain-coverage: checker detects an unresolvable error row" 0 1
+  else
+    ok "explain-coverage: checker detects an unresolvable error row" 0 0
+  fi
+
+  # Same for a config.md key row with no matching config field — the
+  # bogus row is spliced inside the ## Keys table the checker scopes to.
+  cp "$ROOT/docs/config.md" "$stage/config.md"
+  python3 - "$stage/config.md" <<'PYEOF'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+t = t.replace("| `provider` |", "| `bogus_key` | `string` | — | staged |\n| `provider` |", 1)
+open(p, "w").write(t)
+PYEOF
+  if python3 "$check" --tau "$BIN" --config-doc "$stage/config.md" >/dev/null 2>&1; then
+    ok "explain-coverage: checker detects an unresolvable config key" 0 1
+  else
+    ok "explain-coverage: checker detects an unresolvable config key" 0 0
   fi
 }
 
