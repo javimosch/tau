@@ -2649,6 +2649,60 @@ test_group_setup() {
     HOME="$mock_home29" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key TAU_SETUP_IMPORT=1 "$BIN" setup --offline --client zed
   ok "--import on a direct client exits 0" "$s35_rc" 0
   printf '%s' "$s35_out" | grep -q '"imported"'; ok "direct client entry carries no imported field" "$?" 1
+
+  # ── wire → --remove round-trip: byte-exact restore of client files ────
+
+  # A setup-written bridge client file and the shared mcacp bridge both
+  # came from setup — removing restores "nothing was ever wired".
+  local mock_home30; mock_home30="$(mktemp -d)"; register_temp_dir "$mock_home30"
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home30" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --yes >/dev/null
+  [ -f "$mock_home30/.codeium/windsurf/mcp_config.json" ]; ok "windsurf wiring seeded" "$?" 0
+  [ -f "$mock_home30/.config/mcacp/mcacp.json" ]; ok "mcacp bridge seeded" "$?" 0
+  capture s36 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home30" "$BIN" setup --remove --client windsurf
+  ok "setup --remove round-trip exits 0" "$s36_rc" 0
+  [ ! -e "$mock_home30/.codeium/windsurf/mcp_config.json" ]; ok "setup-written client file deleted" "$?" 0
+  [ ! -e "$mock_home30/.config/mcacp/mcacp.json" ]; ok "setup-written bridge file deleted" "$?" 0
+
+  # A commented user file wired via --import, then unwired: --remove takes
+  # back exactly the mcacp member it spliced in — the original bytes and
+  # the merged servers (the user's own config) all survive verbatim.
+  local mock_home31; mock_home31="$(mktemp -d)"; register_temp_dir "$mock_home31"
+  mkdir -p "$mock_home31/.codeium/windsurf" "$mock_home31/.config/Claude"
+  printf '{\n  // keep me\n  "mcpServers": {\n    "mine": { "command": "mine", "args": ["x"] }\n  },\n  "theme": "dark"\n}\n' \
+    > "$mock_home31/.codeium/windsurf/mcp_config.json"
+  printf '{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}\n' \
+    > "$mock_home31/.config/Claude/claude_desktop_config.json"
+  capture s37 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home31" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "setup --import for round-trip exits 0" "$s37_rc" 0
+  cp "$mock_home31/.codeium/windsurf/mcp_config.json" "$mock_home31/wired.json"
+  capture s38 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home31" "$BIN" setup --remove --client windsurf
+  ok "remove after --import exits 0" "$s38_rc" 0
+  contains "remove reports the splice" "$s38_out" '"status":"removed"'
+  # Post-remove == wired file minus exactly the one "mcacp" member line.
+  grep -v '"mcacp"' "$mock_home31/wired.json" | cmp -s - "$mock_home31/.codeium/windsurf/mcp_config.json"
+  ok "only the mcacp entry was spliced back out" "$?" 0
+  grep -q '// keep me' "$mock_home31/.codeium/windsurf/mcp_config.json"; ok "user comment survived the round-trip" "$?" 0
+  grep -q '"fs"' "$mock_home31/.codeium/windsurf/mcp_config.json"; ok "merged server stays as user config" "$?" 0
+  [ ! -e "$mock_home31/.config/mcacp/mcacp.json" ]; ok "bridge file removed too" "$?" 0
+
+  # --import with nothing to merge: the mcacp entry was the only insert,
+  # so removal restores the user's file byte-for-byte.
+  local mock_home32; mock_home32="$(mktemp -d)"; register_temp_dir "$mock_home32"
+  mkdir -p "$mock_home32/.codeium/windsurf"
+  printf '{\n  // keep me\n  "mcpServers": {\n    "mine": { "command": "mine", "args": ["x"] }\n  },\n  "theme": "dark"\n}\n' \
+    > "$mock_home32/.codeium/windsurf/mcp_config.json"
+  cp "$mock_home32/.codeium/windsurf/mcp_config.json" "$mock_home32/before.json"
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home32" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes >/dev/null
+  capture s39 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home32" "$BIN" setup --remove --client windsurf
+  ok "round-trip remove exits 0" "$s39_rc" 0
+  cmp -s "$mock_home32/before.json" "$mock_home32/.codeium/windsurf/mcp_config.json"
+  ok "user file restored byte-for-byte" "$?" 0
 }
 
 # Group: runnable client-config examples under examples/clients/ —

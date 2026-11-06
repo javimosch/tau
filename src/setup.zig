@@ -3516,3 +3516,294 @@ test "configureClient --import falls back to manual on an unparseable file" {
     const after = try std.Io.Dir.cwd().readFileAlloc(io, wpath, a, .unlimited);
     try testing.expectEqualStrings(before, after);
 }
+
+// ---------------------------------------------------------------------------
+// --import / --remove round-trip property tests — the byte-fidelity contract:
+// splicing tau's entry into a user's settings file and taking it back out
+// must leave every byte the user wrote exactly where it was.
+// ---------------------------------------------------------------------------
+
+/// Settings-file shapes every JSONC client is round-tripped through. `@SEC@`
+/// stands in for the client's section key — "mcpServers" (Windsurf, Gemini,
+/// Claude Desktop, Cline, Roo Code, Amazon Q), "mcp" (OpenCode, Kilo Code),
+/// "agent_servers" (Zed, JetBrains) or "acp.agents" (VS Code, Cursor).
+const round_trip_cases = [_]struct {
+    name: []const u8,
+    body: []const u8,
+}{
+    .{ .name = "comments and siblings around the section", .body =
+        \\{
+        \\  // user's own comment
+        \\  "@SEC@": {
+        \\    "mine": { "command": "mine", "args": ["x"] }
+        \\  },
+        \\  "theme": "dark"
+        \\}
+        \\
+    },
+    .{ .name = "section absent — appended then removed wholesale", .body =
+        \\{
+        \\  "other": true,
+        \\  "hint": "no @SEC@ yet"
+        \\}
+        \\
+    },
+    .{ .name = "single-line compact document", .body = "{\"@SEC@\":{\"a\":{}},\"z\":1}" },
+    .{ .name = "comment after the last section member", .body =
+        \\{
+        \\  "@SEC@": {
+        \\    "mine": {}
+        \\    // trailing note
+        \\  }
+        \\}
+        \\
+    },
+    .{ .name = "dangling comma inside the section", .body =
+        \\{
+        \\  "@SEC@": {
+        \\    "a": {},
+        \\  },
+        \\  "x": 1
+        \\}
+        \\
+    },
+};
+
+/// The `{s}`-free render of a round-trip case for one client.
+fn rtBody(arena: std.mem.Allocator, tmpl: []const u8, k: ClientKind) ![]u8 {
+    return std.mem.replaceOwned(u8, arena, tmpl, "@SEC@", clientSectionKey(k));
+}
+
+/// Entry token a direct client's file carries — mirrors the shapes
+/// renderClientJson writes (zed requires "type": "custom").
+fn rtTauToken(k: ClientKind) []const u8 {
+    return switch (k) {
+        .zed => "{\"type\":\"custom\",\"command\":\"/abs/tau\",\"args\":[\"acp\",\"serve\"],\"env\":{}}",
+        else => "{\"command\":\"/abs/tau\",\"args\":[\"acp\",\"serve\"],\"env\":{}}",
+    };
+}
+
+test "property: wire then --remove restores user bytes for every JSONC client" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var case_n: usize = 0;
+    for (all_clients) |k| {
+        // Snippet-only clients (nvim/emacs Lua+elisp, goose/continue YAML)
+        // never get their file edited in place — nothing to round-trip.
+        if ((try clientSettingsPath(a, root, k)) == null) continue;
+        for (round_trip_cases) |c| {
+            const home = try std.fmt.allocPrint(a, "{s}/h{d}", .{ root, case_n });
+            case_n += 1;
+            const cpath = (try clientSettingsPath(a, home, k)).?;
+            const orig = try rtBody(a, c.body, k);
+            _ = try writeIfChanged(io, a, cpath, orig, false);
+
+            var entries: std.ArrayList(u8) = .empty;
+            if (clientUsesBridge(k)) {
+                // The real wiring path: --import splices the mcacp entry
+                // into the existing file.
+                const woc = try configureClient(io, a, &entries, true, home, k, "/abs/tau", true, false);
+                try testing.expectEqual(ClientOutcome.installed, woc);
+            } else {
+                // A direct client's entry lands the way the user pastes it —
+                // same insert primitive the --import path uses.
+                const wired = switch (try configedit.insertNestedMember(a, orig, clientSectionKey(k), "tau", rtTauToken(k))) {
+                    .inserted => |nb| nb,
+                    else => return error.TestUnexpectedResult,
+                };
+                _ = try writeIfChanged(io, a, cpath, wired, false);
+            }
+            const wired_bytes = try std.Io.Dir.cwd().readFileAlloc(io, cpath, a, .unlimited);
+            // hasTauEntry goes through std.json, which can't see JSONC's
+            // dangling commas — accept the textual member name there.
+            if (hasTauEntry(a, k, wired_bytes)) |v| try testing.expect(v);
+            try testing.expect(std.mem.indexOf(u8, wired_bytes, clientEntryName(k)) != null);
+
+            entries.clearRetainingCapacity();
+            const set = [_]ClientKind{k};
+            const roc = try unwireClient(io, a, &entries, true, home, k, &set, false);
+            try testing.expectEqual(RemoveOutcome.removed, roc);
+            const after = try std.Io.Dir.cwd().readFileAlloc(io, cpath, a, .unlimited);
+            if (std.mem.indexOfDiff(u8, orig, after)) |d| {
+                std.debug.print("{s} / {s}: round-trip diverged at byte {d}\n--- want ---\n{s}\n--- got ---\n{s}\n", .{ @tagName(k), c.name, d, orig, after });
+                return error.TestUnexpectedResult;
+            }
+            // The shared bridge file came and went with the wiring (bridge
+            // clients) or was never created (direct clients).
+            try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, try mcacpConfigPath(a, home), a, .unlimited));
+        }
+    }
+}
+
+test "wire then --remove edges: emptied-section husk and memberless docs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // The two shapes where byte-exact restore deliberately diverges: the
+    // emptied section husk is lifted with the entry (no dead "mcpServers": {}
+    // is left behind), and a document gone memberless is deleted outright —
+    // it only ever held tau wiring. Both section shapes get a run.
+    const cases = [_]struct {
+        name: []const u8,
+        body: []const u8,
+        /// Exact bytes left behind, or null when the file is deleted.
+        leaves: ?[]const u8,
+    }{
+        .{ .name = "empty section husk is lifted with the entry", .body =
+            \\{
+            \\  "@SEC@": {},
+            \\  "x": 1
+            \\}
+            \\
+        , .leaves =
+            \\{
+            \\  "x": 1
+            \\}
+            \\
+        },
+        .{ .name = "file holding only the section is deleted", .body =
+            \\{
+            \\  "@SEC@": {}
+            \\}
+            \\
+        , .leaves = null },
+        .{ .name = "memberless document is deleted", .body = "{}", .leaves = null },
+        .{ .name = "comment-only document is deleted", .body = "{ // all comments\n}", .leaves = null },
+    };
+
+    var case_n: usize = 0;
+    for ([_]ClientKind{ .windsurf, .opencode }) |k| {
+        for (cases) |c| {
+            const home = try std.fmt.allocPrint(a, "{s}/e{d}", .{ root, case_n });
+            case_n += 1;
+            const cpath = (try clientSettingsPath(a, home, k)).?;
+            _ = try writeIfChanged(io, a, cpath, try rtBody(a, c.body, k), false);
+
+            var entries: std.ArrayList(u8) = .empty;
+            const woc = try configureClient(io, a, &entries, true, home, k, "/abs/tau", true, false);
+            try testing.expectEqual(ClientOutcome.installed, woc);
+
+            entries.clearRetainingCapacity();
+            const set = [_]ClientKind{k};
+            const roc = try unwireClient(io, a, &entries, true, home, k, &set, false);
+            try testing.expectEqual(RemoveOutcome.removed, roc);
+            if (c.leaves) |want| {
+                const after = try std.Io.Dir.cwd().readFileAlloc(io, cpath, a, .unlimited);
+                try testing.expectEqualStrings(want, after);
+            } else {
+                try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, cpath, a, .unlimited));
+            }
+            try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, try mcacpConfigPath(a, home), a, .unlimited));
+        }
+    }
+}
+
+test "--import merged servers survive --remove; original bytes return around them" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // The user's windsurf file — comments, an own server, a sibling setting.
+    const wpath = (try clientSettingsPath(a, home, .windsurf)).?;
+    const orig =
+        \\{
+        \\  // keep me
+        \\  "mcpServers": {
+        \\    "mine": { "command": "mine", "args": ["x"] }
+        \\  },
+        \\  "theme": "dark"
+        \\}
+        \\
+    ;
+    _ = try writeIfChanged(io, a, wpath, orig, false);
+
+    // Two import sources — Claude Desktop wins "fs2" only because gemini's
+    // file is missing here; order is all_clients (gemini before claude).
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
+        \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}, "gh": {"command": "gh"}}}
+        \\
+    , false);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
+        \\{"mcpServers": {"fs2": {"command": "uvx"}}}
+        \\
+    , false);
+
+    var entries: std.ArrayList(u8) = .empty;
+    const woc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    try testing.expectEqual(ClientOutcome.installed, woc);
+
+    // Expected post-remove bytes: the original document plus each merged
+    // server appended in collectImportable order — the same inserts the
+    // wire path made, minus the mcacp entry --remove takes back out.
+    var expected: []const u8 = orig;
+    const plan = try collectImportable(io, a, home, .windsurf);
+    for (plan.servers.items) |srv| {
+        switch (try configedit.insertNestedMember(a, expected, "mcpServers", srv.name, try renderImportToken(a, .windsurf, srv))) {
+            .inserted => |nb| expected = nb,
+            else => return error.TestUnexpectedResult,
+        }
+    }
+
+    entries.clearRetainingCapacity();
+    const set = [_]ClientKind{.windsurf};
+    const roc = try unwireClient(io, a, &entries, true, home, .windsurf, &set, false);
+    try testing.expectEqual(RemoveOutcome.removed, roc);
+
+    const after = try std.Io.Dir.cwd().readFileAlloc(io, wpath, a, .unlimited);
+    try testing.expectEqualStrings(expected, after);
+    // Every user byte survived: comments, the own server, the merged ones.
+    try testing.expect(std.mem.indexOf(u8, after, "// keep me") != null);
+    try testing.expectEqual(@as(?bool, true), sectionHasEntry(a, "mcpServers", "mine", after));
+    try testing.expectEqual(@as(?bool, true), sectionHasEntry(a, "mcpServers", "fs", after));
+    try testing.expectEqual(@as(?bool, true), sectionHasEntry(a, "mcpServers", "fs2", after));
+    // ...and tau's wiring is fully gone.
+    try testing.expectEqual(@as(?bool, false), hasTauEntry(a, .windsurf, after));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, try mcacpConfigPath(a, home), a, .unlimited));
+}
+
+test "setup-written file round-trips to absent for every JSONC client" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // A file setup itself wrote (fresh, no user content) is deleted on
+    // --remove — the HOME returns to "nothing was ever wired".
+    for (all_clients, 0..) |k, i| {
+        if ((try clientSettingsPath(a, root, k)) == null) continue;
+        const home = try std.fmt.allocPrint(a, "{s}/f{d}", .{ root, i });
+        var entries: std.ArrayList(u8) = .empty;
+        const woc = try configureClient(io, a, &entries, true, home, k, "/abs/tau", false, false);
+        try testing.expectEqual(ClientOutcome.installed, woc);
+        const cpath = (try clientSettingsPath(a, home, k)).?;
+
+        entries.clearRetainingCapacity();
+        const set = [_]ClientKind{k};
+        const roc = try unwireClient(io, a, &entries, true, home, k, &set, false);
+        try testing.expectEqual(RemoveOutcome.removed, roc);
+        try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, cpath, a, .unlimited));
+        try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().readFileAlloc(io, try mcacpConfigPath(a, home), a, .unlimited));
+    }
+}
