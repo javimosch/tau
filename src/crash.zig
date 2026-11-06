@@ -31,6 +31,7 @@ const std = @import("std");
 const term = @import("term.zig");
 const debuglog = @import("debuglog.zig");
 const version_mod = @import("version.zig");
+const cfgmod = @import("config.zig");
 
 var g_io: ?std.Io = null;
 var g_env: ?*std.process.Environ.Map = null;
@@ -273,4 +274,175 @@ test "latestPath: null when the crashes dir does not exist" {
     var home = try TestHome.init(a);
     defer home.deinit();
     try testing.expect(latestPath(testing.io, a, &home.env) == null);
+}
+
+// ── Redaction invariant: crash bundles ─────────────────────────────────────
+// Property sweep over the bundle's three credential input surfaces: the argv
+// line (args), the panic message (runtime/config echoes), and the env-derived
+// debug_log path — fed by the process secret registry that registerSecrets
+// builds from config + env sources. `k-`-prefixed generated secrets can't
+// collide with static bundle text, so any substring hit is a real leak.
+
+const crash_prop_alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._";
+const crash_prop_env_keys = [_][]const u8{ "XIAOMI_API_KEY", "PIZIG_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "OPENCODE_API_KEY", "TAU_API_KEY" };
+const crash_prop_panics = [_][]const u8{
+    "index out of bounds: index 5, len 2",
+    "reached unreachable code",
+    "integer overflow",
+    "attempt to unwrap error: ",
+    "segmentation fault at address ",
+};
+
+fn randBundleSecret(r: std.Random, a: std.mem.Allocator) ![]u8 {
+    const s = try a.alloc(u8, r.intRangeAtMost(usize, 10, 36));
+    s[0] = 'k';
+    s[1] = '-';
+    for (s[2..]) |*ch| ch.* = crash_prop_alphabet[r.uintLessThan(usize, crash_prop_alphabet.len)];
+    return s;
+}
+
+/// Spread `secrets` across the sources collectSecrets reads — the --api-key
+/// winner, the config-file key, keys map entries, endpoint userinfo, and env
+/// vars — then register through the real registerSecrets path. Callers must
+/// pass at most 5 secrets so each lands in a distinct slot.
+fn seedRegistry(r: std.Random, a: std.mem.Allocator, env: *std.process.Environ.Map, secrets: []const []const u8) !void {
+    var km = std.StringHashMap([]const u8).init(a);
+    var cfg = cfgmod.Config{ .provider = "openai" };
+    for (secrets, 0..) |s, i| {
+        switch (i % 5) {
+            0 => cfg.api_key = s,
+            1 => cfg.config_api_key = s,
+            2 => try km.put(try std.fmt.allocPrint(a, "p{d}", .{i}), s),
+            3 => cfg.endpoint = try std.fmt.allocPrint(a, "https://u:{s}@api.example.com/v1", .{s}),
+            else => try env.put(crash_prop_env_keys[r.uintLessThan(usize, crash_prop_env_keys.len)], s),
+        }
+    }
+    cfg.keys = km;
+    debuglog.registerSecrets(a, env, cfg);
+}
+
+/// An argv line or panic message with each picked secret planted in one of
+/// the real leak shapes (flag value, Bearer header, env assignment, JSON
+/// credential field, bare echo).
+fn plantSecrets(r: std.Random, a: std.mem.Allocator, out: *std.ArrayList(u8), secrets: []const []const u8) !void {
+    const frags = r.intRangeAtMost(usize, 1, 4);
+    var fi: usize = 0;
+    while (fi < frags) : (fi += 1) {
+        const s = secrets[r.uintLessThan(usize, secrets.len)];
+        switch (r.uintLessThan(usize, 6)) {
+            0 => try out.appendSlice(a, try std.fmt.allocPrint(a, " --api-key {s}", .{s})),
+            1 => try out.appendSlice(a, try std.fmt.allocPrint(a, " Authorization: Bearer {s}", .{s})),
+            2 => try out.appendSlice(a, try std.fmt.allocPrint(a, " {s}={s}", .{ crash_prop_env_keys[r.uintLessThan(usize, crash_prop_env_keys.len)], s })),
+            3 => try out.appendSlice(a, try std.fmt.allocPrint(a, " {{\"api_key\":\"{s}\"}}", .{s})),
+            4 => try out.appendSlice(a, try std.fmt.allocPrint(a, " prompt {s} tail", .{s})),
+            else => try out.appendSlice(a, try std.fmt.allocPrint(a, " {s}", .{s})),
+        }
+    }
+}
+
+fn expectNoSecrets(body: []const u8, secrets: []const []const u8) !void {
+    for (secrets) |s| {
+        if (std.mem.indexOf(u8, body, s) != null) {
+            std.debug.print("crash bundle leaked '{s}':\n{s}\n", .{ s, body });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "property: config/env secrets never survive formatBundle's argv + panic surfaces" {
+    var prng = std.Random.DefaultPrng.init(0x350_b1e);
+    const r = prng.random();
+    var iter: usize = 0;
+    while (iter < 160) : (iter += 1) {
+        var ar = std.heap.ArenaAllocator.init(testing.allocator);
+        defer ar.deinit();
+        const a = ar.allocator();
+        var env = std.process.Environ.Map.init(a);
+
+        const n = r.intRangeAtMost(usize, 1, 5);
+        var secrets: std.ArrayList([]const u8) = .empty;
+        for (0..n) |_| try secrets.append(a, try randBundleSecret(r, a));
+        try seedRegistry(r, a, &env, secrets.items);
+        defer debuglog.clearSecretsForTest();
+
+        var argv_line: std.ArrayList(u8) = .empty;
+        try argv_line.appendSlice(a, "tau");
+        try plantSecrets(r, a, &argv_line, secrets.items);
+        var msg: std.ArrayList(u8) = .empty;
+        try msg.appendSlice(a, crash_prop_panics[r.uintLessThan(usize, crash_prop_panics.len)]);
+        if (r.uintLessThan(usize, 2) == 0) try plantSecrets(r, a, &msg, secrets.items);
+
+        const body = try formatBundle(a, msg.items, argv_line.items, 1_700_000_000 + iter);
+        try testing.expect(std.mem.indexOf(u8, body, "# argv:") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "panic:") != null);
+        try expectNoSecrets(body, secrets.items);
+        try testing.expect(std.mem.indexOf(u8, body, debuglog.mask) != null);
+    }
+}
+
+test "property: env-derived debug_log path never leaks a secret into the bundle" {
+    var prng = std.Random.DefaultPrng.init(0x350_1ab);
+    const r = prng.random();
+    var iter: usize = 0;
+    while (iter < 20) : (iter += 1) {
+        var ar = std.heap.ArenaAllocator.init(testing.allocator);
+        defer ar.deinit();
+        const a = ar.allocator();
+        var home = try TestHome.init(a);
+        defer home.deinit();
+
+        // A credential that found its way into a filesystem path must still
+        // be masked — TAU_API_KEY registers it, TAU_DEBUG_LOG plants it.
+        const k_log = try randBundleSecret(r, a);
+        try home.env.put("TAU_API_KEY", k_log);
+        try home.env.put("TAU_DEBUG_LOG", try std.fmt.allocPrint(a, "{s}/{s}/dbg.log", .{ home.home, k_log }));
+        const log_path = debuglog.open(testing.io, a, &home.env, .{ .provider = "openai" });
+        defer debuglog.closeForTest();
+        defer debuglog.clearSecretsForTest();
+        try testing.expect(log_path != null);
+
+        const body = try formatBundle(a, "boom", "tau hi", 1_700_000_000);
+        try testing.expect(std.mem.indexOf(u8, body, "# debug_log: ") != null);
+        try testing.expect(std.mem.indexOf(u8, body, "dbg.log") != null);
+        try expectNoSecrets(body, &.{k_log});
+        try testing.expect(std.mem.indexOf(u8, body, debuglog.mask) != null);
+
+        // The opened log's own provenance header is redacted too — the
+        // TAU_DEBUG_LOG path it records carries the same secret.
+        const log_bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, log_path.?, a, .unlimited);
+        try expectNoSecrets(log_bytes, &.{k_log});
+    }
+}
+
+test "property: on-disk bundles never contain a plaintext secret" {
+    var prng = std.Random.DefaultPrng.init(0x350_d15c);
+    const r = prng.random();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    var iter: usize = 0;
+    while (iter < 24) : (iter += 1) {
+        var env = std.process.Environ.Map.init(a);
+        const n = r.intRangeAtMost(usize, 1, 4);
+        var secrets: std.ArrayList([]const u8) = .empty;
+        for (0..n) |_| try secrets.append(a, try randBundleSecret(r, a));
+        try seedRegistry(r, a, &env, secrets.items);
+        defer debuglog.clearSecretsForTest();
+
+        var argv_line: std.ArrayList(u8) = .empty;
+        try argv_line.appendSlice(a, "tau");
+        try plantSecrets(r, a, &argv_line, secrets.items);
+        var msg: std.ArrayList(u8) = .empty;
+        try msg.appendSlice(a, crash_prop_panics[r.uintLessThan(usize, crash_prop_panics.len)]);
+        try plantSecrets(r, a, &msg, secrets.items);
+
+        const p = writeBundle(testing.io, a, &home.env, argv_line.items, msg.items).?;
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, p, a, .unlimited);
+        try testing.expect(std.mem.indexOf(u8, bytes, "# argv:") != null);
+        try expectNoSecrets(bytes, secrets.items);
+        try testing.expect(std.mem.indexOf(u8, bytes, debuglog.mask) != null);
+    }
 }
