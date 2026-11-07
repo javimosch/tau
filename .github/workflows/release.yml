@@ -318,6 +318,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Drift-check VERIFYING.md commands
         run: python3 scripts/check-verifying-doc.py
+      - name: Drift-check AIRGAPPED.md commands
+        run: python3 scripts/check-airgapped-doc.py
 
   release:
     if: github.ref_type == 'tag'
