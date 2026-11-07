@@ -7,6 +7,10 @@
 // path documented for fresh installs, so upgrade inherits the installer's
 // checksum gating for free (plus its TAU_BASE_URL/TAU_SKIP_CHECKSUM/
 // TAU_VERIFY_SIGSTORE env contract, which flows through the child env).
+// --verify-signature is the discoverable spelling of TAU_VERIFY_SIGSTORE=1:
+// it is injected into the installer's env so the opt-in cosign check runs on
+// the downloaded asset before the swap — no cosign, no signature bundle, or
+// a failed verify all fail closed and surface through the report's hint.
 // TAU_INSTALL_URL overrides the installer script URL (file:// stubs in
 // tests, mirrors behind proxies). When an update exists the tag's own
 // CHANGELOG.md is fetched too (TAU_CHANGELOG_URL overrides): the sections
@@ -304,6 +308,14 @@ fn confirm(r: *std.Io.Reader, prompt: []const u8) bool {
 /// documented in docs/troubleshooting.md ("Install & upgrade failures").
 /// First match wins; unknown output gets the generic retry hint.
 pub fn installerHint(stderr: []const u8) []const u8 {
+    // Sigstore verification failures first — opt-in via --verify-signature /
+    // TAU_VERIFY_SIGSTORE=1, every path fails closed.
+    if (std.mem.indexOf(u8, stderr, "requires cosign on PATH") != null)
+        return "signature verification needs cosign on PATH — install cosign (https://docs.sigstore.dev) and retry, or drop --verify-signature/TAU_VERIFY_SIGSTORE";
+    if (std.mem.indexOf(u8, stderr, ".sigstore.json") != null)
+        return "the release ships no cosign signature bundle for this asset — retry without --verify-signature, or point TAU_BASE_URL at a mirror that carries .sigstore.json files";
+    if (std.mem.indexOf(u8, stderr, "sigstore signature verification failed") != null)
+        return "the asset was not signed by the tau release workflow — distrust the mirror and retry; report persistent failures via `tau bug`";
     if (std.mem.indexOf(u8, stderr, "checksum verification failed") != null)
         return "the asset's SHA256 did not match the release manifest — retry; if it persists, distrust the mirror (do not bypass with TAU_SKIP_CHECKSUM=1 unless the source is trusted)";
     if (std.mem.indexOf(u8, stderr, "is not listed in SHA256SUMS") != null)
@@ -328,11 +340,25 @@ pub fn installerHint(stderr: []const u8) []const u8 {
     return "the installer failed — see its log on stderr, or install manually via install.sh";
 }
 
+/// The installer's environment: a clone of the caller's map with
+/// TAU_VERIFY_SIGSTORE=1 injected when --verify-signature asked for it —
+/// the flag is the discoverable spelling of the env contract install.sh
+/// already honors. Null when no injection is needed (the child then
+/// inherits the process env unchanged, so a user-set TAU_VERIFY_SIGSTORE
+/// keeps flowing through untouched).
+fn installerEnv(gpa: std.mem.Allocator, env: *std.process.Environ.Map, verify_signature: bool) !?std.process.Environ.Map {
+    if (!verify_signature) return null;
+    var child = try env.clone(gpa);
+    errdefer child.deinit();
+    try child.put("TAU_VERIFY_SIGSTORE", "1");
+    return child;
+}
+
 /// Download the installer, stage it, run `sh install.sh --version <latest>
 /// [--dir <d>]` and relay its progress to stderr so stdout stays a pure
 /// JSON result. Returns the post-install Report (caller fills the release
 /// fields and maps status to an exit code).
-fn runInstaller(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, url: []const u8, latest: []const u8, dir: ?[]const u8) Report {
+fn runInstaller(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map, url: []const u8, latest: []const u8, dir: ?[]const u8, verify_signature: bool) Report {
     const fail = struct {
         fn f(status: Status, detail: []const u8, hint: []const u8, d: ?[]const u8) Report {
             return .{ .checked = true, .status = status, .detail = detail, .hint = hint, .install_dir = d };
@@ -356,8 +382,13 @@ fn runInstaller(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, en
         return fail(.failed, "out of memory building the installer command", "retry; if it persists, install manually via install.sh", dir);
     if (dir) |d| argv.appendSlice(arena, &.{ "--dir", d }) catch {};
 
+    var child_env = installerEnv(gpa, env, verify_signature) catch
+        return fail(.failed, "out of memory building the installer environment", "retry; if it persists, install manually via install.sh", dir);
+    defer if (child_env) |*m| m.deinit();
+
     const res = std.process.run(gpa, io, .{
         .argv = argv.items,
+        .environ_map = if (child_env) |*m| m else null,
         .stdout_limit = .unlimited,
         .stderr_limit = .unlimited,
     }) catch return fail(.failed, "could not launch the installer (sh not on PATH?)", "install.sh runs via sh — ensure a POSIX shell is on PATH, or run the installer manually", dir);
@@ -450,7 +481,10 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
             .tag = tag,
             .update_available = true,
             .status = .dry_run,
-            .detail = std.fmt.allocPrint(arena, "would install tau {s} via {s} into {s}", .{ latest, url, dir orelse "the installer default (~/.local/bin)" }) catch "would install",
+            .detail = if (cfg.upgrade_verify_signature)
+                std.fmt.allocPrint(arena, "would install tau {s} via {s} into {s} after verifying the cosign signature (TAU_VERIFY_SIGSTORE=1)", .{ latest, url, dir orelse "the installer default (~/.local/bin)" }) catch "would install"
+            else
+                std.fmt.allocPrint(arena, "would install tau {s} via {s} into {s}", .{ latest, url, dir orelse "the installer default (~/.local/bin)" }) catch "would install",
             .release_url = release_url,
             .install_dir = dir,
             .changelog = changelog,
@@ -480,7 +514,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
         return if (interactive) 0 else 1;
     }
 
-    var rep = runInstaller(io, gpa, arena, env, url, latest, dir);
+    var rep = runInstaller(io, gpa, arena, env, url, latest, dir, cfg.upgrade_verify_signature);
     rep.latest = latest;
     rep.tag = tag;
     rep.update_available = true;
@@ -645,6 +679,38 @@ test "installerHint: install.sh failure lines map to remediation hints" {
 
     // Unknown installer output falls back to the generic retry hint.
     try testing.expect(H.has(installerHint("install.sh: something else broke\n"), "install.sh"));
+
+    // Sigstore opt-in failures — every path fails closed with actionable
+    // guidance back at the flag/env spelling.
+    try testing.expect(H.has(installerHint("install.sh: TAU_VERIFY_SIGSTORE=1 requires cosign on PATH — install cosign or unset TAU_VERIFY_SIGSTORE\n"), "cosign"));
+    try testing.expect(H.has(installerHint("install.sh: could not download tau-linux-x86_64.tar.gz.sigstore.json for v9.9.9\n"), "signature bundle"));
+    try testing.expect(H.has(installerHint("install.sh: sigstore signature verification failed for tau-linux-x86_64.tar.gz\n"), "not signed"));
+}
+
+test "installerEnv: --verify-signature injects TAU_VERIFY_SIGSTORE=1" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+    defer env.deinit();
+    try env.put("KEEP", "me");
+
+    // Flag off -> no override map (the child inherits the process env).
+    try testing.expect((try installerEnv(a, &env, false)) == null);
+
+    // Flag on -> cloned env plus the contract var; the caller's map is
+    // untouched.
+    var child = (try installerEnv(a, &env, true)).?;
+    defer child.deinit();
+    try testing.expectEqualStrings("1", child.get("TAU_VERIFY_SIGSTORE").?);
+    try testing.expectEqualStrings("me", child.get("KEEP").?);
+    try testing.expect(env.get("TAU_VERIFY_SIGSTORE") == null);
+
+    // An explicit TAU_VERIFY_SIGSTORE=0 loses to the flag.
+    try env.put("TAU_VERIFY_SIGSTORE", "0");
+    var forced = (try installerEnv(a, &env, true)).?;
+    defer forced.deinit();
+    try testing.expectEqualStrings("1", forced.get("TAU_VERIFY_SIGSTORE").?);
 }
 
 test "formatReport: changelog entries serialize as {version,notes} objects" {

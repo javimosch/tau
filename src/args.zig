@@ -226,7 +226,7 @@ pub fn parse(
         return .{ .action = .version, .config = vcfg };
     }
 
-    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--json]` — self-update
+    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--verify-signature] [--json]` — self-update
     // in place: run the same release lookup as `tau version --check`, confirm,
     // then fetch and exec the release tag's own install.sh so the fail-closed
     // SHA256-verified install path is reused verbatim. The prompt only
@@ -248,12 +248,15 @@ pub fn parse(
                 ucfg.upgrade_dir = argv[j];
             } else if (eq(a, "--dry-run")) {
                 ucfg.upgrade_dry_run = true;
+            } else if (eq(a, "--verify-signature")) {
+                ucfg.upgrade_verify_signature = true;
             } else if (eq(a, "--json")) {
                 ucfg.cli_json = true;
                 ucfg.mode = .json;
             } else return errResult(arena, "unknown upgrade argument: {s}", .{a});
         }
         if (envTruthy(env.get("TAU_YES"))) ucfg.upgrade_yes = true;
+        if (envTruthy(env.get("TAU_VERIFY_SIGSTORE"))) ucfg.upgrade_verify_signature = true;
         return .{ .action = .upgrade, .config = ucfg };
     }
 
@@ -2379,6 +2382,29 @@ test "parse: upgrade accepts --yes/-y, --dir and --dry-run" {
 
     const q = try parseArgv(a, &.{ "tau", "upgrade", "-y" }, .{});
     try std.testing.expect(q.config.upgrade_yes);
+}
+
+test "parse: upgrade --verify-signature opts into the cosign check" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade", "--verify-signature" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.upgrade_verify_signature);
+
+    const off = try parseArgv(a, &.{ "tau", "upgrade" }, .{});
+    try std.testing.expect(!off.config.upgrade_verify_signature);
+
+    const env_on = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_VERIFY_SIGSTORE", "1" },
+    }, .{});
+    try std.testing.expect(env_on.config.upgrade_verify_signature);
+
+    const env_off = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_VERIFY_SIGSTORE", "0" },
+    }, .{});
+    try std.testing.expect(!env_off.config.upgrade_verify_signature);
 }
 
 test "parse: upgrade TAU_YES env approves like --yes" {

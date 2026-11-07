@@ -419,6 +419,9 @@ tau upgrade --yes                # Non-interactive (env TAU_YES=1)
 tau upgrade --dir /opt/bin       # Override destination (default: the running
                                  # binary's directory; env TAU_INSTALL_DIR)
 tau upgrade --dry-run            # Print the resolved plan + release notes; install nothing
+tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundle
+                                 # before the swap (env TAU_VERIFY_SIGSTORE=1;
+                                 # requires cosign on PATH, fails closed)
 # → {"name":"tau","version":"0.4.0","checked":true,"latest":"0.5.0","tag":"v0.5.0",
 #    "update_available":true,"status":"upgraded","detail":"installed tau 0.5.0 -> /opt/bin/tau",
 #    "release_url":"...","install_dir":"/opt/bin","changelog":[{"version":"0.5.0","notes":"..."}]}

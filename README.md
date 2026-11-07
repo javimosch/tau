@@ -66,7 +66,11 @@ notes since your version before changing anything (a `[y/N]` prompt on a
 terminal, `--yes` for scripts), then re-runs this same verified installer
 over the running binary — no separate update channel to trust. `tau
 upgrade --dry-run` prints the plan plus the pending changelog entries;
-`tau version --check` is the read-only form. Audit what changed between
+`tau version --check` is the read-only form. `tau upgrade
+--verify-signature` additionally asks the installer to verify the
+asset's cosign/Sigstore signature bundle before the swap (requires
+`cosign` on `PATH`, fails closed; `TAU_VERIFY_SIGSTORE=1` is the env
+equivalent). Audit what changed between
 releases in [CHANGELOG.md](CHANGELOG.md) — its tagged-release sections are
 generated from the release notes themselves.
 

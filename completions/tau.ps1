@@ -30,7 +30,7 @@ $TauArgumentCompleter = {
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report',
                      '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
-    $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--json')
+    $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
     # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
