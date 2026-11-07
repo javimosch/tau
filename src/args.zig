@@ -497,6 +497,9 @@ pub fn parse(
     // into editing existing MCP-client settings files: the mcacp entry and
     // the user's server entries from the other supported clients are
     // spliced in (comments preserved), mutually exclusive with --remove.
+    // --detect is the read-only counterpart: a detect_clients inventory of
+    // every supported client's config dir, detection status, and wiring
+    // state — mutually exclusive with both write modes.
     // The stdout
     // stream is already NDJSON; --json is the
     // stable-contract spelling that pins it (schema/tau-setup.schema.json).
@@ -555,6 +558,8 @@ pub fn parse(
                 scfg.setup_remove = true;
             } else if (eq(a, "--import")) {
                 scfg.setup_import = true;
+            } else if (eq(a, "--detect")) {
+                scfg.setup_detect = true;
             } else if (eq(a, "--json")) {
                 scfg.cli_json = true;
                 scfg.mode = .json;
@@ -588,6 +593,12 @@ pub fn parse(
         // them — the two modes are mutually exclusive.
         if (scfg.setup_import and scfg.setup_remove)
             return errResult(arena, "--import and --remove/--uninstall are mutually exclusive", .{});
+        // --detect is a read-only inventory — it can't run inside the
+        // write modes.
+        if (scfg.setup_detect and scfg.setup_remove)
+            return errResult(arena, "--detect and --remove/--uninstall are mutually exclusive", .{});
+        if (scfg.setup_detect and scfg.setup_import)
+            return errResult(arena, "--detect and --import are mutually exclusive", .{});
         if (try resolveProviderAndModel(&scfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
             scfg.doctor_bad_provider = bad;
         }
@@ -1715,6 +1726,33 @@ test "parse: setup --import sets setup_import, mutex with --remove/--uninstall" 
     const imp_first = try parseArgv(a, &.{ "tau", "setup", "--import", "--uninstall" }, .{});
     try std.testing.expectEqual(Action.err, imp_first.action);
     try std.testing.expectEqualStrings("--import and --remove/--uninstall are mutually exclusive", imp_first.err_msg.?);
+}
+
+test "parse: setup --detect sets setup_detect, mutex with --remove/--import" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expect(!bare.config.setup_detect);
+
+    // --client scopes the inventory; --json composes with it.
+    const det = try parseArgv(a, &.{ "tau", "setup", "--detect", "--client", "zed", "--json" }, .{});
+    try std.testing.expectEqual(Action.setup, det.action);
+    try std.testing.expect(det.config.setup_detect);
+    try std.testing.expectEqualStrings("zed", det.config.setup_client.?);
+    try std.testing.expect(det.config.cli_json);
+
+    // The read-only inventory can't run inside either write mode.
+    const rm = try parseArgv(a, &.{ "tau", "setup", "--detect", "--remove" }, .{});
+    try std.testing.expectEqual(Action.err, rm.action);
+    try std.testing.expectEqualStrings("--detect and --remove/--uninstall are mutually exclusive", rm.err_msg.?);
+    const un = try parseArgv(a, &.{ "tau", "setup", "--uninstall", "--detect" }, .{});
+    try std.testing.expectEqual(Action.err, un.action);
+    try std.testing.expectEqualStrings("--detect and --remove/--uninstall are mutually exclusive", un.err_msg.?);
+    const imp = try parseArgv(a, &.{ "tau", "setup", "--import", "--detect" }, .{});
+    try std.testing.expectEqual(Action.err, imp.action);
+    try std.testing.expectEqualStrings("--detect and --import are mutually exclusive", imp.err_msg.?);
 }
 
 test "parse: TAU_SETUP_IMPORT env enables setup --import" {

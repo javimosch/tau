@@ -223,6 +223,7 @@ _tau() {
                         '--remove[reverse per-client editor wiring]' \
                         '--uninstall[alias for --remove]' \
                         '--import[merge existing MCP server entries into wired MCP clients]' \
+                        '--detect[read-only client inventory: config paths + wiring status]' \
                         '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \
                         '--api-key=[diagnose an override API key]:key:' \

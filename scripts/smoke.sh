@@ -3915,6 +3915,7 @@ test_group_golden_onboarding() {
   golden_check_n ob-setup-bad-client 80 "$BIN" setup --client vim
   golden_check_n ob-setup-bad-shell  80 "$BIN" setup --shell tcsh
   golden_check_n ob-setup-import-remove 80 "$BIN" setup --import --remove
+  golden_check_n ob-setup-detect-remove 80 "$BIN" setup --detect --remove
 
   # The doctor step embeds a report whose curl check text depends on the
   # installed curl — with curl present it normalizes to <VER>; without curl
@@ -4080,6 +4081,24 @@ test_group_golden_onboarding() {
   _golden_fresh_home
   env HOME="$_GOLDEN_HOME" SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client all >/dev/null
   golden_check_n ob-remove-sweep      0 "$BIN" setup --remove
+
+  # ── tau setup --detect ──
+  # The read-only inventory carries no doctor step, so these snapshots are
+  # deterministic without curl — the same constraint the remove stream has.
+  _golden_fresh_home
+  golden_check_n ob-detect-none      0 "$BIN" setup --detect
+
+  # A wired client reports wiring "ok" with its settings path; --client
+  # scopes the inventory to one entry.
+  _golden_fresh_home
+  env HOME="$_GOLDEN_HOME" SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client zed >/dev/null
+  golden_check_n ob-detect-zed       0 "$BIN" setup --detect --client zed
+
+  # A detected-but-unwired editor reports "no_entry" with the settings path.
+  _golden_fresh_home
+  mkdir -p "$_GOLDEN_HOME/.config/zed"
+  printf '{ "vim_mode": true }\n' > "$_GOLDEN_HOME/.config/zed/settings.json"
+  golden_check_n ob-detect-no-entry  0 "$BIN" setup --detect --client zed
 
   # ── tau config edit ──  (editor stubbed via TAU_EDITOR; VISUAL/EDITOR are
   # scrubbed so ambient values can't change precedence)
@@ -4955,6 +4974,28 @@ test_group_cli_schemas() {
   else
     ok "cli-schemas: setup --import stream validates" 1 0
   fi
+
+  # ── tau setup --detect --json ──
+  # Detect mode emits its own fixed sequence: detect_clients + verdict.
+  local det_home="$SMOKE_TEMP/setup-det-home"
+  mkdir -p "$det_home/.config/zed"
+  printf '{ "vim_mode": true }\n' > "$det_home/.config/zed/settings.json"
+  out=$("${scrub[@]}" HOME="$det_home" "$BIN" setup --detect --json); rc=$?
+  ok "cli-schemas: setup --detect --json exit 0" "$rc" 0
+  contains "cli-schemas: detect stream opens with detect_clients" "$out" '"step":"detect_clients"'
+  contains "cli-schemas: detect verdict carries detect:true" "$out" '"detect":true'
+  contains "cli-schemas: detect reports the zed wiring state" "$out" '"client":"zed","detected":true,"wiring":"no_entry"'
+  if printf '%s' "$out" | python3 "$setup_check" - >/dev/null 2>&1; then
+    ok "cli-schemas: setup --detect stream validates" 0 0
+  else
+    ok "cli-schemas: setup --detect stream validates" 1 0
+  fi
+
+  # The read-only inventory is mutually exclusive with both write modes.
+  "$BIN" setup --detect --remove >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: setup --detect --remove -> exit 80" "$rc" 80
+  "$BIN" setup --detect --import >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: setup --detect --import -> exit 80" "$rc" 80
 }
 
 # Group: generated docs/compatibility.md drift check

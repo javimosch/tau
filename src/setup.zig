@@ -2153,6 +2153,70 @@ fn stepRemoveClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *st
     return ok;
 }
 
+// --- Step 3c: detect editor ACP clients (`--detect`, read-only) -----------
+
+/// The `setup --detect` step: a read-only inventory of supported clients —
+/// each entry reports the config dir probed, whether the client was
+/// detected there, and the wiring state `tau doctor` would classify
+/// (settings path and stale reason included when they apply; bridge:true
+/// marks the MCP clients wired through the shared mcacp bridge). --client
+/// scopes the sweep; without it every client is listed. Writes nothing and
+/// fails only when HOME is unset — zero detected clients is still a passing
+/// report (it carries a hint instead).
+fn stepDetectClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+    var buf: std.ArrayList(u8) = .empty;
+    const home = env.get("HOME") orelse {
+        try buf.appendSlice(arena, "{\"step\":\"detect_clients\",\"status\":\"failed\",\"message\":");
+        try js(arena, &buf, "HOME is not set — cannot locate editor config directories");
+        try buf.appendSlice(arena, "}");
+        emit(&buf);
+        return false;
+    };
+
+    var clients: []const ClientKind = try resolveClients(arena, cfg);
+    if (clients.len == 0) clients = &all_clients;
+
+    var entries: std.ArrayList(u8) = .empty;
+    try entries.append(arena, '[');
+    var detected: usize = 0;
+    for (clients, 0..) |k, i| {
+        if (i > 0) try entries.append(arena, ',');
+        const w = try inspectClientWiring(io, arena, home, k);
+        try entries.appendSlice(arena, "{\"client\":");
+        try js(arena, &entries, clientName(k));
+        try entries.appendSlice(arena, ",\"detected\":");
+        try entries.appendSlice(arena, if (w.state == .not_detected) "false" else "true");
+        try entries.appendSlice(arena, ",\"wiring\":");
+        try js(arena, &entries, @tagName(w.state));
+        try entries.appendSlice(arena, ",\"config_dir\":");
+        try js(arena, &entries, try clientConfigDir(arena, home, k));
+        if (w.path) |p| {
+            try entries.appendSlice(arena, ",\"path\":");
+            try js(arena, &entries, p);
+        }
+        if (w.reason) |r| {
+            try entries.appendSlice(arena, ",\"reason\":");
+            try js(arena, &entries, r);
+        }
+        if (clientUsesBridge(k)) try entries.appendSlice(arena, ",\"bridge\":true");
+        try entries.append(arena, '}');
+        if (w.state != .not_detected) detected += 1;
+    }
+    try entries.append(arena, ']');
+
+    try buf.appendSlice(arena, "{\"step\":\"detect_clients\",\"status\":\"ok\",\"clients\":");
+    try buf.appendSlice(arena, entries.items);
+    try buf.appendSlice(arena, ",\"detected\":");
+    try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}", .{detected}));
+    if (detected == 0) {
+        try buf.appendSlice(arena, ",\"hint\":");
+        try js(arena, &buf, "no supported editor config directories found — install an editor, or see docs/clients/ for the client list");
+    }
+    try buf.appendSlice(arena, "}");
+    emit(&buf);
+    return true;
+}
+
 // --- Driver ---------------------------------------------------------------
 
 /// True when setup was explicitly declared unattended — `--yes`,
@@ -2174,11 +2238,15 @@ pub fn unattended(cfg: Config) bool {
 /// Removal mode (`--remove`/`--uninstall`): the stream is just the
 /// remove_clients step + verdict (which carries "remove":true) — the
 /// init/completions/doctor steps don't run.
+/// Detect mode (`--detect`): the stream is just the detect_clients
+/// inventory + verdict ("detect":true) — a read-only report, no steps run.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     var buf: std.ArrayList(u8) = .empty;
     var ok = true;
     if (cfg.setup_remove) {
         ok = try stepRemoveClients(io, arena, cfg, env);
+    } else if (cfg.setup_detect) {
+        ok = try stepDetectClients(io, arena, cfg, env);
     } else {
         ok = try stepInit(io, arena, cfg, env);
         if (!try stepCompletions(io, arena, cfg, env)) ok = false;
@@ -2197,6 +2265,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     try buf.appendSlice(arena, ",\"version\":");
     try js(arena, &buf, version);
     if (cfg.setup_remove) try buf.appendSlice(arena, ",\"remove\":true");
+    if (cfg.setup_detect) try buf.appendSlice(arena, ",\"detect\":true");
     if (unattended(cfg)) try buf.appendSlice(arena, ",\"non_interactive\":true");
     if (cfg.setup_yes) try buf.appendSlice(arena, ",\"yes\":true");
     if (cfg.setup_dry_run) try buf.appendSlice(arena, ",\"dry_run\":true");

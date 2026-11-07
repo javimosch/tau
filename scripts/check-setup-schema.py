@@ -4,14 +4,16 @@
 schema/tau-setup.schema.json describes every line the stream can emit —
 {"step":"init",...}, {"step":"completions",...}, {"step":"clients",...},
 {"step":"doctor",...} step events, the removal-mode {"step":"remove_clients",
-...} event (`tau setup --remove`/`--uninstall`), and the terminal
-{"step":"setup",...,"done":true} verdict. This script validates each line
-against the schema and asserts the stream invariants a per-line schema
+...} event (`tau setup --remove`/`--uninstall`), the detect-mode
+{"step":"detect_clients",...} inventory (`tau setup --detect`), and the
+terminal {"step":"setup",...,"done":true} verdict. This script validates each
+line against the schema and asserts the stream invariants a per-line schema
 cannot express:
 
   - the step events appear exactly once, in a fixed order — either the
-    install sequence (init -> completions -> clients -> doctor) or the
-    removal sequence (remove_clients alone)
+    install sequence (init -> completions -> clients -> doctor), the
+    removal sequence (remove_clients alone), or the detect sequence
+    (detect_clients alone)
   - exactly one verdict event (step "setup") and it is the last line
   - "done" is true on the verdict only — no earlier line may carry it
   - the stream is non-empty
@@ -39,6 +41,7 @@ SCHEMA_JSON = ROOT / "schema" / "tau-setup.schema.json"
 
 STEP_ORDER = ["init", "completions", "clients", "doctor"]
 REMOVE_ORDER = ["remove_clients"]
+DETECT_ORDER = ["detect_clients"]
 
 
 def fail(msg):
@@ -66,10 +69,11 @@ def validate_stream(text, schema):
 
     # Stream invariants a per-line schema cannot express.
     steps = [ev.get("step") for ev in events if isinstance(ev, dict)]
-    if steps not in (STEP_ORDER + ["setup"], REMOVE_ORDER + ["setup"]):
+    valid = (STEP_ORDER + ["setup"], REMOVE_ORDER + ["setup"], DETECT_ORDER + ["setup"])
+    if steps not in valid:
         errors.append(
-            f"step sequence {steps!r} — expected {STEP_ORDER + ['setup']!r} "
-            f"or {REMOVE_ORDER + ['setup']!r} "
+            f"step sequence {steps!r} — expected {STEP_ORDER + ['setup']!r}, "
+            f"{REMOVE_ORDER + ['setup']!r}, or {DETECT_ORDER + ['setup']!r} "
             "(one event per step, fixed order, verdict last)"
         )
 

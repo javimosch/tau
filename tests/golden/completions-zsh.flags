@@ -11,6 +11,7 @@
 --coordinator-model
 --debug
 --deep
+--detect
 --dir
 --dry-run
 --exclude-tools

@@ -274,6 +274,12 @@ pub const Config = struct {
     /// survive byte-for-byte). Mutually exclusive with --remove/--uninstall;
     /// env `TAU_SETUP_IMPORT=1` is the env equivalent.
     setup_import: bool = false,
+    /// `tau setup --detect` — read-only client inventory: report every
+    /// supported client with its config-dir path, detection status, and the
+    /// wiring state `tau doctor` would classify (settings path + stale
+    /// reason included). --client scopes the sweep; mutually exclusive with
+    /// --remove/--uninstall and --import. Writes nothing.
+    setup_detect: bool = false,
 
     // --- Config subcommands (src/configedit.zig / src/configvalidate.zig) ---
     /// `tau config` subcommand carried through parse. Null/absent means the

@@ -365,6 +365,8 @@ tau setup --client zed         # Write editor ACP config: zed|nvim|emacs|vscode|
 tau setup --offline            # Skip network checks in the doctor step
 tau setup -y --non-interactive # Unattended contract (verdict records non_interactive/yes)
 tau setup --dry-run            # Preview all writes (would_* statuses); change nothing
+tau setup --detect             # Read-only client inventory: config dirs, detection, wiring state
+tau setup --detect --client zed # ...scoped to one client (writes nothing)
 # Env equivalents (flag > env > detect): TAU_YES, TAU_NONINTERACTIVE,
 # TAU_SETUP_SHELL, TAU_SETUP_CLIENT. CI is not auto-detected.
 # Emits one NDJSON object per step plus a final verdict:

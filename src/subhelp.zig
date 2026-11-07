@@ -310,6 +310,11 @@ const setup_help =
     \\                         entry once no remaining client uses it.
     \\                         --client scopes the sweep; without it every
     \\                         wired client is unwired.
+    \\      --detect           Read-only client inventory: list every
+    \\                         supported client's config dir, detection
+    \\                         status, and wiring state (settings path and
+    \\                         stale reason included) — writes nothing.
+    \\                         --client scopes the sweep.
     \\      --json             Pin the stable schema-checked NDJSON stream
     \\                         (schema/tau-setup.schema.json; output is
     \\                         already NDJSON)
@@ -322,6 +327,7 @@ const setup_help =
     \\  tau setup --remove --client zed
     \\  tau setup --uninstall --dry-run
     \\  tau setup --client windsurf --import --dry-run
+    \\  tau setup --detect
     \\
 ;
 
