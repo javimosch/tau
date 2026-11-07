@@ -293,6 +293,8 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `scripts/generate-sbom.py` | Emits a deterministic CycloneDX 1.6 `<asset>.sbom.json` per release archive (archive hash + hashed member listing + toolchain); the release job signs, attests, and publishes them | Release asset/packaging changes — also update `VERIFYING.md` |
 | `VERIFYING.md` | Consumer guide to verifying releases: checksum → cosign signature → SLSA attestation → SBOM | Any change to `release.yml`, `install.sh`/`install.ps1`, or `generate-sbom.py` that alters the verification surface |
 | `scripts/check-verifying-doc.py` | Extracts every command in `VERIFYING.md` and drift-checks it against the release pipeline; runs in the `verify-docs` release job and the `verify-doc` smoke group | After editing `VERIFYING.md` or the release pipeline — run it to prove the recipes still work |
+| `AIRGAPPED.md` | Consumer guide to air-gapped install/upgrade: stage a `file://` mirror, verify checksum + cosign signature offline, re-root the installers via `TAU_BASE_URL` | Any change to `install.sh`/`install.ps1` env vars, URL layout, or the signing contract |
+| `scripts/check-airgapped-doc.py` | Extracts every command in `AIRGAPPED.md` and drift-checks it against the installers + release pipeline, then replays the offline install on a staged `file://` mirror; runs in the `verify-docs` release job and the `airgap-doc` smoke group | After editing `AIRGAPPED.md` or the installer contract — run it to prove the recipes still work |
 
 #### Validation Commands
 
@@ -307,6 +309,7 @@ zig build test               # Full unit test suite
 ./scripts/smoke.sh --bench             # Smoke + resource benchmarks
 ./scripts/benchmark-resources.sh       # Standalone resource benchmarks
 ./scripts/check-verifying-doc.py       # Drift-check VERIFYING.md recipes
+./scripts/check-airgapped-doc.py       # Drift-check AIRGAPPED.md recipes
 ./zig-out/bin/tau --help               # Verify help text
 ./zig-out/bin/tau --help-json          # Verify JSON schema
 ```

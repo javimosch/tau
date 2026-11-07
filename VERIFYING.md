@@ -164,3 +164,9 @@ scripts/generate-sbom.py --dist . --version <x.y.z> --commit <tag-commit-sha> \
 | `signature verification failed` / `cosign verify-blob` errors | The asset was **not** produced by tau's release workflow — do not run it. |
 | `gh attestation verify` finds no attestation | Same conclusion as a missing bundle: the asset is not covered by release provenance. |
 | `<asset>.sbom.json` missing or fails signature/attestation | The release predates SBOM generation, or the file was swapped — do not trust the contents listing it describes. |
+
+## See also
+
+- [AIRGAPPED.md](AIRGAPPED.md) — install and upgrade tau on hosts with no
+  outbound connectivity: stage a `file://` mirror, verify checksum +
+  signature offline, and re-root the installers at the staged tree.

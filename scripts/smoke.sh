@@ -73,6 +73,7 @@ ALL_TEST_GROUPS=(
   "fleet-flags:test_group_fleet_flags"
   "release:test_group_release"
   "verify-doc:test_group_verify_doc"
+  "airgap-doc:test_group_airgap_doc"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -1263,6 +1264,7 @@ test_group_release() {
     contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-windows, smoke-action, verify-docs]"
     contains "workflow has a verify-docs job" "$(cat "$wf")" "  verify-docs:"
     contains "verify-docs runs the doc drift checker" "$(cat "$wf")" "check-verifying-doc.py"
+    contains "verify-docs runs the airgap drift checker" "$(cat "$wf")" "check-airgapped-doc.py"
     contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
     contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
     contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
@@ -1709,6 +1711,7 @@ PY
     contains "verify doc names the bundle files" "$(cat "$vdoc")" ".sigstore.json"
   fi
   contains "README links the verifying doc" "$(cat "$ROOT/README.md")" "VERIFYING.md"
+  contains "README links the airgapped doc" "$(cat "$ROOT/README.md")" "AIRGAPPED.md"
 
   # ── offline end-to-end install via file:// (needs a built binary) ──
   # Mirrors the CI smoke job: stage latest/download/<asset> + SHA256SUMS.txt,
@@ -1947,6 +1950,37 @@ test_group_verify_doc() {
     [ "$rc" -ne 0 ] && [ "$SMOKE_DEBUG" = "1" ] && diag "checker output: $out"
   else
     skip_test "verify-doc drift check" "python3 unavailable"
+  fi
+}
+
+# Group: AIRGAPPED.md command drift check (task #366).
+# Runs scripts/check-airgapped-doc.py, which extracts every command block
+# from AIRGAPPED.md and cross-checks it against release.yml, install.sh,
+# install.ps1 and VERIFYING.md — then replays the offline recipes on a
+# staged file:// mirror: the checksum pipeline verbatim, the real
+# install.sh end-to-end, and the fail-closed paths the doc promises
+# (missing manifest aborts; TAU_VERIFY_SIGSTORE=1 without a staged bundle
+# aborts). Fully offline; the release workflow runs the same script as a
+# publish gate (verify-docs job).
+test_group_airgap_doc() {
+  local out rc
+  local checker="$ROOT/scripts/check-airgapped-doc.py"
+
+  note "airgap-doc: AIRGAPPED.md command drift check"
+
+  [ -f "$checker" ];  ok "check-airgapped-doc.py exists" "$?" 0
+  [ -x "$checker" ];  ok "check-airgapped-doc.py is executable" "$?" 0
+  python3 -m py_compile "$checker" 2>/dev/null
+  ok "check-airgapped-doc.py compiles under python3" "$?" 0
+
+  if command -v python3 >/dev/null 2>&1; then
+    out=$(python3 "$checker" 2>&1); rc=$?
+    ok "AIRGAPPED.md drift check passes" "$rc" 0
+    contains "drift check reports a pass count" "$out" " passed, "
+    contains "drift check reports zero failures" "$out" " 0 failed"
+    [ "$rc" -ne 0 ] && [ "$SMOKE_DEBUG" = "1" ] && diag "checker output: $out"
+  else
+    skip_test "airgap-doc drift check" "python3 unavailable"
   fi
 }
 

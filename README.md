@@ -65,7 +65,9 @@ build-provenance attestation, and a CycloneDX SBOM (`<asset>.sbom.json`)
 listing the archive hash and every file inside it — set
 `TAU_VERIFY_SIGSTORE=1` to have the installers run `cosign verify-blob`
 too, or verify manually per
-[`VERIFYING.md`](VERIFYING.md).
+[`VERIFYING.md`](VERIFYING.md). For machines without outbound
+connectivity, [`AIRGAPPED.md`](AIRGAPPED.md) covers staging a `file://`
+mirror and verifying + installing entirely offline.
 
 **Windows (PowerShell — installs `tau-windows-x86_64.zip` to
 `%LOCALAPPDATA%\Programs\tau`):**
