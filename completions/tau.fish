@@ -243,6 +243,7 @@ set -l upgrade '__tau_using_subcommand upgrade'
 complete -c tau -n $upgrade -f -s y -l yes -d 'upgrade without prompting'
 complete -c tau -n $upgrade -f -l dir -x -d 'install destination (default: the running binary dir)'
 complete -c tau -n $upgrade -f -l dry-run -d 'print the resolved plan; install nothing'
+complete -c tau -n $upgrade -f -l verify-signature -d 'verify the cosign signature bundle before the swap'
 complete -c tau -n $upgrade -f -l json -d 'emit the stable schema-checked report object'
 
 set -l explain '__tau_using_subcommand explain'

@@ -170,6 +170,12 @@ pub const Config = struct {
     /// `tau upgrade --dry-run` — report the update check plus the resolved
     /// install plan without prompting, downloading, or installing anything.
     upgrade_dry_run: bool = false,
+    /// `tau upgrade --verify-signature` — opt-in Sigstore/cosign verification
+    /// of the downloaded asset before the installer swaps it in (env
+    /// `TAU_VERIFY_SIGSTORE=1`). Forwarded to install.sh, which fails closed:
+    /// no cosign, no <asset>.sigstore.json bundle, or a failed verify all
+    /// abort the upgrade.
+    upgrade_verify_signature: bool = false,
 
     // --- Per-subcommand help ---
     /// `tau <sub> -h|--help` — names the subcommand whose dedicated help text

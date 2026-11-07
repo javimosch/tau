@@ -64,6 +64,7 @@
 --tools
 --uninstall
 --verbose
+--verify-signature
 --version
 --worker-model
 --yes

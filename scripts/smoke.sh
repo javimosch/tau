@@ -483,6 +483,15 @@ EOF
   contains "missing-changelog still dry_run" "$ug_drync_out" '"status":"dry_run"'
   lacks "missing-changelog omits the field" "$ug_drync_out" '"changelog"'
 
+  # 6c. --verify-signature is the discoverable spelling of the installer's
+  #     TAU_VERIFY_SIGSTORE contract — the dry-run plan says so.
+  capture ug_drysig env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/ug-changelog.md" \
+    "$BIN" upgrade --dry-run --verify-signature
+  ok "dry-run --verify-signature exit 0" "$ug_drysig_rc" 0
+  contains "dry-run --verify-signature still dry_run" "$ug_drysig_out" '"status":"dry_run"'
+  contains "dry-run --verify-signature names cosign" "$ug_drysig_out" 'cosign signature'
+
   # 7. Installer download failure -> status failed, exit 1 — the summary
   #    still precedes the installer log on stderr.
   capture ug_noinst env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
@@ -525,7 +534,8 @@ EOF
     cp "$ROOT/install.sh" "$e2e/install.sh"
     cp "$SMOKE_TEMP/ug-changelog.md" "$e2e/changelog.md"
 
-    capture ug_yes env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    capture ug_yes env -u TAU_VERIFY_SIGSTORE \
+      TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
       TAU_INSTALL_URL="file://$e2e/install.sh" \
       TAU_CHANGELOG_URL="file://$e2e/changelog.md" \
       TAU_BASE_URL="file://$e2e/srv" \
@@ -542,7 +552,8 @@ EOF
 
     # TAU_YES=1 approves the same way as --yes.
     rm -f "$e2e/bin/tau"
-    capture ug_envyes env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    capture ug_envyes env -u TAU_VERIFY_SIGSTORE \
+      TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
       TAU_INSTALL_URL="file://$e2e/install.sh" \
       TAU_CHANGELOG_URL="file://$e2e/changelog.md" \
       TAU_BASE_URL="file://$e2e/srv" \
@@ -553,6 +564,40 @@ EOF
     contains "TAU_YES e2e status upgraded" "$ug_envyes_out" '"status":"upgraded"'
     contains "TAU_YES e2e carries changelog" "$ug_envyes_out" '"changelog":[{"version":"99.9.9"'
     [ -x "$e2e/bin/tau" ]; ok "TAU_YES e2e installed binary" "$?" 0
+
+    # --verify-signature forwards TAU_VERIFY_SIGSTORE=1 into the installer's
+    # env: stage a signature bundle next to the asset and shadow cosign with
+    # a stub — success and failure both route through it.
+    mkdir -p "$e2e/shim"
+    printf '{}' > "$e2e/srv/download/v99.9.9/$asset.sigstore.json"
+    printf '#!/bin/sh\nexit 0\n' > "$e2e/shim/cosign" && chmod +x "$e2e/shim/cosign"
+    rm -f "$e2e/bin/tau"
+    capture ug_sig env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+      TAU_INSTALL_URL="file://$e2e/install.sh" \
+      TAU_CHANGELOG_URL="file://$e2e/changelog.md" \
+      TAU_BASE_URL="file://$e2e/srv" \
+      TAU_INSTALL_DIR="$e2e/bin" \
+      PATH="$e2e/shim:$PATH" \
+      "$BIN" upgrade --yes --verify-signature
+    ok "upgrade --verify-signature e2e exit 0" "$ug_sig_rc" 0
+    contains "verify-signature e2e status upgraded" "$ug_sig_out" '"status":"upgraded"'
+    contains "verify-signature e2e cosign ran" "$ug_sig_err" 'sigstore signature verified'
+    [ -x "$e2e/bin/tau" ]; ok "verify-signature e2e installed binary" "$?" 0
+
+    # A refusing cosign fails the upgrade closed; the hint names the cause.
+    printf '#!/bin/sh\nexit 1\n' > "$e2e/shim/cosign"
+    rm -f "$e2e/bin/tau"
+    capture ug_sigfail env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+      TAU_INSTALL_URL="file://$e2e/install.sh" \
+      TAU_CHANGELOG_URL="file://$e2e/changelog.md" \
+      TAU_BASE_URL="file://$e2e/srv" \
+      TAU_INSTALL_DIR="$e2e/bin" \
+      PATH="$e2e/shim:$PATH" \
+      "$BIN" upgrade --yes --verify-signature
+    ok "verify-signature refused exit 1" "$ug_sigfail_rc" 1
+    contains "verify-signature refused status failed" "$ug_sigfail_out" '"status":"failed"'
+    contains "verify-signature refused hint names signature" "$ug_sigfail_out" 'not signed by the tau release workflow'
+    [ ! -e "$e2e/bin/tau" ]; ok "verify-signature refused installed nothing" "$?" 0
   else
     note "upgrade: skipping e2e install (unsupported host platform)"
   fi
@@ -3509,7 +3554,7 @@ _golden_env() {
       -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
       -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
       -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u TAU_CHANGELOG_URL \
-      -u TAU_SETUP_IMPORT \
+      -u TAU_VERIFY_SIGSTORE -u TAU_SETUP_IMPORT \
       -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
       -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy \
       -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR \
@@ -3667,6 +3712,7 @@ _COLOR_SCRUB_U="-u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY \
 -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
 -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
 -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u TAU_CHANGELOG_URL -u BROWSER \
+-u TAU_VERIFY_SIGSTORE \
 -u NO_COLOR -u CLICOLOR -u CLICOLOR_FORCE"
 
 # The sweep calls below use `env $_COLOR_SCRUB_U` too — same scrub as
@@ -4360,7 +4406,7 @@ EOF
   # `tau upgrade` exits 111 (unimplemented) before reaching them.
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-      for _ug_skip in ug-offline ug-checksum-mismatch ug-asset-missing ug-truncated-asset; do
+      for _ug_skip in ug-offline ug-checksum-mismatch ug-asset-missing ug-truncated-asset ug-sig-no-cosign ug-sig-bundle-missing ug-sig-verify-failed ug-sig-verified; do
         skip_test "golden $_ug_skip" "tau upgrade is POSIX-only (exits 111 here)"
       done
       ;;
@@ -4415,11 +4461,11 @@ EOF
       ug_asset="tau-$ug_os-$ug_arch.tar.gz"
 
       if [ -z "$ug_os" ]; then
-        for _ug_skip in ug-checksum-mismatch ug-asset-missing ug-truncated-asset; do
+        for _ug_skip in ug-checksum-mismatch ug-asset-missing ug-truncated-asset ug-sig-no-cosign ug-sig-bundle-missing ug-sig-verify-failed ug-sig-verified; do
           skip_test "golden $_ug_skip" "no release asset for this platform"
         done
       elif ! { command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; }; then
-        for _ug_skip in ug-checksum-mismatch ug-asset-missing ug-truncated-asset; do
+        for _ug_skip in ug-checksum-mismatch ug-asset-missing ug-truncated-asset ug-sig-no-cosign ug-sig-bundle-missing ug-sig-verify-failed ug-sig-verified; do
           skip_test "golden $_ug_skip" "no sha256sum/shasum to stage the manifest"
         done
       else
@@ -4466,6 +4512,68 @@ EOF
           TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
           TAU_BASE_URL="file://$ug_tr" \
           TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
+
+        # ── --verify-signature: the opt-in cosign check fails closed ──
+        # A valid asset + manifest tree that also carries a signature
+        # bundle. Each branch (no cosign, no bundle, refused verify) is a
+        # golden-locked failure; the stubbed-success path is locked too.
+        local ug_sig ug_sigmiss ug_shim ug_farm
+        ug_sig="$_GOLDEN_HOME/ug-srv-sig"
+        ug_sigmiss="$_GOLDEN_HOME/ug-srv-sigmiss"
+        ug_shim="$_GOLDEN_HOME/ug-sig-shim"
+        ug_farm="$_GOLDEN_HOME/ug-nocosign-bin"
+        mkdir -p "$ug_sig/download/v99.9.9" "$ug_sigmiss/download/v99.9.9" \
+          "$ug_shim" "$ug_farm"
+        tar -czf "$ug_sig/download/v99.9.9/$ug_asset" -C "$_GOLDEN_HOME/ug-pkg" tau
+        (cd "$ug_sig/download/v99.9.9" && \
+          { sha256sum "$ug_asset" 2>/dev/null || shasum -a 256 "$ug_asset"; } > SHA256SUMS.txt)
+        printf '{}' > "$ug_sig/download/v99.9.9/$ug_asset.sigstore.json"
+        cp "$ug_sig/download/v99.9.9/$ug_asset" "$ug_sig/download/v99.9.9/SHA256SUMS.txt" \
+          "$ug_sigmiss/download/v99.9.9/"
+
+        # No cosign: a tool-farm PATH carrying every binary the installer
+        # needs except cosign — deterministic even on hosts that do ship a
+        # real cosign (it simply is not linked here).
+        local _t _src
+        for _t in sh curl uname tr mktemp sha256sum shasum grep tar install \
+                  cp chmod mkdir dirname basename rm; do
+          _src="$(command -v "$_t" 2>/dev/null)" && ln -sf "$_src" "$ug_farm/$_t"
+        done
+        golden_ug ug-sig-no-cosign 1 env PATH="$ug_farm" \
+          TAU_UPDATE_URL="file://$stubs/newer.json" \
+          TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
+          TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
+          TAU_BASE_URL="file://$ug_sig" \
+          TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes --verify-signature
+
+        # cosign present (stub) but the release ships no bundle.
+        printf '#!/bin/sh\nexit 0\n' > "$ug_shim/cosign"
+        chmod +x "$ug_shim/cosign"
+        golden_ug ug-sig-bundle-missing 1 env PATH="$ug_shim:$PATH" \
+          TAU_UPDATE_URL="file://$stubs/newer.json" \
+          TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
+          TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
+          TAU_BASE_URL="file://$ug_sigmiss" \
+          TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes --verify-signature
+
+        # Bundle downloaded but cosign refuses to verify it.
+        printf '#!/bin/sh\nexit 1\n' > "$ug_shim/cosign"
+        golden_ug ug-sig-verify-failed 1 env PATH="$ug_shim:$PATH" \
+          TAU_UPDATE_URL="file://$stubs/newer.json" \
+          TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
+          TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
+          TAU_BASE_URL="file://$ug_sig" \
+          TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes --verify-signature
+
+        # Stubbed cosign verifies — the upgrade completes with the
+        # verification noted on stderr.
+        printf '#!/bin/sh\nexit 0\n' > "$ug_shim/cosign"
+        golden_ug ug-sig-verified 0 env PATH="$ug_shim:$PATH" \
+          TAU_UPDATE_URL="file://$stubs/newer.json" \
+          TAU_CHANGELOG_URL="file://$stubs/no-changelog.md" \
+          TAU_INSTALL_URL="file://$_GOLDEN_HOME/ug-install.sh" \
+          TAU_BASE_URL="file://$ug_sig" \
+          TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes --verify-signature
       fi
       ;;
   esac

@@ -197,6 +197,10 @@ Version:
                               binary's directory; env TAU_INSTALL_DIR)
       --dry-run               Print the resolved plan + release notes;
                               install nothing
+      --verify-signature      Verify the asset's cosign/Sigstore
+                              signature before the swap (env
+                              TAU_VERIFY_SIGSTORE=1; requires cosign
+                              on PATH, fails closed)
       --json                  Pin the stable schema-checked report object
                               (schema/tau-upgrade.schema.json)
 

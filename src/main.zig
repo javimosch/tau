@@ -281,6 +281,10 @@ const help_text =
     \\                              binary's directory; env TAU_INSTALL_DIR)
     \\      --dry-run               Print the resolved plan + release notes;
     \\                              install nothing
+    \\      --verify-signature      Verify the asset's cosign/Sigstore
+    \\                              signature before the swap (env
+    \\                              TAU_VERIFY_SIGSTORE=1; requires cosign
+    \\                              on PATH, fails closed)
     \\      --json                  Pin the stable schema-checked report object
     \\                              (schema/tau-upgrade.schema.json)
     \\
@@ -521,7 +525,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
     .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report)." },
     .{ .a = "tau version [--verbose] [--check] [--json]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1), --json emits the stable {\"name\",\"version\"} object (schema/tau-version.schema.json)." },
-    .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run]", .b = "self-update in place via the release's verified install.sh; shows the release notes since your version before the TTY prompt/install and in the report's changelog field, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
+    .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run] [--verify-signature]", .b = "self-update in place via the release's verified install.sh; shows the release notes since your version before the TTY prompt/install and in the report's changelog field, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau config show [--flags] [--json]", .b = "print the resolved effective config (file+env+flags merged; keys redacted). --json pins the stable JSON form (schema/tau-config-show.schema.json)." },
     .{ .a = "tau config validate [path] [--json]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit). --json pins the stable report (schema/tau-config-validate.schema.json)." },

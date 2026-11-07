@@ -355,7 +355,8 @@ const upgrade_help =
     \\tau upgrade - self-update in place from the latest release
     \\
     \\Usage:
-    \\  tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--json]
+    \\  tau upgrade [--yes|-y] [--dir <path>] [--dry-run]
+    \\              [--verify-signature] [--json]
     \\
     \\Options:
     \\  -y, --yes        Upgrade without prompting (env TAU_YES=1); a TTY
@@ -364,6 +365,10 @@ const upgrade_help =
     \\                   directory; env TAU_INSTALL_DIR)
     \\      --dry-run    Print the resolved plan + release notes; install
     \\                   nothing
+    \\      --verify-signature
+    \\                   Verify the asset's cosign/Sigstore signature
+    \\                   before the swap (env TAU_VERIFY_SIGSTORE=1;
+    \\                   requires cosign on PATH, fails closed)
     \\      --json       Pin the stable schema-checked report object
     \\                   (schema/tau-upgrade.schema.json; output is
     \\                   already JSON)
@@ -377,6 +382,7 @@ const upgrade_help =
     \\Examples:
     \\  tau upgrade --dry-run
     \\  tau upgrade --yes
+    \\  tau upgrade --yes --verify-signature
     \\  tau upgrade --dir ~/.local/bin
     \\
 ;

@@ -30,6 +30,7 @@ tau reports failures on **stderr** as a single-line JSON envelope — even in
 |-----------|----------|-------|
 | `command not found: tau` after installing | The install dir isn't on `PATH` | [Install & upgrade failures](#install--upgrade-failures) |
 | `install.sh: checksum verification failed` / `not listed in SHA256SUMS.txt` / `no sha256sum` | Fail-closed verification aborted the install | [Install & upgrade failures](#install--upgrade-failures) |
+| `install.sh: … requires cosign on PATH` / `… .sigstore.json` / `sigstore signature verification failed` | Opt-in signature check (`--verify-signature`/`TAU_VERIFY_SIGSTORE=1`) failed closed | [Install & upgrade failures](#install--upgrade-failures) |
 | `install.sh: unsupported OS` / `unsupported architecture` | No prebuilt binary for that platform | [Install & upgrade failures](#install--upgrade-failures) |
 | `tau doctor` prints `"status":"fail"` rows | Diagnosable setup problem — some auto-fixable | [Setup & config problems](#setup--config-problems--tau-doctor) |
 | `{"warn":{"message":"config file has invalid JSON …"}}` | Config doesn't parse; tau runs on defaults | [Setup & config problems](#setup--config-problems--tau-doctor) |
@@ -129,6 +130,9 @@ without scraping the installer log.
 | `<asset> is not listed in SHA256SUMS.txt` | Manifest/asset mismatch — partial or tampered mirror | Prefer fixing the mirror over `TAU_SKIP_CHECKSUM=1` |
 | `checksum verification failed for <asset>` | Download corrupted or tampered — aborts by design | Re-download; if it persists, distrust the network path |
 | `no sha256sum/shasum on PATH` | No checksum tool to verify with | Install coreutils, or `TAU_SKIP_CHECKSUM=1` on a trusted source |
+| `TAU_VERIFY_SIGSTORE=1 requires cosign on PATH` | Signature verification was requested (`tau upgrade --verify-signature` or the env var) but cosign isn't installed | Install cosign (https://docs.sigstore.dev), or drop `--verify-signature`/`TAU_VERIFY_SIGSTORE` |
+| `could not download <asset>.sigstore.json` | The release predates the signing pipeline, or the mirror lacks the bundle — verification fails closed | Retry without `--verify-signature`, or point `TAU_BASE_URL` at a mirror that carries `.sigstore.json` files |
+| `sigstore signature verification failed for <asset>` | The asset wasn't signed by the tau release workflow — possible tampering | Distrust the mirror and retry; report persistent failures via `tau bug` |
 | `cannot create install dir <d>` / `cannot write <d>/tau` | Destination not writable | Pick a writable `--dir`/`TAU_INSTALL_DIR`, or fix ownership |
 | `note: <dir> is not on your PATH` (install itself succeeded) | Shell can't find the binary | Add the printed `export PATH="<dir>:$PATH"` line to your shell rc |
 
