@@ -23,7 +23,9 @@ full agentic tool loop and streams back `session/update` notifications
 > Cline, Goose, Continue, Roo Code, Kilo Code, Amazon Q Developer)
 > also get the
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
-> without `--client` to see which editors were detected. To undo the wiring,
+> without `--client` to see which editors were detected — or
+> `tau setup --detect` for the full read-only inventory (config dirs,
+> detection status, wiring state per client). To undo the wiring,
 > `tau setup --remove [--client <name>] [--dry-run]` splices the tau (or
 > mcacp) entry back out — comments and your other settings survive
 > byte-for-byte, files left with no settings are deleted, and the shared

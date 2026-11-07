@@ -31,7 +31,7 @@ PowerShell.
 | `tau config` | `show validate set get unset edit schema` + `--mode`, `--raw` (+ global flags for `show`, zsh) |
 | `tau init` | `--force`, `--stdout`, `--provider`, `--json` |
 | `tau doctor` | `--offline`, `--deep`, `--probe`, `--selftest`, `--fix`, `--yes`/`-y`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
-| `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive`, `--dry-run`, `--remove`, `--uninstall`, `--import`, `--json` |
+| `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive`, `--dry-run`, `--remove`, `--uninstall`, `--import`, `--detect`, `--json` |
 | `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--check`, `--json`, `--mode` |

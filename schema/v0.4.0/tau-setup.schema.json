@@ -2,13 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-setup.schema.json",
   "title": "tau setup --json NDJSON event",
-  "description": "Schema for one line of `tau setup [--json]` output. Setup streams newline-delimited JSON: one event per step — init (config scaffold), completions (shell completion installs), clients (editor ACP wiring), doctor (embedded health report) — plus exactly one terminal verdict_event (always the last line, always \"done\":true). Step order is fixed: init, completions, clients, doctor, verdict. Removal mode (`tau setup --remove`/`--uninstall`) emits a different fixed sequence: remove_clients (editor wiring reversal), verdict — the verdict carries \"remove\":true there. The event types are mutually exclusive — validate each NDJSON line against this schema individually. The process exit code mirrors the verdict's ok (0 when true, 1 when false).",
+  "description": "Schema for one line of `tau setup [--json]` output. Setup streams newline-delimited JSON: one event per step — init (config scaffold), completions (shell completion installs), clients (editor ACP wiring), doctor (embedded health report) — plus exactly one terminal verdict_event (always the last line, always \"done\":true). Step order is fixed: init, completions, clients, doctor, verdict. Removal mode (`tau setup --remove`/`--uninstall`) emits a different fixed sequence: remove_clients (editor wiring reversal), verdict — the verdict carries \"remove\":true there. Detect mode (`tau setup --detect`) emits detect_clients (read-only client inventory), verdict — the verdict carries \"detect\":true there. The event types are mutually exclusive — validate each NDJSON line against this schema individually. The process exit code mirrors the verdict's ok (0 when true, 1 when false).",
   "oneOf": [
     { "$ref": "#/$defs/init_event" },
     { "$ref": "#/$defs/completions_event" },
     { "$ref": "#/$defs/clients_event" },
     { "$ref": "#/$defs/remove_clients_event" },
     { "$ref": "#/$defs/doctor_event" },
+    { "$ref": "#/$defs/detect_clients_event" },
     { "$ref": "#/$defs/verdict_event" }
   ],
   "$defs": {
@@ -182,6 +183,37 @@
         "report": { "type": "object", "description": "The doctor single-object report {\"ok\",\"version\",\"build\",\"checks\",\"summary\"}." }
       }
     },
+    "detect_clients_event": {
+      "type": "object",
+      "description": "Detect-mode step event (`tau setup --detect`), emitted where the install stream would put init — the only step event before the verdict. A read-only inventory of supported clients: each entry reports the config dir probed, whether the client was detected there, and the wiring state `tau doctor` would classify (settings path and stale reason included when they apply; \"bridge\":true marks the MCP clients wired through the shared mcacp bridge). --client scopes the sweep; without it every client is listed. Nothing is written. status is \"ok\" or \"failed\" (e.g. HOME unset).",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "detect_clients" },
+        "status": { "type": "string", "enum": ["ok", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "clients": {
+          "type": "array",
+          "description": "One entry per surveyed client, in client order; absent on failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["client", "detected", "wiring", "config_dir"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"] },
+              "detected": { "type": "boolean", "description": "Whether the client's config dir exists on this machine." },
+              "wiring": { "type": "string", "enum": ["not_detected", "manual_only", "missing_file", "unreadable", "unparseable", "no_entry", "stale", "ok"], "description": "Wiring state as `tau doctor` classifies it: \"not_detected\" (no config dir), \"manual_only\" (snippet-only client — Lua/elisp/YAML), \"missing_file\", \"unreadable\", \"unparseable\", \"no_entry\" (settings file without a tau/mcacp entry), \"stale\" (broken entry), \"ok\" (wired)." },
+              "config_dir": { "type": "string", "description": "Editor config dir probed — the detection anchor." },
+              "path": { "type": "string", "description": "Editor settings file path; emitted for JSON clients once detected." },
+              "reason": { "type": "string", "description": "What makes the entry broken; emitted with wiring \"stale\"." },
+              "bridge": { "const": true, "description": "Present on MCP-bridge clients — their entry launches the mcacp MCP->ACP bridge, and wiring covers the shared ~/.config/mcacp/mcacp.json side too." }
+            }
+          }
+        },
+        "detected": { "type": "integer", "minimum": 0, "description": "How many surveyed clients were detected (config dir exists)." },
+        "hint": { "type": "string", "description": "Remediation hint emitted when no client was detected." }
+      }
+    },
     "verdict_event": {
       "type": "object",
       "description": "Terminal verdict — always the last NDJSON line, always \"done\":true. ok mirrors the process exit code (0 when true, 1 when false): any failed step or a failing doctor report flips it.",
@@ -192,6 +224,7 @@
         "ok": { "type": "boolean", "description": "true when every step passed (skipped/manual outcomes still pass)." },
         "version": { "type": "string", "description": "tau version that produced the stream, e.g. \"0.4.0\"." },
         "remove": { "const": true, "description": "Present in removal mode (`tau setup --remove`/`--uninstall`) — the stream then carries only the remove_clients step event and this verdict." },
+        "detect": { "const": true, "description": "Present in detect mode (`tau setup --detect`) — the stream then carries only the detect_clients step event and this verdict." },
         "non_interactive": { "const": true, "description": "Present when the run was declared unattended (--yes/--non-interactive or env equivalents)." },
         "yes": { "const": true, "description": "Present when --yes approved all write steps." },
         "dry_run": { "const": true, "description": "Present under --dry-run." },

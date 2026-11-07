@@ -82,6 +82,9 @@ Setup:
       --remove/--uninstall    Reverse per-client editor wiring (comments
                               and other settings survive byte-for-byte);
                               --client scopes the sweep, none unwires all
+      --detect                Read-only client inventory: config dir,
+                              detection status, wiring state per client;
+                              --client scopes the sweep, writes nothing
       --json                  Pin the stable schema-checked NDJSON stream
                               (schema/tau-setup.schema.json)
 
