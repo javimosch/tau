@@ -309,13 +309,13 @@ _tau() {
                         'temperature:config key' 'max_tokens:config key'
                         'timeout_ms:config key' 'context_window:config key'
                         'auto_compact:config key' 'compact_threshold:config key'
-                        'compact_keep_recent_tokens:config key'
+                        'compact_keep_recent:deprecated config key' 'compact_keep_recent_tokens:config key'
                         'goal_max_iterations:config key' 'goal_max_continues:config key'
                         'keys.xiaomi:config key' 'keys.openai:config key'
                         'keys.deepseek:config key' 'keys.opencode-go:config key'
                     )
                     local -a checks=(
-                        'doctor.config_file:doctor check'
+                        'doctor.config_deprecated_keys:doctor check' 'doctor.config_file:doctor check'
                         'doctor.config_permissions:doctor check'
                         'doctor.plaintext_secrets:doctor check'
                         'doctor.shell_completions:doctor check'

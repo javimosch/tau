@@ -10,14 +10,19 @@
 const std = @import("std");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
+const configedit = @import("configedit.zig");
 const json = @import("json.zig");
 const suggest = @import("suggest.zig");
 
 /// One validation problem. `key` is the offending config key when the issue is
 /// tied to one (`"provider"`, `"keys.openai"`); null for file-level problems
-/// (unreadable file, invalid JSON, non-object top level).
+/// (unreadable file, invalid JSON, non-object top level). `line`/`column`
+/// carry the member's position in the file for the findings that have one —
+/// currently deprecated-spelling reports (1-based, exact in the raw file).
 pub const Issue = struct {
     key: ?[]const u8 = null,
+    line: ?usize = null,
+    column: ?usize = null,
     message: []const u8,
 };
 
@@ -84,6 +89,15 @@ fn asNumber(v: std.json.Value) ?f64 {
 
 fn addIssue(arena: std.mem.Allocator, issues: *std.ArrayList(Issue), key: ?[]const u8, comptime fmt: []const u8, args: anytype) !void {
     try issues.append(arena, .{ .key = key, .message = try std.fmt.allocPrint(arena, fmt, args) });
+}
+
+fn addIssuePos(arena: std.mem.Allocator, issues: *std.ArrayList(Issue), key: []const u8, pos: ?configfile.JsonPos, comptime fmt: []const u8, args: anytype) !void {
+    try issues.append(arena, .{
+        .key = key,
+        .line = if (pos) |p| p.line else null,
+        .column = if (pos) |p| p.col else null,
+        .message = try std.fmt.allocPrint(arena, fmt, args),
+    });
 }
 
 /// Comma-separated provider names for "valid providers: ..." hints.
@@ -241,6 +255,13 @@ pub fn validate(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Report 
         return .{ .path = path, .issues = issues.items };
     }
 
+    // Member positions come from a scan of the RAW (comment-included) bytes
+    // so a deprecated-key report can point at the exact line/column.
+    const doc: ?configedit.Obj = if (configfile.renamed_keys.len > 0) blk: {
+        const d = configedit.scanDoc(arena, bytes_raw) catch break :blk null;
+        break :blk d;
+    } else null;
+
     var it = value.object.iterator();
     outer: while (it.next()) |entry| {
         const key = entry.key_ptr.*;
@@ -259,6 +280,20 @@ pub fn validate(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Report 
                 try checkKnownField(arena, &issues, f, val);
                 continue :outer;
             }
+        }
+        // A deprecated/renamed spelling is a positioned finding — the exact
+        // line/column of the old member plus the rename hint (and the
+        // deprecation-window semantics: it still loads, but is scheduled for
+        // removal — `tau doctor --fix` rewrites it in place).
+        if (configfile.renamedKey(key)) |rk| {
+            var pos: ?configfile.JsonPos = null;
+            if (doc) |d| {
+                if (configedit.findMember(d, key)) |mi| {
+                    pos = configfile.offsetPos(bytes_raw, d.members[mi].key_start);
+                }
+            }
+            try addIssuePos(arena, &issues, key, pos, "\"{s}\" is a deprecated spelling ({s}) — did you mean \"{s}\"? it still loads during the deprecation window — run 'tau doctor --fix' to migrate", .{ key, rk.note, rk.new });
+            continue :outer;
         }
         // Did-you-mean on misspelled keys — an unknown key is almost always a
         // typo, and the suggestion beats the generic "check the spelling".
@@ -291,6 +326,8 @@ pub fn formatJson(arena: std.mem.Allocator, report: Report) ![]u8 {
         if (i != 0) try b.append(arena, ',');
         try b.appendSlice(arena, "{\"key\":");
         if (iss.key) |k| try appendJsonStr(arena, &b, k) else try b.appendSlice(arena, "null");
+        if (iss.line) |l| try b.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"line\":{d}", .{l}));
+        if (iss.column) |c| try b.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"column\":{d}", .{c}));
         try b.appendSlice(arena, ",\"message\":");
         try appendJsonStr(arena, &b, iss.message);
         try b.append(arena, '}');
@@ -309,6 +346,9 @@ pub fn formatText(arena: std.mem.Allocator, report: Report) ![]u8 {
     }
     for (report.issues) |iss| {
         try b.appendSlice(arena, report.path);
+        if (iss.line) |l| {
+            try b.appendSlice(arena, try std.fmt.allocPrint(arena, ":{d}:{d}", .{ l, iss.column.? }));
+        }
         try b.appendSlice(arena, ": error");
         if (iss.key) |k| {
             try b.appendSlice(arena, " in \"");
@@ -571,4 +611,45 @@ test "formatText: ok line and per-issue lines" {
     } };
     const out = try formatText(arena, bad_rep);
     try testing.expectEqualStrings("/x/c.json: error in \"mode\": bad mode\n/x/c.json: error: file-level problem\n", out);
+}
+
+test "validate: deprecated spelling reports a positioned rename hint" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var tc = try TmpConfig.init(arena,
+        \\{
+        \\  "provider": "openai",
+        \\  "compact_keep_recent": 8000
+        \\}
+    );
+    defer tc.deinit();
+
+    const rep = try validate(testing.io, arena, tc.path);
+    try testing.expect(!rep.ok());
+    try testing.expectEqual(@as(usize, 1), rep.issues.len);
+    const iss = rep.issues[0];
+    try testing.expectEqualStrings("compact_keep_recent", iss.key.?);
+    try testing.expectEqual(@as(usize, 3), iss.line.?);
+    try testing.expectEqual(@as(usize, 3), iss.column.?);
+    try testing.expect(std.mem.indexOf(u8, iss.message, "deprecated spelling") != null);
+    try testing.expect(std.mem.indexOf(u8, iss.message, "compact_keep_recent_tokens") != null);
+    try testing.expect(std.mem.indexOf(u8, iss.message, "tau doctor --fix") != null);
+}
+
+test "validate: positioned issues serialize line/column in JSON and text" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var tc = try TmpConfig.init(arena, "{\n  \"compact_keep_recent\": 1\n}\n");
+    defer tc.deinit();
+
+    const rep = try validate(testing.io, arena, tc.path);
+    const j = try formatJson(arena, rep);
+    try testing.expect(std.mem.indexOf(u8, j, "\"line\":2,\"column\":3") != null);
+
+    const t = try formatText(arena, rep);
+    try testing.expect(std.mem.indexOf(u8, t, ":2:3: error in \"compact_keep_recent\"") != null);
 }
