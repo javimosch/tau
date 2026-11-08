@@ -71,6 +71,7 @@ ALL_TEST_GROUPS=(
   "fleet-items:test_group_fleet_items"
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
+  "completions:test_group_completions"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
   "json-mode:test_group_network_json_mode:network"
@@ -1146,6 +1147,105 @@ test_group_network_role_critic() {
   else
     ok "--role critic response missing <APPROVED>/<BLOCKED>" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "critic output: $out"
+  fi
+}
+
+# Group: shell completions — coverage drift guard + real-shell load
+# 1) Every flag advertised by --help-json and every subcommand/enum value must
+#    appear in each shipped completion file (bash, zsh, fish, PowerShell).
+# 2) Each completion script must load cleanly in its real shell through the
+#    shell's own completion machinery; when a shell binary is not on PATH the
+#    load check is skipped.
+test_group_completions() {
+  local out flags f missing fl word
+  local files="completions/tau.bash completions/_tau completions/tau.fish completions/tau.ps1"
+
+  out=$("$BIN" --help-json)
+  flags=$(printf '%s' "$out" | python3 -c 'import sys,json; print("\n".join(f["name"].lstrip("-") for f in json.load(sys.stdin)["flags"]))' 2>/dev/null)
+  if [ -n "$flags" ]; then
+    ok "--help-json flag list extracted" 0 0
+  else
+    ok "--help-json flag list extracted" 1 0
+    return
+  fi
+
+  for f in $files; do
+    if [ ! -f "$ROOT/$f" ]; then
+      ok "$f exists" 1 0
+      continue
+    fi
+    ok "$f exists" 0 0
+
+    missing=""
+    for fl in $flags; do
+      grep -Fq -- "$fl" "$ROOT/$f" || missing="$missing $fl"
+    done
+    if [ -z "$missing" ]; then
+      ok "$f covers every --help-json flag" 0 0
+    else
+      ok "$f missing flags:$missing" 1 0
+    fi
+
+    missing=""
+    for word in acp fleet skills models guide \
+                xiaomi openai deepseek opencode-go text json \
+                author critic coordinator none \
+                bash ls read write edit grep find calculator; do
+      grep -Fqw -- "$word" "$ROOT/$f" || missing="$missing $word"
+    done
+    if [ -z "$missing" ]; then
+      ok "$f covers subcommands and enum values" 0 0
+    else
+      ok "$f missing words:$missing" 1 0
+    fi
+  done
+
+  # ── Real-shell load checks ─────────────────────────────────────────────
+  # bash: source the script, then prove the spec registered via `complete -p`.
+  if command -v bash >/dev/null 2>&1; then
+    if bash -c 'source "$1" && complete -p tau >/dev/null 2>&1' _ "$ROOT/completions/tau.bash"; then
+      ok "bash loads completions/tau.bash and registers tau" 0 0
+    else
+      ok "bash loads completions/tau.bash and registers tau" 1 0
+    fi
+  else
+    skip_test "bash loads completions/tau.bash" "bash not on PATH"
+  fi
+
+  # zsh: completions autoload via #compdef — exercise the real install path:
+  # put completions/ on fpath, run compinit, assert _comps[tau] is set and the
+  # file loads into a function.
+  if command -v zsh >/dev/null 2>&1; then
+    if zsh -c 'fpath=("$1" $fpath); autoload -Uz compinit; compinit -u >/dev/null 2>&1; [ "${_comps[tau]:-}" = "_tau" ] && autoload +X _tau && whence -w _tau | grep -q function' _ "$ROOT/completions" >/dev/null 2>&1; then
+      ok "zsh compinit registers _tau from fpath and it autoloads" 0 0
+    else
+      ok "zsh compinit registers _tau from fpath and it autoloads" 1 0
+    fi
+  else
+    skip_test "zsh compinit registers _tau" "zsh not on PATH"
+  fi
+
+  # fish: source the script, then prove entries registered via `complete -c`.
+  if command -v fish >/dev/null 2>&1; then
+    if [ "$(fish -c 'source "$argv[1]"; complete -c tau | count' -- "$ROOT/completions/tau.fish" 2>/dev/null)" -gt 0 ] 2>/dev/null; then
+      ok "fish loads completions/tau.fish and registers tau entries" 0 0
+    else
+      ok "fish loads completions/tau.fish and registers tau entries" 1 0
+    fi
+  else
+    skip_test "fish loads completions/tau.fish" "fish not on PATH"
+  fi
+
+  # pwsh: dot-source the script, then prove the native argument completer
+  # returns candidates for a real partial command line.
+  if command -v pwsh >/dev/null 2>&1; then
+    if TAU_COMPLETION_PS1="$ROOT/completions/tau.ps1" pwsh -NoProfile -Command '. $env:TAU_COMPLETION_PS1; $r=[System.Management.Automation.CommandCompletion]::CompleteInput("tau --m",6,$null); exit ($r.CompletionMatches.Count -gt 0 ? 0 : 1)' >/dev/null 2>&1; then
+      ok "pwsh loads completions/tau.ps1 and completes 'tau --m'" 0 0
+    else
+      ok "pwsh loads completions/tau.ps1 and completes 'tau --m'" 1 0
+    fi
+  else
+    skip_test "pwsh loads completions/tau.ps1" "pwsh not on PATH"
   fi
 }
 
