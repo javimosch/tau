@@ -60,6 +60,7 @@ GUIDES = {
     "windsurf.md": "windsurf",
     "gemini-cli.md": "gemini",
     "claude-desktop.md": "claude-desktop",
+    "claude-code.md": "claude-code",
     "opencode.md": "opencode",
     "cline.md": "cline",
     "goose.md": "goose",
@@ -73,8 +74,8 @@ GUIDES = {
 # shared ~/.config/mcacp/mcacp.json — so their guides carry four verified
 # blocks. Direct ACP clients carry two (their own file + snippet only).
 BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop",
-                            "opencode", "cline", "roo-code", "kilo-code",
-                            "amazonq"))
+                            "claude-code", "opencode", "cline", "roo-code",
+                            "kilo-code", "amazonq"))
 
 # YAML-configured bridge clients (Goose's extensions: map, Continue's
 # mcpServers: list) can't be written or spliced — setup always reports
@@ -230,6 +231,8 @@ def collect(tau):
             ".gemini/settings.json":
                 '{"mcpServers":{"other":{"command":"x"}}}',
             ".config/Claude/claude_desktop_config.json":
+                '{"mcpServers":{"other":{"command":"x"}}}',
+            ".claude.json":
                 '{"mcpServers":{"other":{"command":"x"}}}',
             ".config/opencode/opencode.json":
                 '{"mcp":{"other":{"type":"local","command":["x"]}}}',

@@ -37,6 +37,7 @@ dedicated per-client guide for each client with verified snippets:
 | `windsurf` (mcacp) | `windsurf` | `~/.codeium/windsurf` | `~/.codeium/windsurf/mcp_config.json` | `mcpServers` | none | `~/.config/tau/snippets/windsurf.jsonc` | `client_windsurf` / `wire_client_windsurf` |
 | `gemini` (mcacp) | `gemini` (alias `gemini-cli`) | `~/.gemini` | `~/.gemini/settings.json` | `mcpServers` | none | `~/.config/tau/snippets/gemini.jsonc` | `client_gemini` / `wire_client_gemini` |
 | `claude-desktop` (mcacp) | `claude-desktop` (alias `claude`) | `~/.config/Claude` | `~/.config/Claude/claude_desktop_config.json` | `mcpServers` | none | `~/.config/tau/snippets/claude-desktop.jsonc` | `client_claude_desktop` / `wire_client_claude_desktop` |
+| `claude-code` (mcacp) | `claude-code` (alias `claude_code`) | `~/.claude` | `~/.claude.json` | `mcpServers` | none | `~/.config/tau/snippets/claude-code.jsonc` | `client_claude_code` / `wire_client_claude_code` |
 | `opencode` (mcacp) | `opencode` | `~/.config/opencode` | `~/.config/opencode/opencode.json` | `mcp` | none | `~/.config/tau/snippets/opencode.jsonc` | `client_opencode` / `wire_client_opencode` |
 | `cline` (mcacp) | `cline` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `mcpServers` | none | `~/.config/tau/snippets/cline.jsonc` | `client_cline` / `wire_client_cline` |
 | `goose` (mcacp) | `goose` | `~/.config/goose` | — (YAML config) | — | — | `~/.config/tau/snippets/goose.yaml` | `client_goose` (manual only — YAML config) |
@@ -65,7 +66,7 @@ the editor runs `command` + `args`, and `args` must be exactly
 }
 ```
 
-MCP-bridge clients (`windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`, `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`) speak MCP, not ACP — they can't
+MCP-bridge clients (`windsurf`, `gemini`, `claude-desktop`, `claude-code`, `opencode`, `cline`, `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`) speak MCP, not ACP — they can't
 spawn `tau acp serve` directly. Their server entry launches
 the [mcacp](https://github.com/Oortonaut/mcacp) bridge instead:
 
@@ -140,6 +141,7 @@ After tau writes (or previews) the config, one in-editor step remains:
 | `windsurf` | install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers |
 | `gemini` | install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools |
 | `claude-desktop` | install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server |
+| `claude-code` | install mcacp (npm i -g mcacp or npx), restart Claude Code, and run /mcp to see the mcacp server |
 | `opencode` | install mcacp (npm i -g mcacp or npx), restart OpenCode, and check the mcacp server with 'opencode mcp list' |
 | `cline` | install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Cline pane |
 | `goose` | install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.config/goose/config.yaml, then run 'goose session' and ask about the mcacp tools |

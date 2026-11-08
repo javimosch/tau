@@ -2419,6 +2419,7 @@ test_group_setup() {
   contains "--client all covers windsurf" "$s12_out" '"client":"windsurf"'
   contains "--client all covers gemini" "$s12_out" '"client":"gemini"'
   contains "--client all covers claude-desktop" "$s12_out" '"client":"claude-desktop"'
+  contains "--client all covers claude-code" "$s12_out" '"client":"claude-code"'
   contains "--client all covers opencode" "$s12_out" '"client":"opencode"'
   contains "--client all covers cline" "$s12_out" '"client":"cline"'
   contains "--client all covers goose" "$s12_out" '"client":"goose"'
@@ -2435,6 +2436,8 @@ test_group_setup() {
   [ -f "$mock_home10/.codeium/windsurf/mcp_config.json" ]; ok "windsurf mcp_config.json written" "$?" 0
   [ -f "$mock_home10/.gemini/settings.json" ]; ok "gemini settings.json written" "$?" 0
   [ -f "$mock_home10/.config/Claude/claude_desktop_config.json" ]; ok "claude_desktop_config.json written" "$?" 0
+  [ -f "$mock_home10/.claude.json" ]; ok "claude-code .claude.json written" "$?" 0
+  grep -q '"mcpServers"' "$mock_home10/.claude.json"; ok "claude-code uses mcpServers key" "$?" 0
   grep -q '"mcpServers"' "$mock_home10/.gemini/settings.json"; ok "gemini uses mcpServers key" "$?" 0
   [ -f "$mock_home10/.config/opencode/opencode.json" ]; ok "opencode.json written" "$?" 0
   grep -q '"type": "local"' "$mock_home10/.config/opencode/opencode.json"; ok "opencode uses mcp local-server shape" "$?" 0
@@ -2464,6 +2467,31 @@ test_group_setup() {
   contains "gemini bridge reports installed" "$s12b_out" '"bridge_status":"installed"'
   grep -q '"mcacp"' "$mock_home10b/.gemini/settings.json"; ok "gemini settings names the mcacp server" "$?" 0
   ! grep -q '"acp"' "$mock_home10b/.gemini/settings.json"; ok "gemini settings never spawn tau directly" "$?" 0
+
+  # claude-code also merges the project-scoped .mcp.json in the cwd when it
+  # exists — the mcacp entry splices into mcpServers, comments and sibling
+  # servers survive, and --remove takes it back out.
+  local mock_home10c proj10c; mock_home10c="$(mktemp -d)"; proj10c="$(mktemp -d)"
+  register_temp_dir "$mock_home10c"; register_temp_dir "$proj10c"
+  printf '{\n  // keep me\n  "mcpServers": {\n    "mine": { "command": "mine", "args": ["x"] }\n  }\n}\n' \
+    > "$proj10c/.mcp.json"
+  capture s12c env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home10c" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key \
+    sh -c 'cd "$1" && shift && exec "$@"' _ "$proj10c" "$BIN" setup --offline --client claude-code
+  ok "setup --client claude-code exits 0" "$s12c_rc" 0
+  contains "claude-code entry reports installed" "$s12c_out" '"client":"claude-code"'
+  contains "claude-code project merge reports installed" "$s12c_out" '"project_status":"installed"'
+  grep -q '"mcacp"' "$proj10c/.mcp.json"; ok "mcacp spliced into .mcp.json" "$?" 0
+  grep -q '// keep me' "$proj10c/.mcp.json"; ok ".mcp.json comment survives" "$?" 0
+  grep -q '"mine"' "$proj10c/.mcp.json"; ok ".mcp.json existing server survives" "$?" 0
+  [ -f "$mock_home10c/.claude.json" ]; ok "claude-code user file written" "$?" 0
+  capture s12d env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home10c" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key \
+    sh -c 'cd "$1" && shift && exec "$@"' _ "$proj10c" "$BIN" setup --offline --client claude-code --remove
+  ok "setup --client claude-code --remove exits 0" "$s12d_rc" 0
+  contains "claude-code project removal reports removed" "$s12d_out" '"project_status":"removed"'
+  ! grep -q '"mcacp"' "$proj10c/.mcp.json"; ok "mcacp spliced back out of .mcp.json" "$?" 0
+  grep -q '"mine"' "$proj10c/.mcp.json"; ok ".mcp.json user server survives removal" "$?" 0
 
   # Without --client the step detects installed editors but writes nothing.
   local mock_home11; mock_home11="$(mktemp -d)"; register_temp_dir "$mock_home11"
@@ -2827,11 +2855,12 @@ test_group_client_examples() {
 
   # MCP-bridge client files carry no tau path — they launch `npx mcacp` — so
   # they diff byte-for-byte with no normalization.
-  for spec in windsurf gemini claude-desktop opencode cline roo-code kilo-code amazonq; do
+  for spec in windsurf gemini claude-desktop claude-code opencode cline roo-code kilo-code amazonq; do
     case "$spec" in
       windsurf)       want="$h/.codeium/windsurf/mcp_config.json" ;;
       gemini)         want="$h/.gemini/settings.json" ;;
       claude-desktop) want="$h/.config/Claude/claude_desktop_config.json" ;;
+      claude-code)    want="$h/.claude.json" ;;
       opencode)       want="$h/.config/opencode/opencode.json" ;;
       cline)          want="$h/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json" ;;
       roo-code)       want="$h/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json" ;;
@@ -2888,10 +2917,10 @@ for p in sys.argv[-3:-1]:
 mc = json.load(open(sys.argv[-1]))
 tau = mc.get("agent_servers", {}).get("tau", {})
 sys.exit(0 if ok and tau.get("args") == ["acp", "serve"] else 1)' \
-    "$ex/claude-desktop.json" "$ex/windsurf.json" "$ex/gemini.json" \
-    "$ex/cline.json" "$ex/roo-code.json" "$ex/amazonq.json" \
+    "$ex/claude-desktop.json" "$ex/claude-code.json" "$ex/windsurf.json" \
+    "$ex/gemini.json" "$ex/cline.json" "$ex/roo-code.json" "$ex/amazonq.json" \
     "$ex/opencode.json" "$ex/kilo-code.json" "$ex/mcacp.json" 2>/dev/null
-  ok "claude-desktop/windsurf/gemini/cline/roo-code/amazonq/opencode/kilo-code + mcacp.json wire the bridge to tau" "$?" 0
+  ok "claude-desktop/claude-code/windsurf/gemini/cline/roo-code/amazonq/opencode/kilo-code + mcacp.json wire the bridge to tau" "$?" 0
 }
 
 # Group: per-client setup guides drift check — docs/clients/*.md embed
@@ -3931,6 +3960,7 @@ _golden_norm() {
     -e 's|"target":"[^"]*"|"target":"<TARGET>"|g' \
     -e 's|"build_date":"[^"]*"|"build_date":"<DATE>"|g' \
     -e 's|"zig":"[^"]*"|"zig":"<ZIG>"|g' \
+    -e "s|$ROOT|<ROOT>|g" \
     "$1"
 }
 
@@ -4101,6 +4131,10 @@ test_group_golden_onboarding() {
     _golden_fresh_home
     golden_check_n ob-setup-client-amazonq 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client amazonq
     golden_file    ob-setup-amazonq.json "$_GOLDEN_HOME/.aws/amazonq/mcp.json"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-claude-code 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client claude-code
+    golden_file    ob-setup-claude-code.json "$_GOLDEN_HOME/.claude.json"
 
     # --import: merge the user's MCP servers into the wired bridge client —
     # a fresh file carries mcacp plus every imported entry; the remote one

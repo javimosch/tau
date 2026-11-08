@@ -87,7 +87,7 @@
             "required": ["client", "status"],
             "additionalProperties": false,
             "properties": {
-              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"] },
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "claude-code", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"] },
               "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"] },
               "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
               "command": { "type": "string", "description": "Absolute tau path written into the client config." },
@@ -100,6 +100,9 @@
               "bridge_status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"], "description": "Outcome of the bridge-side wiring; MCP-bridge clients only." },
               "bridge_snippet_path": { "type": "string", "description": "Paste-ready bridge fragment when the existing mcacp.json could not be spliced." },
               "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side write." },
+              "project_path": { "type": "string", "description": "Claude Code's project-scoped <cwd>/.mcp.json; claude-code entries only." },
+              "project_status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "skipped", "manual", "failed"], "description": "Outcome of the .mcp.json project-scope merge; claude-code entries only. 'skipped' means the cwd carries no .mcp.json — it is never created." },
+              "project_reason": { "type": "string", "description": "Why the project-scope merge is manual (unreadable or unparseable .mcp.json)." },
               "imported": {
                 "type": "array",
                 "description": "MCP server entries merged into this client's settings file by --import, each with the client it was imported from. Always emitted for MCP-bridge clients under --import (empty when nothing was merged).",
@@ -109,7 +112,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "name": { "type": "string", "description": "Server entry name as written into the client's server section." },
-                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"], "description": "Supported client whose settings file supplied the entry." }
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "claude-code", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"], "description": "Supported client whose settings file supplied the entry." }
                   }
                 }
               },
@@ -122,7 +125,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "name": { "type": "string", "description": "Server entry name; absent on file-level findings." },
-                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"], "description": "Supported client whose settings file the entry or finding came from." },
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "claude-code", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"], "description": "Supported client whose settings file the entry or finding came from." },
                     "reason": { "type": "string", "description": "Why the entry or file was not imported." }
                   }
                 }
@@ -150,7 +153,7 @@
             "required": ["client", "status"],
             "additionalProperties": false,
             "properties": {
-              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"] },
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "claude-code", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"] },
               "status": { "type": "string", "enum": ["removed", "would_remove", "absent", "manual", "failed"] },
               "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
               "file_deleted": { "const": true, "description": "The settings file was (or, under --dry-run, would be) deleted entirely — it held no settings besides the tau wiring." },
@@ -166,7 +169,11 @@
               "bridge_reason": { "type": "string", "description": "Why the bridge entry was kept or needs hand-removal." },
               "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side removal." },
               "bridge_snippet_path": { "type": "string", "description": "mcacp paste-snippet cleaned once the bridge entry went away; emitted when it existed." },
-              "bridge_snippet_status": { "type": "string", "enum": ["removed", "would_remove"], "description": "Outcome of the bridge snippet cleanup; emitted with bridge_snippet_path." }
+              "bridge_snippet_status": { "type": "string", "enum": ["removed", "would_remove"], "description": "Outcome of the bridge snippet cleanup; emitted with bridge_snippet_path." },
+              "project_path": { "type": "string", "description": "Claude Code's project-scoped <cwd>/.mcp.json; claude-code entries only." },
+              "project_status": { "type": "string", "enum": ["removed", "would_remove", "absent", "manual", "failed"], "description": "Outcome of the .mcp.json project-scope removal; claude-code entries only." },
+              "project_file_deleted": { "const": true, "description": "The .mcp.json file was (or would be) deleted entirely — it held nothing besides the empty mcpServers section." },
+              "project_reason": { "type": "string", "description": "Why the project-scope removal is manual (unreadable or unparseable .mcp.json)." }
             }
           }
         },
@@ -200,7 +207,7 @@
             "required": ["client", "detected", "wiring", "config_dir"],
             "additionalProperties": false,
             "properties": {
-              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"] },
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "claude-code", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq"] },
               "detected": { "type": "boolean", "description": "Whether the client's config dir exists on this machine." },
               "wiring": { "type": "string", "enum": ["not_detected", "manual_only", "missing_file", "unreadable", "unparseable", "no_entry", "stale", "ok"], "description": "Wiring state as `tau doctor` classifies it: \"not_detected\" (no config dir), \"manual_only\" (snippet-only client — Lua/elisp/YAML), \"missing_file\", \"unreadable\", \"unparseable\", \"no_entry\" (settings file without a tau/mcacp entry), \"stale\" (broken entry), \"ok\" (wired)." },
               "config_dir": { "type": "string", "description": "Editor config dir probed — the detection anchor." },
