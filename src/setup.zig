@@ -445,11 +445,11 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 // --- Step 3: editor ACP clients --------------------------------------------
 
 /// Editor clients setup can configure to spawn `tau acp serve`.
-pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop, opencode, cline, goose, continue_, roo, kilo, amazonq };
+pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop, claude_code, opencode, cline, goose, continue_, roo, kilo, amazonq };
 
 /// Every ClientKind, in the order `--client all` expands and detection
 /// iterates: direct ACP clients first, then the MCP-bridge clients.
-pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq };
+pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .claude_code, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq };
 
 pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
@@ -462,6 +462,7 @@ pub fn clientName(k: ClientKind) []const u8 {
         .windsurf => "windsurf",
         .gemini => "gemini",
         .claude_desktop => "claude-desktop",
+        .claude_code => "claude-code",
         .opencode => "opencode",
         .cline => "cline",
         .goose => "goose",
@@ -474,7 +475,8 @@ pub fn clientName(k: ClientKind) []const u8 {
 
 /// Map a client name (as passed to --client) to a ClientKind. "code" is an
 /// alias for vscode, "gemini-cli" for gemini, "claude" for claude-desktop,
-/// "roo" for roo-code, "kilo" for kilo-code, "amazon-q" for amazonq.
+/// "claude_code" for claude-code, "roo" for roo-code, "kilo" for kilo-code,
+/// "amazon-q" for amazonq.
 pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "zed")) return .zed;
     if (std.mem.eql(u8, name, "nvim")) return .nvim;
@@ -485,6 +487,7 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "windsurf")) return .windsurf;
     if (std.mem.eql(u8, name, "gemini") or std.mem.eql(u8, name, "gemini-cli")) return .gemini;
     if (std.mem.eql(u8, name, "claude-desktop") or std.mem.eql(u8, name, "claude")) return .claude_desktop;
+    if (std.mem.eql(u8, name, "claude-code") or std.mem.eql(u8, name, "claude_code")) return .claude_code;
     if (std.mem.eql(u8, name, "opencode")) return .opencode;
     if (std.mem.eql(u8, name, "cline")) return .cline;
     if (std.mem.eql(u8, name, "goose")) return .goose;
@@ -506,7 +509,7 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
 /// touching the client config.)
 pub fn clientUsesBridge(k: ClientKind) bool {
     return switch (k) {
-        .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq => true,
+        .windsurf, .gemini, .claude_desktop, .claude_code, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq => true,
         else => false,
     };
 }
@@ -530,6 +533,10 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
         .windsurf => try std.fmt.allocPrint(arena, "{s}/.codeium/windsurf/mcp_config.json", .{home}),
         .gemini => try std.fmt.allocPrint(arena, "{s}/.gemini/settings.json", .{home}),
         .claude_desktop => try std.fmt.allocPrint(arena, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
+        // Claude Code keeps user-scoped MCP servers in ~/.claude.json's
+        // top-level "mcpServers"; the project-scoped <cwd>/.mcp.json is
+        // merged separately (see mergeProjectMcpJson).
+        .claude_code => try std.fmt.allocPrint(arena, "{s}/.claude.json", .{home}),
         .opencode => try std.fmt.allocPrint(arena, "{s}/.config/opencode/opencode.json", .{home}),
         .cline => try std.fmt.allocPrint(arena, "{s}/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", .{home}),
         .roo => try std.fmt.allocPrint(arena, "{s}/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json", .{home}),
@@ -550,6 +557,9 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
         .windsurf => std.fmt.allocPrint(arena, "{s}/.codeium/windsurf", .{home}),
         .gemini => std.fmt.allocPrint(arena, "{s}/.gemini", .{home}),
         .claude_desktop => std.fmt.allocPrint(arena, "{s}/.config/Claude", .{home}),
+        // ~/.claude exists once Claude Code has run (holds settings,
+        // projects/, agents/) — the ~/.claude.json MCP file sits beside it.
+        .claude_code => std.fmt.allocPrint(arena, "{s}/.claude", .{home}),
         .nvim => std.fmt.allocPrint(arena, "{s}/.config/nvim", .{home}),
         // The classic init dir — ~/.config/emacs (XDG) also exists but
         // ~/.emacs.d is what an agent-shell user almost always has.
@@ -575,7 +585,7 @@ fn clientSectionKey(k: ClientKind) []const u8 {
     return switch (k) {
         .zed, .jetbrains => "agent_servers",
         .vscode, .cursor => "acp.agents",
-        .windsurf, .gemini, .claude_desktop, .cline, .roo, .amazonq => "mcpServers",
+        .windsurf, .gemini, .claude_desktop, .claude_code, .cline, .roo, .amazonq => "mcpServers",
         // OpenCode's MCP servers live under the top-level "mcp" object —
         // mcp.<name> entries, not mcpServers.<name>. Kilo Code's current
         // kilo.jsonc config uses the same "mcp" shape.
@@ -595,6 +605,7 @@ fn clientNextStep(k: ClientKind) []const u8 {
         .windsurf => "install mcacp (npm i -g mcacp or npx), restart Windsurf, and confirm the mcacp server in Settings > MCP servers",
         .gemini => "install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools",
         .claude_desktop => "install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server",
+        .claude_code => "install mcacp (npm i -g mcacp or npx), restart Claude Code, and run /mcp to see the mcacp server",
         .opencode => "install mcacp (npm i -g mcacp or npx), restart OpenCode, and check the mcacp server with 'opencode mcp list'",
         .cline => "install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Cline pane",
         .goose => "install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.config/goose/config.yaml, then run 'goose session' and ask about the mcacp tools",
@@ -635,6 +646,19 @@ fn mcacpSnippetPath(arena: std.mem.Allocator, home: []const u8) ![]u8 {
 fn dirExists(io: std.Io, path: []const u8) bool {
     const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return false;
     return st.kind == .directory;
+}
+
+/// The detection probe: the client's config dir exists. claude-code also
+/// counts a bare `~/.claude.json` — its settings file sits beside (not
+/// inside) `~/.claude`, so a tau-wired install must still classify as
+/// detected before Claude Code itself has run once.
+fn clientDetected(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind) !bool {
+    if (dirExists(io, try clientConfigDir(arena, home, k))) return true;
+    if (k == .claude_code) {
+        const st = std.Io.Dir.cwd().statFile(io, (try clientSettingsPath(arena, home, k)).?, .{}) catch return false;
+        return st.kind == .file;
+    }
+    return false;
 }
 
 /// Full settings-file content for a client whose file doesn't exist yet —
@@ -685,7 +709,7 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
         , .{cmd}),
         // MCP-bridge clients launch the mcacp bridge, never tau directly —
         // their file carries no tau command path at all.
-        .windsurf, .gemini, .claude_desktop, .cline, .roo, .amazonq => std.fmt.allocPrint(arena,
+        .windsurf, .gemini, .claude_desktop, .claude_code, .cline, .roo, .amazonq => std.fmt.allocPrint(arena,
             \\{{
             \\  "mcpServers": {{
             \\    "mcacp": {{
@@ -1029,7 +1053,7 @@ fn acpServeArgs(e: std.json.ObjectMap) bool {
 /// ["acp","serve"], and Zed entries need "type":"custom". A bare "tau"
 /// command can't be disproved offline and stays ok.
 pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind) !ClientWiring {
-    if (!dirExists(io, try clientConfigDir(arena, home, k))) return .{ .state = .not_detected };
+    if (!try clientDetected(io, arena, home, k)) return .{ .state = .not_detected };
     if (k == .nvim or k == .emacs or k == .goose or k == .continue_) return .{ .state = .manual_only };
     const path = (try clientSettingsPath(arena, home, k)).?;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
@@ -1267,13 +1291,97 @@ fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
         try entries.appendSlice(arena, ",\"bridge_snippet_path\":");
         try js(arena, entries, s);
     }
-    try entries.append(arena, '}');
-    return switch (det.outcome) {
+    var result: ClientOutcome = switch (det.outcome) {
         .failed => .failed,
         .manual => .manual,
         .would_install => if (oc == .failed) .failed else .would_install,
         else => oc,
     };
+    if (k == .claude_code) result = try appendProjectMerge(io, arena, entries, dry, result);
+    try entries.append(arena, '}');
+    return result;
+}
+
+/// Claude Code's project-scoped MCP file: `.mcp.json` in the current
+/// working directory — the same top-level "mcpServers" shape as the
+/// user-scoped ~/.claude.json, meant to be committed with the project.
+/// Returns the absolute path.
+fn projectMcpPath(io: std.Io, arena: std.mem.Allocator) ![]u8 {
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", arena);
+    return std.fmt.allocPrint(arena, "{s}/.mcp.json", .{cwd});
+}
+
+/// Outcome of the claude-code project-scope merge — `status` is the JSON
+/// word for project_status.
+const ProjectMerge = struct {
+    status: []const u8, // installed|already_installed|would_install|skipped|manual
+    path: []const u8,
+    reason: ?[]const u8 = null,
+    /// True when the file exists but couldn't be spliced — the project
+    /// half of the wiring is left undone, so the client entry reports
+    /// "manual".
+    downgrade: bool = false,
+};
+
+/// The claude-code-only project-scope half of the wiring: when the cwd
+/// carries a `.mcp.json`, the "mcacp" entry is spliced into its
+/// "mcpServers" map in place — comments and sibling servers survive
+/// byte-for-byte (the same splice --import uses). The project file is
+/// never created or rewritten wholesale here: a `.mcp.json` is the
+/// project opting into shared MCP config, so an absent one just reports
+/// "skipped". Files that can't be read or parsed report "manual".
+fn mergeProjectMcpJson(io: std.Io, arena: std.mem.Allocator, dry: bool) !ProjectMerge {
+    const path = try projectMcpPath(io, arena);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
+        if (err == error.FileNotFound)
+            return .{ .status = "skipped", .path = path };
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{
+            .status = "manual",
+            .path = path,
+            .reason = "could not read .mcp.json — merge the \"mcacp\" entry by hand",
+            .downgrade = true,
+        };
+    };
+    switch (try configedit.insertNestedMember(arena, bytes, "mcpServers", "mcacp", bridgeEntryToken(.claude_code))) {
+        .invalid => return .{
+            .status = "manual",
+            .path = path,
+            .reason = ".mcp.json did not parse as JSON/JSONC — merge the \"mcacp\" entry by hand",
+            .downgrade = true,
+        },
+        .present => return .{ .status = "already_installed", .path = path },
+        .inserted => |body| {
+            const w = try writeIfChanged(io, arena, path, body, dry);
+            return .{
+                .status = if (w == .would_write) "would_install" else "installed",
+                .path = path,
+            };
+        },
+    }
+}
+
+/// Append the project_* fields to an open claude-code install entry and
+/// return the outcome adjusted for the project-scope merge: a "manual"
+/// merge downgrades the client (half the wiring is left undone), "failed"
+/// stays failed.
+fn appendProjectMerge(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), dry: bool, oc: ClientOutcome) !ClientOutcome {
+    const pm = mergeProjectMcpJson(io, arena, dry) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        try entries.appendSlice(arena, ",\"project_status\":\"failed\",\"project_reason\":");
+        try js(arena, entries, @errorName(err));
+        return .failed;
+    };
+    try entries.appendSlice(arena, ",\"project_path\":");
+    try js(arena, entries, pm.path);
+    try entries.appendSlice(arena, ",\"project_status\":");
+    try js(arena, entries, pm.status);
+    if (pm.reason) |r| {
+        try entries.appendSlice(arena, ",\"project_reason\":");
+        try js(arena, entries, r);
+    }
+    if (pm.downgrade and oc != .failed) return .manual;
+    return oc;
 }
 
 /// The clients setup should configure: explicit --client (validated
@@ -1283,7 +1391,7 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     var list: std.ArrayList(ClientKind) = .empty;
     if (cfg.setup_client) |s| {
         if (std.mem.eql(u8, s, "all")) {
-            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq });
+            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .claude_code, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq });
         } else if (parseClientName(s)) |k| {
             try list.append(arena, k);
         }
@@ -1340,7 +1448,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         try entries.appendSlice(arena, ",\"status\":\"manual\",\"snippet_path\":");
         try js(arena, entries, snip);
         try entries.appendSlice(arena, ",\"editor_detected\":");
-        try entries.appendSlice(arena, if (dirExists(io, try clientConfigDir(arena, home, k))) "true" else "false");
+        try entries.appendSlice(arena, if (try clientDetected(io, arena, home, k)) "true" else "false");
         // --import can't splice YAML — a bridge client taking the
         // snippet path reports the same empty import list as any other
         // manual outcome.
@@ -1762,14 +1870,14 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
         try buf.appendSlice(arena, "{\"step\":\"clients\",\"status\":\"skipped\",\"detected\":[");
         var first = true;
         for (all_clients) |k| {
-            if (dirExists(io, try clientConfigDir(arena, home, k))) {
+            if (try clientDetected(io, arena, home, k)) {
                 if (!first) try buf.append(arena, ',');
                 first = false;
                 try js(arena, &buf, clientName(k));
             }
         }
         try buf.appendSlice(arena, "],\"hint\":");
-        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all to write editor ACP config");
+        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|claude-code|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all to write editor ACP config");
         try buf.appendSlice(arena, "}");
         emit(&buf);
         return true;
@@ -1894,6 +2002,19 @@ fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k:
             try others.appendSlice(arena, clientName(c));
         }
     }
+    // Claude Code's project-scoped .mcp.json isn't home-scoped like the
+    // settings files — a cwd copy still carrying "mcacp" keeps the bridge
+    // alive when claude-code itself isn't being removed.
+    if (!inSet(set, .claude_code)) {
+        const ppath = try projectMcpPath(io, arena);
+        if (std.Io.Dir.cwd().readFileAlloc(io, ppath, arena, .unlimited)) |b| {
+            if (hasTauEntry(arena, .claude_code, b) orelse false) {
+                if (!first) try others.appendSlice(arena, ", ");
+                first = false;
+                try others.appendSlice(arena, "claude-code (.mcp.json)");
+            }
+        } else |_| {}
+    }
     if (others.items.len > 0) {
         return .{
             .status = "kept",
@@ -1979,10 +2100,97 @@ fn closeRemoveEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
             try js(arena, entries, if (fr.? == .would_remove) "would_remove" else "removed");
         }
     }
+    var result: RemoveOutcome = blk: {
+        if (oc == .failed or det.outcome == .failed) break :blk .failed;
+        if (oc == .manual or det.outcome == .manual) break :blk .manual;
+        if (det.outcome == .removed or det.outcome == .would_remove) break :blk det.outcome;
+        break :blk oc;
+    };
+    if (k == .claude_code) result = try appendProjectRemove(io, arena, entries, dry, result);
     try entries.append(arena, '}');
-    if (oc == .failed or det.outcome == .failed) return .failed;
-    if (oc == .manual or det.outcome == .manual) return .manual;
-    if (det.outcome == .removed or det.outcome == .would_remove) return det.outcome;
+    return result;
+}
+
+/// Outcome of the claude-code project-scope removal — `status` is the JSON
+/// word for project_status.
+const ProjectRemove = struct {
+    status: []const u8, // removed|would_remove|absent|manual
+    path: []const u8,
+    reason: ?[]const u8 = null,
+    file_deleted: bool = false,
+    outcome: RemoveOutcome,
+};
+
+/// Reverse the project-scope half of claude-code's wiring: drop "mcacp"
+/// from <cwd>/.mcp.json's "mcpServers" map, splicing on the original bytes
+/// so comments and sibling servers survive; a file left holding nothing
+/// but the empty section is deleted. Absent files report "absent"; files
+/// that can't be read or parsed report "manual" with the hand-step.
+fn removeProjectMcpJson(io: std.Io, arena: std.mem.Allocator, dry: bool) !ProjectRemove {
+    const path = try projectMcpPath(io, arena);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
+        if (err == error.FileNotFound)
+            return .{ .status = "absent", .path = path, .outcome = .absent };
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{
+            .status = "manual",
+            .path = path,
+            .reason = "could not read .mcp.json — remove the \"mcacp\" entry by hand",
+            .outcome = .manual,
+        };
+    };
+    switch (try configedit.removeNestedMember(arena, bytes, "mcpServers", "mcacp")) {
+        .invalid => return .{
+            .status = "manual",
+            .path = path,
+            .reason = ".mcp.json did not parse as JSON/JSONC — remove the \"mcacp\" entry by hand",
+            .outcome = .manual,
+        },
+        .absent => return .{ .status = "absent", .path = path, .outcome = .absent },
+        .empty => {
+            const fr = try removeFile(io, path, dry);
+            return .{
+                .status = if (fr == .would_remove) "would_remove" else "removed",
+                .path = path,
+                .file_deleted = true,
+                .outcome = if (fr == .would_remove) .would_remove else .removed,
+            };
+        },
+        .spliced => |body| {
+            const w = try writeIfChanged(io, arena, path, body, dry);
+            return .{
+                .status = if (w == .would_write) "would_remove" else "removed",
+                .path = path,
+                .outcome = if (w == .would_write) .would_remove else .removed,
+            };
+        },
+    }
+}
+
+/// Append the project_* fields to an open claude-code removal entry and
+/// return the outcome adjusted for the project-scope removal: "manual"
+/// means hand-work remains, and a removal where the user-scope file was
+/// absent still counts as "removed" when the project file carried the
+/// entry.
+fn appendProjectRemove(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), dry: bool, oc: RemoveOutcome) !RemoveOutcome {
+    const pr = removeProjectMcpJson(io, arena, dry) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        try entries.appendSlice(arena, ",\"project_status\":\"failed\",\"project_reason\":");
+        try js(arena, entries, @errorName(err));
+        return .failed;
+    };
+    try entries.appendSlice(arena, ",\"project_path\":");
+    try js(arena, entries, pr.path);
+    try entries.appendSlice(arena, ",\"project_status\":");
+    try js(arena, entries, pr.status);
+    if (pr.file_deleted) try entries.appendSlice(arena, ",\"project_file_deleted\":true");
+    if (pr.reason) |r| {
+        try entries.appendSlice(arena, ",\"project_reason\":");
+        try js(arena, entries, r);
+    }
+    if (oc == .failed or pr.outcome == .failed) return .failed;
+    if (oc == .manual or pr.outcome == .manual) return .manual;
+    if (pr.outcome == .removed or pr.outcome == .would_remove) return pr.outcome;
     return oc;
 }
 
@@ -2440,6 +2648,8 @@ test "parseClientName accepts supported clients and the code alias" {
     try testing.expectEqual(ClientKind.gemini, parseClientName("gemini-cli").?);
     try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude-desktop").?);
     try testing.expectEqual(ClientKind.claude_desktop, parseClientName("claude").?);
+    try testing.expectEqual(ClientKind.claude_code, parseClientName("claude-code").?);
+    try testing.expectEqual(ClientKind.claude_code, parseClientName("claude_code").?);
     try testing.expectEqual(ClientKind.opencode, parseClientName("opencode").?);
     try testing.expectEqual(ClientKind.cline, parseClientName("cline").?);
     try testing.expectEqual(ClientKind.goose, parseClientName("goose").?);
@@ -2486,6 +2696,10 @@ test "clientSettingsPath matches the docs/acp.md targets (nvim has none)" {
     try testing.expectEqualStrings(
         "/h/.config/Claude/claude_desktop_config.json",
         (try clientSettingsPath(a, "/h", .claude_desktop)).?,
+    );
+    try testing.expectEqualStrings(
+        "/h/.claude.json",
+        (try clientSettingsPath(a, "/h", .claude_code)).?,
     );
     try testing.expectEqualStrings(
         "/h/.config/opencode/opencode.json",
@@ -2537,7 +2751,7 @@ test "renderClientJson emits a parseable minimal file with the tau entry" {
 
     // MCP-bridge clients write an mcpServers.mcacp entry — the file launches
     // the bridge and never mentions the tau command path.
-    for ([_]ClientKind{ .windsurf, .gemini, .claude_desktop, .roo, .amazonq }) |k| {
+    for ([_]ClientKind{ .windsurf, .gemini, .claude_desktop, .claude_code, .roo, .amazonq }) |k| {
         const body = try renderClientJson(a, k, "/abs/path/tau");
         try testing.expectEqual(@as(?bool, true), hasTauEntry(a, k, body));
         try testing.expect(std.mem.indexOf(u8, body, "\"mcpServers\"") != null);
@@ -3009,6 +3223,59 @@ test "remedyClientWiring bridge repairs both halves" {
     try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .claude_desktop)).state);
 }
 
+test "claude-code project merge: .mcp.json splice, skip, and removal" {
+    const builtin = @import("builtin");
+    if (builtin.os.tag != .linux) return; // std 0.16 exposes chdir on linux only
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    // Save the real cwd — the project file resolves relative to it.
+    const saved = try a.dupeZ(u8, try std.Io.Dir.cwd().realPathFileAlloc(io, ".", a));
+    defer _ = std.os.linux.chdir(saved.ptr);
+
+    // No .mcp.json in the cwd → skipped on the way in, absent on the way out.
+    var tmp0 = testing.tmpDir(.{});
+    defer tmp0.cleanup();
+    const root0z = try a.dupeZ(u8, try tmp0.dir.realPathFileAlloc(io, ".", a));
+    try testing.expectEqual(@as(usize, 0), std.os.linux.chdir(root0z.ptr));
+    const skipped = try mergeProjectMcpJson(io, a, false);
+    try testing.expectEqualStrings("skipped", skipped.status);
+    const prabsent = try removeProjectMcpJson(io, a, false);
+    try testing.expectEqualStrings("absent", prabsent.status);
+
+    // An existing .mcp.json gets the mcacp entry spliced in — the comment
+    // and the user's own server survive byte-for-byte.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const mcp = try std.fmt.allocPrint(a, "{s}/.mcp.json", .{root});
+    const orig = "{\n  // keep me\n  \"mcpServers\": {\n    \"mine\": { \"command\": \"mine\" }\n  }\n}\n";
+    _ = try writeIfChanged(io, a, mcp, orig, false);
+    const rootz = try a.dupeZ(u8, root);
+    try testing.expectEqual(@as(usize, 0), std.os.linux.chdir(rootz.ptr));
+
+    const pm = try mergeProjectMcpJson(io, a, false);
+    try testing.expectEqualStrings("installed", pm.status);
+    const body = try std.Io.Dir.cwd().readFileAlloc(io, mcp, a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, body, "\"mcacp\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "// keep me") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"mine\"") != null);
+
+    // Idempotent: a second merge reports already_installed.
+    const pm2 = try mergeProjectMcpJson(io, a, false);
+    try testing.expectEqualStrings("already_installed", pm2.status);
+
+    // Removal splices the entry back out; the user's server and comment stay.
+    const pr = try removeProjectMcpJson(io, a, false);
+    try testing.expectEqualStrings("removed", pr.status);
+    const body2 = try std.Io.Dir.cwd().readFileAlloc(io, mcp, a, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, body2, "\"mcacp\"") == null);
+    try testing.expect(std.mem.indexOf(u8, body2, "\"mine\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body2, "// keep me") != null);
+}
+
 test "docs/compatibility.md generated matrix mirrors the client registry" {
     const gpa = testing.allocator;
     const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/compatibility.md", gpa, .unlimited);
@@ -3061,6 +3328,7 @@ test "docs/clients per-client guides mirror the client renderers" {
         .{ .file = "docs/clients/windsurf.md", .kind = .windsurf },
         .{ .file = "docs/clients/gemini-cli.md", .kind = .gemini },
         .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
+        .{ .file = "docs/clients/claude-code.md", .kind = .claude_code },
         .{ .file = "docs/clients/opencode.md", .kind = .opencode },
         .{ .file = "docs/clients/cline.md", .kind = .cline },
         .{ .file = "docs/clients/goose.md", .kind = .goose, .yaml = true },

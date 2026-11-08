@@ -48,7 +48,8 @@ $TauArgumentCompleter = {
         'doctor.client_zed', 'doctor.client_nvim', 'doctor.client_emacs',
         'doctor.client_vscode', 'doctor.client_cursor', 'doctor.client_jetbrains',
         'doctor.client_windsurf', 'doctor.client_gemini',
-        'doctor.client_claude_desktop', 'doctor.client_opencode',
+        'doctor.client_claude_desktop', 'doctor.client_claude_code',
+        'doctor.client_opencode',
         'doctor.client_cline', 'doctor.client_goose', 'doctor.client_continue',
         'doctor.client_roo_code', 'doctor.client_kilo_code',
         'doctor.client_amazonq',
@@ -58,7 +59,7 @@ $TauArgumentCompleter = {
         'doctor.probe_opencode-go_auth',
         '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
-    $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'all')
+    $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'claude-code', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
         '--print', '-p',
@@ -149,7 +150,7 @@ $TauArgumentCompleter = {
         '--force'             = 'overwrite an existing config file'
         '--stdout'            = 'print the starter config without writing it'
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
-        '--client'            = 'editor ACP client (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all)'
+        '--client'            = 'editor ACP client (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|claude-code|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
         '--probe'             = 'live-verify connectivity and credentials for every provider'

@@ -12,15 +12,17 @@ full agentic tool loop and streams back `session/update` notifications
 `session/prompt` response carrying a `stopReason`.
 
 > **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `cursor`,
-> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`,
-> `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`, `all`)
+> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `claude-code`,
+> `opencode`, `cline`, `goose`, `continue`, `roo-code`, `kilo-code`,
+> `amazonq`, `all`)
 > writes these
 > configs for you
 > during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
-> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode,
-> Cline, Goose, Continue, Roo Code, Kilo Code, Amazon Q Developer)
+> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, Claude
+> Code, OpenCode, Cline, Goose, Continue, Roo Code, Kilo Code, Amazon Q
+> Developer)
 > also get the
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
 > without `--client` to see which editors were detected — or
@@ -38,6 +40,7 @@ full agentic tool loop and streams back `session/update` notifications
 > [Neovim](clients/nvim.md), [Emacs](clients/emacs.md),
 > [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
 > [Claude Desktop](clients/claude-desktop.md),
+> [Claude Code](clients/claude-code.md),
 > [OpenCode](clients/opencode.md), [Cline](clients/cline.md),
 > [Goose](clients/goose.md), [Continue](clients/continue.md),
 > [Roo Code](clients/roo-code.md), [Kilo Code](clients/kilo-code.md),
@@ -349,6 +352,30 @@ Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp ser
 Both files ship as [`examples/clients/claude-desktop.json`](../examples/clients/claude-desktop.json)
 and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json); the full
 walkthrough is [docs/clients/claude-desktop.md](clients/claude-desktop.md).
+
+### Claude Code (via an MCP↔ACP bridge)
+
+Claude Code speaks MCP, not ACP, so it wires through the same mcacp bridge —
+but its MCP servers live at two scopes: **user scope** in `~/.claude.json`'s
+top-level `mcpServers` (every project), and **project scope** in `.mcp.json`
+at the project root (committed, shared with the team).
+
+```
+Claude Code ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+```
+
+`tau setup --client claude-code` always handles the user-scope file — a
+fresh minimal `~/.claude.json` when absent, a paste-ready snippet when it
+already exists — and **merges** the `"mcacp"` entry into a `.mcp.json` in
+the directory you ran setup from, when one exists (comments and sibling
+servers survive byte-for-byte; an absent `.mcp.json` is never created —
+reported as `"project_status":"skipped"`). `tau setup --remove --client
+claude-code` splices the entry back out of both files. Restart Claude Code
+and run `/mcp` to see the `mcacp` server.
+
+Both files ship as [`examples/clients/claude-code.json`](../examples/clients/claude-code.json)
+and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json); the full
+walkthrough is [docs/clients/claude-code.md](clients/claude-code.md).
 
 ### OpenCode (via an MCP↔ACP bridge)
 

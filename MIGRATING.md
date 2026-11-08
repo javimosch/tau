@@ -29,13 +29,14 @@ entry plus your imported servers in one fresh write.
 
 ## Which clients participate
 
-`--import` reads from and writes to the eight file-backed MCP-bridge clients:
+`--import` reads from and writes to the nine file-backed MCP-bridge clients:
 
 | `--client` | Settings file | Server section |
 |---|---|---|
 | `windsurf` | `~/.codeium/windsurf/mcp_config.json` | `"mcpServers"` |
 | `gemini` | `~/.gemini/settings.json` | `"mcpServers"` |
 | `claude-desktop` | `~/.config/Claude/claude_desktop_config.json` | `"mcpServers"` |
+| `claude-code` | `~/.claude.json` (user scope) | `"mcpServers"` |
 | `opencode` | `~/.config/opencode/opencode.json` | `"mcp"` |
 | `cline` | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `"mcpServers"` |
 | `roo-code` | `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json` | `"mcpServers"` |
@@ -102,7 +103,7 @@ Skipped entries are never dropped silently — each lands in
 | Remote servers (`"url"`/`"serverUrl"`-keyed entries, OpenCode `"type":"remote"`) | `remote servers are not imported` — no stdio spawn line to translate to |
 | Entries with no `"command"` string/array | not a stdio/local server entry |
 | `"args"` or `"command"` that isn't a string array | malformed entry shape |
-| A name already imported from another client | `same name already imported from <client>` — first source wins, in windsurf → gemini → claude-desktop → opencode → cline order |
+| A name already imported from another client | `same name already imported from <client>` — first source wins, in windsurf → gemini → claude-desktop → claude-code → opencode → cline → roo-code → kilo-code → amazonq order |
 | Unreadable or unparseable source files | file-level `import_skipped` entry naming the path |
 
 And by design:

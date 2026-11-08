@@ -84,6 +84,8 @@ pub const FixKind = enum {
     wire_client_gemini,
     /// Same for Claude Desktop (`mcpServers` in claude_desktop_config.json via mcacp).
     wire_client_claude_desktop,
+    /// Same for Claude Code (`mcpServers` in ~/.claude.json via mcacp).
+    wire_client_claude_code,
     /// Same for OpenCode (`mcp` local entry in opencode.json via mcacp).
     wire_client_opencode,
     /// Same for Cline (`mcpServers` in cline_mcp_settings.json via mcacp).
@@ -765,6 +767,7 @@ fn clientFixKind(k: setup.ClientKind) ?FixKind {
         .windsurf => .wire_client_windsurf,
         .gemini => .wire_client_gemini,
         .claude_desktop => .wire_client_claude_desktop,
+        .claude_code => .wire_client_claude_code,
         .opencode => .wire_client_opencode,
         .cline => .wire_client_cline,
         .roo => .wire_client_roo,
@@ -869,7 +872,7 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
             .name = "client_wiring",
             .status = .skip,
             .message = "no supported editor config dirs detected",
-            .hint = "run 'tau setup --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all' to wire 'tau acp serve' into an installed editor",
+            .hint = "run 'tau setup --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|claude-code|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all' to wire 'tau acp serve' into an installed editor",
         });
     return list.toOwnedSlice(arena);
 }
@@ -1776,6 +1779,7 @@ fn fixDescription(k: FixKind) []const u8 {
         .wire_client_windsurf => "wire tau into Windsurf via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_gemini => "wire tau into Gemini CLI via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_claude_desktop => "wire tau into Claude Desktop via the mcacp bridge (minimal file, or paste-ready snippet)",
+        .wire_client_claude_code => "wire tau into Claude Code via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_opencode => "wire tau into OpenCode via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_cline => "wire tau into Cline via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_roo => "wire tau into Roo Code via the mcacp bridge (minimal file, or paste-ready snippet)",
@@ -1875,7 +1879,7 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             }
             break :blk std.fmt.allocPrint(arena, "installed completions for {s}", .{names.items}) catch "installed completions";
         },
-        .wire_client_zed, .wire_client_vscode, .wire_client_cursor, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop, .wire_client_opencode, .wire_client_cline, .wire_client_roo, .wire_client_kilo, .wire_client_amazonq => blk: {
+        .wire_client_zed, .wire_client_vscode, .wire_client_cursor, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop, .wire_client_claude_code, .wire_client_opencode, .wire_client_cline, .wire_client_roo, .wire_client_kilo, .wire_client_amazonq => blk: {
             const home = env.get("HOME") orelse break :blk error.HomeUnset;
             const ck: setup.ClientKind = switch (pf.kind) {
                 .wire_client_zed => .zed,
@@ -1885,6 +1889,7 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
                 .wire_client_windsurf => .windsurf,
                 .wire_client_gemini => .gemini,
                 .wire_client_claude_desktop => .claude_desktop,
+                .wire_client_claude_code => .claude_code,
                 .wire_client_opencode => .opencode,
                 .wire_client_cline => .cline,
                 .wire_client_roo => .roo,
