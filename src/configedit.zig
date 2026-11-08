@@ -118,6 +118,14 @@ fn parseKeyPath(arena: std.mem.Allocator, key: []const u8, strict_field: bool) u
     if (key.len == 0) return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = "empty config key" } };
     const dot = std.mem.indexOfScalar(u8, key, '.');
     if (dot == null) {
+        // Deprecated spellings are read-only: writes always go to the
+        // canonical key (the file's old member loads during the window).
+        if (strict_field) {
+            if (configfile.renamedKey(key)) |rk| {
+                const msg = std.fmt.allocPrint(arena, "\"{s}\" is a deprecated spelling — use \"{s}\"", .{ key, rk.new }) catch "deprecated config key";
+                return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
+            }
+        }
         if (strict_field and !isKnownField(key)) {
             // Did-you-mean on misspelled keys (same rule `config validate`
             // reports for file typos); the full list is the fallback.
@@ -501,6 +509,83 @@ pub fn insertNestedMember(arena: std.mem.Allocator, bytes: []const u8, section: 
 }
 
 // ---------------------------------------------------------------------------
+// Deprecated-key migration (`tau doctor --fix`)
+// ---------------------------------------------------------------------------
+
+/// The result of rewriting deprecated config-key spellings.
+pub const KeyMigration = struct {
+    /// New document bytes — the original slice when nothing needed migrating.
+    out: []const u8,
+    /// Human-readable list of what changed, e.g. `"old" -> "new"`, or
+    /// `"old" removed ("new" already present)` for dead duplicates.
+    changes: []const u8,
+    /// Members renamed in place.
+    renamed: usize = 0,
+    /// Members removed because the canonical key was already present.
+    removed: usize = 0,
+
+    pub fn migrated(self: KeyMigration) bool {
+        return self.renamed + self.removed > 0;
+    }
+};
+
+/// Rewrite deprecated top-level config-key spellings per
+/// `configfile.renamed_keys` — the file-edit half of the docs/stability.md
+/// deprecation window (`tau doctor --fix` runs this on the real config):
+///
+/// * deprecated member, canonical absent → the `"old"` literal is renamed in
+///   place: value, position, comments, and key order survive byte-for-byte;
+/// * deprecated member, canonical present → the old member is dead config
+///   (the loader always prefers the canonical spelling) and is removed
+///   rather than duplicated.
+///
+/// Occurrences are processed last-to-first so duplicate `"old"` members keep
+/// the loader's last-wins semantics. Returns error.InvalidJson when `bytes`
+/// doesn't scan as a JSONC object document.
+pub fn migrateRenamedKeys(arena: std.mem.Allocator, bytes: []const u8) !KeyMigration {
+    var out: []const u8 = bytes;
+    var res: KeyMigration = .{ .out = out, .changes = "" };
+    var notes: std.ArrayList([]const u8) = .empty;
+    // Re-scan after every splice — offsets shift. Each pass handles the LAST
+    // deprecated member still in the doc; notes are prepended so the report
+    // reads in file order.
+    passes: while (true) {
+        const doc = try scanDoc(arena, out);
+        var i = doc.members.len;
+        while (i > 0) {
+            i -= 1;
+            const m = doc.members[i];
+            const rk = configfile.renamedKey(m.key) orelse continue;
+            if (findMember(doc, rk.new) != null) {
+                const span = removalSpan(out, m);
+                out = try splice(arena, out, span.start, span.end, "");
+                res.removed += 1;
+                try notes.insert(arena, 0, try std.fmt.allocPrint(arena, "\"{s}\" removed (\"{s}\" already present)", .{ rk.old, rk.new }));
+            } else {
+                var lit: std.ArrayList(u8) = .empty;
+                try lit.append(arena, '"');
+                try jsonmod.escapeInto(arena, &lit, rk.new);
+                try lit.append(arena, '"');
+                const ke = try stringEnd(out, m.key_start);
+                out = try splice(arena, out, m.key_start, ke, lit.items);
+                res.renamed += 1;
+                try notes.insert(arena, 0, try std.fmt.allocPrint(arena, "\"{s}\" -> \"{s}\"", .{ rk.old, rk.new }));
+            }
+            continue :passes;
+        }
+        break;
+    }
+    var changes: std.ArrayList(u8) = .empty;
+    for (notes.items, 0..) |note, i| {
+        if (i != 0) try changes.appendSlice(arena, ", ");
+        try changes.appendSlice(arena, note);
+    }
+    res.out = out;
+    res.changes = changes.items;
+    return res;
+}
+
+// ---------------------------------------------------------------------------
 // Value coercion (set) — same rules `config validate` enforces.
 // ---------------------------------------------------------------------------
 
@@ -720,8 +805,9 @@ fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
 
 /// Write `content` to `path` atomically (temp file + rename). Existing file
 /// permissions are preserved; a new file is created owner-only (0600) since it
-/// may hold API keys.
-fn writeAtomic(io: std.Io, arena: std.mem.Allocator, path: []const u8, content: []const u8) !void {
+/// may hold API keys. `pub` so `tau doctor --fix` (deprecated-key migration)
+/// writes through the same atomic path.
+pub fn writeAtomic(io: std.Io, arena: std.mem.Allocator, path: []const u8, content: []const u8) !void {
     const perms: std.Io.File.Permissions = if (std.Io.Dir.cwd().statFile(io, path, .{})) |st|
         st.permissions
     else |_| if (builtin.os.tag == .windows)
@@ -1944,4 +2030,90 @@ test "run: malformed config file reports line/column in the invalid_config error
     // set refuses to touch the broken file with the same positioned error.
     const fs = try failMessage(try th.sub(arena, .set, "mode", "text", false));
     try testing.expect(std.mem.indexOf(u8, fs.message, "invalid JSON at line 3, column") != null);
+}
+
+test "migrateRenamedKeys: renames in place, preserving comments and order" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const res = try migrateRenamedKeys(arena,
+        \\{
+        \\  // leading comment
+        \\  "provider": "openai",
+        \\  "compact_keep_recent": 8000, // trailing note
+        \\  "mode": "json"
+        \\}
+    );
+    try testing.expect(res.migrated());
+    try testing.expectEqual(@as(usize, 1), res.renamed);
+    try testing.expectEqual(@as(usize, 0), res.removed);
+    try testing.expectEqualStrings(
+        \\{
+        \\  // leading comment
+        \\  "provider": "openai",
+        \\  "compact_keep_recent_tokens": 8000, // trailing note
+        \\  "mode": "json"
+        \\}
+    , res.out);
+    try testing.expect(std.mem.indexOf(u8, res.changes, "\"compact_keep_recent\" -> \"compact_keep_recent_tokens\"") != null);
+}
+
+test "migrateRenamedKeys: canonical already present removes the dead member" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const res = try migrateRenamedKeys(arena,
+        \\{
+        \\  "compact_keep_recent": 8000,
+        \\  "mode": "text",
+        \\  "compact_keep_recent_tokens": 4000
+        \\}
+    );
+    try testing.expect(res.migrated());
+    try testing.expectEqual(@as(usize, 0), res.renamed);
+    try testing.expectEqual(@as(usize, 1), res.removed);
+    try testing.expect(std.mem.indexOf(u8, res.out, "compact_keep_recent\"") == null);
+    try testing.expect(std.mem.indexOf(u8, res.out, "\"compact_keep_recent_tokens\": 4000") != null);
+    try testing.expect(std.mem.indexOf(u8, res.out, "\"mode\": \"text\"") != null);
+}
+
+test "migrateRenamedKeys: duplicate deprecated members keep last-wins value" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // Two "compact_keep_recent" members: the loader's last-wins rule makes the
+    // second effective — migration must keep its value, not the shadowed one.
+    const res = try migrateRenamedKeys(arena, "{ \"compact_keep_recent\": 1, \"compact_keep_recent\": 2 }");
+    try testing.expect(std.mem.indexOf(u8, res.out, "\"compact_keep_recent_tokens\": 2") != null);
+    try testing.expect(std.mem.indexOf(u8, res.out, "compact_keep_recent\"") == null);
+}
+
+test "migrateRenamedKeys: nothing to do returns the input verbatim" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const res = try migrateRenamedKeys(arena, "{ \"provider\": \"openai\" }");
+    try testing.expect(!res.migrated());
+    try testing.expectEqualStrings("{ \"provider\": \"openai\" }", res.out);
+
+    try testing.expectError(error.InvalidJson, migrateRenamedKeys(arena, "{ not json"));
+}
+
+test "parseKeyPath: config set rejects a deprecated spelling with the canonical name" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const r = parseKeyPath(arena, "compact_keep_recent", true);
+    try testing.expect(r == .fail);
+    try testing.expectEqual(@as(u8, 80), r.fail.code);
+    try testing.expect(std.mem.indexOf(u8, r.fail.message, "compact_keep_recent_tokens") != null);
+
+    // get/unset (non-strict) still accept the path — manual migration needs it.
+    const g = parseKeyPath(arena, "compact_keep_recent", false);
+    try testing.expect(g == .ok);
 }

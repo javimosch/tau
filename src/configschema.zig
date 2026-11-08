@@ -387,9 +387,26 @@ pub const key_member_specs = blk: {
 /// dotted keys.<provider> members.
 pub const key_catalog = key_specs ++ key_member_specs;
 
+/// One explain entry per deprecated spelling in configfile.renamed_keys —
+/// resolves `tau explain <old>` to the canonical key's spec with a
+/// deprecation-prefixed description. Comptime-derived from the registry so
+/// the catalog can't drift from what the loader honors.
+pub const deprecated_key_specs = blk: {
+    var ks: [configfile.renamed_keys.len]KeySpec = undefined;
+    for (configfile.renamed_keys, 0..) |rk, i| {
+        ks[i] = for (key_specs) |c| {
+            if (std.mem.eql(u8, c.name, rk.new)) break c;
+        } else @compileError("renamed_keys target '" ++ rk.new ++ "' is not a FileConfig field");
+        ks[i].name = rk.old;
+        ks[i].desc = "Deprecated spelling — renamed to `" ++ rk.new ++ "`. " ++ ks[i].desc;
+    }
+    break :blk ks;
+};
+
 /// Resolve a `tau explain <key>` query. Flat keys match exactly (config keys
 /// are case-sensitive); dotted queries only resolve `keys.<provider>` member
-/// paths. Returns null when nothing matches.
+/// paths. Deprecated spellings resolve to the canonical key's entry marked
+/// as renamed. Returns null when nothing matches.
 pub fn findKey(query: []const u8) ?KeySpec {
     const q = std.mem.trim(u8, query, " \t");
     if (q.len == 0) return null;
@@ -400,6 +417,9 @@ pub fn findKey(query: []const u8) ?KeySpec {
         return null;
     }
     for (key_specs) |ks| {
+        if (std.mem.eql(u8, q, ks.name)) return ks;
+    }
+    for (deprecated_key_specs) |ks| {
         if (std.mem.eql(u8, q, ks.name)) return ks;
     }
     return null;
@@ -674,4 +694,13 @@ test "explain: formatKeyHuman renders the prose form" {
     try testing.expect(std.mem.indexOf(u8, got, "constraints: `0..1`") != null);
     try testing.expect(std.mem.indexOf(u8, got, "description: Fraction of context_window") != null);
     try testing.expect(std.mem.endsWith(u8, got, "\n"));
+}
+
+test "findKey: deprecated spelling resolves to the canonical spec, marked renamed" {
+    const ks = findKey("compact_keep_recent").?;
+    try testing.expectEqualStrings("compact_keep_recent", ks.name);
+    try testing.expectEqualStrings("integer", ks.type_name);
+    try testing.expect(std.mem.indexOf(u8, ks.desc, "renamed to `compact_keep_recent_tokens`") != null);
+    // The canonical key still resolves plainly.
+    try testing.expectEqualStrings("compact_keep_recent_tokens", findKey("compact_keep_recent_tokens").?.name);
 }

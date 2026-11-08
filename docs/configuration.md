@@ -111,6 +111,24 @@ Not everything is file-configurable. Flag-only settings include `--session`,
 AGENTS.md flags (`--scan-agents`, `--load-agents-md`, `--auto-agents-md`).
 See `tau --help` or `tau --help-json` for the full flag list.
 
+### Deprecated keys
+
+Renamed config keys follow the deprecation policy in
+[docs/stability.md](stability.md): during the overlap window the old spelling
+**still loads** — the canonical key wins when both spellings are present —
+and every invocation prints a `{"warn":...}` envelope on stderr naming the
+replacement. `tau config validate` reports the old member with its exact
+line/column, `tau doctor` flags it on the `config_deprecated_keys` row, and
+`tau doctor --fix` rewrites the file in place (comments and key order are
+preserved; a deprecated member that duplicates an already-present canonical
+key is removed as dead config). Deprecated spellings never appear in the
+schema or in `config set`'s accepted keys — writes always go to the
+canonical name.
+
+| Deprecated spelling | Canonical key | Notes |
+|---------------------|---------------|-------|
+| `compact_keep_recent` | `compact_keep_recent_tokens` | The `--compact-keep-recent` flag spelling, honored as a compatibility alias. |
+
 ### JSON Schema and editor autocomplete
 
 `tau config schema` prints the config file's JSON Schema (draft 2020-12) to

@@ -47,13 +47,17 @@ pub fn resolve(query: []const u8) ?Entry {
 /// doctor-check id in both `doctor.<id>` and bare spellings — so a
 /// suggestion always resolves on retry.
 const candidates = blk: {
-    var c: [errors.specs.len * 2 + cfgschema.key_catalog.len + doctorcat.check_catalog.len * 2][]const u8 = undefined;
+    var c: [errors.specs.len * 2 + cfgschema.key_catalog.len + cfgschema.deprecated_key_specs.len + doctorcat.check_catalog.len * 2][]const u8 = undefined;
     for (errors.specs, 0..) |s, i| {
         c[i * 2] = s.type_name;
         c[i * 2 + 1] = std.fmt.comptimePrint("{d}", .{s.code});
     }
     var n = errors.specs.len * 2;
     for (cfgschema.key_catalog) |ks| {
+        c[n] = ks.name;
+        n += 1;
+    }
+    for (cfgschema.deprecated_key_specs) |ks| {
         c[n] = ks.name;
         n += 1;
     }

@@ -134,6 +134,11 @@ These cross-cutting conventions are part of the contract:
   additive; removing or retyping a key follows the deprecation policy.
 - Unknown keys produce a `{"warn":...}` envelope, never a hard failure —
   configs written for newer tau versions keep loading on older ones.
+- Renamed keys keep loading with a `{"warn":...}` envelope during the
+  deprecation window (registry: `configfile.renamed_keys`). `tau config
+  validate` reports the old member with its line/column, `tau doctor`
+  flags it on the `config_deprecated_keys` row, and `tau doctor --fix`
+  migrates the file in place.
 - Precedence is stable: **CLI flags > environment > config file >
   defaults** (full chain in [docs/configuration.md](configuration.md),
   including the `api_key` resolution order).

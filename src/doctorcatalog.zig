@@ -58,6 +58,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "fix the JSON or delete the file — `tau config validate` pinpoints the error with line/column; `tau doctor --fix` moves a broken config to config.json.bak and writes a starter",
     },
     .{
+        .name = "config_deprecated_keys",
+        .fails_when = "the config file still uses a deprecated or renamed key spelling (e.g. compact_keep_recent) — old spellings still load with a warn envelope during the deprecation window but are scheduled for removal (skipped when there is no config file or it doesn't parse)",
+        .remediation = "run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name",
+    },
+    .{
         .name = "config_permissions",
         .fails_when = "the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys)",
         .remediation = "run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself",

@@ -45,6 +45,7 @@ const term = @import("term.zig");
 const json = @import("json.zig");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
+const configedit = @import("configedit.zig");
 const initmod = @import("init.zig");
 const setup = @import("setup.zig");
 const debuglog = @import("debuglog.zig");
@@ -65,6 +66,8 @@ pub const FixKind = enum {
     restore_config,
     /// chmod 0700 on ~/.config/tau and 0600 on config.json.
     chmod_config,
+    /// Rewrite deprecated/renamed config-key spellings in place (JSONC splice).
+    migrate_config_keys,
     /// Install/refresh shell completion scripts (+ rc hooks where needed).
     install_completions,
     /// Wire `tau acp serve` into Zed's settings (minimal file or snippet).
@@ -429,6 +432,43 @@ fn checkConfigFile(io: std.Io, arena: std.mem.Allocator, env: *std.process.Envir
         },
     };
     return configBodyCheck(arena, p, bytes);
+}
+
+/// Check 1b: deprecated/renamed config keys still present in the file (the
+/// docs/stability.md deprecation window — old spellings still load with a
+/// warn envelope but are scheduled for removal). Warns when any
+/// configfile.renamed_keys member is found; auto-fixable — --fix rewrites the
+/// deprecated spellings in place (comments and key order preserved).
+/// Skips when there is no config file or it doesn't parse (the config_file
+/// row already fails in that case).
+fn checkConfigDeprecatedKeys(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const p = configfile.path(arena, env) orelse
+        return .{ .name = "config_deprecated_keys", .status = .skip, .message = "skipped (HOME is not set)" };
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited) catch |err| switch (err) {
+        error.FileNotFound => return .{ .name = "config_deprecated_keys", .status = .skip, .message = "skipped (no config file)" },
+        else => return .{ .name = "config_deprecated_keys", .status = .skip, .message = "skipped (config file unreadable)" },
+    };
+    const doc = configedit.scanDoc(arena, bytes) catch
+        return .{ .name = "config_deprecated_keys", .status = .skip, .message = "skipped (config file doesn't parse — see config_file)" };
+    var names: std.ArrayList(u8) = .empty;
+    var n: usize = 0;
+    for (doc.members) |m| {
+        if (configfile.renamedKey(m.key)) |rk| {
+            n += 1;
+            if (names.items.len > 0) names.appendSlice(arena, ", ") catch {};
+            names.appendSlice(arena, std.fmt.allocPrint(arena, "\"{s}\" -> \"{s}\"", .{ rk.old, rk.new }) catch rk.old) catch {};
+        }
+    }
+    if (n == 0) {
+        return .{ .name = "config_deprecated_keys", .status = .ok, .message = "no deprecated config keys" };
+    }
+    return .{
+        .name = "config_deprecated_keys",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "{d} deprecated config key{s}: {s}", .{ n, if (n == 1) "" else "s", names.items }) catch "deprecated config keys",
+        .hint = "deprecated spellings still load during the deprecation window — run 'tau doctor --fix' to migrate, or 'tau config validate' for the exact lines",
+        .fix = .migrate_config_keys,
+    };
 }
 
 /// Check 2 (POSIX only): ~/.config/tau dir and config.json permission bits.
@@ -1639,6 +1679,7 @@ fn addCheck(arena: std.mem.Allocator, list: *std.ArrayList(Check), c: Check, cfg
 pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]Check {
     var checks: std.ArrayList(Check) = .empty;
     try addCheck(arena, &checks, checkConfigFile(io, arena, env), cfg);
+    try addCheck(arena, &checks, checkConfigDeprecatedKeys(io, arena, env), cfg);
     try addCheck(arena, &checks, checkConfigPermissions(io, arena, env), cfg);
     try addCheck(arena, &checks, checkPlaintextSecrets(io, arena, env), cfg);
     try addCheck(arena, &checks, checkProvider(arena, cfg), cfg);
@@ -1726,6 +1767,7 @@ fn fixDescription(k: FixKind) []const u8 {
         .scaffold_config => "create ~/.config/tau and write a commented starter config",
         .restore_config => "move the invalid config to config.json.bak and write a starter config",
         .chmod_config => "restrict permissions (~/.config/tau -> 0700, config.json -> 0600)",
+        .migrate_config_keys => "rename deprecated config keys in place (comments and order preserved)",
         .install_completions => "install/refresh shell completion scripts",
         .wire_client_zed => "wire tau into Zed settings (minimal file, or paste-ready snippet)",
         .wire_client_vscode => "wire tau into VS Code settings (minimal file, or paste-ready snippet)",
@@ -1812,6 +1854,14 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             } else |_| {}
             if (did.items.len == 0) break :blk std.fmt.allocPrint(arena, "nothing to restrict: {s}", .{path}) catch "nothing to restrict";
             break :blk std.fmt.allocPrint(arena, "restricted {s} ({s})", .{ did.items, path }) catch "restricted permissions";
+        },
+        .migrate_config_keys => blk: {
+            const path = configfile.path(arena, env) orelse break :blk error.HomeUnset;
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| break :blk err;
+            const res = configedit.migrateRenamedKeys(arena, bytes) catch |err| break :blk err;
+            if (!res.migrated()) break :blk "no deprecated keys to migrate";
+            configedit.writeAtomic(io, arena, path, res.out) catch |err| break :blk err;
+            break :blk std.fmt.allocPrint(arena, "migrated deprecated keys in {s}: {s}", .{ path, res.changes }) catch "migrated deprecated keys";
         },
         .install_completions => blk: {
             const home = env.get("HOME") orelse break :blk error.HomeUnset;
@@ -3429,4 +3479,41 @@ test "docs/doctor-json.md generated reference mirrors the schema" {
             return error.TestFailed;
         }
     }
+}
+
+test "checkConfigDeprecatedKeys: skip/ok/warn lifecycle" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> skip.
+    var env_no_home = std.process.Environ.Map.init(a);
+    const c_nohome = checkConfigDeprecatedKeys(testing.io, a, &env_no_home);
+    try testing.expectEqual(CheckStatus.skip, c_nohome.status);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // No config file -> skip.
+    const c_missing = checkConfigDeprecatedKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_missing.status);
+
+    // Clean file -> ok.
+    try home.writeConfig(a, "{\"provider\":\"openai\"}");
+    const c_ok = checkConfigDeprecatedKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+    try testing.expectEqual(@as(?FixKind, null), c_ok.fix);
+
+    // Deprecated spelling present -> warn + auto-fixable.
+    try home.writeConfig(a, "{ \"compact_keep_recent\": 8000 }");
+    const c_warn = checkConfigDeprecatedKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_warn.status);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "compact_keep_recent") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "compact_keep_recent_tokens") != null);
+    try testing.expectEqual(@as(?FixKind, .migrate_config_keys), c_warn.fix);
+
+    // Broken JSON -> skip (config_file carries the failure).
+    try home.writeConfig(a, "{ not json");
+    const c_bad = checkConfigDeprecatedKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_bad.status);
 }

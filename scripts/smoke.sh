@@ -1049,6 +1049,17 @@ test_group_config_validate() {
   else
     ok "validate never echoes key values" 0 0
   fi
+
+  # Deprecated spelling -> positioned rename hint, exit 1, line/column in JSON.
+  printf '{\n  "provider":"openai",\n  "compact_keep_recent":8000\n}\n' > "$tmpdir/dep.json"
+  out=$("$BIN" config validate "$tmpdir/dep.json"); rc=$?
+  ok "config validate deprecated key -> exit 1" "$rc" 1
+  contains "deprecated key flagged" "$out" '"key":"compact_keep_recent"'
+  contains "deprecated key reports position" "$out" '"line":3,"column":3'
+  contains "deprecated key names canonical" "$out" 'compact_keep_recent_tokens'
+  contains "deprecated key points at doctor --fix" "$out" 'doctor --fix'
+  out=$("$BIN" config validate --mode text "$tmpdir/dep.json")
+  contains "text mode prints path:line:col" "$out" ':3:3: error in "compact_keep_recent"'
 }
 
 # Group: `tau config set|get|unset` — programmatic, schema-checked edits to the
@@ -1911,6 +1922,29 @@ PYEOF
   contains "valid CA bundle reports ok" "$doc_px_goodca_out" '"name":"tls_ca","status":"ok"'
   contains "CA row names the var" "$doc_px_goodca_out" 'custom CA bundle via CURL_CA_BUNDLE'
   rm -f "$mock_home/ca.pem"
+
+  # 17. config_deprecated_keys: a renamed spelling warns (the load still
+  #     honors it — the warn envelope fires on stderr) and --fix --yes
+  #     rewrites the member in place, flipping the row back to ok.
+  mkdir -p "$mock_config"
+  printf '{\n  "provider":"openai",\n  "compact_keep_recent": 8000\n}\n' > "$mock_config/config.json"
+  capture doc_dep env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-dep HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline
+  ok "deprecated keys warn keeps exit 0" "$doc_dep_rc" 0
+  contains "config_deprecated_keys warns" "$doc_dep_out" '"name":"config_deprecated_keys","status":"warn"'
+  contains "deprecated check names the rename" "$doc_dep_out" 'compact_keep_recent_tokens'
+  contains "deprecated load warns on stderr" "$doc_dep_err" 'deprecated key'
+  capture doc_dep_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-dep HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
+  ok "migrate fix run exits 0" "$doc_dep_fix_rc" 0
+  contains "migrate_config_keys applied" "$doc_dep_fix_out" '"id":"migrate_config_keys","check":"config_deprecated_keys","status":"applied"'
+  contains "post-fix deprecated row ok" "$doc_dep_fix_out" '"name":"config_deprecated_keys","status":"ok"'
+  if grep -q '"compact_keep_recent_tokens": 8000' "$mock_config/config.json" && ! grep -q '"compact_keep_recent":' "$mock_config/config.json"; then
+    ok "deprecated key renamed in the file" 0 0
+  else
+    ok "deprecated key renamed in the file" 1 0
+  fi
+  rm -f "$mock_config/config.json"
 }
 
 # Group: tau bug — pre-filled GitHub issue carrying the redacted doctor bundle
@@ -4221,6 +4255,15 @@ test_group_golden_doctor() {
   golden_check_n doc-tls-ca-missing  1 env SHELL=/bin/bash CURL_CA_BUNDLE="$_GOLDEN_HOME/missing-ca.pem" "$BIN" doctor --offline --provider openai --api-key k
   printf -- '-----BEGIN CERTIFICATE-----\n' > "$_GOLDEN_HOME/ca.pem"
   golden_check_n doc-tls-ca-ok       0 env SHELL=/bin/bash CURL_CA_BUNDLE="$_GOLDEN_HOME/ca.pem" "$BIN" doctor --offline --provider openai --api-key k
+
+  # Deprecated config-key surface: the warn row + the stderr warn envelope,
+  # then the --fix --yes run that rewrites the member in place (the migrated
+  # file itself is pinned via golden_file).
+  mkdir -p "$_GOLDEN_HOME/.config/tau"
+  printf '{\n  "provider": "openai",\n  "compact_keep_recent": 8000,\n  "mode": "json"\n}\n' > "$_GOLDEN_HOME/.config/tau/config.json"
+  golden_check_n doc-deprecated-keys 0 env SHELL=/bin/bash "$BIN" doctor --offline --provider openai --api-key k
+  golden_check_n doc-deprecated-fix  0 env SHELL=/bin/bash "$BIN" doctor --offline --provider openai --api-key k --fix --yes
+  golden_file doc-deprecated-fix-config "$_GOLDEN_HOME/.config/tau/config.json"
   _golden_fresh_home
 }
 
