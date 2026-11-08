@@ -7,6 +7,7 @@ const json = @import("json.zig");
 const agent = @import("agent.zig");
 const debuglog = @import("debuglog.zig");
 const errs = @import("errors.zig");
+const envvars = @import("envvars.zig");
 const Config = cfgmod.Config;
 
 pub const name = "tau";
@@ -876,6 +877,9 @@ pub fn main(init: std.process.Init) !void {
     const base_cfg: Config = configfile.load(io, arena, init.environ_map);
     // Warn if the config file exists but has invalid JSON (load degrades silently).
     if (base_cfg.config_warning) |w| printWarnJson(w);
+    // Warn on unrecognized TAU_* env vars — a typo (TAU_ENDPONT) is otherwise
+    // silently ignored by every consumer (src/envvars.zig registry).
+    if (envvars.unknownVarWarning(arena, init.environ_map)) |w| printWarnJson(w);
 
     // Materialize the platform argv vector (WTF-16 on Windows, UTF-8 bytes on
     // POSIX) into a plain UTF-8 slice so the parser stays platform-agnostic.
@@ -1286,6 +1290,7 @@ test {
     _ = @import("subhelp.zig");
     _ = @import("explain.zig");
     _ = @import("doctorcatalog.zig");
+    _ = @import("envvars.zig");
 }
 
 test "flag_specs appear in help_text" {

@@ -151,7 +151,11 @@ These cross-cutting conventions are part of the contract:
 ([docs/configuration.md](configuration.md) lists them all — e.g.
 `TAU_API_KEY`, `TAU_ENDPOINT`, `TAU_YES`, `TAU_NONINTERACTIVE`,
 `TAU_NO_UPDATE_CHECK`, `TAU_DEBUG_LOG`, `TAU_EDITOR`, installer knobs
-like `TAU_BASE_URL`/`TAU_INSTALL_DIR`/`TAU_VERIFY_SIGSTORE`). The
+like `TAU_BASE_URL`/`TAU_INSTALL_DIR`/`TAU_VERIFY_SIGSTORE`; the
+generated, drift-checked catalog is [docs/env.md](env.md)). An
+unrecognized `TAU_*` name emits a `{"warn":...}` envelope on stderr —
+an informational surface, never a hard failure, so scripts that only
+read stdout are unaffected. The
 `NO_COLOR`/`CLICOLOR`/`CLICOLOR_FORCE`/`TERM` color policy is also
 stable: machine channels never emit ANSI escapes.
 

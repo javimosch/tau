@@ -505,6 +505,7 @@ tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundl
 | `src/tools/registry.zig` | Tool registry + allowlist/denylist | Registering new tools |
 | `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
 | `src/errors.zig` | Stable error-code catalog + shared `{"err"}` envelope emitter | Error codes/hints, envelope fields |
+| `src/envvars.zig` | Recognized `TAU_*` env-var registry + startup typo warning (`{"warn"}` + did-you-mean); `scripts/gen-env-doc.py` → `docs/env.md` (env-doc smoke group + CI drift-check) | Adding/renaming a `TAU_*` env var — register it here or every run warns |
 | `src/version.zig` | Version const + build metadata (`build.*`, `buildJson`, `buildLine`) | Version bump, build metadata |
 | `src/update.zig` | `tau version --check` + doctor `update_available` release lookup (curl, TAU_UPDATE_URL/TAU_NO_UPDATE_CHECK) | Update-check behavior |
 | `src/upgrade.zig` | `tau upgrade` self-update — check → confirm → staged `install.sh` exec | Upgrade flow, install-dir resolution |
