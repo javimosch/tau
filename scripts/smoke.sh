@@ -108,6 +108,8 @@ ALL_TEST_GROUPS=(
   "versioned-schemas:test_group_versioned_schemas"
   "explain:test_group_explain"
   "explain-coverage:test_group_explain_coverage"
+  "env-doc:test_group_env_doc"
+  "env-warn:test_group_env_warn"
   "golden-maintenance:test_group_golden_maintenance"
   "bench:test_group_bench_smoke:slow"
   "baseline:test_group_network_baseline:network"
@@ -3576,19 +3578,28 @@ STUB
 # Regenerate after an intentional contract change:
 #   GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-errors
 
-# _golden_env <cmd...> — run cmd with every provider key + TAU_ENDPOINT scrubbed
-# and HOME pointed at an isolated dir so a contributor's real config.json or
-# exported keys cannot leak into a snapshot.
+# _env_no_tau <cmd...> — run cmd with every ambient TAU_* variable scrubbed.
+# Unrecognized TAU_* names emit a startup {"warn"} envelope on stderr (the
+# src/envvars.zig registry + env-warn group pin that contract), so any stray
+# TAU_* var in a contributor's environment would otherwise leak into stderr
+# captures and goldens. Commands re-add exactly the vars under test via a
+# nested `env NAME=val` in the command line.
+_env_no_tau() {
+  local v args=()
+  while IFS= read -r v; do args+=(-u "$v"); done < <(printenv | cut -d= -f1 | grep '^TAU_' || true)
+  env ${args[@]+"${args[@]}"} "$@"
+}
+
+# _golden_env <cmd...> — run cmd with every provider key + every ambient
+# TAU_* var scrubbed and HOME pointed at an isolated dir so a contributor's
+# real config.json or exported keys cannot leak into a snapshot.
 _golden_env() {
   if [ -z "${_GOLDEN_HOME:-}" ]; then
     _GOLDEN_HOME="$(mktemp -d)"
     register_temp_dir "$_GOLDEN_HOME"
   fi
-  env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY \
-      -u OPENCODE_API_KEY -u TAU_API_KEY -u TAU_ENDPOINT \
-      -u TAU_UPDATE_URL -u TAU_NO_UPDATE_CHECK -u TAU_INSTALL_URL \
-      -u TAU_INSTALL_DIR -u TAU_BASE_URL -u TAU_YES -u TAU_CHANGELOG_URL \
-      -u TAU_VERIFY_SIGSTORE -u TAU_SETUP_IMPORT \
+  _env_no_tau env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY \
+      -u OPENCODE_API_KEY \
       -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
       -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy \
       -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR \
@@ -4666,6 +4677,109 @@ test_group_errors_doc() {
   else
     skip_test "errors-doc: --check detects a stale doc" "docs/errors.md missing"
   fi
+}
+
+# Group: generated docs/env.md drift check
+# docs/env.md is generated from the TAU_* env-var Spec registry in
+# src/envvars.zig — the same registry the startup typo warning scans —
+# by scripts/gen-env-doc.py; --check regenerates in memory and fails on
+# drift.
+test_group_env_doc() {
+  note "generated docs/env.md drift check"
+
+  local doc="$ROOT/docs/env.md"
+  local gen="$ROOT/scripts/gen-env-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "env-doc: docs/env.md exists" 0 0
+    contains "env-doc: doc declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "env-doc: docs/env.md exists" 1 0
+    contains "env-doc: doc declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "env-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "env-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "env-doc: --check passes (no drift)" 0 0
+  else
+    ok "env-doc: --check passes (no drift)" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/env.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "env-doc: --check detects a stale doc" 0 1
+    else
+      ok "env-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/env.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/env.md.bak" "$doc"
+  else
+    skip_test "env-doc: --check detects a stale doc" "docs/env.md missing"
+  fi
+}
+
+# Group: unrecognized TAU_* env-var warnings (issue #375)
+# Startup scans the environment for TAU_* names missing from the
+# src/envvars.zig registry — a misspelled var is otherwise silently
+# ignored. The {"warn"} envelope (stderr-only, sorted names, per-var
+# did-you-mean within two case-insensitive edits, docs/env.md trailer) is
+# pinned behaviorally here and byte-locked by the golden checks. Every
+# capture runs under _env_no_tau so ambient TAU_* vars can't leak in.
+test_group_env_warn() {
+  note "unrecognized TAU_* env-var warnings"
+
+  # A typo within two edits warns with a did-you-mean; the run continues
+  # (exit 0, stdout stays the clean version line).
+  capture ew_typo _env_no_tau env TAU_ENDPONT=http://x "$BIN" --version
+  ok "env-warn: typo exits 0" "$ew_typo_rc" 0
+  contains "env-warn: typo names the var" "$ew_typo_err" '\"TAU_ENDPONT\"'
+  contains "env-warn: typo suggests the fix" "$ew_typo_err" 'did you mean \"TAU_ENDPOINT\"'
+  contains "env-warn: emit is a warn envelope" "$ew_typo_err" '{"warn":{"message":"'
+  contains "env-warn: warn links the catalog" "$ew_typo_err" 'docs/env.md'
+  lacks "env-warn: stdout stays clean" "$ew_typo_out" 'warn'
+
+  # Multiple unknowns sort; recognized vars are filtered out of the list.
+  capture ew_multi _env_no_tau env TAU_ZZZ=1 TAU_YES=1 TAU_ENDPONT=x "$BIN" --version
+  ok "env-warn: multi exits 0" "$ew_multi_rc" 0
+  contains "env-warn: pluralized message" "$ew_multi_err" 'unrecognized TAU_* variables'
+  contains "env-warn: names sort" "$ew_multi_err" '\"TAU_ENDPONT\" — did you mean \"TAU_ENDPOINT\"?, \"TAU_ZZZ\"'
+  lacks "env-warn: recognized var not listed" "$ew_multi_err" 'TAU_YES'
+
+  # Distant names warn without a suggestion; non-TAU vars never warn.
+  capture ew_far _env_no_tau env TAU_QQQ=1 NOT_TAU_X=1 "$BIN" --version
+  ok "env-warn: distant name exits 0" "$ew_far_rc" 0
+  contains "env-warn: distant name listed" "$ew_far_err" 'TAU_QQQ'
+  lacks "env-warn: distant name gets no suggestion" "$ew_far_err" 'did you mean'
+  lacks "env-warn: non-TAU var ignored" "$ew_far_err" 'NOT_TAU_X'
+
+  # An all-recognized env stays silent — installer-scope (TAU_VERSION,
+  # TAU_BASE_URL) and companion-scope (TAU_BIN, TAU_TOOLS) vars are
+  # documented surface and must not warn.
+  capture ew_ok _env_no_tau env TAU_YES=1 TAU_VERSION=0.4.0 TAU_BASE_URL=file:///x TAU_TOOLS=bash TAU_BIN=/bin/true "$BIN" --version
+  ok "env-warn: recognized env exits 0" "$ew_ok_rc" 0
+  lacks "env-warn: recognized env stays silent" "$ew_ok_err" '"warn"'
+
+  # The warning fires for every invocation — subcommands included — and
+  # stays on stderr so it cannot corrupt a stdout JSON contract.
+  capture ew_sub _env_no_tau env TAU_ENDPONT=x "$BIN" explain 80
+  contains "env-warn: subcommand warns" "$ew_sub_err" 'TAU_ENDPONT'
+  lacks "env-warn: subcommand stdout clean" "$ew_sub_out" 'warn'
+
+  # Byte-lock the envelope: exact warn text, sorted multi-var form, and
+  # the silent recognized-env baseline.
+  GOLDEN_DIR="$ROOT/tests/golden"
+  golden_check env-warn-typo  0 env TAU_ENDPONT=http://x "$BIN" --version
+  golden_check env-warn-multi 0 env TAU_ZZZ=1 TAU_ENDPONT=x "$BIN" --version
+  golden_check env-warn-none  0 env TAU_YES=1 "$BIN" --version
 }
 
 # Group: error-catalog golden coverage gate

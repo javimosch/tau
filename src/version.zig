@@ -22,6 +22,10 @@ pub const errors_doc_url = "https://github.com/javimosch/tau/blob/master/docs/er
 /// so a key lookup lands on the full Key|Type|Constraints|Description table.
 pub const config_doc_url = "https://github.com/javimosch/tau/blob/master/docs/config.md";
 
+/// Generated TAU_* env-var catalog URL. The startup warning for unrecognized
+/// `TAU_*` variables links here so a typo'd name is one hop from the fix.
+pub const env_doc_url = "https://github.com/javimosch/tau/blob/master/docs/env.md";
+
 /// GitHub "latest release" API endpoint queried by the update check
 /// (`tau version --check`, `tau doctor` update_available). TAU_UPDATE_URL
 /// overrides it.

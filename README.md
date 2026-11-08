@@ -554,7 +554,7 @@ starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 }
 ```
 
-CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md) (generated, drift-checked key table: [docs/config.md](docs/config.md)).
+CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md) (generated, drift-checked key table: [docs/config.md](docs/config.md)); the generated `TAU_*` env-var catalog is [docs/env.md](docs/env.md) — unrecognized `TAU_*` names warn on stderr with a did-you-mean hint.
 
 Inspect the resolved effective config (config file + env + CLI flags merged) with `tau config show` — output is JSON and API keys are always redacted:
 
