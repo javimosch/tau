@@ -87,6 +87,14 @@ Setup:
                               --client scopes the sweep, writes nothing
       --json                  Pin the stable schema-checked NDJSON stream
                               (schema/tau-setup.schema.json)
+  tau completions install     Install the generated shell completions for
+                              the detected shell (or --shell
+                              bash|zsh|fish|pwsh|all) into your shell
+                              profile — the same machinery the setup
+                              completions step uses
+      --dry-run               Preview the install; change nothing
+      --json                  Pin the stable schema-checked result object
+                              (schema/tau-completions.schema.json)
 
 Goal mode (in the prompt):
   /goal <objective>            Work autonomously until the objective is audited-complete

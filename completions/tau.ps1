@@ -14,7 +14,7 @@ $TauArgumentCompleter = {
     $modes       = @('text', 'json')
     $roles       = @('author', 'critic', 'coordinator', 'none')
     $tools       = @('bash', 'ls', 'read', 'write', 'edit', 'grep', 'find', 'calculator')
-    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'config', 'doctor', 'setup', 'bug', 'version', 'upgrade', 'explain')
+    $subcommands = @('acp', 'fleet', 'skills', 'models', 'guide', 'init', 'config', 'doctor', 'setup', 'completions', 'bug', 'version', 'upgrade', 'explain')
     $acpArgs     = @('start', 'stop', 'status', 'serve', '--acp-socket', '--max-iterations')
     $fleetSubs   = @('run', 'status', 'list', 'logs', 'cancel')
     $fleetFlags  = @('--goal', '--id', '--api-key', '--provider', '--model',
@@ -29,6 +29,7 @@ $TauArgumentCompleter = {
     $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive', '--dry-run', '--remove', '--uninstall', '--import', '--detect', '--json')
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report', '--attach-report',
                      '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
+    $completionsArgs = @('install', '--shell', '--dry-run', '--json')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
@@ -99,6 +100,8 @@ $TauArgumentCompleter = {
         'config'              = 'inspect and edit the config file (show|validate|set|get|unset|edit|schema)'
         'doctor'              = 'validate setup (config, provider, key, connectivity)'
         'setup'               = 'one-shot onboarding (init + completions + doctor)'
+        'completions'         = 'install generated shell completions (install)'
+        'install'             = 'install generated completions into your shell profile'
         'bug'                 = 'file a pre-filled GitHub issue with doctor diagnostics'
         'version'             = 'print version (--verbose adds build metadata)'
         'upgrade'             = 'self-update in place via the verified install.sh'
@@ -284,6 +287,7 @@ $TauArgumentCompleter = {
         'init'   { return & $emit $initFlags 'ParameterName' }
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
         'setup'  { return & $emit $setupFlags 'ParameterName' }
+        'completions' { return & $emit $completionsArgs 'ParameterName' }
         'bug'    { return & $emit $bugFlags 'ParameterName' }
         'version' { return & $emit $versionFlags 'ParameterName' }
         'upgrade' { return & $emit $upgradeFlags 'ParameterName' }

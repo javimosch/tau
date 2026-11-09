@@ -621,7 +621,9 @@ run `./install.sh` (or `install.ps1` on Windows) — no Zig needed; see
 
 Tab-completion scripts for Bash (`tau.bash`), Zsh (`_tau`), Fish (`tau.fish`),
 and PowerShell (`tau.ps1`) live in [`completions/`](completions/README.md) with
-per-shell install instructions.
+per-shell install instructions — or let `tau completions install` (also part of
+`tau setup`) wire the detected shell for you (`--shell bash|zsh|fish|pwsh|all`,
+`--dry-run` to preview).
 
 ---
 

@@ -3,9 +3,11 @@
 Tab-complete `tau` flags, options, and subcommands in Bash, Zsh, Fish, or
 PowerShell.
 
-> **Quick install:** `tau setup` installs these for the detected shell (or
-> `--shell bash|zsh|fish|pwsh|all`) — the scripts are embedded in the binary,
-> so no checkout is needed. The manual installs below do the same thing.
+> **Quick install:** `tau completions install` (or the completions step of
+> `tau setup`) installs these for the detected shell —
+> `--shell bash|zsh|fish|pwsh|all` to pick, `--dry-run` to preview. The
+> scripts are embedded in the binary, so no checkout is needed. The manual
+> installs below do the same thing.
 
 | File | Shell |
 |---|---|
@@ -18,7 +20,7 @@ PowerShell.
 
 | Context | Completions |
 |---|---|
-| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `init`, `config`, `setup`, `doctor`, `bug`, `guide`, `version`, `upgrade`, `explain`) |
+| Top-level | All flags + subcommands (`acp`, `fleet`, `skills`, `models`, `init`, `config`, `setup`, `completions`, `doctor`, `bug`, `guide`, `version`, `upgrade`, `explain`) |
 | `--provider` | `xiaomi openai deepseek opencode-go` |
 | `--mode` | `text json` |
 | `--role` | `author critic coordinator none` |
@@ -32,6 +34,7 @@ PowerShell.
 | `tau init` | `--force`, `--stdout`, `--provider`, `--json` |
 | `tau doctor` | `--offline`, `--deep`, `--probe`, `--selftest`, `--fix`, `--yes`/`-y`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive`, `--dry-run`, `--remove`, `--uninstall`, `--import`, `--detect`, `--json` |
+| `tau completions` | `install` + `--shell`, `--dry-run`, `--json` |
 | `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--attach-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--check`, `--json`, `--mode` |

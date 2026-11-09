@@ -188,6 +188,13 @@ pub const Config = struct {
     /// Argument to the skills subcommand (e.g. skill name for `load`, query for `search`).
     skills_arg: ?[]const u8 = null,
 
+    // --- Shell completions (`tau completions`) ---
+    /// `tau completions install` subcommand selector. Null means no
+    /// completions subcommand. Its --shell/--dry-run flags land on
+    /// setup_shell/setup_dry_run — the same fields the shared install
+    /// machinery in setup.zig already consumes.
+    completions_sub: ?[]const u8 = null,
+
     // --- Error catalog (`tau explain`) ---
     /// `tau explain <code|type>` query. Null means list the whole catalog.
     explain_arg: ?[]const u8 = null,
@@ -248,7 +255,8 @@ pub const Config = struct {
 
     // --- Setup (src/setup.zig) ---
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —
-    /// shared by `tau setup` and `tau doctor`. Null means detect from $SHELL.
+    /// shared by `tau setup`, `tau doctor`, and `tau completions install`.
+    /// Null means detect from $SHELL.
     /// `TAU_SETUP_SHELL` is the env fallback for `tau setup` when the flag is
     /// absent.
     setup_shell: ?[]const u8 = null,
@@ -266,7 +274,8 @@ pub const Config = struct {
     setup_non_interactive: bool = false,
     /// `tau setup --dry-run` — preview every write step without touching the
     /// filesystem: steps report `would_*` statuses plus `"dry_run":true` so
-    /// scripts can diff the plan against a real run.
+    /// scripts can diff the plan against a real run. `tau completions
+    /// install --dry-run` shares the field.
     setup_dry_run: bool = false,
     /// `tau setup --remove` / `--uninstall` — reverse per-client editor
     /// wiring instead of writing it: splice the tau (or mcacp) entry out of

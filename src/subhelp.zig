@@ -339,6 +339,42 @@ const setup_help =
     \\
 ;
 
+const completions_help =
+    \\tau completions - install the generated shell completions
+    \\
+    \\Usage:
+    \\  tau completions install [--shell <name>] [--dry-run] [--json]
+    \\
+    \\Commands:
+    \\  install          Write the completion script for the detected
+    \\                   shell (or --shell) into its completions dir and
+    \\                   wire the rc/profile autoload hook — the same
+    \\                   machinery `tau setup` runs as its completions
+    \\                   step. Idempotent: re-runs report
+    \\                   "already_installed"/"present" and never
+    \\                   duplicate the rc hook.
+    \\
+    \\Options:
+    \\      --shell <name>  Shell to install for:
+    \\                    bash|zsh|fish|pwsh|all
+    \\                    (default: detect $SHELL)
+    \\      --dry-run       Preview the install — "would_install"/
+    \\                    "would_append" statuses plus "dry_run":true;
+    \\                    nothing is written
+    \\      --json          Pin the stable schema-checked result object
+    \\                    (schema/tau-completions.schema.json; output is
+    \\                    already JSON)
+    \\
+    \\The result object is {"ok","status","shells":[...],"version",
+    \\ "done":true}; the exit code mirrors ok (0 success/skip, 1 failure).
+    \\
+    \\Examples:
+    \\  tau completions install
+    \\  tau completions install --shell zsh
+    \\  tau completions install --shell all --dry-run
+    \\
+;
+
 const skills_help =
     \\tau skills - autodiscover and load agent skills (~/.agents/skills/)
     \\
@@ -437,6 +473,7 @@ pub const entries = [_]Entry{
     .{ .name = "skills", .text = skills_help },
     .{ .name = "init", .text = init_help },
     .{ .name = "setup", .text = setup_help },
+    .{ .name = "completions", .text = completions_help },
     .{ .name = "fleet", .text = fleet_help },
     .{ .name = "config", .text = config_help },
 };
@@ -478,6 +515,7 @@ fn expectedAction(name: []const u8) argsmod.Action {
         .{ "skills", argsmod.Action.skills },
         .{ "init", argsmod.Action.init },
         .{ "setup", argsmod.Action.setup },
+        .{ "completions", argsmod.Action.completions },
         .{ "fleet", argsmod.Action.fleet },
         .{ "config", argsmod.Action.config },
     };

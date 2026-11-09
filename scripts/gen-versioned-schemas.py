@@ -45,6 +45,7 @@ RAW_BASE = "https://raw.githubusercontent.com/javimosch/tau"
 # published contract).
 COMMANDS = {
     "tau-bug.schema.json": "tau bug --json",
+    "tau-completions.schema.json": "tau completions install --json",
     "tau-config-show.schema.json": "tau config show --json",
     "tau-config-validate.schema.json": "tau config validate --json",
     "tau-config.schema.json": "tau config schema",

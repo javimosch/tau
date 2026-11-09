@@ -4,7 +4,7 @@ const goalmod = @import("goal.zig");
 const suggest = @import("suggest.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, config, bug, upgrade, explain, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, completions, config, bug, upgrade, explain, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -620,6 +620,39 @@ pub fn parse(
         // pickProvider ignores unknown names (doctor reports that failure).
         scfg.init_provider = provider_opt;
         return .{ .action = .setup, .config = scfg };
+    }
+
+    // `tau completions install [--shell <sh>] [--dry-run] [--json]` — the
+    // setup completions step as a standalone command: write the embedded
+    // completion script for the detected (or --shell-named) shell and wire
+    // its rc/profile hook. The install flags share setup_shell/setup_dry_run
+    // — the fields the shared machinery in setup.zig consumes. Output is a
+    // single stable JSON result object; --json is the contract spelling.
+    if (argv.len > 0 and eq(argv[0], "completions")) {
+        if (wantsHelp(argv[1..])) return subHelp("completions", base);
+        var ccfg: Config = base;
+        if (argv.len < 2) return errResult(arena, "completions subcommand required: install", .{});
+        if (!eq(argv[1], "install"))
+            return errResult(arena, "invalid completions subcommand (want install): {s}", .{argv[1]});
+        ccfg.completions_sub = argv[1];
+        var j: usize = 2;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!validSetupShell(s))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                ccfg.setup_shell = s;
+            } else if (eq(a, "--dry-run")) {
+                ccfg.setup_dry_run = true;
+            } else if (eq(a, "--json")) {
+                ccfg.cli_json = true;
+                ccfg.mode = .json;
+            } else return errResult(arena, "unknown completions argument: {s}", .{a});
+        }
+        return .{ .action = .completions, .config = ccfg };
     }
 
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
@@ -1767,6 +1800,54 @@ test "parse: setup --detect sets setup_detect, mutex with --remove/--import" {
     const imp = try parseArgv(a, &.{ "tau", "setup", "--import", "--detect" }, .{});
     try std.testing.expectEqual(Action.err, imp.action);
     try std.testing.expectEqualStrings("--detect and --import are mutually exclusive", imp.err_msg.?);
+}
+
+test "parse: completions install flags + validation" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Bare `tau completions` requires a subcommand; only `install` is valid.
+    const bare = try parseArgv(a, &.{ "tau", "completions" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    const bogus = try parseArgv(a, &.{ "tau", "completions", "bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bogus.action);
+
+    const p = try parseArgv(a, &.{ "tau", "completions", "install" }, .{});
+    try std.testing.expectEqual(Action.completions, p.action);
+    try std.testing.expectEqualStrings("install", p.config.completions_sub.?);
+    try std.testing.expect(!p.config.setup_dry_run);
+    try std.testing.expect(!p.config.cli_json);
+
+    // --shell/--dry-run feed the shared install machinery's fields; --json
+    // is the contract-pinned spelling of the same result object.
+    const q = try parseArgv(a, &.{ "tau", "completions", "install", "--shell", "zsh", "--dry-run", "--json" }, .{});
+    try std.testing.expectEqual(Action.completions, q.action);
+    try std.testing.expectEqualStrings("zsh", q.config.setup_shell.?);
+    try std.testing.expect(q.config.setup_dry_run);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, q.config.mode);
+
+    // --shell all expands like `tau setup --shell all`.
+    const all = try parseArgv(a, &.{ "tau", "completions", "install", "--shell", "all" }, .{});
+    try std.testing.expectEqualStrings("all", all.config.setup_shell.?);
+
+    // Bad shell, missing value, and unknown flags are invalid arguments.
+    const tcsh = try parseArgv(a, &.{ "tau", "completions", "install", "--shell", "tcsh" }, .{});
+    try std.testing.expectEqual(Action.err, tcsh.action);
+    const miss = try parseArgv(a, &.{ "tau", "completions", "install", "--shell" }, .{});
+    try std.testing.expectEqual(Action.err, miss.action);
+    const unk = try parseArgv(a, &.{ "tau", "completions", "install", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, unk.action);
+
+    // `tau completions --help` routes to the dedicated help page, and help
+    // wins over a bad subcommand (the conventional CLI contract).
+    const h = try parseArgv(a, &.{ "tau", "completions", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, h.action);
+    try std.testing.expectEqualStrings("completions", h.config.help_sub.?);
+    const h2 = try parseArgv(a, &.{ "tau", "completions", "bogus", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, h2.action);
+    try std.testing.expectEqualStrings("completions", h2.config.help_sub.?);
 }
 
 test "parse: TAU_SETUP_IMPORT env enables setup --import" {

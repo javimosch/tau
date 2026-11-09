@@ -7,6 +7,11 @@
       "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-bug.schema.json"
     },
     {
+      "command": "tau completions install --json",
+      "file": "tau-completions.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-completions.schema.json"
+    },
+    {
       "command": "tau config show --json",
       "file": "tau-config-show.schema.json",
       "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-config-show.schema.json"
