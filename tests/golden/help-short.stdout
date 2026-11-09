@@ -152,6 +152,8 @@ Diagnostics:
                               ($BROWSER, else open/xdg-open/rundll32)
       --out <path>            Also write the bundle to a file
       --no-report             Omit the diagnostics bundle
+      --attach-report <path>  Bundle an existing report file
+                              (secret-redacted) instead of the live sweep
       --offline/--deep        Passed through to the diagnostic sweep
       --json                  Pin the stable schema-checked JSON form
                               (schema/tau-bug.schema.json)

@@ -330,13 +330,16 @@ pub fn parse(
     }
 
     // `tau bug [--title T] [--body TEXT] [--labels CSV] [--open] [--out PATH]
-    // [--no-report] [--offline] [--deep] [--provider P] [--model M]
-    // [--api-key K] [--shell sh] [--json]` — build a pre-filled GitHub issue
-    // carrying the redacted `tau doctor --report` bundle; a command, not a
-    // prompt. The diagnostic sweep honors the same overrides as `tau doctor`,
-    // so an unknown provider rides into the report as a failed check (exit-80
-    // only for malformed arguments). --out and --no-report conflict: there is
-    // no bundle to write. The stdout object is already JSON; --json is the
+    // [--no-report] [--attach-report PATH] [--offline] [--deep] [--provider P]
+    // [--model M] [--api-key K] [--shell sh] [--json]` — build a pre-filled
+    // GitHub issue carrying the redacted `tau doctor --report` bundle; a
+    // command, not a prompt. The diagnostic sweep honors the same overrides
+    // as `tau doctor`, so an unknown provider rides into the report as a
+    // failed check (exit-80 only for malformed arguments). --out and
+    // --no-report conflict: there is no bundle to write. --attach-report
+    // reads an existing report file at parse time, secret-redacts it, and
+    // bundles it in place of the live sweep — it conflicts with --no-report
+    // for the same reason. The stdout object is already JSON; --json is the
     // stable-contract spelling that pins it (schema/tau-bug.schema.json).
     if (argv.len > 0 and eq(argv[0], "bug")) {
         if (wantsHelp(argv[1..])) return subHelp("bug", base);
@@ -366,6 +369,11 @@ pub fn parse(
                 bcfg.bug_out = argv[j];
             } else if (eq(a, "--no-report")) {
                 bcfg.bug_no_report = true;
+            } else if (eq(a, "--attach-report")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_attach_report = std.Io.Dir.cwd().readFileAlloc(io, argv[j], arena, .unlimited) catch
+                    return errResult(arena, "cannot read report file: {s}", .{argv[j]});
             } else if (eq(a, "--offline")) {
                 bcfg.doctor_offline = true;
             } else if (eq(a, "--deep")) {
@@ -397,6 +405,8 @@ pub fn parse(
         }
         if (bcfg.bug_out != null and bcfg.bug_no_report)
             return errResult(arena, "--out and --no-report are mutually exclusive", .{});
+        if (bcfg.bug_attach_report != null and bcfg.bug_no_report)
+            return errResult(arena, "--attach-report and --no-report are mutually exclusive", .{});
         if (try resolveProviderAndModel(&bcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
             bcfg.doctor_bad_provider = bad;
         }
@@ -2212,6 +2222,7 @@ test "parse: bug selects the bug action with defaults" {
     try std.testing.expect(!p.config.bug_open);
     try std.testing.expect(p.config.bug_out == null);
     try std.testing.expect(!p.config.bug_no_report);
+    try std.testing.expect(p.config.bug_attach_report == null);
     try std.testing.expect(!p.config.doctor_offline);
     try std.testing.expect(!p.config.doctor_deep);
 }
@@ -2260,6 +2271,33 @@ test "parse: bug --out + --no-report is mutually exclusive; bad args exit 80" {
 
     const bad_shell = try parseArgv(a, &.{ "tau", "bug", "--shell", "tcsh" }, .{});
     try std.testing.expectEqual(Action.err, bad_shell.action);
+}
+
+test "parse: bug --attach-report reads the file; mutex/unreadable exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/report.md", .{tmp.sub_path[0..]});
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = "# tau doctor report\nattached\n" });
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--attach-report", path }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expectEqualStrings("# tau doctor report\nattached\n", p.config.bug_attach_report.?);
+
+    const mutex = try parseArgv(a, &.{ "tau", "bug", "--attach-report", path, "--no-report" }, .{});
+    try std.testing.expectEqual(Action.err, mutex.action);
+    try std.testing.expectEqualStrings("--attach-report and --no-report are mutually exclusive", mutex.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "bug", "--attach-report" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --attach-report", missing_val.err_msg.?);
+
+    const unreadable = try parseArgv(a, &.{ "tau", "bug", "--attach-report", "/nonexistent/nope.md" }, .{});
+    try std.testing.expectEqual(Action.err, unreadable.action);
+    try std.testing.expectEqualStrings("cannot read report file: /nonexistent/nope.md", unreadable.err_msg.?);
 }
 
 test "parse: bug carries an unknown provider as a failed check, not exit 80" {

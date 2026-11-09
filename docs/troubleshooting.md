@@ -515,4 +515,7 @@ tool I/O and endpoint details. Attach it to a bug report:
 Or let tau do it: `tau bug --open` builds a pre-filled issue URL carrying the
 redacted `tau doctor --report` bundle and opens it in your browser (`--title`
 and `--body` fill in the title and description, `--out <path>` also writes
-the bundle to a file for manual attaching).
+the bundle to a file for manual attaching). To file an issue around a report
+you captured earlier — e.g. at crash time — `tau bug --attach-report
+<path>` bundles that file instead of re-running the diagnostic sweep; the
+file is secret-redacted before it reaches the issue body or URL.

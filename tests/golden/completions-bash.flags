@@ -1,6 +1,7 @@
 --acp-socket
 --api-key
 --append-system-prompt
+--attach-report
 --auto-agents-md
 --body
 --check

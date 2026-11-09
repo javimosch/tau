@@ -57,6 +57,10 @@ const bug_help =
     \\      --open             Open the issue URL in the system browser
     \\      --out <path>       Also write the diagnostics bundle to a file
     \\      --no-report        Omit the diagnostics bundle
+    \\      --attach-report <path>
+    \\                         Bundle an existing `tau doctor --report` file
+    \\                         (secret-redacted) instead of running the live
+    \\                         sweep — mutually exclusive with --no-report
     \\      --offline/--deep   Passed through to the diagnostic sweep
     \\      --provider <name>  Diagnose an override provider
     \\      --model <id>       Diagnose an override model

@@ -2089,6 +2089,35 @@ test_group_bug() {
     HOME="$mock_home" "$BIN" bug --offline --provider nope
   ok "unknown provider still exits 0" "$bug_badprov_rc" 0
   contains "bad provider inside the bundle" "$bug_badprov_out" "unknown provider 'nope'"
+
+  # 10. --attach-report: an existing report file is bundled (secret-redacted)
+  #     in place of the live sweep. Mutex with --no-report; unreadable -> 80.
+  printf '# captured report\nkey=sk-attach-secret-456\n' > "$mock_home/captured.md"
+  capture bug_attach env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-attach-secret-456 HOME="$mock_home" "$BIN" bug --attach-report "$mock_home/captured.md"
+  ok "bug --attach-report exits 0" "$bug_attach_rc" 0
+  contains "report_source is attached" "$bug_attach_out" '"report_source":"attached"'
+  contains "attached content in report field" "$bug_attach_out" '"report":"# captured report'
+  contains "attached content in body" "$bug_attach_out" '"body":"# captured report'
+  if printf '%s' "$bug_attach_out" | grep -qF 'sk-attach-secret-456'; then
+    ok "attached secret never in output" 1 0
+  else
+    ok "attached secret never in output" 0 0
+  fi
+  contains "attached secret is masked" "$bug_attach_out" '***REDACTED***'
+  capture bug_attach_out_file env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --attach-report "$mock_home/captured.md" --out "$mock_home/bundle.md"
+  ok "attach + --out exits 0" "$bug_attach_out_file_rc" 0
+  if [ -f "$mock_home/bundle.md" ] && grep -qF '# captured report' "$mock_home/bundle.md"; then
+    ok "--out wrote the attached bundle" 0 0
+  else
+    ok "--out wrote the attached bundle" 1 0
+  fi
+  "$BIN" bug --attach-report "$mock_home/captured.md" --no-report >/dev/null 2>&1; ok "attach + --no-report -> exit 80" "$?" 80
+  capture bug_attach_missing "$BIN" bug --attach-report "$mock_home/nope.md"
+  ok "unreadable attach -> exit 80" "$bug_attach_missing_rc" 80
+  contains "unreadable attach names the file" "$bug_attach_missing_err" 'cannot read report file'
+  rm -f "$mock_home/captured.md"
 }
 
 # Group: `tau config schema` — emits the config file's JSON Schema (draft

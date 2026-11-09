@@ -321,6 +321,11 @@ pub const Config = struct {
     bug_out: ?[]const u8 = null,
     /// `tau bug --no-report` — omit the diagnostics bundle from the issue.
     bug_no_report: bool = false,
+    /// `tau bug --attach-report <path>` — contents of an existing
+    /// `tau doctor --report` file bundled into the issue instead of running
+    /// the live diagnostic sweep (read at parse time; secret-redacted before
+    /// embedding).
+    bug_attach_report: ?[]const u8 = null,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` and
