@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Gate: every generated-catalog entry resolves via `tau explain`.
 
-docs/errors.md is generated from the Spec catalog in src/errors.zig and
-docs/config.md from the FileConfig schema — together they declare every
-name a user (or an agent parsing the envelope's `explain` footer) can
-look up offline. This checker fails when a catalog entry does not
+docs/errors.md is generated from the Spec catalog in src/errors.zig,
+docs/config.md from the FileConfig schema, the doctor-check table in
+docs/troubleshooting.md from src/doctorcatalog.zig, and docs/env.md from
+the Spec registry in src/envvars.zig — together they declare every name a
+user (or an agent parsing the envelope's `explain` footer) can look up
+offline. This checker fails when a catalog entry does not
 resolve to a real `tau explain` entry, where "resolves" means:
 
   - `tau explain <code>` exits 0 and emits an entry carrying BOTH the
@@ -15,7 +17,9 @@ resolve to a real `tau explain` entry, where "resolves" means:
   - `tau explain <key>` (each row of the docs/config.md `## Keys` table)
     exits 0 and emits an entry carrying `"key":"<key>"`;
   - `tau explain keys.<member>` — for each member named in the `keys`
-    row's "member names" clause — exits 0 with `"key":"keys.<member>"`.
+    row's "member names" clause — exits 0 with `"key":"keys.<member>"`;
+  - `tau explain TAU_<VAR>` (each `TAU_*` row of the generated
+    docs/env.md tables) exits 0 with `"env":"TAU_<VAR>"`.
 
 The reverse direction is gated too: every code and key the live
 `tau explain` catalog lists must appear in the generated docs, so a new
@@ -24,7 +28,7 @@ Spec or config field cannot ship undocumented.
 Usage:
 
     python3 scripts/check-explain-coverage.py [--tau PATH]
-        [--errors-doc PATH] [--config-doc PATH]
+        [--errors-doc PATH] [--config-doc PATH] [--env-doc PATH]
 
 Exit codes: 0 = full coverage, 1 = coverage gap (each printed to stderr),
 2 = usage/IO error. Stdlib only — paths resolve relative to the script,
@@ -64,6 +68,11 @@ CHECKS_SECTION = re.compile(
     re.DOTALL)
 CHECK_ROW = re.compile(r"^\|([^|\n]+)\|", re.MULTILINE)
 BACKTICK = re.compile(r"`([^`]+)`")
+
+# docs/env.md rows: `| `TAU_X` | <consumers> | <summary> |`. Only TAU_*
+# first cells count — the typo-warning transcript and prose backticks are
+# not table rows, but the prefix filter makes the intent explicit anyway.
+ENV_ROW = re.compile(r"^\|\s*`(TAU_[^`\s]+)`\s*\|", re.MULTILINE)
 
 
 def error_entries(catalog: Path):
@@ -113,6 +122,16 @@ def check_entries(doc: Path):
     return ids
 
 
+def env_entries(doc: Path):
+    """TAU_* variable names from the generated docs/env.md tables."""
+    if not doc.is_file():
+        raise OSError(f"env doc not found: {doc}")
+    names = ENV_ROW.findall(doc.read_text(encoding="utf-8"))
+    if not names:
+        raise OSError(f"no `| `TAU_*` |` rows parsed from {doc}")
+    return names
+
+
 def explain(tau: str, *args):
     """(returncode, stdout) of `tau explain <args>` — pure catalog lookup."""
     proc = subprocess.run([tau, "explain", *args], capture_output=True, text=True)
@@ -127,6 +146,7 @@ def main(argv=None):
     ap.add_argument("--config-doc", type=Path, default=ROOT / "docs" / "config.md")
     ap.add_argument("--doctor-doc", type=Path,
                     default=ROOT / "docs" / "troubleshooting.md")
+    ap.add_argument("--env-doc", type=Path, default=ROOT / "docs" / "env.md")
     args = ap.parse_args(argv)
 
     if not Path(args.tau).is_file():
@@ -138,6 +158,7 @@ def main(argv=None):
         errors = error_entries(args.errors_doc)
         keys, members = config_entries(args.config_doc)
         checks = check_entries(args.doctor_doc)
+        env_names = env_entries(args.env_doc)
     except OSError as e:
         print(f"check-explain-coverage: {e}", file=sys.stderr)
         return 2
@@ -181,6 +202,13 @@ def main(argv=None):
                 f"troubleshooting.md check `{cid}` does not resolve via "
                 f"`tau explain doctor.{cid}` (exit {rc})"
             )
+    for var in sorted(set(env_names)):
+        rc, out = explain(args.tau, var)
+        if rc != 0 or f'"env":"{var}"' not in out:
+            problems.append(
+                f"env.md variable `{var}` does not resolve via "
+                f"`tau explain {var}` (exit {rc})"
+            )
 
     # Reverse: every entry the live catalog lists is documented.
     rc, out = explain(args.tau)
@@ -213,6 +241,13 @@ def main(argv=None):
                         f"`tau explain` lists check `{entry.get('check')}` but "
                         "it is absent from the generated check table in "
                         "docs/troubleshooting.md — regenerate the catalog"
+                    )
+            documented_env = set(env_names)
+            for entry in live.get("env_vars", []):
+                if entry.get("env") not in documented_env:
+                    problems.append(
+                        f"`tau explain` lists env var `{entry.get('env')}` but "
+                        "it is absent from docs/env.md — regenerate the catalog"
                     )
 
     for p in problems:

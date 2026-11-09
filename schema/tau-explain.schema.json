@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-explain.schema.json",
   "title": "tau explain --json output",
-  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key|doctor.<check>> query the output is a single entry object — an error entry for a code/type query, a config-key entry for a key query (including dotted keys.<provider> member paths), or a doctor-check entry for a `doctor.<check>` or bare check-id query; with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...],\"doctor_checks\":[check_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. Doctor-check entries mirror one row of the generated check table in docs/troubleshooting.md: check is the `tau doctor` report row id, fails_when the condition that warns/fails, remediation the fix, docs the troubleshooting-section link. New keys may be added (additive); existing keys keep their names and types.",
+  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key|doctor.<check>|TAU_*> query the output is a single entry object — an error entry for a code/type query, a config-key entry for a key query (including dotted keys.<provider> member paths), a doctor-check entry for a `doctor.<check>` or bare check-id query, or an env-var entry for an exact TAU_* variable name; with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...],\"doctor_checks\":[check_entry, ...],\"env_vars\":[env_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. Doctor-check entries mirror one row of the generated check table in docs/troubleshooting.md: check is the `tau doctor` report row id, fails_when the condition that warns/fails, remediation the fix, docs the troubleshooting-section link. Env-var entries mirror one row of the generated docs/env.md table: env is the TAU_* variable name, section its doc grouping (tau | installer | external), consumers what reads it, summary what it does, docs the env reference link. New keys may be added (additive); existing keys keep their names and types.",
   "oneOf": [
     { "$ref": "#/$defs/entry" },
     { "$ref": "#/$defs/config_entry" },
     { "$ref": "#/$defs/check_entry" },
+    { "$ref": "#/$defs/env_entry" },
     { "$ref": "#/$defs/catalog" }
   ],
   "$defs": {
@@ -46,9 +47,21 @@
         "docs": { "type": "string", "minLength": 1, "description": "Link to the doctor-checks section of docs/troubleshooting.md." }
       }
     },
+    "env_entry": {
+      "type": "object",
+      "required": ["env", "section", "consumers", "summary", "docs"],
+      "additionalProperties": false,
+      "properties": {
+        "env": { "type": "string", "minLength": 1, "description": "TAU_* environment variable name as it appears in the generated docs/env.md catalog (e.g. \"TAU_ENDPOINT\", \"TAU_VERSION\"); queried by exact (uppercase) name." },
+        "section": { "type": "string", "enum": ["tau", "installer", "external"], "description": "docs/env.md grouping — \"tau\" for variables the tau binary reads, \"installer\" for install.sh/install.ps1-only variables, \"external\" for companion tooling (a2a-spawn, scripts/smoke.sh)." },
+        "consumers": { "type": "string", "minLength": 1, "description": "What reads the variable — the same cell text the generated docs/env.md Consumed-by column renders; informational, may be reworded." },
+        "summary": { "type": "string", "minLength": 1, "description": "One line describing what the variable controls — the generated docs/env.md Purpose cell; informational, may be reworded." },
+        "docs": { "type": "string", "minLength": 1, "description": "Link to the generated env-var reference (docs/env.md)." }
+      }
+    },
     "catalog": {
       "type": "object",
-      "required": ["errors", "config_keys", "doctor_checks"],
+      "required": ["errors", "config_keys", "doctor_checks", "env_vars"],
       "additionalProperties": false,
       "properties": {
         "errors": {
@@ -65,6 +78,11 @@
           "type": "array",
           "items": { "$ref": "#/$defs/check_entry" },
           "description": "Every resolvable `tau doctor` check id — each row of the generated docs/troubleshooting.md check table."
+        },
+        "env_vars": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/env_entry" },
+          "description": "Every resolvable TAU_* environment variable — each row of the generated docs/env.md tables (tau binary, installers, and companion tooling sections)."
         }
       }
     }
@@ -73,6 +91,7 @@
     { "code": 106, "type": "AuthFailed", "recoverable": false, "cause": "the provider rejected the API key, or no key was found anywhere in the resolution chain", "hint": "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY", "docs": "https://github.com/javimosch/tau/blob/master/docs/providers.md" },
     { "key": "timeout_ms", "type": "integer", "constraints": "`>= 0`", "description": "HTTP request timeout in milliseconds.", "docs": "https://github.com/javimosch/tau/blob/master/docs/config.md" },
     { "check": "tls_ca", "fails_when": "CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline)", "remediation": "set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#setup--config-problems--tau-doctor" },
+    { "env": "TAU_ENDPOINT", "section": "tau", "consumers": "tau", "summary": "Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers.", "docs": "https://github.com/javimosch/tau/blob/master/docs/env.md" },
     { "errors": [
       { "code": 1, "type": "not_found", "recoverable": false, "cause": "a named resource is missing — the message identifies the file, skill, or session", "hint": "the message names what was not found — check the name/path and retry", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md" }
     ],
@@ -81,6 +100,9 @@
     ],
     "doctor_checks": [
       { "check": "tls_ca", "fails_when": "CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline)", "remediation": "set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#setup--config-problems--tau-doctor" }
+    ],
+    "env_vars": [
+      { "env": "TAU_ENDPOINT", "section": "tau", "consumers": "tau", "summary": "Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers.", "docs": "https://github.com/javimosch/tau/blob/master/docs/env.md" }
     ] }
   ]
 }

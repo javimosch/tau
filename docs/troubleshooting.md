@@ -80,10 +80,13 @@ dotted `keys.<provider>` member path. A `tau doctor` check id resolves too:
 `tau explain doctor.tls_ca` prints when that check fails and the
 remediation that resolves it — the same rows as the generated check table
 below (bare `tls_ca` also works; `api_key` stays the config key — prefix it
-`doctor.api_key` for the check). A mistyped code, `type`, key, or check id
-exits 1 with a `not_found` envelope whose message suggests the nearest
-catalog entry — `did you mean "tau explain <code|type|key|doctor.<check>>"?`
-— when the query is within two case-insensitive edits of one.
+`doctor.api_key` for the check). `TAU_*` environment variables resolve by
+exact name too: `tau explain TAU_ENDPOINT` prints the variable's consumers
+and summary from the generated [env.md](env.md) tables. A mistyped code,
+`type`, key, check id, or env var exits 1 with a `not_found` envelope whose
+message suggests the nearest catalog entry — `did you mean "tau explain
+<code|type|key|doctor.<check>|TAU_*>"?` — when the query is within two
+case-insensitive edits of one.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
 run continues.

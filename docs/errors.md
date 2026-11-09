@@ -75,6 +75,11 @@ Config keys resolve the same way from the generated
 [docs/config.md](config.md) table — `tau explain timeout_ms` or
 `tau explain keys.openai` prints the key's type, constraints, and
 description, and bare `tau explain` lists them under `config_keys`.
+`tau doctor` check ids resolve from the generated check table in
+[docs/troubleshooting.md](troubleshooting.md) (`doctor.<check>` or a
+bare id), and `TAU_*` environment variables resolve from the
+[docs/env.md](env.md) tables (`tau explain TAU_ENDPOINT`); the bare
+catalog lists them under `doctor_checks` and `env_vars`.
 
 ## Silent exit paths
 

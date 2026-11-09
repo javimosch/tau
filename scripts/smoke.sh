@@ -4392,6 +4392,15 @@ test_group_golden_maintenance() {
   golden_check ex-doctor-unknown   1 "$BIN" explain doctor.bogus
   golden_check ex-dym-doctor       1 "$BIN" explain doctor.tls-ca
 
+  # TAU_* env-var lookups — mirror rows of the generated docs/env.md
+  # tables across all three sections (tau / installer / external).
+  golden_check ex-env              0 "$BIN" explain TAU_ENDPOINT
+  golden_check ex-env-installer    0 "$BIN" explain TAU_VERSION
+  golden_check ex-env-external     0 "$BIN" explain TAU_BIN
+  golden_check ex-env-human        0 "$BIN" explain --human TAU_YES
+  golden_check ex-env-unknown      1 "$BIN" explain TAU_ZZZ
+  golden_check ex-env-dym          1 "$BIN" explain TAU_ENDPONT
+
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
   mkdir -p "$stubs"
@@ -5654,7 +5663,7 @@ test_group_explain() {
   capture k7 "$BIN" explain agent.timeout
   ok "explain: unknown dotted path exits 1" "$k7_rc" 1
   contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
-  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, or doctor check'
+  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, or env var'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
@@ -5712,6 +5721,42 @@ test_group_explain() {
   capture d9 "$BIN" explain doctor.bogus
   ok "explain: unknown check exits 1" "$d9_rc" 1
   contains "explain: unknown check emits not_found" "$d9_err" '"type":"not_found"'
+
+  # TAU_* env-var lookups — mirror rows of the generated docs/env.md
+  # tables: exact (uppercase) names across all three sections.
+  capture e1 _env_no_tau "$BIN" explain TAU_ENDPOINT
+  ok "explain: env var exits 0" "$e1_rc" 0
+  contains "explain: env entry carries name" "$e1_out" '"env":"TAU_ENDPOINT"'
+  contains "explain: env entry carries section" "$e1_out" '"section":"tau"'
+  contains "explain: env entry carries consumers" "$e1_out" '"consumers":"tau"'
+  contains "explain: env entry carries summary" "$e1_out" '"summary":"Overrides the provider'
+  contains "explain: env entry links env.md" "$e1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/env.md"'
+
+  capture e2 _env_no_tau "$BIN" explain TAU_VERSION
+  ok "explain: installer env var exits 0" "$e2_rc" 0
+  contains "explain: installer env var tagged" "$e2_out" '"section":"installer"'
+  capture e3 _env_no_tau "$BIN" explain TAU_BIN
+  ok "explain: external env var exits 0" "$e3_rc" 0
+  contains "explain: external env var tagged" "$e3_out" '"section":"external"'
+
+  capture e4 _env_no_tau "$BIN" explain --human TAU_YES
+  ok "explain: --human env exits 0" "$e4_rc" 0
+  contains "explain: --human prints env var" "$e4_out" 'env var  TAU_YES (tau)'
+  contains "explain: --human prints consumers" "$e4_out" 'consumers: tau'
+
+  # The no-query catalog carries the fourth slice.
+  contains "explain: catalog lists env vars" "$r3_out" '"env_vars":['
+  contains "explain: catalog includes an env var" "$r3_out" '"env":"TAU_ENDPOINT"'
+
+  # Env-name typos get the same did-you-mean (lowercase included);
+  # unrecognized TAU_* names exit 1 without a close-enough candidate.
+  capture e5 _env_no_tau "$BIN" explain TAU_ENDPONT
+  ok "explain: env typo exits 1" "$e5_rc" 1
+  contains "explain: env typo suggests TAU_ENDPOINT" "$e5_err" 'did you mean \"tau explain TAU_ENDPOINT\"?'
+  capture e6 _env_no_tau "$BIN" explain TAU_ZZZ
+  ok "explain: unknown env var exits 1" "$e6_rc" 1
+  contains "explain: unknown env var emits not_found" "$e6_err" '"type":"not_found"'
+  lacks "explain: unknown env var gets no suggestion" "$e6_err" 'did you mean'
 
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
@@ -5783,6 +5828,12 @@ test_group_explain() {
     else
       ok "explain: check entry validates against schema" 1 0
     fi
+    # An env-var entry validates against the same schema.
+    if printf '%s' "$e1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: env entry validates against schema" 0 0
+    else
+      ok "explain: env entry validates against schema" 1 0
+    fi
   else
     skip_test "explain: schema validation" "python3 not on PATH"
   fi
@@ -5806,6 +5857,7 @@ test_group_explain_coverage() {
     skip_test "explain-coverage: every catalog entry resolves via tau explain" "python3 not on PATH"
     skip_test "explain-coverage: checker detects an unresolvable error row" "python3 not on PATH"
     skip_test "explain-coverage: checker detects an unresolvable config key" "python3 not on PATH"
+    skip_test "explain-coverage: checker detects an unresolvable env var" "python3 not on PATH"
     return 0
   fi
 
@@ -5860,6 +5912,23 @@ PYEOF
     ok "explain-coverage: checker detects an unresolvable doctor check" 0 1
   else
     ok "explain-coverage: checker detects an unresolvable doctor check" 0 0
+  fi
+
+  # And an env.md row with no matching envvars.Spec — spliced as a table
+  # row so the TAU_*-prefixed row parser picks it up (the env-doc drift
+  # gate independently keeps the row set honest against the registry).
+  cp "$ROOT/docs/env.md" "$stage/env.md"
+  python3 - "$stage/env.md" <<'PYEOF'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+t = t.replace("| `TAU_API_KEY` |", "| `TAU_BOGUS_VAR` | staged | staged |\n| `TAU_API_KEY` |", 1)
+open(p, "w").write(t)
+PYEOF
+  if python3 "$check" --tau "$BIN" --env-doc "$stage/env.md" >/dev/null 2>&1; then
+    ok "explain-coverage: checker detects an unresolvable env var" 0 1
+  else
+    ok "explain-coverage: checker detects an unresolvable env var" 0 0
   fi
 }
 

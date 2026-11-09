@@ -275,7 +275,8 @@ The generated, drift-checked catalog of every recognized `TAU_*` name is
 [docs/env.md](env.md). At startup tau warns on stderr about any `TAU_*`
 variable it does not recognize — a `{"warn":...}` envelope with a
 did-you-mean hint — so a misspelling like `TAU_ENDPONT` surfaces instead
-of silently doing nothing.
+of silently doing nothing. Every name also resolves offline via
+`tau explain TAU_<VAR>` (consumers + summary, JSON or `--human` prose).
 
 ### Read by tau itself
 

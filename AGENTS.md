@@ -312,11 +312,13 @@ tau config edit ./ci.json              # Explicit path
 
 #### 20. Offline Explain Catalog
 ```bash
-tau explain                       # List the error + config-key catalog (JSON)
+tau explain                       # List the error + config-key + doctor-check + env-var catalog (JSON)
 tau explain 106                   # Error entry by exit code: cause + hint + docs
 tau explain AuthFailed            # Same, by wire `type` tag
 tau explain timeout_ms            # Config key: type + constraints + description
 tau explain keys.openai           # Same, a dotted keys.<provider> member path
+tau explain doctor.tls_ca         # Doctor check: fails-when + remediation
+tau explain TAU_ENDPOINT          # Env var: consumers + summary (from docs/env.md)
 tau explain --json 106            # Pin the schema-checked JSON form (default)
 tau explain --human 80            # Prose instead of JSON
 ```
@@ -696,9 +698,10 @@ Set appropriate context windows for compaction threshold:
 ## Troubleshooting
 
 `tau explain <code|type|key>` prints the offline catalog entry (cause + remediation
-hint) for any stable error — see docs/errors.md for the generated catalog — or a
+hint) for any stable error — see docs/errors.md for the generated catalog — a
 config key's type/constraints/description from docs/config.md (`keys.<provider>`
-member paths included).
+member paths included), a doctor check's fails-when + remediation via
+`doctor.<check>`, or a `TAU_*` env var's consumers + summary from docs/env.md.
 
 ### Auth Failed (exit code 106)
 - Check API key is correct

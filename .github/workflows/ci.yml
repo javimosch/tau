@@ -181,6 +181,7 @@ jobs:
           [ "$rc" -eq 1 ] || { echo "config validate on a bad file exited $rc (want 1)"; exit 1; }
           python3 scripts/check-cli-schema.py --schema schema/tau-config-validate.schema.json "$tmp/bad.json"
           "$TAU_BIN" explain --json 106 | python3 scripts/check-cli-schema.py --schema schema/tau-explain.schema.json -
+          "$TAU_BIN" explain --json TAU_ENDPOINT | python3 scripts/check-cli-schema.py --schema schema/tau-explain.schema.json -
           "$TAU_BIN" explain --json | python3 scripts/check-cli-schema.py --schema schema/tau-explain.schema.json -
           # init/setup/upgrade/bug emit JSON by default; --json pins the
           # schema-checked contract spelling (issue #315).
