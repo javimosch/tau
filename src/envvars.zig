@@ -14,6 +14,7 @@
 //! not warn.
 
 const std = @import("std");
+const json = @import("json.zig");
 const suggest = @import("suggest.zig");
 
 /// Doc-table grouping — controls which docs/env.md section a variable is
@@ -108,6 +109,30 @@ fn suggestName(a: std.mem.Allocator, name: []const u8) ?[]const u8 {
 }
 
 const env_doc_url = @import("version.zig").env_doc_url;
+
+/// Serialize one env-var entry for `tau explain` (no trailing newline —
+/// the caller owns framing):
+/// {"env":"N","section":"S","consumers":"C","summary":"S","docs":"U"}
+/// `section` is the docs/env.md grouping ("tau", "installer", or
+/// "external") — it tells an agent whether tau itself reads the variable
+/// or only companion tooling does. Caller owns the returned slice.
+pub fn formatEnvJson(a: std.mem.Allocator, s: Spec) ![]u8 {
+    const ne = try json.escapeAlloc(a, s.name);
+    defer a.free(ne);
+    const ce = try json.escapeAlloc(a, s.consumers);
+    defer a.free(ce);
+    const se = try json.escapeAlloc(a, s.summary);
+    defer a.free(se);
+    const de = try json.escapeAlloc(a, env_doc_url);
+    defer a.free(de);
+    return std.fmt.allocPrint(a, "{{\"env\":\"{s}\",\"section\":\"{s}\",\"consumers\":\"{s}\",\"summary\":\"{s}\",\"docs\":\"{s}\"}}", .{ ne, @tagName(s.section), ce, se, de });
+}
+
+/// Human-readable `tau explain --human TAU_<VAR>` rendering — drawn from
+/// the same Spec so the prose and JSON forms can never drift apart.
+pub fn formatEnvHuman(a: std.mem.Allocator, s: Spec) ![]u8 {
+    return std.fmt.allocPrint(a, "env var  {s} ({s})\n  consumers: {s}\n  summary:   {s}\n  docs:      {s}\n", .{ s.name, @tagName(s.section), s.consumers, s.summary, env_doc_url });
+}
 
 /// Build the startup warning for `TAU_*` environment variables tau does
 /// not recognize — misspelled names are silently ignored otherwise, which
@@ -212,6 +237,35 @@ test "unknownVarWarning: suggestion is case-insensitive" {
     var env = try envWith(arena, &.{.{ "TAU_yes", "1" }});
     const w = unknownVarWarning(arena, &env).?;
     try testing.expect(std.mem.indexOf(u8, w, "did you mean \"TAU_YES\"") != null);
+}
+
+test "explain: formatEnvJson emits the env entry shape" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const got = try formatEnvJson(ar.allocator(), findSpec("TAU_ENDPOINT").?);
+    try testing.expect(std.mem.startsWith(u8, got, "{\"env\":\"TAU_ENDPOINT\""));
+    try testing.expect(std.mem.indexOf(u8, got, "\"section\":\"tau\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"consumers\":\"tau\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"summary\":\"") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "docs/env.md") != null);
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, ar.allocator(), got, .{});
+    try testing.expect(v.object.get("env").?.string.len > 0);
+    // Installer and external specs carry their own section tags.
+    const inst = try formatEnvJson(ar.allocator(), findSpec("TAU_VERSION").?);
+    try testing.expect(std.mem.indexOf(u8, inst, "\"section\":\"installer\"") != null);
+    const ext = try formatEnvJson(ar.allocator(), findSpec("TAU_BIN").?);
+    try testing.expect(std.mem.indexOf(u8, ext, "\"section\":\"external\"") != null);
+}
+
+test "explain: formatEnvHuman renders consumers, summary, and docs" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const s = findSpec("TAU_YES").?;
+    const got = try formatEnvHuman(ar.allocator(), s);
+    try testing.expect(std.mem.indexOf(u8, got, "env var  TAU_YES (tau)") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "consumers: tau") != null);
+    try testing.expect(std.mem.indexOf(u8, got, s.summary) != null);
+    try testing.expect(std.mem.indexOf(u8, got, env_doc_url) != null);
 }
 
 test "docs/env.md generated catalog mirrors the registry" {

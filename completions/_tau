@@ -292,7 +292,8 @@ _tau() {
                     # Exit codes mirror the stable catalog in src/errors.zig;
                     # config keys mirror the generated docs/config.md table;
                     # doctor.* ids mirror the CheckSpec catalog in
-                    # src/doctorcatalog.zig.
+                    # src/doctorcatalog.zig; TAU_* names mirror the Spec
+                    # registry in src/envvars.zig.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -356,8 +357,22 @@ _tau() {
                         'doctor.probe_opencode-go:doctor check'
                         'doctor.probe_opencode-go_auth:doctor check'
                     )
+                    local -a env_vars=(
+                        'TAU_API_KEY:env var' 'TAU_ENDPOINT:env var'
+                        'TAU_DEBUG_LOG:env var' 'TAU_EDITOR:env var'
+                        'TAU_YES:env var' 'TAU_NONINTERACTIVE:env var'
+                        'TAU_SETUP_SHELL:env var' 'TAU_SETUP_CLIENT:env var'
+                        'TAU_SETUP_IMPORT:env var' 'TAU_NO_UPDATE_CHECK:env var'
+                        'TAU_UPDATE_URL:env var' 'TAU_INSTALL_URL:env var'
+                        'TAU_CHANGELOG_URL:env var' 'TAU_INSTALL_DIR:env var'
+                        'TAU_VERIFY_SIGSTORE:env var' 'TAU_VERSION:env var'
+                        'TAU_BASE_URL:env var' 'TAU_OS:env var'
+                        'TAU_ARCH:env var' 'TAU_SKIP_CHECKSUM:env var'
+                        'TAU_BIN:env var' 'TAU_TOOLS:env var'
+                        'TAU_THINKING:env var' 'TAU_DEBUG:env var'
+                    )
                     _arguments \
-                        '1: :_describe "error code/type, config key, or doctor check" err_codes cfg_keys checks' \
+                        '1: :_describe "error code/type, config key, doctor check, or TAU_* env var" err_codes cfg_keys checks env_vars' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]'
                     ;;

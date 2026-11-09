@@ -294,11 +294,12 @@ const help_text =
     \\
     \\Explain catalog (offline — no API key needed):
     \\  tau explain                   List the error + config-key + doctor-check
-    \\                                catalog as JSON
+    \\                                + env-var catalog as JSON
     \\  tau explain <code|type|key>   Print an error's cause + remediation hint,
-    \\                                a config key's type/constraints, or a doctor
+    \\                                a config key's type/constraints, a doctor
     \\                                check's fails-when + remediation
-    \\                                (`tau explain doctor.<check>`)
+    \\                                (`tau explain doctor.<check>`), or a TAU_*
+    \\                                env var's consumers + summary
     \\      --json                    ...pin the schema-checked JSON form (default)
     \\      --human                   ...as prose (e.g. `tau explain --human 106`)
     \\
@@ -536,7 +537,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau config schema", .b = "emit the JSON Schema (draft 2020-12) for the config file — also published at schema/tau-config.schema.json for editor autocomplete/validation." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
-    .{ .a = "tau explain [<code|type|key|doctor.<check>>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, or a doctor check's fails-when + remediation (JSON; --json pins the schema, --human for prose)." },
+    .{ .a = "tau explain [<code|type|key|doctor.<check>|TAU_*>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, a doctor check's fails-when + remediation, or a TAU_* env var's consumers + summary (JSON; --json pins the schema, --human for prose)." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
 };
@@ -561,7 +562,7 @@ const guide_gotchas = [_][]const u8{
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
-    "tau explain <code|type|key|doctor.<check>> (offline error + config-key + doctor-check catalog — cause + remediation, key constraints, check fails-when)",
+    "tau explain <code|type|key|doctor.<check>|TAU_*> (offline error + config-key + doctor-check + env-var catalog — cause + remediation, key constraints, check fails-when, env consumers + summary)",
     "tau --help (human help)",
     "tau <subcommand> --help (per-subcommand usage + runnable examples)",
     "README.md (ships with the source)",
@@ -976,13 +977,13 @@ pub fn main(init: std.process.Init) !void {
         .explain => {
             // Offline catalog lookup — stable errors (src/errors.zig,
             // docs/errors.md), config keys (src/configschema.zig,
-            // docs/config.md), and doctor checks (src/doctorcatalog.zig —
-            // the docs/troubleshooting.md check table). Needs no provider
-            // or API key.
+            // docs/config.md), doctor checks (src/doctorcatalog.zig —
+            // the docs/troubleshooting.md check table), and TAU_* env vars
+            // (src/envvars.zig — docs/env.md). Needs no provider or API key.
             const xpl = @import("explain.zig");
             if (parsed.config.explain_arg) |q| {
                 const entry = xpl.resolve(q) orelse {
-                    const msg = std.fmt.allocPrint(arena, "unknown error code, type, config key, or doctor check: {s}{s} — run `tau explain` to list the catalog", .{ q, xpl.suggestQuery(arena, q) orelse "" }) catch "unknown error code, type, config key, or doctor check";
+                    const msg = std.fmt.allocPrint(arena, "unknown error code, type, config key, doctor check, or env var: {s}{s} — run `tau explain` to list the catalog", .{ q, xpl.suggestQuery(arena, q) orelse "" }) catch "unknown error code, type, config key, doctor check, or env var";
                     printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
                     std.process.exit(@intFromEnum(ExitCode.generic_failure));
                 };

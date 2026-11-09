@@ -123,6 +123,11 @@ def render(specs, env_url):
     a("`NO_COLOR`, `SHELL`, `VISUAL`, `EDITOR`), and proxy/TLS variables are")
     a("documented in [docs/configuration.md](configuration.md) and never warn.")
     a("")
+    a("Every row below also resolves offline via `tau explain TAU_<VAR>` —")
+    a("e.g. `tau explain TAU_ENDPOINT` prints the same consumers + summary as")
+    a("JSON, `--human` renders prose, and a misspelled name gets a")
+    a("`did you mean` suggestion from this catalog.")
+    a("")
 
     for section in SECTION_ORDER:
         rows = [s for s in specs if s["section"] == section]

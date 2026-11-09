@@ -32,7 +32,8 @@ $TauArgumentCompleter = {
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
-    # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig.
+    # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
+    # TAU_* names mirror the Spec registry in src/envvars.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
         '$schema', 'provider', 'model', 'api_key', 'keys', 'mode', 'stream',
         'thinking', 'debug', 'temperature', 'max_tokens', 'timeout_ms',
@@ -56,6 +57,13 @@ $TauArgumentCompleter = {
         'doctor.probe_openai_auth', 'doctor.probe_deepseek',
         'doctor.probe_deepseek_auth', 'doctor.probe_opencode-go',
         'doctor.probe_opencode-go_auth',
+        'TAU_API_KEY', 'TAU_ENDPOINT', 'TAU_DEBUG_LOG', 'TAU_EDITOR',
+        'TAU_YES', 'TAU_NONINTERACTIVE', 'TAU_SETUP_SHELL', 'TAU_SETUP_CLIENT',
+        'TAU_SETUP_IMPORT', 'TAU_NO_UPDATE_CHECK', 'TAU_UPDATE_URL',
+        'TAU_INSTALL_URL', 'TAU_CHANGELOG_URL', 'TAU_INSTALL_DIR',
+        'TAU_VERIFY_SIGSTORE', 'TAU_VERSION', 'TAU_BASE_URL', 'TAU_OS',
+        'TAU_ARCH', 'TAU_SKIP_CHECKSUM', 'TAU_BIN', 'TAU_TOOLS',
+        'TAU_THINKING', 'TAU_DEBUG',
         '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'all')
