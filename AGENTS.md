@@ -394,6 +394,18 @@ tau setup --detect --client zed # ...scoped to one client (writes nothing)
 # "skipped" and only reports detected editor config dirs.
 ```
 
+#### 24. Shell Completions Install
+```bash
+tau completions install            # Install generated completions for $SHELL (+rc hook)
+tau completions install --shell zsh # Pick a shell: bash|zsh|fish|pwsh|all
+tau completions install --dry-run  # Preview (would_install/would_append); writes nothing
+# The `tau setup` completions step as a standalone command — one stable
+# JSON result object (schema/tau-completions.schema.json):
+#   {"ok":bool,"status":"installed|would_install|skipped|failed",
+#    "shells":[{shell,status,path,rc,rc_status}], "version":"0.4.0","done":true}
+# Exit 0 on success/skip, 1 on install failure. --json is the contract spelling.
+```
+
 #### 18. Version & Build Metadata
 ```bash
 tau version                    # Same as -v/--version: "tau 0.4.0"

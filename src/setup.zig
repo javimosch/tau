@@ -386,30 +386,27 @@ fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), 
     return .no_change;
 }
 
-/// Install completions for every resolved shell. Returns false when any
-/// install failed; a detection skip is reported but not a failure. In
-/// dry-run mode nothing is written: the step status is "would_install" when
-/// any shell has a pending change, "installed" when everything is already
-/// current.
-fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+/// The status/shells/reason/hint/message payload shared by `tau setup`'s
+/// completions step and `tau completions install` — resolves the target
+/// shells, installs each (or previews under --dry-run), and appends the
+/// fields to buf. Returns false when an install failed; a detection skip is
+/// reported but not a failure. In dry-run mode nothing is written: the
+/// status is "would_install" when any shell has a pending change,
+/// "installed" when everything is already current.
+fn completionsFields(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, buf: *std.ArrayList(u8)) !bool {
     const dry = cfg.setup_dry_run;
-    var buf: std.ArrayList(u8) = .empty;
     const home = env.get("HOME") orelse {
-        try buf.appendSlice(arena, "{\"step\":\"completions\",\"status\":\"failed\",\"message\":");
-        try js(arena, &buf, "HOME is not set — cannot locate shell config directories");
-        try buf.appendSlice(arena, "}}");
-        emit(&buf);
+        try buf.appendSlice(arena, "\"status\":\"failed\",\"message\":");
+        try js(arena, buf, "HOME is not set — cannot locate shell config directories");
         return false;
     };
 
     const shells = try resolveShells(arena, cfg, env);
     if (shells.len == 0) {
-        try buf.appendSlice(arena, "{\"step\":\"completions\",\"status\":\"skipped\",\"reason\":");
-        try js(arena, &buf, "could not detect shell from $SHELL");
+        try buf.appendSlice(arena, "\"status\":\"skipped\",\"reason\":");
+        try js(arena, buf, "could not detect shell from $SHELL");
         try buf.appendSlice(arena, ",\"hint\":");
-        try js(arena, &buf, "re-run with --shell bash|zsh|fish|pwsh|all");
-        try buf.appendSlice(arena, "}");
-        emit(&buf);
+        try js(arena, buf, "re-run with --shell bash|zsh|fish|pwsh|all");
         return true;
     }
 
@@ -426,7 +423,7 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
     }
     try entries.append(arena, ']');
 
-    try buf.appendSlice(arena, "{\"step\":\"completions\",\"status\":");
+    try buf.appendSlice(arena, "\"status\":");
     if (!ok) {
         try buf.appendSlice(arena, "\"failed\"");
     } else if (any_would) {
@@ -437,9 +434,35 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
     try buf.appendSlice(arena, ",\"shells\":");
     try buf.appendSlice(arena, entries.items);
     if (dry) try buf.appendSlice(arena, ",\"dry_run\":true");
-    try buf.appendSlice(arena, "}");
+    return ok;
+}
+
+/// Step 2 of `tau setup` — emits {"step":"completions",<fields>}.
+fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, "{\"step\":\"completions\",");
+    const ok = try completionsFields(io, arena, cfg, env, &buf);
+    try buf.append(arena, '}');
     emit(&buf);
     return ok;
+}
+
+/// `tau completions install` — the setup completions step as a standalone
+/// command. Emits one stable JSON result object on stdout ({"ok","status",
+/// "shells",...,"version","done":true}); the exit code mirrors ok like
+/// `tau setup`: 0 on success or a detection skip, 1 when an install failed.
+pub fn runCompletionsInstall(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
+    var fields: std.ArrayList(u8) = .empty;
+    const ok = try completionsFields(io, arena, cfg, env, &fields);
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(arena, "{\"ok\":");
+    try buf.appendSlice(arena, if (ok) "true," else "false,");
+    try buf.appendSlice(arena, fields.items);
+    try buf.appendSlice(arena, ",\"version\":");
+    try js(arena, &buf, version);
+    try buf.appendSlice(arena, ",\"done\":true}");
+    emit(&buf);
+    return if (ok) 0 else 1;
 }
 
 // --- Step 3: editor ACP clients --------------------------------------------

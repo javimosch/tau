@@ -18,7 +18,7 @@ function __tau_no_subcommand
     set -e tokens[1]
     for t in $tokens
         switch $t
-            case acp fleet skills models guide init config doctor setup bug version upgrade explain
+            case acp fleet skills models guide init config doctor setup completions bug version upgrade explain
                 return 1
         end
     end
@@ -88,6 +88,7 @@ complete -c tau -n $top -f -a init -d 'write a commented starter config'
 complete -c tau -n $top -f -a config -d 'inspect and edit the config file (show|validate|set|get|unset|edit|schema)'
 complete -c tau -n $top -f -a doctor -d 'validate setup (config, provider, key, connectivity)'
 complete -c tau -n $top -f -a setup -d 'one-shot onboarding (init + completions + doctor)'
+complete -c tau -n $top -f -a completions -d 'install generated shell completions (install)'
 complete -c tau -n $top -f -a bug -d 'file a pre-filled GitHub issue with doctor diagnostics'
 complete -c tau -n $top -f -a version -d 'print version (--verbose adds build metadata)'
 complete -c tau -n $top -f -a upgrade -d 'self-update in place via the verified install.sh'
@@ -217,6 +218,13 @@ complete -c tau -n $setup -f -l provider -x -a 'xiaomi openai deepseek opencode-
 complete -c tau -n $setup -f -l model -x -d 'diagnose an override model'
 complete -c tau -n $setup -f -l api-key -x -d 'diagnose an override API key'
 complete -c tau -n $setup -f -l json -d 'emit the stable schema-checked NDJSON stream'
+
+# ── tau completions ───────────────────────────────────────────────────────
+set -l cmpl '__tau_using_subcommand completions'
+complete -c tau -n $cmpl -f -a install -d 'install generated completions into your shell profile'
+complete -c tau -n $cmpl -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
+complete -c tau -n $cmpl -f -l dry-run -d 'preview the install; change nothing'
+complete -c tau -n $cmpl -f -l json -d 'emit the stable schema-checked result object'
 
 set -l bug '__tau_using_subcommand bug'
 complete -c tau -n $bug -f -l title -x -d 'issue title (default "Bug report")'

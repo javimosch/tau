@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models|init|config|guide|doctor|setup|bug|version|upgrade|explain)
+            acp|fleet|skills|models|init|config|guide|doctor|setup|completions|bug|version|upgrade|explain)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -46,6 +46,9 @@ _tau_complete() {
             return ;;
         --role)
             COMPREPLY=($(compgen -W "author critic coordinator none" -- "$cur"))
+            return ;;
+        --shell)
+            COMPREPLY=($(compgen -W "bash zsh fish pwsh all" -- "$cur"))
             return ;;
         --tools|-t|--exclude-tools|-xt)
             COMPREPLY=($(compgen -W "bash ls read write edit grep find calculator" -- "$cur"))
@@ -140,6 +143,10 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive --dry-run --remove --uninstall --import --detect --json" -- "$cur"))
             ;;
 
+        completions)
+            COMPREPLY=($(compgen -W "install --shell --dry-run --json" -- "$cur"))
+            ;;
+
         guide)
             COMPREPLY=($(compgen -W "--human" -- "$cur"))
             ;;
@@ -165,7 +172,7 @@ _tau_complete() {
 
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet init config guide doctor setup bug version upgrade explain
+            local top_level="acp models skills fleet init config guide doctor setup completions bug version upgrade explain
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream

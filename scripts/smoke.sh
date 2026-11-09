@@ -244,7 +244,7 @@ test_group_help() {
   # golden-help group). -h is the short spelling; help wins over missing
   # subcommand-grammar args (e.g. `tau skills --help`, not an error).
   local sub
-  for sub in acp bug config doctor explain fleet guide init models setup skills upgrade version; do
+  for sub in acp bug completions config doctor explain fleet guide init models setup skills upgrade version; do
     out=$("$BIN" "$sub" --help); ok "$sub --help exit" "$?" 0
     contains "$sub --help has Usage" "$out" "Usage:"
     contains "$sub --help has Examples" "$out" "Examples:"
@@ -4227,6 +4227,44 @@ test_group_golden_onboarding() {
   printf '{ "vim_mode": true }\n' > "$_GOLDEN_HOME/.config/zed/settings.json"
   golden_check_n ob-detect-no-entry  0 "$BIN" setup --detect --client zed
 
+  # ── tau completions install ──
+  # The standalone install carries no doctor step, so these snapshots are
+  # deterministic without curl or keys — the same constraint --detect has.
+  _golden_fresh_home
+  golden_check_n ob-completions-zsh  0 env SHELL=/bin/zsh "$BIN" completions install
+  golden_file    ob-completions.zshrc "$_GOLDEN_HOME/.zshrc"
+  if cmp -s "$ROOT/completions/_tau" "$_GOLDEN_HOME/.zsh/completions/_tau"; then
+    ok "completions install wrote _tau identical to completions/_tau" 0 0
+  else
+    ok "completions install wrote _tau identical to completions/_tau" 1 0
+  fi
+  # Idempotent re-run: already_installed + rc present, marker not duplicated.
+  golden_check_n ob-completions-rerun 0 env SHELL=/bin/zsh "$BIN" completions install
+
+  # --dry-run previews the writes (would_install/would_append) and changes
+  # nothing on disk.
+  _golden_fresh_home
+  golden_check_n ob-completions-dry-run 0 env SHELL=/bin/zsh "$BIN" completions install --dry-run
+  if [ ! -e "$_GOLDEN_HOME/.zshrc" ] && [ ! -e "$_GOLDEN_HOME/.zsh" ]; then
+    ok "completions --dry-run wrote nothing" 0 0
+  else
+    ok "completions --dry-run wrote nothing" 1 0
+  fi
+
+  # --shell all installs every supported shell (bash note + pwsh profile).
+  _golden_fresh_home
+  golden_check_n ob-completions-all 0 env SHELL=/bin/bash "$BIN" completions install --shell all
+
+  # No SHELL -> skipped is reported, still ok; arg validation never reaches
+  # the filesystem — pinned unconditionally.
+  _golden_fresh_home
+  golden_check_n ob-completions-no-shell 0 env -u SHELL "$BIN" completions install
+  golden_check_n ob-completions-bad-shell 80 "$BIN" completions install --shell tcsh
+  golden_check_n ob-completions-bad-arg 80 "$BIN" completions install --bogus
+  golden_check_n ob-completions-no-sub 80 "$BIN" completions
+  golden_check_n ob-completions-bad-sub 80 "$BIN" completions bogus
+  golden_check_n ob-completions-no-home 1 env -u HOME "$BIN" completions install --shell bash
+
   # ── tau config edit ──  (editor stubbed via TAU_EDITOR; VISUAL/EDITOR are
   # scrubbed so ambient values can't change precedence)
   _golden_fresh_home
@@ -4349,6 +4387,7 @@ test_group_golden_help() {
   # usage/options page with a runnable Examples: section.
   golden_check help-acp      0 "$BIN" acp --help
   golden_check help-bug      0 "$BIN" bug --help
+  golden_check help-completions 0 "$BIN" completions --help
   golden_check help-config   0 "$BIN" config --help
   golden_check help-doctor   0 "$BIN" doctor --help
   golden_check help-explain  0 "$BIN" explain --help
@@ -5059,14 +5098,15 @@ test_group_cli_schemas() {
   local setup_schema="$ROOT/schema/tau-setup.schema.json"
   local ug_schema="$ROOT/schema/tau-upgrade.schema.json"
   local bug_schema="$ROOT/schema/tau-bug.schema.json"
+  local comp_schema="$ROOT/schema/tau-completions.schema.json"
 
-  note "stable --json stdout schemas (config show|validate, version, explain, init, setup, upgrade, bug)"
+  note "stable --json stdout schemas (config show|validate, version, explain, init, setup, upgrade, bug, completions)"
 
   scrub=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
   mock_home="$(mktemp -d)"; register_temp_dir "$mock_home"
 
   # The checked-in schemas exist and are draft 2020-12 documents.
-  for s in "$show_schema" "$val_schema" "$ver_schema" "$exp_schema" "$init_schema" "$setup_schema" "$ug_schema" "$bug_schema"; do
+  for s in "$show_schema" "$val_schema" "$ver_schema" "$exp_schema" "$init_schema" "$setup_schema" "$ug_schema" "$bug_schema" "$comp_schema"; do
     if [ -f "$s" ]; then
       ok "cli-schemas: $(basename "$s") exists" 0 0
       contains "cli-schemas: $(basename "$s") is draft 2020-12" "$(cat "$s")" 'draft/2020-12/schema'
@@ -5306,6 +5346,28 @@ test_group_cli_schemas() {
   ok "cli-schemas: setup --detect --remove -> exit 80" "$rc" 80
   "$BIN" setup --detect --import >/dev/null 2>&1; rc=$?
   ok "cli-schemas: setup --detect --import -> exit 80" "$rc" 80
+
+  # ── tau completions install --json ─────────────────────────────────────
+  # Single result object carrying the setup completions step payload.
+  local comp_home="$SMOKE_TEMP/completions-home"
+  mkdir -p "$comp_home"
+  out=$("${scrub[@]}" HOME="$comp_home" SHELL=/bin/bash "$BIN" completions install --json); rc=$?
+  ok "cli-schemas: completions install --json exit 0" "$rc" 0
+  contains "cli-schemas: completions install result is done" "$out" '"done":true'
+  if printf '%s' "$out" | python3 "$check" --schema "$comp_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: completions install --json validates" 0 0
+  else
+    ok "cli-schemas: completions install --json validates" 1 0
+  fi
+
+  # The skipped outcome (no detectable shell) validates against the schema too.
+  out=$("${scrub[@]}" -u SHELL HOME="$comp_home" "$BIN" completions install --json); rc=$?
+  ok "cli-schemas: completions install skipped exit 0" "$rc" 0
+  if printf '%s' "$out" | python3 "$check" --schema "$comp_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: completions install skipped validates" 0 0
+  else
+    ok "cli-schemas: completions install skipped validates" 1 0
+  fi
 }
 
 # Group: generated docs/compatibility.md drift check
@@ -6472,6 +6534,7 @@ test_group_completions() {
 
     missing=""
     for word in acp fleet skills models guide \
+                completions install \
                 xiaomi openai deepseek opencode-go text json \
                 author critic coordinator none \
                 bash ls read write edit grep find calculator; do
@@ -6483,6 +6546,64 @@ test_group_completions() {
       ok "$f missing words:$missing" 1 0
     fi
   done
+
+  # ── tau completions install ─────────────────────────────────────────────
+  # Standalone entry into the setup completions step: writes the embedded
+  # script + rc hook for the detected (or --shell-named) shell.
+  local chome chome2 chome3 chome4
+  chome="$(mktemp -d)"; register_temp_dir "$chome"
+  capture ci env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u XIAOMI_API_KEY \
+    HOME="$chome" SHELL=/bin/bash "$BIN" completions install
+  ok "completions install exits 0" "$ci_rc" 0
+  contains "completions install reports ok" "$ci_out" '"ok":true'
+  contains "completions install reports installed" "$ci_out" '"status":"installed"'
+  contains "completions install resolves bash" "$ci_out" '"shell":"bash"'
+  contains "completions install is done" "$ci_out" '"done":true'
+  [ -f "$chome/.local/share/bash-completion/completions/tau" ]; ok "bash completion file landed" "$?" 0
+  cmp -s "$chome/.local/share/bash-completion/completions/tau" "$ROOT/completions/tau.bash"
+  ok "installed script matches completions/tau.bash" "$?" 0
+
+  # --json is the contract-pinned spelling of the same object.
+  capture cij env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u XIAOMI_API_KEY \
+    HOME="$chome" SHELL=/bin/bash "$BIN" completions install --json
+  ok "completions install --json exits 0" "$cij_rc" 0
+  contains "--json re-run reports already_installed" "$cij_out" '"status":"already_installed"'
+
+  # --dry-run previews every write and changes nothing.
+  chome2="$(mktemp -d)"; register_temp_dir "$chome2"
+  capture cid env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u XIAOMI_API_KEY \
+    HOME="$chome2" SHELL=/bin/zsh "$BIN" completions install --dry-run
+  ok "completions install --dry-run exits 0" "$cid_rc" 0
+  contains "dry-run reports would_install" "$cid_out" '"status":"would_install"'
+  contains "dry-run rc reports would_append" "$cid_out" '"rc_status":"would_append"'
+  contains "dry-run carries dry_run:true" "$cid_out" '"dry_run":true'
+  if [ ! -e "$chome2/.zshrc" ] && [ ! -e "$chome2/.zsh" ]; then
+    ok "dry-run wrote nothing" 0 0
+  else
+    ok "dry-run wrote nothing" 1 0
+  fi
+
+  # --shell all covers every supported shell.
+  chome3="$(mktemp -d)"; register_temp_dir "$chome3"
+  capture cia env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u XIAOMI_API_KEY \
+    HOME="$chome3" SHELL=/bin/bash "$BIN" completions install --shell all
+  ok "completions install --shell all exits 0" "$cia_rc" 0
+  contains "--shell all covers zsh" "$cia_out" '"shell":"zsh"'
+  contains "--shell all covers fish" "$cia_out" '"shell":"fish"'
+  contains "--shell all covers pwsh" "$cia_out" '"shell":"pwsh"'
+  [ -f "$chome3/.config/fish/completions/tau.fish" ]; ok "fish completion file landed" "$?" 0
+  grep -q '# tau completions' "$chome3/.config/powershell/Microsoft.PowerShell_profile.ps1" 2>/dev/null
+  ok "pwsh profile carries the tau marker" "$?" 0
+
+  # Undetectable shell -> skipped, still ok; missing HOME -> failed, exit 1.
+  chome4="$(mktemp -d)"; register_temp_dir "$chome4"
+  capture cis env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY -u XIAOMI_API_KEY -u SHELL \
+    HOME="$chome4" "$BIN" completions install
+  ok "completions install with no SHELL exits 0 (skipped)" "$cis_rc" 0
+  contains "undetected shell reports skipped" "$cis_out" '"status":"skipped"'
+  capture cif env -u HOME "$BIN" completions install --shell bash
+  ok "completions install with no HOME exits 1" "$cif_rc" 1
+  contains "missing HOME reports failed" "$cif_out" '"status":"failed"'
 }
 
 # Group: release surface — install.sh installer + release workflow drift guards.

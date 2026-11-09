@@ -69,6 +69,7 @@ _tau() {
                 'init:write a commented starter config (~/.config/tau/config.json)'
                 'config:inspect, validate, or edit the config (show|validate|set|get|unset|edit|schema)'
                 'setup:one-shot onboarding (init + completions + doctor)'
+                'completions:install generated shell completions (install)'
                 'doctor:validate setup (config, provider, key, connectivity)'
                 'bug:file a pre-filled GitHub issue with doctor diagnostics'
                 'guide:print the embedded operator manual'
@@ -228,6 +229,14 @@ _tau() {
                         '--model=[diagnose an override model]:model:' \
                         '--api-key=[diagnose an override API key]:key:' \
                         '--json[emit the stable schema-checked NDJSON stream]'
+                    ;;
+
+                completions)
+                    _arguments \
+                        '1: :(install)' \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--dry-run[preview the install; change nothing]' \
+                        '--json[emit the stable schema-checked result object]'
                     ;;
 
                 doctor)
