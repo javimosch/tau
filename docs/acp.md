@@ -13,14 +13,16 @@ full agentic tool loop and streams back `session/update` notifications
 
 > **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `cursor`,
 > `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`,
-> `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`, `all`)
+> `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`, `codex`,
+> `all`)
 > writes these
 > configs for you
 > during onboarding — a minimal settings
 > file when none exists, or a paste-ready snippet under
 > `~/.config/tau/snippets/` when the file already exists (your comments are
 > preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode,
-> Cline, Goose, Continue, Roo Code, Kilo Code, Amazon Q Developer)
+> Cline, Goose, Continue, Roo Code, Kilo Code, Amazon Q Developer,
+> Codex CLI)
 > also get the
 > shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
 > without `--client` to see which editors were detected — or
@@ -41,7 +43,8 @@ full agentic tool loop and streams back `session/update` notifications
 > [OpenCode](clients/opencode.md), [Cline](clients/cline.md),
 > [Goose](clients/goose.md), [Continue](clients/continue.md),
 > [Roo Code](clients/roo-code.md), [Kilo Code](clients/kilo-code.md),
-> [Amazon Q Developer](clients/amazonq.md)).
+> [Amazon Q Developer](clients/amazonq.md),
+> [Codex CLI](clients/codex.md)).
 
 ## Quick start: tau in Zed
 
@@ -425,6 +428,10 @@ Three more MCP clients wire through the same bridge:
   standard `mcpServers.mcacp` entry into `~/.aws/amazonq/mcp.json` plus
   the shared bridge config; see
   [docs/clients/amazonq.md](clients/amazonq.md).
+- **Codex CLI** — `tau setup --client codex` writes the shared bridge
+  config plus a paste-ready TOML `[mcp_servers.mcacp]` snippet (Codex's
+  `~/.codex/config.toml` is never spliced); see
+  [docs/clients/codex.md](clients/codex.md).
 
 All of them launch the bridge (`npx -y mcacp`); the shared
 `~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau` entry

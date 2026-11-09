@@ -7,9 +7,10 @@ client sees, and restart the client.
 
 `tau setup --client` writes these same files for you (`zed`, `vscode`,
 `cursor`, `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`,
-`cline`, `roo-code`, `kilo-code`, `amazonq`, `all`; `nvim`
+`cline`, `roo-code`, `kilo-code`, `amazonq`, `codex`, `all`; `nvim`
 gets a paste-ready Lua snippet, `emacs` a paste-ready elisp snippet, and
-`goose`/`continue` paste-ready YAML snippets instead). MCP-only clients
+`goose`/`continue` paste-ready YAML snippets, and `codex` a
+paste-ready TOML snippet instead). MCP-only clients
 also get the shared
 bridge config `~/.config/mcacp/mcacp.json` written in the same pass:
 
@@ -68,18 +69,19 @@ can't spawn `tau acp serve` directly.
 The [mcacp](https://github.com/Oortonaut/mcacp) bridge sits in the middle:
 
 ```
-Windsurf / Gemini CLI / Claude Desktop / OpenCode / Cline / Goose / Continue / Roo Code / Kilo Code / Amazon Q Developer ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+Windsurf / Gemini CLI / Claude Desktop / OpenCode / Cline / Goose / Continue / Roo Code / Kilo Code / Amazon Q Developer / Codex CLI ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
 ```
 
 1. Merge the client's file into its settings path (`windsurf.json`,
    `gemini.json`, `claude-desktop.json`, `opencode.json`,
    `cline.json`, `roo-code.json`, `kilo-code.json`, or
    `amazonq.json`) — each adds the `mcacp` MCP
-   server, launched with `npx`. Goose and Continue keep config in YAML —
-   paste the snippet `tau setup --client goose|continue` drops under
-   `~/.config/tau/snippets/` instead (see
-   [docs/clients/goose.md](../../docs/clients/goose.md) and
-   [docs/clients/continue.md](../../docs/clients/continue.md)).
+   server, launched with `npx`. Goose and Continue keep config in YAML and
+   Codex in TOML — paste the snippet `tau setup --client
+   goose|continue|codex` drops under `~/.config/tau/snippets/` instead
+   (see [docs/clients/goose.md](../../docs/clients/goose.md),
+   [docs/clients/continue.md](../../docs/clients/continue.md), and
+   [docs/clients/codex.md](../../docs/clients/codex.md)).
 2. Copy `mcacp.json` to `~/.config/mcacp/mcacp.json` — this is where the
    bridge learns that `tau` means `tau acp serve`. The `agent_servers` shape
    matches Zed/JetBrains, so the same entry can be copied between them. One

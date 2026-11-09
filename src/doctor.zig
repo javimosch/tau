@@ -755,7 +755,7 @@ fn clientCheckName(arena: std.mem.Allocator, k: setup.ClientKind) []const u8 {
 }
 
 /// The per-client FixKind, or null for the snippet-only clients (nvim's Lua,
-/// Emacs's elisp, Goose/Continue's YAML — manual only).
+/// Emacs's elisp, Goose/Continue's YAML, Codex's TOML — manual only).
 fn clientFixKind(k: setup.ClientKind) ?FixKind {
     return switch (k) {
         .zed => .wire_client_zed,
@@ -770,7 +770,7 @@ fn clientFixKind(k: setup.ClientKind) ?FixKind {
         .roo => .wire_client_roo,
         .kilo => .wire_client_kilo,
         .amazonq => .wire_client_amazonq,
-        .nvim, .emacs, .goose, .continue_ => null,
+        .nvim, .emacs, .goose, .continue_, .codex => null,
     };
 }
 
@@ -787,12 +787,14 @@ fn clientWiringRow(arena: std.mem.Allocator, k: setup.ClientKind, w: setup.Clien
                 .emacs => "Emacs agent-shell wiring lives in elisp — cannot verify automatically",
                 .goose => "Goose extension wiring lives in config.yaml — cannot verify automatically",
                 .continue_ => "Continue MCP wiring lives in config.yaml — cannot verify automatically",
+                .codex => "Codex MCP wiring lives in config.toml — cannot verify automatically",
                 else => "Neovim ACP wiring lives in Lua — cannot verify automatically",
             },
             .hint = switch (k) {
                 .emacs => "run 'tau setup --client emacs' to (re)generate ~/.config/tau/snippets/emacs.el",
                 .goose => "run 'tau setup --client goose' to (re)generate ~/.config/tau/snippets/goose.yaml",
                 .continue_ => "run 'tau setup --client continue' to (re)generate ~/.config/tau/snippets/continue.yaml",
+                .codex => "run 'tau setup --client codex' to (re)generate ~/.config/tau/snippets/codex.toml",
                 else => "run 'tau setup --client nvim' to (re)generate ~/.config/tau/snippets/nvim.lua",
             },
         },
@@ -869,7 +871,7 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
             .name = "client_wiring",
             .status = .skip,
             .message = "no supported editor config dirs detected",
-            .hint = "run 'tau setup --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all' to wire 'tau acp serve' into an installed editor",
+            .hint = "run 'tau setup --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all' to wire 'tau acp serve' into an installed editor",
         });
     return list.toOwnedSlice(arena);
 }

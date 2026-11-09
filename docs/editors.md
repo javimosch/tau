@@ -29,6 +29,7 @@ tau setup --client continue    # MCP client — YAML snippet + mcacp.json
 tau setup --client roo-code    # MCP client — same bridge, Roo's mcp_settings.json
 tau setup --client kilo-code   # MCP client — mcp-shape entry in kilo.jsonc
 tau setup --client amazonq     # MCP client — same bridge, ~/.aws/amazonq/mcp.json
+tau setup --client codex       # MCP client — TOML snippet + mcacp.json
 tau setup --client all         # every supported client at once
 tau setup --client all --dry-run  # preview every write, change nothing
 ```
@@ -41,7 +42,7 @@ touch before letting it.
 Anything else is rejected before setup runs:
 
 ```json
-{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all)","recoverable":false}}
+{"err":{"code":80,"type":"invalid_argument","message":"invalid --client: bogus (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)","recoverable":false}}
 ```
 
 Setup emits one NDJSON object per step. The `clients` step is the one this
@@ -51,7 +52,7 @@ guide covers:
   installed (their config directories exist) — detection alone never writes:
 
 ```json
-{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all to write editor ACP config"}
+{"step":"clients","status":"skipped","detected":["zed","nvim","vscode"],"hint":"re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all to write editor ACP config"}
 ```
 
 - **With `--client`** each requested editor gets a `clients[]` entry carrying
@@ -330,11 +331,14 @@ Goose and Continue are MCP clients too, but their config files are YAML
 (`~/.config/goose/config.yaml`, `~/.continue/config.yaml`) — setup can't
 splice a YAML file, so it writes the shared `mcacp.json` and drops a
 paste-ready YAML snippet under `~/.config/tau/snippets/` for you to merge
-into the client's `extensions:` map or `mcpServers:` list by hand. The
+into the client's `extensions:` map or `mcpServers:` list by hand. Codex
+CLI is the same story in TOML — its `[mcp_servers.<name>]` tables live in
+`~/.codex/config.toml`, so setup drops a `codex.toml` snippet instead. The
 step reports `"status":"manual"` with the `"snippet_path"`; the bridge
 half still reports `"bridge_status":"installed"`. See
-[docs/clients/goose.md](clients/goose.md) and
-[docs/clients/continue.md](clients/continue.md).
+[docs/clients/goose.md](clients/goose.md),
+[docs/clients/continue.md](clients/continue.md), and
+[docs/clients/codex.md](clients/codex.md).
 
 Dedicated per-client guides — each with the exact file contents
 `tau setup --client` writes (drift-checked in CI against the real output):
@@ -355,6 +359,7 @@ Dedicated per-client guides — each with the exact file contents
 - [Roo Code](clients/roo-code.md)
 - [Kilo Code](clients/kilo-code.md)
 - [Amazon Q Developer](clients/amazonq.md)
+- [Codex CLI](clients/codex.md)
 
 ## Removing the integration
 
@@ -367,8 +372,9 @@ Setup is additive and never deletes:
   `"mcacp"` entry from the client's settings file (`mcpServers`, or `"mcp"`
   for OpenCode); delete `~/.config/mcacp/mcacp.json` when no other MCP
   client still uses it.
-- **Goose / Continue:** delete the pasted `mcacp` block from the client's
-  YAML config (`extensions:` or `mcpServers:`); the same bridge-file rule
+- **Goose / Continue / Codex:** delete the pasted `mcacp` block from the
+  client's YAML (`extensions:` or `mcpServers:`) or TOML
+  (`[mcp_servers.mcacp]`) config; the same bridge-file rule
   applies.
 - **Neovim / Emacs:** remove the pasted block from your config.
 - Generated snippets under `~/.config/tau/snippets/` are inert leftovers —

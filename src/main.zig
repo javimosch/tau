@@ -148,8 +148,8 @@ const help_text =
     \\      --client <name>         Editor ACP client: zed|nvim|emacs|
     \\                              vscode|cursor|jetbrains|windsurf|
     \\                              gemini|claude-desktop|opencode|
-    \\                              cline|goose|continue|roo-code|
-    \\                              kilo-code|amazonq|all
+    \\                              cline|goose|continue|roo-code|kilo-code|
+    \\                              amazonq|codex|all
     \\                              (default: detect only; env
     \\                              TAU_SETUP_CLIENT)
     \\      --offline/--deep        Passed through to the doctor step

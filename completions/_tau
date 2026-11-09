@@ -214,7 +214,7 @@ _tau() {
                 setup)
                     _arguments \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
-                        '--client=[editor ACP client]:client:(zed nvim emacs vscode cursor jetbrains windsurf gemini claude-desktop opencode cline goose continue roo-code kilo-code amazonq all)' \
+                        '--client=[editor ACP client]:client:(zed nvim emacs vscode cursor jetbrains windsurf gemini claude-desktop opencode cline goose continue roo-code kilo-code amazonq codex all)' \
                         '--offline[skip network checks in the doctor step]' \
                         '--deep[run an authenticated probe in the doctor step]' \
                         '(-y --yes)'{-y,--yes}'[unattended: approve all write steps]' \
@@ -348,6 +348,7 @@ _tau() {
                         'doctor.client_roo_code:doctor check'
                         'doctor.client_kilo_code:doctor check'
                         'doctor.client_amazonq:doctor check'
+                        'doctor.client_codex:doctor check'
                         'doctor.probe_xiaomi:doctor check'
                         'doctor.probe_xiaomi_auth:doctor check'
                         'doctor.probe_openai:doctor check'

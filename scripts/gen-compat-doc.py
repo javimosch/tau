@@ -299,7 +299,8 @@ def render(members, clients, fixes, version, acp_since):
     a("[Goose](clients/goose.md), [Continue](clients/continue.md),")
     a("[Roo Code](clients/roo-code.md),")
     a("[Kilo Code](clients/kilo-code.md),")
-    a("[Amazon Q Developer](clients/amazonq.md).")
+    a("[Amazon Q Developer](clients/amazonq.md),")
+    a("[Codex CLI](clients/codex.md).")
     a("")
     a("## Supported editor clients")
     a("")
@@ -310,7 +311,8 @@ def render(members, clients, fixes, version, acp_since):
         cli = f"`{c['cli_names'][0]}`" + "".join(
             f" (alias `{n}`)" for n in c["cli_names"][1:])
         label = {"nvim": "Lua plugin", "emacs": "elisp",
-                 "goose": "YAML", "continue_": "YAML"}.get(k, "manual")
+                 "goose": "YAML", "continue_": "YAML",
+                 "codex": "TOML"}.get(k, "manual")
         # The human/CLI-visible name is the clientName() string, not the
         # enum member (continue_ is a Zig keyword-safe spelling of
         # "continue").
@@ -355,8 +357,12 @@ def render(members, clients, fixes, version, acp_since):
     if bridge_clients:
         json_bridge = [k for k in bridge_clients
                        if clients[k].get("section")]
-        yaml_bridge = [k for k in bridge_clients
-                       if not clients[k].get("section")]
+        manual_bridge = [k for k in bridge_clients
+                         if not clients[k].get("section")]
+        yaml_bridge = [k for k in manual_bridge
+                       if clients[k].get("snippet", "").endswith(".yaml")]
+        toml_bridge = [k for k in manual_bridge
+                       if clients[k].get("snippet", "").endswith(".toml")]
         names = ", ".join(f"`{clients[k]['display']}`" for k in bridge_clients)
         a("MCP-bridge clients (" + names + ") speak MCP, not ACP — they can't")
         a("spawn `tau acp serve` directly. Their server entry launches")
@@ -398,6 +404,14 @@ def render(members, clients, fixes, version, acp_since):
             a("paste-ready YAML snippet (the `extensions:` / `mcpServers:`")
             a("block from each client's guide) for the user to merge.")
             a("")
+        if toml_bridge:
+            names = ", ".join(f"`{clients[k]['display']}`" for k in toml_bridge)
+            a("Codex (" + names + ") speaks MCP too but keeps its servers in")
+            a("TOML `[mcp_servers.<name>]` tables in `~/.codex/config.toml` —")
+            a("`tau setup` can't splice a TOML file, so it wires the shared")
+            a("bridge config and drops a paste-ready TOML snippet (the")
+            a("`[mcp_servers.mcacp]` table from the client's guide).")
+            a("")
         a("`tau setup --client` writes the matching bridge config too —")
         a("`~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau`")
         a("entry in the direct-ACP shape above (one file, shared by every")
@@ -408,7 +422,7 @@ def render(members, clients, fixes, version, acp_since):
     a("| Client settings files (matrix above) | JSONC — `//` and `/* */` comments are tolerated and preserved: existing files are never rewritten, setup emits a paste-ready snippet instead |")
     if bridge_clients:
         a("| `~/.config/mcacp/mcacp.json` | JSONC — the mcacp MCP→ACP bridge's `agent_servers.tau` entry, shared by every bridge client |")
-    a("| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell; `.yaml` for Goose/Continue (YAML MCP config) |")
+    a("| `~/.config/tau/snippets/*` | `.jsonc` fragment for JSON clients; `.lua` for Neovim (plugin adapters — e.g. avante.nvim, CodeCompanion.nvim); `.el` for Emacs agent-shell; `.yaml` for Goose/Continue (YAML MCP config); `.toml` for Codex (TOML MCP config) |")
     a("| `~/.config/tau/config.json` | JSONC — see [docs/config.md](config.md) and `schema/tau-config.schema.json` |")
     a("")
     a("## Required tau versions")
