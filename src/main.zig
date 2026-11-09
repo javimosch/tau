@@ -237,6 +237,8 @@ const help_text =
     \\                              ($BROWSER, else open/xdg-open/rundll32)
     \\      --out <path>            Also write the bundle to a file
     \\      --no-report             Omit the diagnostics bundle
+    \\      --attach-report <path>  Bundle an existing report file
+    \\                              (secret-redacted) instead of the live sweep
     \\      --offline/--deep        Passed through to the diagnostic sweep
     \\      --json                  Pin the stable schema-checked JSON form
     \\                              (schema/tau-bug.schema.json)
@@ -525,7 +527,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive] [--dry-run] [--remove|--uninstall] [--import] [--detect]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). --dry-run previews every write (would_* statuses) and changes nothing. --remove/--uninstall reverses per-client wiring instead. --import merges existing MCP server entries from the other supported clients into each wired MCP client. --detect is a read-only inventory of supported clients with config paths and wiring status. Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation." },
-    .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report)." },
+    .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report] [--attach-report <path>]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report). --attach-report bundles an existing report file instead of running the live sweep." },
     .{ .a = "tau version [--verbose] [--check] [--json]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1), --json emits the stable {\"name\",\"version\"} object (schema/tau-version.schema.json)." },
     .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run] [--verify-signature]", .b = "self-update in place via the release's verified install.sh; shows the release notes since your version before the TTY prompt/install and in the report's changelog field, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },

@@ -254,6 +254,7 @@ _tau() {
                         '--open[open the issue URL in the system browser]' \
                         '--out=[write the diagnostics bundle to a file]:file:_files' \
                         '--no-report[omit the diagnostics bundle]' \
+                        '--attach-report=[use an existing report file as the bundle]:file:_files' \
                         '--offline[skip network checks]' \
                         '--deep[run an authenticated probe (spends ~1 token)]' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \

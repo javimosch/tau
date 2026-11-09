@@ -15,15 +15,19 @@
 // past max_url_chars the link falls back to a short body that asks for the
 // bundle to be attached manually). --out writes the bundle to a file for
 // attaching; --no-report omits diagnostics entirely (mutually exclusive with
-// --out). Exit code is 0 on success — the diagnostics verdict lives inside
-// the report, not in the exit status, so `tau bug` works fine on a healthy
-// install too (feature requests welcome).
+// --out). --attach-report <path> bundles an existing `tau doctor --report`
+// file instead of running the live sweep — the file is read at parse time
+// and secret-redacted before it can reach the body, URL, or --out file
+// (mutually exclusive with --no-report). Exit code is 0 on success — the
+// diagnostics verdict lives inside the report, not in the exit status, so
+// `tau bug` works fine on a healthy install too (feature requests welcome).
 
 const std = @import("std");
 const builtin = @import("builtin");
 const term = @import("term.zig");
 const json = @import("json.zig");
 const cfgmod = @import("config.zig");
+const debuglog = @import("debuglog.zig");
 const doctor = @import("doctor.zig");
 const version_mod = @import("version.zig");
 const Config = cfgmod.Config;
@@ -133,6 +137,9 @@ fn openInBrowser(io: std.Io, gpa: std.mem.Allocator, env: *std.process.Environ.M
 /// Serialize the final JSON envelope. `body` is the complete issue text
 /// (report included unless --no-report); `report` is repeated as its own
 /// field so the bundle is directly addressable without ungluing the body.
+/// `report_source` records the bundle's provenance: "live" for a fresh
+/// diagnostic sweep, "attached" for an --attach-report file, null under
+/// --no-report.
 fn formatBugJson(
     arena: std.mem.Allocator,
     title: []const u8,
@@ -140,6 +147,7 @@ fn formatBugJson(
     url: []const u8,
     body: []const u8,
     report: ?[]const u8,
+    report_source: ?[]const u8,
     truncated: bool,
     out_path: ?[]const u8,
     opened: bool,
@@ -159,6 +167,12 @@ fn formatBugJson(
         try json.escapeInto(arena, &buf, r);
         try buf.append(arena, '"');
     } else try buf.appendSlice(arena, "null");
+    try buf.appendSlice(arena, ",\"report_source\":");
+    if (report_source) |s| {
+        try buf.append(arena, '"');
+        try json.escapeInto(arena, &buf, s);
+        try buf.append(arena, '"');
+    } else try buf.appendSlice(arena, "null");
     try buf.appendSlice(arena, ",\"url_truncated\":");
     try buf.appendSlice(arena, if (truncated) "true" else "false");
     try buf.appendSlice(arena, ",\"out\":");
@@ -173,18 +187,39 @@ fn formatBugJson(
     return buf.toOwnedSlice(arena);
 }
 
+/// Redact an attached report file's contents with the run's secret set —
+/// the same treatment the live `doctor --report` bundle gets — and ensure a
+/// trailing newline so the bundle reads cleanly inside the issue body.
+fn redactAttachedReport(arena: std.mem.Allocator, raw: []const u8, secrets: []const []const u8) ![]u8 {
+    const red = try debuglog.redactAlloc(arena, raw, secrets);
+    if (red.len == 0 or red[red.len - 1] == '\n') return red;
+    defer arena.free(red);
+    return std.mem.concat(arena, u8, &.{ red, "\n" });
+}
+
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     const title = cfg.bug_title orelse default_title;
     const labels = cfg.bug_labels orelse default_labels;
 
     // Same sweep as `tau doctor --report` — honors the offline/deep and
     // provider/model/api-key overrides the arg parser copied onto cfg.
+    // --attach-report swaps the sweep for an existing report file; the file
+    // is arbitrary user content, so it passes through the same secret
+    // redaction the live bundle gets before it can reach the issue.
     const report: ?[]u8 = if (cfg.bug_no_report)
         null
+    else if (cfg.bug_attach_report) |raw|
+        try redactAttachedReport(arena, raw, debuglog.collectSecrets(arena, env, cfg))
     else blk: {
         const checks = try doctor.collectChecks(io, gpa, arena, cfg, env);
         break :blk try doctor.formatReportMarkdown(io, arena, checks, null, cfg, env);
     };
+    const report_source: ?[]const u8 = if (cfg.bug_no_report)
+        null
+    else if (cfg.bug_attach_report != null)
+        "attached"
+    else
+        "live";
 
     // The full issue body always carries the bundle; the URL gets a short
     // fallback body when the encoded link would exceed max_url_chars.
@@ -204,7 +239,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
 
     const opened = cfg.bug_open and openInBrowser(io, gpa, env, url);
 
-    term.out(try formatBugJson(arena, title, labels, url, body, report, truncated, cfg.bug_out, opened));
+    term.out(try formatBugJson(arena, title, labels, url, body, report, report_source, truncated, cfg.bug_out, opened));
     return 0;
 }
 
@@ -269,11 +304,65 @@ test "issueBody: description sits above the bundle; notes mark omission" {
 
 test "formatBugJson: all fields emitted, nulls for absent report/out" {
     const a = testing.allocator;
-    const got = try formatBugJson(a, "t", "bug", "u", "b", null, false, null, false);
+    const got = try formatBugJson(a, "t", "bug", "u", "b", null, null, false, null, false);
     defer a.free(got);
     try testing.expect(std.mem.indexOf(u8, got, "\"report\":null") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"report_source\":null") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"out\":null") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"url_truncated\":false") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"opened\":false") != null);
     try testing.expect(std.mem.endsWith(u8, got, "\"done\":true}\n"));
+
+    const live = try formatBugJson(a, "t", "bug", "u", "b", "r", "live", false, null, false);
+    defer a.free(live);
+    try testing.expect(std.mem.indexOf(u8, live, "\"report_source\":\"live\"") != null);
+}
+
+test "redactAttachedReport: secrets masked, trailing newline ensured" {
+    const a = testing.allocator;
+    const secrets = [_][]const u8{"sk-attach-secret-123"};
+
+    const red = try redactAttachedReport(a, "# report\nkey=sk-attach-secret-123", &secrets);
+    defer a.free(red);
+    try testing.expect(std.mem.indexOf(u8, red, "sk-attach-secret-123") == null);
+    try testing.expect(std.mem.indexOf(u8, red, "***REDACTED***") != null);
+    try testing.expect(std.mem.endsWith(u8, red, "\n"));
+
+    const already = try redactAttachedReport(a, "clean\n", &secrets);
+    defer a.free(already);
+    try testing.expectEqualStrings("clean\n", already);
+}
+
+test "property: secrets anywhere in an attached report never reach the composed output" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const rnd = prng.random();
+    const secret = "sk-attached-prop-secret-9";
+
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        // Sprinkle the secret between random printable text — position,
+        // repetition, and neighbors must not matter.
+        var raw: std.ArrayList(u8) = .empty;
+        var j: usize = 0;
+        while (j < 4) : (j += 1) {
+            try raw.appendSlice(a, "line ");
+            const ch: u8 = @intCast(0x20 + rnd.uintLessThan(u8, 95));
+            try raw.append(a, ch);
+            if (rnd.boolean()) try raw.appendSlice(a, secret);
+            try raw.append(a, '\n');
+        }
+
+        const red = try redactAttachedReport(a, raw.items, &.{secret});
+        try testing.expect(std.mem.indexOf(u8, red, secret) == null);
+
+        const body = try issueBody(a, "desc", red, "note");
+        const url = try buildIssueUrl(a, "t", body, "bug");
+        const out = try formatBugJson(a, "t", "bug", url, body, red, "attached", false, "/tmp/o.md", false);
+        try testing.expect(std.mem.indexOf(u8, out, secret) == null);
+        try testing.expect(std.mem.indexOf(u8, out, "\"report_source\":\"attached\"") != null);
+    }
 }

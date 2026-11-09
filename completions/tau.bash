@@ -133,7 +133,7 @@ _tau_complete() {
             ;;
 
         bug)
-            COMPREPLY=($(compgen -W "--title --body --labels --open --out --no-report --offline --deep --shell --provider --model --api-key --json" -- "$cur"))
+            COMPREPLY=($(compgen -W "--title --body --labels --open --out --no-report --attach-report --offline --deep --shell --provider --model --api-key --json" -- "$cur"))
             ;;
 
         setup)
