@@ -2426,6 +2426,7 @@ test_group_setup() {
   contains "--client all covers roo-code" "$s12_out" '"client":"roo-code"'
   contains "--client all covers kilo-code" "$s12_out" '"client":"kilo-code"'
   contains "--client all covers amazonq" "$s12_out" '"client":"amazonq"'
+  contains "--client all covers codex" "$s12_out" '"client":"codex"'
   [ -f "$mock_home10/.config/Code/User/settings.json" ]; ok "vscode settings written" "$?" 0
   grep -q '"acp.agents"' "$mock_home10/.config/Code/User/settings.json"; ok "vscode uses acp.agents key" "$?" 0
   [ -f "$mock_home10/.config/Cursor/User/settings.json" ]; ok "cursor settings written" "$?" 0
@@ -2450,6 +2451,8 @@ test_group_setup() {
   grep -q '"type": "local"' "$mock_home10/.config/kilo/kilo.jsonc"; ok "kilo-code uses mcp local-server shape" "$?" 0
   [ -f "$mock_home10/.aws/amazonq/mcp.json" ]; ok "amazonq mcp.json written" "$?" 0
   grep -q '"mcpServers"' "$mock_home10/.aws/amazonq/mcp.json"; ok "amazonq uses mcpServers key" "$?" 0
+  [ -f "$mock_home10/.config/tau/snippets/codex.toml" ]; ok "codex.toml snippet written" "$?" 0
+  grep -q '\[mcp_servers.mcacp\]' "$mock_home10/.config/tau/snippets/codex.toml"; ok "codex snippet uses TOML mcp_servers table" "$?" 0
   [ -f "$mock_home10/.config/mcacp/mcacp.json" ]; ok "shared mcacp bridge config written" "$?" 0
   grep -q '"acp", "serve"' "$mock_home10/.config/mcacp/mcacp.json"; ok "mcacp.json wires tau acp serve" "$?" 0
 
@@ -4101,6 +4104,10 @@ test_group_golden_onboarding() {
     _golden_fresh_home
     golden_check_n ob-setup-client-amazonq 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client amazonq
     golden_file    ob-setup-amazonq.json "$_GOLDEN_HOME/.aws/amazonq/mcp.json"
+
+    _golden_fresh_home
+    golden_check_n ob-setup-client-codex 0 env SHELL=/bin/bash XIAOMI_API_KEY=smoke-golden-key "$BIN" setup --offline --client codex
+    golden_file    ob-setup-codex.toml "$_GOLDEN_HOME/.config/tau/snippets/codex.toml"
 
     # --import: merge the user's MCP servers into the wired bridge client —
     # a fresh file carries mcacp plus every imported entry; the remote one

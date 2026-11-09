@@ -283,7 +283,7 @@ const setup_help =
     \\                         zed|nvim|emacs|vscode|cursor|jetbrains|
     \\                         windsurf|gemini|claude-desktop|opencode|
     \\                         cline|goose|continue|roo-code|kilo-code|
-    \\                         amazonq|all
+    \\                         amazonq|codex|all
     \\                         (env TAU_SETUP_CLIENT)
     \\      --provider <name>  Seed the config scaffold for a provider
     \\      --model <id>       Passed through to the doctor step

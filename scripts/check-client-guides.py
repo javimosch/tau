@@ -20,9 +20,9 @@ Slots:
 
 Direct ACP clients (zed, vscode, cursor, jetbrains) verify the two client
 slots; MCP-bridge clients (windsurf, gemini, claude-desktop, opencode,
-cline, roo-code, kilo-code, amazonq) verify all four. YAML bridge clients
-(goose, continue) verify
-client-snippet + both bridge slots — their YAML config is never written.
+cline, roo-code, kilo-code, amazonq) verify all four. Manual bridge
+clients (goose/continue YAML, codex TOML) verify
+client-snippet + both bridge slots — their config is never written.
 Snippet-only clients (nvim's Lua plugin config, emacs' agent-shell elisp)
 verify just client-snippet. Blocks whose bytes embed
 the absolute path of the tau binary — client-file/client-snippet for
@@ -67,6 +67,7 @@ GUIDES = {
     "roo-code.md": "roo-code",
     "kilo-code.md": "kilo-code",
     "amazonq.md": "amazonq",
+    "codex.md": "codex",
 }
 
 # MCP-bridge clients wire two files — the client's mcpServers entry plus the
@@ -76,11 +77,12 @@ BRIDGE_CLIENTS = frozenset(("windsurf", "gemini", "claude-desktop",
                             "opencode", "cline", "roo-code", "kilo-code",
                             "amazonq"))
 
-# YAML-configured bridge clients (Goose's extensions: map, Continue's
-# mcpServers: list) can't be written or spliced — setup always reports
-# "manual" with a YAML snippet but still wires the shared mcacp.json. Their
-# guides carry three verified blocks: client-snippet + both bridge slots.
-YAML_BRIDGE = frozenset(("goose", "continue"))
+# Bridge clients whose config isn't JSON can't be written or spliced —
+# Goose's YAML extensions: map, Continue's YAML mcpServers: list, Codex's
+# TOML [mcp_servers] tables. Setup always reports "manual" with a
+# paste-ready snippet but still wires the shared mcacp.json. Their guides
+# carry three verified blocks: client-snippet + both bridge slots.
+MANUAL_BRIDGE = frozenset(("goose", "continue", "codex"))
 
 # Snippet-only clients have no settings file at all — setup always reports
 # "manual" and writes the paste-ready snippet (elisp for emacs, lua for
@@ -96,7 +98,7 @@ SNIPPET_SLOTS = ("client-snippet",)
 def slots_for(client):
     if client in BRIDGE_CLIENTS:
         return BRIDGE_SLOTS
-    if client in YAML_BRIDGE:
+    if client in MANUAL_BRIDGE:
         return YAML_SLOTS
     if client in SNIPPET_ONLY:
         return SNIPPET_SLOTS
@@ -104,7 +106,7 @@ def slots_for(client):
 
 MARKER = re.compile(
     r"<!--\s*setup-verify:\s*(client-file|bridge-file|client-snippet|bridge-snippet)\s*-->"
-    r"\s*```(?:json|jsonc|elisp|lua|yaml)\n(.*?)```",
+    r"\s*```(?:json|jsonc|elisp|lua|yaml|toml)\n(.*?)```",
     re.DOTALL,
 )
 
@@ -178,7 +180,7 @@ def collect(tau):
             if entry is None:
                 fail(f"clients step has no entry for {client}")
             slots = out.setdefault(client, {})
-            if client in SNIPPET_ONLY or client in YAML_BRIDGE:
+            if client in SNIPPET_ONLY or client in MANUAL_BRIDGE:
                 if entry.get("status") != "manual":
                     fail(f"{client}: expected status manual, got "
                          f"{entry.get('status')} — {json.dumps(entry)}")
@@ -186,7 +188,7 @@ def collect(tau):
                     slots["client-snippet"] = norm_snippet(client, f.read())
                 if client in SNIPPET_ONLY:
                     continue
-                # YAML bridge clients still get the shared mcacp.json.
+                # Manual bridge clients still get the shared mcacp.json.
                 if entry.get("bridge_status") not in ("installed",
                                                       "already_installed"):
                     fail(f"{client}: unexpected bridge_status "
@@ -264,7 +266,7 @@ def collect(tau):
             slots["client-snippet"] = (norm_command(body)
                                        if client not in BRIDGE_CLIENTS
                                        else body)
-            if client in BRIDGE_CLIENTS or client in YAML_BRIDGE:
+            if client in BRIDGE_CLIENTS or client in MANUAL_BRIDGE:
                 if "bridge_snippet_path" not in entry:
                     fail(f"{client}: no bridge_snippet_path on seeded run")
                 with open(entry["bridge_snippet_path"],

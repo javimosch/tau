@@ -445,11 +445,11 @@ fn stepCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.
 // --- Step 3: editor ACP clients --------------------------------------------
 
 /// Editor clients setup can configure to spawn `tau acp serve`.
-pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop, opencode, cline, goose, continue_, roo, kilo, amazonq };
+pub const ClientKind = enum { zed, nvim, emacs, vscode, cursor, jetbrains, windsurf, gemini, claude_desktop, opencode, cline, goose, continue_, roo, kilo, amazonq, codex };
 
 /// Every ClientKind, in the order `--client all` expands and detection
 /// iterates: direct ACP clients first, then the MCP-bridge clients.
-pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq };
+pub const all_clients = [_]ClientKind{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq, .codex };
 
 pub fn clientName(k: ClientKind) []const u8 {
     return switch (k) {
@@ -469,12 +469,14 @@ pub fn clientName(k: ClientKind) []const u8 {
         .roo => "roo-code",
         .kilo => "kilo-code",
         .amazonq => "amazonq",
+        .codex => "codex",
     };
 }
 
 /// Map a client name (as passed to --client) to a ClientKind. "code" is an
 /// alias for vscode, "gemini-cli" for gemini, "claude" for claude-desktop,
-/// "roo" for roo-code, "kilo" for kilo-code, "amazon-q" for amazonq.
+/// "roo" for roo-code, "kilo" for kilo-code, "amazon-q" for amazonq,
+/// "codex-cli" for codex.
 pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "zed")) return .zed;
     if (std.mem.eql(u8, name, "nvim")) return .nvim;
@@ -492,6 +494,7 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
     if (std.mem.eql(u8, name, "roo-code") or std.mem.eql(u8, name, "roo")) return .roo;
     if (std.mem.eql(u8, name, "kilo-code") or std.mem.eql(u8, name, "kilo")) return .kilo;
     if (std.mem.eql(u8, name, "amazonq") or std.mem.eql(u8, name, "amazon-q")) return .amazonq;
+    if (std.mem.eql(u8, name, "codex") or std.mem.eql(u8, name, "codex-cli")) return .codex;
     return null;
 }
 
@@ -501,12 +504,12 @@ pub fn parseClientName(name: []const u8) ?ClientKind {
 /// config (~/.config/mcacp/mcacp.json) carries the real tau agent entry.
 /// (OpenCode *serves* ACP via `opencode acp` but consumes MCP servers —
 /// same bridge path as the other MCP-only clients. Goose and Continue are
-/// MCP clients too but their configs are YAML, not JSON — setup wires the
-/// shared bridge file and emits a paste-ready YAML snippet instead of
+/// MCP clients too but their configs are YAML, and Codex's is TOML — setup
+/// wires the shared bridge file and emits a paste-ready snippet instead of
 /// touching the client config.)
 pub fn clientUsesBridge(k: ClientKind) bool {
     return switch (k) {
-        .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq => true,
+        .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq, .codex => true,
         else => false,
     };
 }
@@ -519,7 +522,8 @@ fn clientEntryName(k: ClientKind) []const u8 {
 
 /// The JSON/JSONC settings file that carries the client config, or null for
 /// the snippet-only clients — nvim's ACP plugins are configured in Lua (see
-/// renderNvimSnippet) and Emacs agent-shell in elisp (renderEmacsSnippet).
+/// renderNvimSnippet), Emacs agent-shell in elisp (renderEmacsSnippet), and
+/// the YAML/TOML MCP configs of goose/continue/codex.
 /// Linux paths; docs/acp.md lists equivalents for other platforms.
 pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) !?[]u8 {
     return switch (k) {
@@ -535,7 +539,7 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
         .roo => try std.fmt.allocPrint(arena, "{s}/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json", .{home}),
         .kilo => try std.fmt.allocPrint(arena, "{s}/.config/kilo/kilo.jsonc", .{home}),
         .amazonq => try std.fmt.allocPrint(arena, "{s}/.aws/amazonq/mcp.json", .{home}),
-        .nvim, .emacs, .goose, .continue_ => null,
+        .nvim, .emacs, .goose, .continue_, .codex => null,
     };
 }
 
@@ -565,6 +569,7 @@ fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
         .amazonq => std.fmt.allocPrint(arena, "{s}/.aws/amazonq", .{home}),
         .goose => std.fmt.allocPrint(arena, "{s}/.config/goose", .{home}),
         .continue_ => std.fmt.allocPrint(arena, "{s}/.continue", .{home}),
+        .codex => std.fmt.allocPrint(arena, "{s}/.codex", .{home}),
     };
 }
 
@@ -580,7 +585,7 @@ fn clientSectionKey(k: ClientKind) []const u8 {
         // mcp.<name> entries, not mcpServers.<name>. Kilo Code's current
         // kilo.jsonc config uses the same "mcp" shape.
         .opencode, .kilo => "mcp",
-        .nvim, .emacs, .goose, .continue_ => unreachable,
+        .nvim, .emacs, .goose, .continue_, .codex => unreachable,
     };
 }
 
@@ -602,6 +607,7 @@ fn clientNextStep(k: ClientKind) []const u8 {
         .roo => "install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Roo Code pane",
         .kilo => "install mcacp (npm i -g mcacp or npx), restart Kilo Code, and confirm the mcacp server under Agent Behaviour > MCP Servers (or run 'kilo mcp list')",
         .amazonq => "install mcacp (npm i -g mcacp or npx), then run 'q chat' (or restart the IDE plugin) and check the mcacp server with /mcp",
+        .codex => "install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.codex/config.toml, then run 'codex mcp list' to confirm the mcacp server",
         .nvim => "pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)",
         .emacs => "paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau",
     };
@@ -621,6 +627,7 @@ fn snippetPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 
         .emacs => "el",
         .goose => "yaml",
         .continue_ => "yaml",
+        .codex => "toml",
         else => "jsonc",
     };
     return std.fmt.allocPrint(arena, "{s}/.config/tau/snippets/{s}.{s}", .{ home, clientName(k), ext });
@@ -711,7 +718,7 @@ fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8
             \\}}
             \\
         , .{}),
-        .nvim, .emacs, .goose, .continue_ => unreachable,
+        .nvim, .emacs, .goose, .continue_, .codex => unreachable,
     };
 }
 
@@ -738,9 +745,11 @@ fn renderMcacpJson(arena: std.mem.Allocator, command: []const u8) ![]u8 {
 /// whole document — it splices into the top-level object by hand.
 fn renderClientSnippet(arena: std.mem.Allocator, k: ClientKind, command: []const u8) ![]u8 {
     if (clientUsesBridge(k)) {
-        // YAML-configured MCP clients get a YAML fragment — the JSONC
-        // splice shapes below don't apply to config.yaml files.
+        // YAML/TOML-configured MCP clients get a fragment in their own
+        // format — the JSONC splice shapes below don't apply to
+        // config.yaml/config.toml files.
         if (k == .goose or k == .continue_) return renderYamlBridgeSnippet(arena, k);
+        if (k == .codex) return renderTomlBridgeSnippet(arena);
         if (k == .opencode or k == .kilo) {
             return std.fmt.allocPrint(arena,
                 \\// tau via the mcacp MCP->ACP bridge — merge into your {s} settings file.
@@ -831,6 +840,24 @@ fn renderYamlBridgeSnippet(arena: std.mem.Allocator, k: ClientKind) ![]u8 {
         , .{}),
         else => unreachable,
     };
+}
+
+/// The ready-to-paste TOML fragment for Codex, whose MCP servers live in
+/// [mcp_servers.<name>] tables in ~/.codex/config.toml — a TOML file setup
+/// never splices. Written to ~/.config/tau/snippets/codex.toml; the bridge
+/// half of the wiring is configured separately (see snippets/mcacp.jsonc).
+fn renderTomlBridgeSnippet(arena: std.mem.Allocator) ![]u8 {
+    return std.fmt.allocPrint(arena,
+        \\# tau via the mcacp MCP->ACP bridge — merge into ~/.codex/config.toml.
+        \\# Each MCP server is its own [mcp_servers.<name>] table — paste this
+        \\# one alongside your other servers (or run 'codex mcp add mcacp --
+        \\# npx -y mcacp'). The bridge itself is configured separately — see
+        \\# snippets/mcacp.jsonc.
+        \\[mcp_servers.mcacp]
+        \\command = "npx"
+        \\args = ["-y", "mcacp"]
+        \\
+    , .{});
 }
 
 /// The paste-ready fragment for an existing ~/.config/mcacp/mcacp.json that
@@ -979,13 +1006,14 @@ fn bridgeHasTau(arena: std.mem.Allocator, bytes: []const u8) ?bool {
 }
 
 /// How one client's `tau acp serve` wiring looks to `tau doctor`. Snippet-
-/// only clients (nvim/emacs — Lua and elisp; goose/continue — YAML) always
-/// report .manual_only; the JSON clients classify their settings file.
+/// only clients (nvim/emacs — Lua and elisp; goose/continue — YAML; codex —
+/// TOML) always report .manual_only; the JSON clients classify their
+/// settings file.
 pub const WiringState = enum {
     /// No editor config dir — the client isn't installed here.
     not_detected,
-    /// Snippet-only client (Lua/elisp/YAML config); doctor can only point
-    /// at the snippet.
+    /// Snippet-only client (Lua/elisp/YAML/TOML config); doctor can only
+    /// point at the snippet.
     manual_only,
     /// Settings file absent — the fix writes a fresh minimal one.
     missing_file,
@@ -1030,7 +1058,7 @@ fn acpServeArgs(e: std.json.ObjectMap) bool {
 /// command can't be disproved offline and stays ok.
 pub fn inspectClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind) !ClientWiring {
     if (!dirExists(io, try clientConfigDir(arena, home, k))) return .{ .state = .not_detected };
-    if (k == .nvim or k == .emacs or k == .goose or k == .continue_) return .{ .state = .manual_only };
+    if (k == .nvim or k == .emacs or k == .goose or k == .continue_ or k == .codex) return .{ .state = .manual_only };
     const path = (try clientSettingsPath(arena, home, k)).?;
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
         if (err == error.FileNotFound) return .{ .state = .missing_file, .path = path };
@@ -1283,7 +1311,7 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
     var list: std.ArrayList(ClientKind) = .empty;
     if (cfg.setup_client) |s| {
         if (std.mem.eql(u8, s, "all")) {
-            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq });
+            try list.appendSlice(arena, &.{ .zed, .nvim, .emacs, .vscode, .cursor, .jetbrains, .windsurf, .gemini, .claude_desktop, .opencode, .cline, .goose, .continue_, .roo, .kilo, .amazonq, .codex });
         } else if (parseClientName(s)) |k| {
             try list.append(arena, k);
         }
@@ -1321,15 +1349,17 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         }
     }.f;
 
-    if (k == .nvim or k == .emacs or k == .goose or k == .continue_) {
+    if (k == .nvim or k == .emacs or k == .goose or k == .continue_ or k == .codex) {
         // Snippet-only clients — Neovim ACP plugins are configured in Lua,
-        // Emacs agent-shell in elisp, and Goose/Continue MCP servers in
-        // YAML config files; splicing arbitrary user config is unsafe, so
-        // always emit a paste-ready snippet. (Goose and Continue still get
-        // the shared mcacp bridge file — closeClientEntry handles it.)
+        // Emacs agent-shell in elisp, Goose/Continue MCP servers in YAML,
+        // and Codex's in TOML; splicing arbitrary user config is unsafe, so
+        // always emit a paste-ready snippet. (Goose, Continue, and Codex
+        // still get the shared mcacp bridge file — closeClientEntry handles
+        // it.)
         const body = switch (k) {
             .nvim => try renderNvimSnippet(arena, command),
             .emacs => try renderEmacsSnippet(arena, command),
+            .codex => try renderTomlBridgeSnippet(arena),
             else => try renderYamlBridgeSnippet(arena, k),
         };
         const snip = try snippetPath(arena, home, k);
@@ -1341,7 +1371,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         try js(arena, entries, snip);
         try entries.appendSlice(arena, ",\"editor_detected\":");
         try entries.appendSlice(arena, if (dirExists(io, try clientConfigDir(arena, home, k))) "true" else "false");
-        // --import can't splice YAML — a bridge client taking the
+        // --import can't splice YAML/TOML — a bridge client taking the
         // snippet path reports the same empty import list as any other
         // manual outcome.
         if (imp and clientUsesBridge(k)) try entries.appendSlice(arena, ",\"imported\":[]");
@@ -1536,8 +1566,8 @@ fn collectImportable(io: std.Io, arena: std.mem.Allocator, home: []const u8, tar
     var seen = std.StringHashMap(ClientKind).init(arena);
     for (all_clients) |src| {
         if (src == target or !clientUsesBridge(src)) continue;
-        // YAML-configured bridge clients (Goose, Continue) have no
-        // settings file to import from.
+        // YAML/TOML-configured bridge clients (Goose, Continue, Codex)
+        // have no JSON settings file to import from.
         const path = (try clientSettingsPath(arena, home, src)) orelse continue;
         const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
             switch (err) {
@@ -1769,7 +1799,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
             }
         }
         try buf.appendSlice(arena, "],\"hint\":");
-        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all to write editor ACP config");
+        try js(arena, &buf, "re-run with --client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all to write editor ACP config");
         try buf.appendSlice(arena, "}");
         emit(&buf);
         return true;
@@ -1884,8 +1914,9 @@ fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k:
     var first = true;
     for (all_clients) |c| {
         if (c == k or !clientUsesBridge(c) or inSet(set, c)) continue;
-        // YAML-configured bridge clients (Goose, Continue) carry no
-        // inspectable settings file — they can't vouch for the bridge.
+        // YAML/TOML-configured bridge clients (Goose, Continue, Codex)
+        // carry no inspectable settings file — they can't vouch for the
+        // bridge.
         const cpath = (try clientSettingsPath(arena, home, c)) orelse continue;
         const b = std.Io.Dir.cwd().readFileAlloc(io, cpath, arena, .unlimited) catch continue;
         if (hasTauEntry(arena, c, b) orelse false) {
@@ -1999,21 +2030,24 @@ fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8
     try entries.appendSlice(arena, "{\"client\":");
     try js(arena, entries, clientName(k));
 
-    if (k == .nvim or k == .emacs or k == .goose or k == .continue_) {
-        // Init-file (Lua/elisp) and YAML wiring can't be introspected or
-        // safely spliced — clean the setup-generated snippet and hand the
-        // rest off. Goose/Continue still close through closeRemoveEntry so
-        // the shared mcacp bridge entry is reverted like any MCP client.
+    if (k == .nvim or k == .emacs or k == .goose or k == .continue_ or k == .codex) {
+        // Init-file (Lua/elisp) and YAML/TOML wiring can't be introspected
+        // or safely spliced — clean the setup-generated snippet and hand
+        // the rest off. Goose/Continue/Codex still close through
+        // closeRemoveEntry so the shared mcacp bridge entry is reverted
+        // like any MCP client.
         try removeSnippetFields(io, arena, entries, home, k, dry);
         try entries.appendSlice(arena, ",\"status\":\"manual\",\"reason\":");
         try js(arena, entries, switch (k) {
             .goose, .continue_ => "YAML wiring cannot be inspected — remove the pasted mcacp block by hand",
+            .codex => "TOML wiring cannot be inspected — remove the pasted mcacp table by hand",
             else => "init-file wiring cannot be inspected — remove the pasted tau block by hand",
         });
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, switch (k) {
             .goose => "delete the mcacp extension block from ~/.config/goose/config.yaml and restart Goose",
             .continue_ => "delete the mcacp list item from mcpServers in ~/.continue/config.yaml and restart Continue",
+            .codex => "delete the [mcp_servers.mcacp] table from ~/.codex/config.toml and restart Codex",
             else => "delete the tau block from your editor init file and restart",
         });
         return closeRemoveEntry(io, arena, entries, home, k, set, dry, .manual);
@@ -2450,6 +2484,8 @@ test "parseClientName accepts supported clients and the code alias" {
     try testing.expectEqual(ClientKind.kilo, parseClientName("kilo").?);
     try testing.expectEqual(ClientKind.amazonq, parseClientName("amazonq").?);
     try testing.expectEqual(ClientKind.amazonq, parseClientName("amazon-q").?);
+    try testing.expectEqual(ClientKind.codex, parseClientName("codex").?);
+    try testing.expectEqual(ClientKind.codex, parseClientName("codex-cli").?);
     try testing.expect(parseClientName("vim") == null);
     try testing.expect(parseClientName("") == null);
 }
@@ -2493,6 +2529,7 @@ test "clientSettingsPath matches the docs/acp.md targets (nvim has none)" {
     );
     try testing.expect((try clientSettingsPath(a, "/h", .nvim)) == null);
     try testing.expect((try clientSettingsPath(a, "/h", .emacs)) == null);
+    try testing.expect((try clientSettingsPath(a, "/h", .codex)) == null);
     try testing.expectEqualStrings(
         "/h/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json",
         (try clientSettingsPath(a, "/h", .roo)).?,
@@ -3050,7 +3087,7 @@ test "docs/clients per-client guides mirror the client renderers" {
     // ACP clients verify the two client-* slots; MCP-bridge clients verify
     // all four; snippet-only clients (no JSON settings file) verify just
     // their paste-ready snippet.
-    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false, snippet_only: bool = false, yaml: bool = false };
+    const Guide = struct { file: []const u8, kind: ClientKind, direct: bool = false, snippet_only: bool = false, no_client_file: bool = false };
     const guides = [_]Guide{
         .{ .file = "docs/clients/zed.md", .kind = .zed, .direct = true },
         .{ .file = "docs/clients/vscode.md", .kind = .vscode, .direct = true },
@@ -3063,11 +3100,12 @@ test "docs/clients per-client guides mirror the client renderers" {
         .{ .file = "docs/clients/claude-desktop.md", .kind = .claude_desktop },
         .{ .file = "docs/clients/opencode.md", .kind = .opencode },
         .{ .file = "docs/clients/cline.md", .kind = .cline },
-        .{ .file = "docs/clients/goose.md", .kind = .goose, .yaml = true },
-        .{ .file = "docs/clients/continue.md", .kind = .continue_, .yaml = true },
+        .{ .file = "docs/clients/goose.md", .kind = .goose, .no_client_file = true },
+        .{ .file = "docs/clients/continue.md", .kind = .continue_, .no_client_file = true },
         .{ .file = "docs/clients/roo-code.md", .kind = .roo },
         .{ .file = "docs/clients/kilo-code.md", .kind = .kilo },
         .{ .file = "docs/clients/amazonq.md", .kind = .amazonq },
+        .{ .file = "docs/clients/codex.md", .kind = .codex, .no_client_file = true },
     };
     // Marker -> renderer output it must equal ("tau" stands in for the
     // absolute command path, like the smoke group's normalization).
@@ -3093,6 +3131,7 @@ test "docs/clients per-client guides mirror the client renderers" {
                     .nvim => renderNvimSnippet(al, "tau"),
                     .emacs => renderEmacsSnippet(al, "tau"),
                     .goose, .continue_ => renderYamlBridgeSnippet(al, k),
+                    .codex => renderTomlBridgeSnippet(al),
                     else => renderClientSnippet(al, k, "tau"),
                 };
             }
@@ -3110,9 +3149,10 @@ test "docs/clients per-client guides mirror the client renderers" {
         for (slots) |s| {
             if (g.direct and std.mem.startsWith(u8, s.marker, "bridge")) continue;
             if (g.snippet_only and !std.mem.eql(u8, s.marker, "client-snippet")) continue;
-            // YAML bridge clients carry no client-file slot (their config
-            // can't be written) but do verify the shared bridge slots.
-            if (g.yaml and std.mem.eql(u8, s.marker, "client-file")) continue;
+            // YAML/TOML bridge clients carry no client-file slot (their
+            // config can't be written) but do verify the shared bridge
+            // slots.
+            if (g.no_client_file and std.mem.eql(u8, s.marker, "client-file")) continue;
             const marker = try std.fmt.allocPrint(a, "<!-- setup-verify: {s} -->", .{s.marker});
             const mpos = std.mem.indexOf(u8, doc, marker) orelse {
                 std.debug.print("{s} missing marker '{s}'\n", .{ g.file, marker });
@@ -3664,8 +3704,9 @@ test "property: wire then --remove restores user bytes for every JSONC client" {
 
     var case_n: usize = 0;
     for (all_clients) |k| {
-        // Snippet-only clients (nvim/emacs Lua+elisp, goose/continue YAML)
-        // never get their file edited in place — nothing to round-trip.
+        // Snippet-only clients (nvim/emacs Lua+elisp, goose/continue
+        // YAML, codex TOML) never get a file edited in place — nothing to
+        // round-trip.
         if ((try clientSettingsPath(a, root, k)) == null) continue;
         for (round_trip_cases) |c| {
             const home = try std.fmt.allocPrint(a, "{s}/h{d}", .{ root, case_n });

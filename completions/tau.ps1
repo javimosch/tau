@@ -53,6 +53,7 @@ $TauArgumentCompleter = {
         'doctor.client_cline', 'doctor.client_goose', 'doctor.client_continue',
         'doctor.client_roo_code', 'doctor.client_kilo_code',
         'doctor.client_amazonq',
+        'doctor.client_codex',
         'doctor.probe_xiaomi', 'doctor.probe_xiaomi_auth', 'doctor.probe_openai',
         'doctor.probe_openai_auth', 'doctor.probe_deepseek',
         'doctor.probe_deepseek_auth', 'doctor.probe_opencode-go',
@@ -66,7 +67,7 @@ $TauArgumentCompleter = {
         'TAU_THINKING', 'TAU_DEBUG',
         '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
-    $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'all')
+    $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'codex', 'all')
     $globalFlags = @(
         '--help', '-h', '--version', '-v', '--help-json',
         '--print', '-p',
@@ -157,7 +158,7 @@ $TauArgumentCompleter = {
         '--force'             = 'overwrite an existing config file'
         '--stdout'            = 'print the starter config without writing it'
         '--shell'             = 'completions shell (bash|zsh|fish|pwsh|all)'
-        '--client'            = 'editor ACP client (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|all)'
+        '--client'            = 'editor ACP client (zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)'
         '--offline'           = 'skip network checks'
         '--deep'              = 'run an authenticated probe (spends ~1 token)'
         '--probe'             = 'live-verify connectivity and credentials for every provider'
