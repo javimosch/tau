@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "OpenCode config (~/.config/opencode/opencode.json) — MCP servers live under the top-level mcp object; local servers use a type=local entry whose command is an argv array. tau reaches this MCP-only client through the mcacp MCP->ACP bridge, so the contract pins the bridge entry: mcp.mcacp must be a local server running npx -y mcacp. Applied to the settings file tau writes and to the wrapped paste-ready jsonc snippet.",
+  "type": "object",
+  "required": ["mcp"],
+  "properties": {
+    "mcp": {
+      "type": "object",
+      "required": ["mcacp"],
+      "properties": { "mcacp": { "$ref": "#/$defs/server" } },
+      "additionalProperties": { "$ref": "#/$defs/server" }
+    }
+  },
+  "$defs": {
+    "server": {
+      "type": "object",
+      "required": ["type", "command", "enabled"],
+      "properties": {
+        "type": { "const": "local" },
+        "command": { "const": ["npx", "-y", "mcacp"] },
+        "enabled": { "const": true }
+      }
+    }
+  }
+}

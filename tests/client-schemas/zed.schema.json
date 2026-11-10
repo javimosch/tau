@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Zed settings.json (Linux: ~/.config/zed/settings.json). External agents live under the agent_servers object; custom agents require \"type\": \"custom\" plus command/args (Zed docs: external agents / agent_servers). The contract pins tau's entry: agent_servers.tau must spawn `tau acp serve`. Applied to the settings file tau writes and to the wrapped paste-ready jsonc snippet.",
+  "type": "object",
+  "required": ["agent_servers"],
+  "properties": {
+    "agent_servers": {
+      "type": "object",
+      "required": ["tau"],
+      "properties": { "tau": { "$ref": "#/$defs/agent" } },
+      "additionalProperties": { "$ref": "#/$defs/agent" }
+    }
+  },
+  "$defs": {
+    "agent": {
+      "type": "object",
+      "required": ["type", "command", "args"],
+      "properties": {
+        "type": { "const": "custom" },
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "const": ["acp", "serve"] },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -74,6 +74,7 @@ ALL_TEST_GROUPS=(
   "setup:test_group_setup"
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
+  "client-contracts:test_group_client_contracts"
   "doc-snippets:test_group_doc_snippets"
   "migrating-doc:test_group_migrating_doc"
   "goal:test_group_goal_offline"
@@ -2936,6 +2937,20 @@ test_group_client_guides() {
   python3 "$ROOT/scripts/check-client-guides.py" --tau "$BIN" \
     --docs "$ROOT/docs/clients"
   ok "client guides verified against setup --client output" "$?" 0
+}
+
+# Group: per-client contract tests — every artifact `tau setup --client`
+# produces (fresh settings files, the shared mcacp.json, and the paste-ready
+# snippets for pre-existing files) is validated against the client's
+# documented config schema in tests/client-schemas/ by
+# scripts/check-client-contracts.py. Where guides byte-pin output to the
+# docs, this pins output to the vendor formats — a wrong section key or a
+# missing required field fails even if the docs drifted along with it.
+test_group_client_contracts() {
+  note "setup --client output conforms to per-client config schemas"
+
+  python3 "$ROOT/scripts/check-client-contracts.py" --tau "$BIN"
+  ok "every client artifact conforms to its documented config schema" "$?" 0
 }
 
 # Group: README + cookbook command snippets run end-to-end in a clean env.

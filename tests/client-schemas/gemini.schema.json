@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Gemini CLI settings (~/.gemini/settings.json) — stdio MCP servers under mcpServers as named {command, args?, env?} entries. tau reaches this MCP-only client through the mcacp MCP->ACP bridge, so the contract pins the bridge entry: mcpServers.mcacp must spawn `npx -y mcacp`. Applied to the settings file tau writes and to the wrapped paste-ready jsonc snippet.",
+  "type": "object",
+  "required": ["mcpServers"],
+  "properties": {
+    "mcpServers": {
+      "type": "object",
+      "required": ["mcacp"],
+      "properties": { "mcacp": { "$ref": "#/$defs/server" } },
+      "additionalProperties": { "$ref": "#/$defs/server" }
+    }
+  },
+  "$defs": {
+    "server": {
+      "type": "object",
+      "required": ["command", "args"],
+      "properties": {
+        "command": { "const": "npx" },
+        "args": { "const": ["-y", "mcacp"] },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    }
+  }
+}
