@@ -68,6 +68,7 @@ A single diagnostic outcome — the same object shape the single-object report c
 | `status` | `string` | one of `ok` \| `warn` \| `fail` \| `skip` | Outcome of the check. warn counts toward ok:true; fail flips the verdict and the exit code to 1; skip means the check did not run (offline mode, missing prerequisite, or platform gating). |
 | `message` | `string` | — | Human-readable result — what was found, never secret material. |
 | `hint` (optional) | `string` | — | Optional remediation hint shown on non-ok outcomes. |
+| `explain` (optional) | `string` | — | Ready-to-run catalog lookup for the check — present on non-ok outcomes (warn/fail/skip), always "tau explain doctor.<name>". Resolves the check's fails_when/remediation/docs row offline via `tau explain`. |
 
 ### fix
 
@@ -108,7 +109,7 @@ A `--fix --yes` run emits all three event types (check events, fix
 events, then the verdict carrying the fixes array):
 
 ```json
-{"check":{"name":"api_key","status":"fail","message":"no API key resolved","hint":"set XIAOMI_API_KEY or add keys.<provider> to config.json"},"done":false}
+{"check":{"name":"api_key","status":"fail","message":"no API key resolved","hint":"set XIAOMI_API_KEY or add keys.<provider> to config.json","explain":"tau explain doctor.api_key"},"done":false}
 {"fix":{"id":"scaffold_config","check":"config_file","status":"applied","detail":"wrote starter config to ~/.config/tau/config.json"},"done":false}
 {"ok":false,"version":"0.4.0","build":{"commit":"abc1234","target":"x86_64-linux-gnu","build_date":"2026-10-27T12:00:00Z","zig":"0.16.0"},"summary":{"ok":5,"warn":1,"fail":1,"skip":3},"fixes":[{"id":"scaffold_config","check":"config_file","status":"applied","detail":"wrote starter config to ~/.config/tau/config.json"}],"done":true}
 ```

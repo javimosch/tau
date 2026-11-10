@@ -332,6 +332,34 @@ test "explain: every check-catalog entry resolves via findCheck" {
     }
 }
 
+test "every check name doctor.zig emits resolves in the catalog" {
+    // Non-ok report rows carry an "explain":"tau explain doctor.<id>"
+    // pointer (formatCheckJson); a name missing from this catalog would
+    // print a pointer that resolves to nothing. Literal check ids live in
+    // doctor.zig as `.name = "<id>"` and `const name = "<id>"` — scan the
+    // pre-test region for `name = "` so a new check row can't ship an
+    // uncataloged id. Dynamic ids (client_*, probe_*) are pinned by the
+    // clientCheckName/probe tests above.
+    const src = @embedFile("doctor.zig");
+    const code_end = std.mem.indexOf(u8, src, "// Tests") orelse src.len;
+    const code = src[0..code_end];
+    var pos: usize = 0;
+    var scanned: usize = 0;
+    while (std.mem.indexOfPos(u8, code, pos, "name = \"")) |i| {
+        const start = i + "name = \"".len;
+        const end = std.mem.indexOfScalarPos(u8, code, start, '"') orelse break;
+        const id = code[start..end];
+        pos = end;
+        if (id.len == 0) continue;
+        scanned += 1;
+        if (findCheck(id) == null) {
+            std.debug.print("doctor.zig emits check '{s}' with no catalog row — `tau explain doctor.{s}` would not resolve\n", .{ id, id });
+            return error.TestUnexpectedResult;
+        }
+    }
+    try testing.expect(scanned >= 17); // the static rows today — a scan that silently found nothing would be worthless
+}
+
 test "explain: formatCheckJson emits the check entry shape" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();

@@ -23,7 +23,7 @@
       },
       "examples": [
         {
-          "check": { "name": "api_key", "status": "fail", "message": "no API key resolved", "hint": "set XIAOMI_API_KEY or add keys.<provider> to config.json" },
+          "check": { "name": "api_key", "status": "fail", "message": "no API key resolved", "hint": "set XIAOMI_API_KEY or add keys.<provider> to config.json", "explain": "tau explain doctor.api_key" },
           "done": false
         }
       ]
@@ -106,6 +106,10 @@
         "hint": {
           "type": "string",
           "description": "Optional remediation hint shown on non-ok outcomes."
+        },
+        "explain": {
+          "type": "string",
+          "description": "Ready-to-run catalog lookup for the check — present on non-ok outcomes (warn/fail/skip), always \"tau explain doctor.<name>\". Resolves the check's fails_when/remediation/docs row offline via `tau explain`."
         }
       }
     },
