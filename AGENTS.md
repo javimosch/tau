@@ -496,7 +496,7 @@ tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundl
 |------|-------------|-------------|
 | `src/main.zig` | CLI dispatch, `help_text`, `flag_specs` | Adding CLI flags, subcommands |
 | `src/subhelp.zig` | Per-subcommand help pages (`tau <sub> --help`) — usage + runnable `Examples:` | Editing subcommand help output |
-| `src/args.zig` | Argv parser, `Action` enum | Adding new subcommands |
+| `src/args.zig` | Argv parser, `Action` enum, did-you-mean hints (flag pool comptime-scanned from `eq(…, "-…")` literals + per-subcommand word pools; mistyped top-level subcommands error only when the rest of argv is call-shaped) | Adding new subcommands |
 | `src/agent.zig` | Single-turn agentic tool loop | Modifying agent behavior |
 | `src/goal.zig` | Goal directive parsing + sentinels | Changing goal mode logic |
 | `src/loop.zig` | Author↔Critic primitive | A/C loop changes |

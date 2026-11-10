@@ -388,6 +388,21 @@ All of these carry `"type":"invalid_argument"` and print the offending value.
 | `/goal subcommands require --session <name>` | `/goal status\|pause\|resume\|clear\|complete` without a session | Add `--session <name>` |
 | `argument parsing failed` (type `internal_error`) | Arg parser itself failed (OOM etc.) | Report it — not user error |
 
+When the offending token is within two edits of a registered name, the
+message earns a ` — did you mean "…"?` suffix — the same suggestion engine
+the config-file and `tau explain` lookups use. A mistyped flag resolves
+against every registered flag (`tau --mod` → `did you mean "--mode"?`), a
+mistyped subcommand word against that subcommand's grammar (`tau skills
+lst` → `did you mean "list"?`, `tau fleet stauts` → `did you mean
+"status"?`, `tau acp stats` → `did you mean "status"?`), and a mistyped
+top-level subcommand fails fast as `unknown subcommand: <w> — did you mean
+"<sub>"?` — but only when the rest of the line is unambiguously a
+subcommand call (a bare token, a flag next, or one of that subcommand's
+own args, e.g. `tau conifg show`). A real prompt whose first word merely
+sits near a subcommand name (`tau model the auth flow`) still parses as a
+prompt. A correctly-spelled flag that's invalid in that context — like
+`tau explain --mode` — earns no hint.
+
 ---
 
 ## Missing required fields (exit 82)
