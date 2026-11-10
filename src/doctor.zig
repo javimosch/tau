@@ -25,7 +25,11 @@
 // env blocks inside client settings files) — not auto-fixable, since
 // deleting a credential is destructive; the hint names the remediation —
 // and `client_permissions` warns (fixable) when client files grant
-// group/other access.
+// group/other access. A `wsl_boundary` row watches the WSL/Windows
+// filesystem split: a POSIX build whose binary, config root, or client
+// settings land on a mounted Windows filesystem (drvfs/9p, /mnt/<letter>)
+// can't serve the other side — warns with the offending paths and is not
+// auto-fixable.
 //
 // `--report` renders the same run as a Markdown diagnostics bundle for
 // pasting into a GitHub issue: verdict, build metadata, the checks table,
@@ -692,6 +696,132 @@ fn checkClientPermissions(io: std.Io, arena: std.mem.Allocator, env: *std.proces
         .message = std.fmt.allocPrint(arena, "client files grant group/other access: {s}", .{loose.items}) catch "client files grant group/other access",
         .hint = "run 'tau doctor --fix' to restrict them to 0600 — env blocks can hold API keys",
         .fix = .chmod_client_files,
+    };
+}
+
+/// Mount-table entries that live on the Windows side of a WSL boundary:
+/// drvfs (the automounted drives, conventionally /mnt/<letter>) and 9p
+/// shares. Pure so tests can feed it a canned /proc/mounts.
+fn windowsMountsFromTable(arena: std.mem.Allocator, contents: []const u8) ![][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    var lines = std.mem.splitScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        // /proc/mounts: <device> <mountpoint> <fstype> <opts> <dump> <pass>
+        var f = std.mem.tokenizeScalar(u8, line, ' ');
+        _ = f.next() orelse continue;
+        const mp = f.next() orelse continue;
+        const fs = f.next() orelse continue;
+        if (!std.mem.eql(u8, fs, "drvfs") and !std.mem.eql(u8, fs, "9p")) continue;
+        // Mount points escape space/tab/newline/backslash as \<NNN> octal
+        // (\040, \011, \012, \134).
+        var un: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < mp.len) : (i += 1) {
+            if (mp[i] == '\\' and i + 3 < mp.len and
+                std.ascii.isDigit(mp[i + 1]) and mp[i + 1] <= '7' and
+                std.ascii.isDigit(mp[i + 2]) and mp[i + 2] <= '7' and
+                std.ascii.isDigit(mp[i + 3]) and mp[i + 3] <= '7')
+            {
+                try un.append(arena, std.fmt.parseInt(u8, mp[i + 1 .. i + 4], 8) catch mp[i]);
+                i += 3;
+            } else try un.append(arena, mp[i]);
+        }
+        try list.append(arena, un.items);
+    }
+    return list.toOwnedSlice(arena);
+}
+
+fn windowsMounts(io: std.Io, arena: std.mem.Allocator) [][]const u8 {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, "/proc/mounts", arena, .unlimited) catch return &.{};
+    return windowsMountsFromTable(arena, bytes) catch &.{};
+}
+
+/// The classic WSL automount layout: /mnt/<drive-letter>[/...]. Counted as
+/// Windows-side only in a WSL context — a hand-mounted /mnt/c share on
+/// plain Linux is not a boundary.
+fn isDriveLetterMount(path: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, "/mnt/")) return false;
+    const rest = path["/mnt/".len..];
+    if (rest.len == 0 or !std.ascii.isAlphabetic(rest[0])) return false;
+    return rest.len == 1 or rest[1] == '/';
+}
+
+fn pathUnderMount(path: []const u8, mount: []const u8) bool {
+    if (mount.len == 0) return false;
+    if (std.mem.eql(u8, path, mount)) return true;
+    return path.len > mount.len and std.mem.startsWith(u8, path, mount) and
+        (mount[mount.len - 1] == '/' or path[mount.len] == '/');
+}
+
+/// Windows-side = under a drvfs/9p mount, or under /mnt/<letter> while WSL
+/// is detected (covers mount tables we couldn't read).
+fn isWindowsSidePath(path: []const u8, mounts: []const []const u8, wsl: bool) bool {
+    for (mounts) |m| {
+        if (pathUnderMount(path, m)) return true;
+    }
+    return wsl and isDriveLetterMount(path);
+}
+
+/// WSL detection: the documented env markers first, then the kernel release
+/// string ("…-microsoft-standard-WSL2").
+fn wslContext(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) bool {
+    if (env.get("WSL_DISTRO_NAME") != null or env.get("WSL_INTEROP") != null) return true;
+    const rel = std.Io.Dir.cwd().readFileAlloc(io, "/proc/sys/kernel/osrelease", arena, .unlimited) catch return false;
+    return std.ascii.indexOfIgnoreCase(rel, "microsoft") != null;
+}
+
+/// Check: WSL/Windows filesystem-boundary mismatch. When tau runs as a
+/// Linux build inside WSL, anything of its footprint sitting on a mounted
+/// Windows filesystem — the binary itself, the HOME that anchors the config
+/// dir and client settings paths, or a stray client settings file — is dead
+/// to the other side: Windows clients can't spawn a Linux ELF, and WSL-side
+/// clients can't serve configs only Windows can see. Warns with the
+/// offending paths; not auto-fixable — the remediation is installing the
+/// build that matches the side each client runs on.
+fn checkWslBoundary(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const name = "wsl_boundary";
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .name = name, .status = .skip, .message = "skipped (the WSL boundary only exists on the POSIX side — a Windows binary is always Windows-side)" };
+    }
+    const wsl = wslContext(io, arena, env);
+    const mounts = windowsMounts(io, arena);
+
+    var win: std.ArrayList(u8) = .empty;
+    var saw_linux_side = false;
+    if (std.process.executablePathAlloc(io, arena) catch null) |exe| {
+        if (isWindowsSidePath(exe, mounts, wsl)) {
+            tryFmt(&win, arena, "tau binary is Windows-side: {s}", .{exe});
+        } else saw_linux_side = true;
+    }
+    if (env.get("HOME")) |home| {
+        if (isWindowsSidePath(home, mounts, wsl)) {
+            if (win.items.len > 0) win.appendSlice(arena, "; ") catch {};
+            tryFmt(&win, arena, "HOME (config + client settings root) is Windows-side: {s}", .{home});
+        } else {
+            saw_linux_side = true;
+            // A stray client settings file on a Windows mount is exactly the
+            // cross-boundary wiring that looks healthy inside WSL but is
+            // dead to the client that owns it.
+            for (clientSecretPaths(arena, home) catch &.{}) |p| {
+                if (!isWindowsSidePath(p, mounts, wsl)) continue;
+                _ = std.Io.Dir.cwd().statFile(io, p, .{}) catch continue;
+                if (win.items.len > 0) win.appendSlice(arena, "; ") catch {};
+                tryFmt(&win, arena, "client settings file is Windows-side: {s}", .{p});
+            }
+        }
+    }
+    if (win.items.len == 0)
+        return .{ .name = name, .status = .ok, .message = "no WSL/Windows boundary mismatch in tau's footprint" };
+    if (!saw_linux_side and win.items.len > 0) {
+        // Everything Windows-side still mismatches: the running build is a
+        // POSIX binary that Windows clients cannot spawn.
+        win.appendSlice(arena, " — entire footprint is on the Windows filesystem") catch {};
+    }
+    return .{
+        .name = name,
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "WSL/Windows boundary mismatch — {s}", .{win.items}) catch "WSL/Windows boundary mismatch",
+        .hint = "install the Windows build (install.ps1) for Windows-side clients, or move the binary/configs into the WSL filesystem — not auto-fixable by 'tau doctor --fix'",
     };
 }
 
@@ -1690,6 +1820,10 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
     for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
     try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
+    // WSL/Windows boundary: a POSIX build whose binary, config root, or a
+    // client settings file sits on a mounted Windows filesystem can't serve
+    // the other side. Local-only — runs under --offline.
+    try addCheck(arena, &checks, checkWslBoundary(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try addCheck(arena, &checks, curl_check, cfg);
@@ -2891,6 +3025,73 @@ test "checkClientPermissions + chmod_client_files fix round-trips" {
     try testing.expectEqual(@as(std.posix.mode_t, 0o600), st.permissions.toMode() & 0o777);
     const c_ok = checkClientPermissions(testing.io, a, &home.env);
     try testing.expectEqual(CheckStatus.ok, c_ok.status);
+}
+
+test "windowsMountsFromTable: drvfs and 9p only, octal escapes decoded" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const mounts = try windowsMountsFromTable(a,
+        \\proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+        \\C:\134 /mnt/c drvfs rw,noatime,uid=1000,gid=1000 0 0
+        \\D:\134 /mnt/d drvfs rw,noatime 0 0
+        \\host\040share /mnt/with\040space 9p rw,noatime 0 0
+        \\weird /mnt/back\134slash drvfs rw,noatime 0 0
+        \\tmpfs /run tmpfs rw,nosuid 0 0
+    );
+    try testing.expectEqual(@as(usize, 4), mounts.len);
+    try testing.expectEqualStrings("/mnt/c", mounts[0]);
+    try testing.expectEqualStrings("/mnt/d", mounts[1]);
+    try testing.expectEqualStrings("/mnt/with space", mounts[2]);
+    try testing.expectEqualStrings("/mnt/back\\slash", mounts[3]);
+}
+
+test "isWindowsSidePath: mount prefix boundaries and the /mnt/<letter> rule" {
+    const mounts = [_][]const u8{ "/mnt/c", "/mnt/with space" };
+    try testing.expect(isWindowsSidePath("/mnt/c", &mounts, false));
+    try testing.expect(isWindowsSidePath("/mnt/c/Users/x", &mounts, false));
+    try testing.expect(isWindowsSidePath("/mnt/with space/f", &mounts, false));
+    // Prefix alone is not enough — the mount boundary must be a path segment.
+    try testing.expect(!isWindowsSidePath("/mnt/code/x", &mounts, false));
+    try testing.expect(!isWindowsSidePath("/home/u", &mounts, false));
+    // /mnt/<letter> only counts in a WSL context.
+    try testing.expect(!isWindowsSidePath("/mnt/c/x", &.{}, false));
+    try testing.expect(isWindowsSidePath("/mnt/c/x", &.{}, true));
+    try testing.expect(isWindowsSidePath("/mnt/c", &.{}, true));
+    try testing.expect(!isWindowsSidePath("/mnt/cd/x", &.{}, true));
+    try testing.expect(!isWindowsSidePath("/mnt/1/x", &.{}, true));
+    try testing.expect(!isWindowsSidePath("/home/u", &.{}, true));
+}
+
+test "checkWslBoundary: ok off-WSL, ok all-WSL-side, warn on mixed footprint" {
+    if (comptime builtin.os.tag == .windows) return;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // Fresh env without WSL markers. On real WSL hardware the osrelease
+    // fallback detects WSL, but the verdict is ok either way — the binary
+    // and HOME are Linux-side.
+    const c_plain = checkWslBoundary(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_plain.status);
+
+    // WSL marker + Linux-side everything -> ok.
+    try home.env.put("WSL_DISTRO_NAME", "Ubuntu");
+    const c_wsl = checkWslBoundary(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_wsl.status);
+
+    // HOME on a Windows drive while the binary stays Linux-side -> warn.
+    try home.env.put("HOME", "/mnt/c/Users/x");
+    const c_mixed = checkWslBoundary(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_mixed.status);
+    try testing.expect(std.mem.indexOf(u8, c_mixed.message, "boundary mismatch") != null);
+    try testing.expect(std.mem.indexOf(u8, c_mixed.message, "/mnt/c/Users/x") != null);
+    try testing.expect(std.mem.indexOf(u8, c_mixed.hint.?, "install.ps1") != null);
+    try testing.expect(c_mixed.fix == null);
 }
 
 test "collectChecks: fixable outcomes are attached to the right checks" {
