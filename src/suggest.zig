@@ -33,6 +33,17 @@ pub fn suggest(arena: std.mem.Allocator, name: []const u8, candidates: []const [
     return best;
 }
 
+/// ` — did you mean "X"?` suffix for error messages, or "" when no candidate
+/// is within typo distance. An exact match never produces a self-suggestion:
+/// a correctly-spelled name that's simply invalid in this context (e.g.
+/// `tau explain --mode`, where --mode belongs to other subcommands) stays a
+/// plain "unknown argument" error.
+pub fn hint(arena: std.mem.Allocator, name: []const u8, candidates: []const []const u8) ![]const u8 {
+    const s = suggest(arena, name, candidates) orelse return "";
+    if (std.mem.eql(u8, s, name)) return "";
+    return std.fmt.allocPrint(arena, " — did you mean \"{s}\"?", .{s});
+}
+
 test "editDistance: exact, typo, and unrelated distances" {
     var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer ar.deinit();
@@ -58,4 +69,16 @@ test "suggest: typos resolve to nearest key, unrelated names get none" {
     try std.testing.expectEqual(@as(?[]const u8, null), suggest(arena, "zztopp", &known_keys));
     // Exact matches are never "unknown", but suggest still resolves them.
     try std.testing.expectEqualStrings("mode", suggest(arena, "mode", &known_keys).?);
+}
+
+test "hint: typos earn the suffix, unrelated and exact names get none" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    const known_keys = [_][]const u8{ "provider", "model", "mode", "temperature" };
+    try std.testing.expectEqualStrings(" — did you mean \"temperature\"?", try hint(arena, "temprature", &known_keys));
+    try std.testing.expectEqualStrings("", try hint(arena, "zztopp", &known_keys));
+    // Correctly spelled but wrong-context names never self-suggest.
+    try std.testing.expectEqualStrings("", try hint(arena, "mode", &known_keys));
 }

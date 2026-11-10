@@ -3691,8 +3691,17 @@ test_group_golden_errors() {
   golden_check acp-unknown-arg           80 "$BIN" acp bogus
   golden_check guide-unknown-arg         80 "$BIN" guide --bogus
   golden_check fleet-no-subcommand       80 "$BIN" fleet
-  golden_check fleet-unknown-subcommand  80 "$BIN" fleet bogus
+  golden_check fleet-unknown-subcommand  80 "$BIN" fleet zztopp
   golden_check skills-no-subcommand      80 "$BIN" skills
+
+  # ── did-you-mean hints: mistyped subcommands and flags suggest the
+  #    nearest registered name inside the same 80 envelope ──
+  golden_check subcommand-typo           80 "$BIN" docter --json
+  golden_check subcommand-typo-args      80 "$BIN" conifg show
+  golden_check flag-typo                 80 "$BIN" --mod text x
+  golden_check acp-word-typo             80 "$BIN" acp stats
+  golden_check skills-sub-typo           80 "$BIN" skills lst
+  golden_check fleet-word-typo           80 "$BIN" fleet stauts
 
   # ── runtime validation failures ──
   golden_check skills-load-missing-name  82 "$BIN" skills load

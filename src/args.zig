@@ -63,6 +63,110 @@ fn envTruthy(v: ?[]const u8) bool {
     return false;
 }
 
+// ── did-you-mean pools ─────────────────────────────────────────────────────
+// Two suggestion vocabularies back every "unknown X argument/option" error:
+// the registered --flag spellings, and each subcommand's positional words.
+// The flag pool is comptime-scanned from this file's own dash literals — the
+// same source-scan the surface-drift tests in main.zig/subhelp.zig run — so
+// a flag added anywhere in the parser joins the pool automatically.
+
+const args_source = @embedFile("args.zig");
+
+/// Iterate `eq(<expr>, "<literal>")` where the literal starts with '-' — the
+/// registered flags (global and subcommand-scoped alike). Mirrors
+/// nextFlagLiteral in main.zig.
+fn nextFlagLiteral(pos: *usize) ?[]const u8 {
+    while (std.mem.indexOfPos(u8, args_source, pos.*, "eq(")) |i| {
+        const close = std.mem.indexOfPos(u8, args_source, i + 3, ")") orelse return null;
+        const q1 = std.mem.indexOfPos(u8, args_source, i + 3, "\"") orelse return null;
+        pos.* = i + 3;
+        if (q1 > close) continue;
+        const q2 = std.mem.indexOfPos(u8, args_source, q1 + 1, "\"") orelse return null;
+        pos.* = q2 + 1;
+        const lit = args_source[q1 + 1 .. q2];
+        if (lit.len > 1 and lit[0] == '-') return lit;
+    }
+    return null;
+}
+
+/// Every registered --flag spelling — the suggestion pool for unknown-option
+/// errors. Two-char shorts (-h/-v/-p/-t/-y) are excluded: every stray
+/// dash-token sits within an edit of one, which would make the hint noise.
+const flag_pool = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (nextFlagLiteral(&pos)) |f| {
+        if (f.len > 2) count += 1;
+    }
+    var pool: [count][]const u8 = undefined;
+    pos = 0;
+    var i: usize = 0;
+    while (nextFlagLiteral(&pos)) |f| {
+        if (f.len > 2) {
+            pool[i] = f;
+            i += 1;
+        }
+    }
+    break :blk pool;
+};
+
+/// Each subcommand's positional vocabulary — the word pool for tokens
+/// rejected in a slot that takes words rather than flags.
+const acp_words = [_][]const u8{ "serve", "start", "stop", "status" };
+const skills_words = [_][]const u8{ "list", "search", "load" };
+const fleet_words = [_][]const u8{ "run", "status", "list", "logs", "cancel" };
+const completions_words = [_][]const u8{"install"};
+const config_words = [_][]const u8{ "show", "validate", "set", "get", "unset", "edit", "schema" };
+
+/// The top-level `tau <sub>` surface plus the arg words that make a mistyped
+/// line unambiguously a subcommand call (see the typo guard in parse).
+const TopSub = struct { name: []const u8, args: []const []const u8 = &.{} };
+const top_subs = [_]TopSub{
+    .{ .name = "acp", .args = &acp_words },
+    .{ .name = "models" },
+    .{ .name = "version" },
+    .{ .name = "upgrade" },
+    .{ .name = "doctor" },
+    .{ .name = "bug" },
+    .{ .name = "guide" },
+    .{ .name = "explain" },
+    .{ .name = "skills", .args = &skills_words },
+    .{ .name = "init" },
+    .{ .name = "setup" },
+    .{ .name = "completions", .args = &completions_words },
+    .{ .name = "fleet", .args = &fleet_words },
+    .{ .name = "config", .args = &config_words },
+};
+
+const top_sub_names = blk: {
+    var names: [top_subs.len][]const u8 = undefined;
+    for (top_subs, 0..) |t, i| names[i] = t.name;
+    break :blk names;
+};
+
+fn subSpec(name: []const u8) TopSub {
+    for (top_subs) |t| {
+        if (eq(t.name, name)) return t;
+    }
+    unreachable; // `near` always comes from top_sub_names
+}
+
+fn containsWord(words: []const []const u8, w: []const u8) bool {
+    for (words) |x| {
+        if (eq(x, w)) return true;
+    }
+    return false;
+}
+
+/// ` — did you mean "X"?` suffix for a rejected token: `-`-led tokens are
+/// matched against flag_pool, bare words against `words` (that slot's
+/// positional vocabulary — empty when the slot takes none).
+fn argHint(arena: std.mem.Allocator, a: []const u8, words: []const []const u8) ![]const u8 {
+    const pool: []const []const u8 = if (a.len > 0 and a[0] == '-') &flag_pool else words;
+    return suggest.hint(arena, a, pool);
+}
+
 /// Resolve `cfg.provider`/`endpoint`/`model` and `context_window` from CLI
 /// overrides and the provider table. Supports `--model provider/id` shorthand.
 /// Returns `null` on success, or the unknown provider name if the requested
@@ -174,7 +278,7 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 acfg.max_iterations = std.fmt.parseInt(u32, argv[j], 10) catch
                     return errResult(arena, "invalid --max-iterations: {s}", .{argv[j]});
-            } else return errResult(arena, "unknown acp argument: {s}", .{a});
+            } else return errResult(arena, "unknown acp argument: {s}{s}", .{ a, try argHint(arena, a, &acp_words) });
         }
         return .{ .action = .acp, .config = acfg };
     }
@@ -222,7 +326,7 @@ pub fn parse(
                 } else {
                     return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
                 }
-            } else return errResult(arena, "unknown version argument: {s}", .{a});
+            } else return errResult(arena, "unknown version argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         return .{ .action = .version, .config = vcfg };
     }
@@ -254,7 +358,7 @@ pub fn parse(
             } else if (eq(a, "--json")) {
                 ucfg.cli_json = true;
                 ucfg.mode = .json;
-            } else return errResult(arena, "unknown upgrade argument: {s}", .{a});
+            } else return errResult(arena, "unknown upgrade argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         if (envTruthy(env.get("TAU_YES"))) ucfg.upgrade_yes = true;
         if (envTruthy(env.get("TAU_VERIFY_SIGSTORE"))) ucfg.upgrade_verify_signature = true;
@@ -319,7 +423,7 @@ pub fn parse(
                     !eq(s, "powershell") and !eq(s, "all"))
                     return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
                 dcfg.setup_shell = s;
-            } else return errResult(arena, "unknown doctor argument: {s}", .{a});
+            } else return errResult(arena, "unknown doctor argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         if (dcfg.doctor_report and dcfg.doctor_json)
             return errResult(arena, "--report and --json are mutually exclusive", .{});
@@ -401,7 +505,7 @@ pub fn parse(
                     !eq(s, "powershell") and !eq(s, "all"))
                     return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
                 bcfg.setup_shell = s;
-            } else return errResult(arena, "unknown bug argument: {s}", .{a});
+            } else return errResult(arena, "unknown bug argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         if (bcfg.bug_out != null and bcfg.bug_no_report)
             return errResult(arena, "--out and --no-report are mutually exclusive", .{});
@@ -420,7 +524,7 @@ pub fn parse(
         var gcfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
-            if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResult(arena, "unknown guide argument: {s}", .{argv[j]});
+            if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResult(arena, "unknown guide argument: {s}{s}", .{ argv[j], try argHint(arena, argv[j], &.{}) });
         }
         return .{ .action = .guide, .config = gcfg };
     }
@@ -449,7 +553,7 @@ pub fn parse(
                 if (ecfg.explain_arg != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 ecfg.explain_arg = a;
             } else {
-                return errResult(arena, "unknown explain argument: {s}", .{a});
+                return errResult(arena, "unknown explain argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
             }
         }
         return .{ .action = .explain, .config = ecfg };
@@ -463,7 +567,7 @@ pub fn parse(
         scfg.skills_sub = argv[1];
         if (argv.len > 2) scfg.skills_arg = argv[2];
         if (!eq(argv[1], "list") and !eq(argv[1], "search") and !eq(argv[1], "load")) {
-            return errResult(arena, "invalid skills subcommand (want list|search|load): {s}", .{argv[1]});
+            return errResult(arena, "invalid skills subcommand (want list|search|load): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &skills_words) });
         }
         return .{ .action = .skills, .config = scfg };
     }
@@ -494,7 +598,7 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 if (cfgmod.findProvider(argv[j]) == null) return unknownProviderErr(arena, argv[j]);
                 icfg.init_provider = argv[j];
-            } else return errResult(arena, "unknown init argument: {s}", .{a});
+            } else return errResult(arena, "unknown init argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         return .{ .action = .init, .config = icfg };
     }
@@ -577,7 +681,7 @@ pub fn parse(
             } else if (eq(a, "--json")) {
                 scfg.cli_json = true;
                 scfg.mode = .json;
-            } else return errResult(arena, "unknown setup argument: {s}", .{a});
+            } else return errResult(arena, "unknown setup argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         // Env equivalents so dotfiles/devcontainers configure setup without
         // argv. Flag wins over env; an env value is only validated when it
@@ -633,7 +737,7 @@ pub fn parse(
         var ccfg: Config = base;
         if (argv.len < 2) return errResult(arena, "completions subcommand required: install", .{});
         if (!eq(argv[1], "install"))
-            return errResult(arena, "invalid completions subcommand (want install): {s}", .{argv[1]});
+            return errResult(arena, "invalid completions subcommand (want install): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &completions_words) });
         ccfg.completions_sub = argv[1];
         var j: usize = 2;
         while (j < argv.len) : (j += 1) {
@@ -650,7 +754,7 @@ pub fn parse(
             } else if (eq(a, "--json")) {
                 ccfg.cli_json = true;
                 ccfg.mode = .json;
-            } else return errResult(arena, "unknown completions argument: {s}", .{a});
+            } else return errResult(arena, "unknown completions argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         return .{ .action = .completions, .config = ccfg };
     }
@@ -720,7 +824,7 @@ pub fn parse(
                 if (fleet_id != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 fleet_id = a;
             } else {
-                return errResult(arena, "unknown fleet argument: {s}", .{a});
+                return errResult(arena, "unknown fleet argument: {s}{s}", .{ a, try argHint(arena, a, &fleet_words) });
             }
         }
         const m = mode orelse return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
@@ -780,7 +884,7 @@ pub fn parse(
                     if (vcfg.validate_path != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                     vcfg.validate_path = a;
                 } else {
-                    return errResult(arena, "unknown config validate argument: {s}", .{a});
+                    return errResult(arena, "unknown config validate argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
                 }
             }
             return .{ .action = .config, .config = vcfg };
@@ -807,7 +911,7 @@ pub fn parse(
                         return errResult(arena, "invalid --mode (want text|json): {s}", .{argv[j]});
                     }
                 } else {
-                    return errResult(arena, "unknown config schema argument: {s}", .{a});
+                    return errResult(arena, "unknown config schema argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
                 }
             }
             return .{ .action = .config, .config = scfg };
@@ -833,7 +937,7 @@ pub fn parse(
                     if (ecfg.edit_path != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                     ecfg.edit_path = a;
                 } else {
-                    return errResult(arena, "unknown config edit argument: {s}", .{a});
+                    return errResult(arena, "unknown config edit argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
                 }
             }
             return .{ .action = .config, .config = ecfg };
@@ -873,7 +977,7 @@ pub fn parse(
                         return errResult(arena, "unexpected extra argument: {s}", .{a});
                     }
                 } else {
-                    return errResult(arena, "unknown config {s} argument: {s}", .{ argv[1], a });
+                    return errResult(arena, "unknown config {s} argument: {s}{s}", .{ argv[1], a, try argHint(arena, a, &.{}) });
                 }
             }
             if (ecfg.config_key == null) {
@@ -888,15 +992,31 @@ pub fn parse(
             return .{ .action = .config, .config = ecfg };
         }
         if (!eq(argv[1], "show")) {
-            const subs = [_][]const u8{ "show", "validate", "set", "get", "unset", "edit", "schema" };
-            const hint: []const u8 = if (suggest.suggest(arena, argv[1], &subs)) |s|
-                try std.fmt.allocPrint(arena, " — did you mean \"{s}\"?", .{s})
-            else
-                "";
-            return errResult(arena, "invalid config subcommand (want show|validate|set|get|unset|edit|schema): {s}{s}", .{ argv[1], hint });
+            return errResult(arena, "invalid config subcommand (want show|validate|set|get|unset|edit|schema): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &config_words) });
         }
         config_show = true;
         argv = argv[2..];
+    }
+
+    // `tau docter --json` — the first token is not a registered subcommand
+    // (those all dispatched above) but sits within typo distance of one, and
+    // the rest of the line is shaped like a subcommand call: bare (`tau
+    // versoin`), flag next (`tau docter --probe`), or one of that
+    // subcommand's own args (`tau conifg show`). Error with a suggestion
+    // instead of silently running the token as a prompt; a real prompt whose
+    // first word happens to sit near a subcommand name (`tau model the auth
+    // flow`) still parses because what follows is neither a flag nor a
+    // subcommand arg.
+    if (!config_show and argv.len > 0 and argv[0].len > 0 and argv[0][0] != '-' and argv[0][0] != '@') {
+        if (suggest.suggest(arena, argv[0], &top_sub_names)) |near| {
+            if (!eq(near, argv[0])) {
+                const looks_like_call = argv.len == 1 or
+                    (argv[1].len > 0 and argv[1][0] == '-') or
+                    containsWord(subSpec(near).args, argv[1]);
+                if (looks_like_call)
+                    return errResult(arena, "unknown subcommand: {s} — did you mean \"{s}\"?", .{ argv[0], near });
+            }
+        }
     }
 
     // Start from `base` (config-file defaults). CLI flags below override it.
@@ -1049,7 +1169,7 @@ pub fn parse(
             // (same spelling as `tau doctor --json`). Not a global flag —
             // version/validate parse their own --json; anything else is an
             // unknown option.
-            if (!config_show) return errResult(arena, "unknown option: {s}", .{a});
+            if (!config_show) return errResult(arena, "unknown option: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
             if (saw_text_mode)
                 return errResult(arena, "--json and --mode text are mutually exclusive", .{});
             cfg.cli_json = true;
@@ -1100,7 +1220,7 @@ pub fn parse(
             continue;
         }
         if (a.len > 1 and a[0] == '-') {
-            return errResult(arena, "unknown option: {s}", .{a});
+            return errResult(arena, "unknown option: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         try msg_parts.append(arena, a); // positional message part
     }
@@ -1310,9 +1430,16 @@ test "parse: unknown option is rejected" {
     defer ar.deinit();
     const a = ar.allocator();
 
-    const p = try parseArgv(a, &.{ "tau", "--nope" }, .{});
+    const p = try parseArgv(a, &.{ "tau", "--zztopp" }, .{});
     try std.testing.expectEqual(Action.err, p.action);
-    try std.testing.expectEqualStrings("unknown option: --nope", p.err_msg.?);
+    // Clearly-unrelated flags get no did-you-mean noise (anything within two
+    // edits — e.g. --nope, d=2 from --mode — would earn a hint).
+    try std.testing.expectEqualStrings("unknown option: --zztopp", p.err_msg.?);
+
+    // A close typo earns the nearest registered flag.
+    const typo = try parseArgv(a, &.{ "tau", "--mod", "text", "x" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expectEqualStrings("unknown option: --mod — did you mean \"--mode\"?", typo.err_msg.?);
 }
 
 test "parse: --role accepts known roles and rejects others" {
@@ -1545,9 +1672,14 @@ test "parse: acp subcommands and validation" {
     try std.testing.expectEqual(cfgmod.AcpSub.start, start.config.acp_sub);
     try std.testing.expectEqualStrings("/tmp/tau.sock", start.config.acp_socket.?);
 
-    const bad = try parseArgv(a, &.{ "tau", "acp", "--frob" }, .{});
+    const bad = try parseArgv(a, &.{ "tau", "acp", "--zztopp" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
-    try std.testing.expectEqualStrings("unknown acp argument: --frob", bad.err_msg.?);
+    try std.testing.expectEqualStrings("unknown acp argument: --zztopp", bad.err_msg.?);
+
+    // A mistyped sub-command word suggests the nearest acp verb.
+    const typo = try parseArgv(a, &.{ "tau", "acp", "stats" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expectEqualStrings("unknown acp argument: stats — did you mean \"status\"?", typo.err_msg.?);
 
     const bad_iter = try parseArgv(a, &.{ "tau", "acp", "--max-iterations", "ten" }, .{});
     try std.testing.expectEqual(Action.err, bad_iter.action);
@@ -1632,9 +1764,13 @@ test "parse: explain subcommand" {
     try std.testing.expectEqual(Action.err, mutex_b.action);
     try std.testing.expectEqualStrings("--json and --human are mutually exclusive", mutex_b.err_msg.?);
 
-    const bad_flag = try parseArgv(a, &.{ "tau", "explain", "--nope" }, .{});
+    const bad_flag = try parseArgv(a, &.{ "tau", "explain", "--zztopp" }, .{});
     try std.testing.expectEqual(Action.err, bad_flag.action);
-    try std.testing.expectEqualStrings("unknown explain argument: --nope", bad_flag.err_msg.?);
+    try std.testing.expectEqualStrings("unknown explain argument: --zztopp", bad_flag.err_msg.?);
+
+    const typo_flag = try parseArgv(a, &.{ "tau", "explain", "--jsson" }, .{});
+    try std.testing.expectEqual(Action.err, typo_flag.action);
+    try std.testing.expectEqualStrings("unknown explain argument: --jsson — did you mean \"--json\"?", typo_flag.err_msg.?);
 
     const extra = try parseArgv(a, &.{ "tau", "explain", "80", "106" }, .{});
     try std.testing.expectEqual(Action.err, extra.action);
@@ -1661,6 +1797,45 @@ test "parse: skills subcommand validation" {
     const bad = try parseArgv(a, &.{ "tau", "skills", "frob" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
     try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): frob", bad.err_msg.?);
+
+    const typo = try parseArgv(a, &.{ "tau", "skills", "lst" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): lst — did you mean \"list\"?", typo.err_msg.?);
+}
+
+test "parse: mistyped top-level subcommand suggests, prompt-shaped lines still parse" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Flag next → clearly a subcommand call, not a prompt.
+    const flag_next = try parseArgv(a, &.{ "tau", "docter", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, flag_next.action);
+    try std.testing.expectEqualStrings("unknown subcommand: docter — did you mean \"doctor\"?", flag_next.err_msg.?);
+
+    // Bare mistyped token.
+    const bare = try parseArgv(a, &.{ "tau", "versoin" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    try std.testing.expectEqualStrings("unknown subcommand: versoin — did you mean \"version\"?", bare.err_msg.?);
+
+    // Next token is one of that subcommand's own args.
+    const sub_arg = try parseArgv(a, &.{ "tau", "conifg", "show" }, .{});
+    try std.testing.expectEqual(Action.err, sub_arg.action);
+    try std.testing.expectEqualStrings("unknown subcommand: conifg — did you mean \"config\"?", sub_arg.err_msg.?);
+    const fleet_arg = try parseArgv(a, &.{ "tau", "flet", "status" }, .{});
+    try std.testing.expectEqual(Action.err, fleet_arg.action);
+    try std.testing.expectEqualStrings("unknown subcommand: flet — did you mean \"fleet\"?", fleet_arg.err_msg.?);
+
+    // Prompt-shaped lines still parse: 'model' is d=1 from 'models' but
+    // 'the' is neither a flag nor a subcommand arg.
+    const prompt = try parseArgv(a, &.{ "tau", "model", "the", "auth", "flow" }, .{});
+    try std.testing.expectEqual(Action.run, prompt.action);
+    try std.testing.expectEqualStrings("model the auth flow", prompt.config.prompt.?);
+
+    // Unrelated first tokens are prompts, not subcommand errors.
+    const plain = try parseArgv(a, &.{ "tau", "zebra" }, .{});
+    try std.testing.expectEqual(Action.run, plain.action);
+    try std.testing.expectEqualStrings("zebra", plain.config.prompt.?);
 }
 
 test "parse: init subcommand and validation" {
