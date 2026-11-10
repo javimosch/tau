@@ -1404,10 +1404,12 @@ test "every catalog error code is advertised in --help-json exit_codes" {
     }
 }
 
-test "every literal err emitter in src carries a hint and docs link" {
+test "every literal err emitter in src carries a hint, docs link, and explain footer" {
     // Hand-rolled {"err":...} literals live outside errors.format in these
     // files; scan each emission site so a new one can't forget the hint/docs
-    // fields (the catalog's snapshot tests live in errors.zig).
+    // fields or the explain/catalog pointer (the catalog's snapshot tests
+    // live in errors.zig). The window is generous — explain/catalog close
+    // out the literal, after message/hint/docs.
     const sources = [_][]const u8{
         @embedFile("main.zig"),
         @embedFile("agent.zig"),
@@ -1419,12 +1421,27 @@ test "every literal err emitter in src carries a hint and docs link" {
     for (sources) |src| {
         var pos: usize = 0;
         while (std.mem.indexOfPos(u8, src, pos, "err\\\":{")) |i| {
-            const window = src[i..@min(src.len, i + 700)];
+            const window = src[i..@min(src.len, i + 900)];
             try std.testing.expect(std.mem.indexOf(u8, window, "hint\\\":") != null);
             try std.testing.expect(std.mem.indexOf(u8, window, "docs\\\":") != null);
+            try std.testing.expect(std.mem.indexOf(u8, window, "explain\\\":") != null);
+            try std.testing.expect(std.mem.indexOf(u8, window, "catalog\\\":") != null);
             pos = i + 1;
         }
     }
+    // init.zig emits a minimal envelope (code/type/message only) — it is
+    // exempt from hint/docs but must still carry the explain/catalog footer.
+    const init_src = @embedFile("init.zig");
+    var pos: usize = 0;
+    var found: usize = 0;
+    while (std.mem.indexOfPos(u8, init_src, pos, "err\\\":{")) |i| {
+        const window = init_src[i..@min(init_src.len, i + 900)];
+        try std.testing.expect(std.mem.indexOf(u8, window, "explain\\\":") != null);
+        try std.testing.expect(std.mem.indexOf(u8, window, "catalog\\\":") != null);
+        found += 1;
+        pos = i + 1;
+    }
+    try std.testing.expect(found > 0);
 }
 
 test "troubleshooting doc exists and indexes every exit code" {

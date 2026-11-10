@@ -1307,6 +1307,26 @@ test_group_doctor() {
   contains "curl check present" "$doc_keyless_out" '"name":"curl"'
   contains "report has summary" "$doc_keyless_out" '"summary":{'
 
+  # explain footer: every non-ok check row carries a ready-to-run
+  # "tau explain doctor.<id>" pointer; ok rows stay compact.
+  contains "failed api_key check carries explain pointer" "$doc_keyless_out" '"explain":"tau explain doctor.api_key"'
+  contains "skipped check carries explain pointer" "$doc_keyless_out" '"explain":"tau explain doctor.endpoint_reachable"'
+  if printf '%s' "$doc_keyless_out" | python3 -c 'import sys,json; r=json.load(sys.stdin); ok_all = all("explain" not in c for c in r["checks"] if c["status"]=="ok"); nonok_all = all(c.get("explain")=="tau explain doctor."+c["name"] for c in r["checks"] if c["status"]!="ok"); sys.exit(0 if ok_all and nonok_all else 1)' 2>/dev/null; then
+    ok "explain pointer on every non-ok row, none on ok rows" 0 0
+  else
+    ok "explain pointer on every non-ok row, none on ok rows" 1 0
+  fi
+  # Every emitted pointer resolves offline via `tau explain`.
+  doc_explain_ids="$(printf '%s' "$doc_keyless_out" | python3 -c 'import sys,json; r=json.load(sys.stdin); print("\n".join(c["explain"].rsplit("doctor.",1)[1] for c in r["checks"] if "explain" in c))')"
+  doc_explain_rc=0
+  while IFS= read -r cid; do
+    [ -n "$cid" ] || continue
+    "$BIN" explain "doctor.$cid" >/dev/null 2>&1 || doc_explain_rc=1
+  done <<EOF
+$doc_explain_ids
+EOF
+  ok "every emitted explain pointer resolves via tau explain" "$doc_explain_rc" 0
+
   # 2. Key via env + --provider override: local checks pass -> exit 0.
   capture doc_openai env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     OPENAI_API_KEY=sk-doctor-secret HOME="$mock_home" "$BIN" doctor --offline --provider openai
@@ -1389,6 +1409,7 @@ test_group_doctor() {
     OPENAI_API_KEY=sk-warn HOME="$mock_home" "$BIN" doctor --offline --provider openai
   ok "warn-only report exits 0" "$doc_warn_rc" 0
   contains "config_file warns on unknown provider" "$doc_warn_out" '"name":"config_file","status":"warn"'
+  contains "warn check carries explain pointer" "$doc_warn_out" '"explain":"tau explain doctor.config_file"'
   contains "flag provider wins over config" "$doc_warn_out" 'provider=openai'
   contains "warn does not flip ok" "$doc_warn_out" '"ok":true'
   rm -f "$mock_config/config.json"
