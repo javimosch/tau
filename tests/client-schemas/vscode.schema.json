@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "VS Code User settings.json (~/.config/Code/User/settings.json) — the formulahendry.acp-client extension reads the acp.agents setting: named {command, args, env} agent entries. The contract pins tau's entry: acp.agents.tau must spawn `tau acp serve`. Applied to the settings file tau writes and to the wrapped paste-ready jsonc snippet.",
+  "type": "object",
+  "required": ["acp.agents"],
+  "properties": {
+    "acp.agents": {
+      "type": "object",
+      "required": ["tau"],
+      "properties": { "tau": { "$ref": "#/$defs/agent" } },
+      "additionalProperties": { "$ref": "#/$defs/agent" }
+    }
+  },
+  "$defs": {
+    "agent": {
+      "type": "object",
+      "required": ["command", "args"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "const": ["acp", "serve"] },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    }
+  }
+}
