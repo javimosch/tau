@@ -123,6 +123,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself",
     },
     .{
+        .name = "wsl_boundary",
+        .fails_when = "the tau binary or a config/client-settings path sits on a mounted Windows filesystem (drvfs/9p, /mnt/<letter>) while running a POSIX build — Windows clients can't spawn the Linux binary and WSL-side configs are invisible to Windows-side clients (warn only)",
+        .remediation = "install the Windows build (install.ps1) for Windows-side clients, or move the binary and configs into the WSL filesystem — not auto-fixable by `tau doctor --fix`",
+    },
+    .{
         .name = "provider_probes",
         .fails_when = "placeholder row for the opt-in sweep — skipped unless --probe is passed",
         .remediation = "run `tau doctor --probe` to live-verify connectivity and credentials for every registered provider",
