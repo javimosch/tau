@@ -1,0 +1,6 @@
+{
+  "name": "tau",
+  "description": "JSON Schema for the tau agent-first AI CLI config file (~/.config/tau/config.json, JSONC — comments allowed)",
+  "fileMatch": ["**/.config/tau/config.json"],
+  "url": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-config.schema.json"
+}

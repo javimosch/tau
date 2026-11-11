@@ -1,0 +1,1 @@
+{"name":"tau","version":"0.4.0","checked":true,"latest":"99.9.9","tag":"v99.9.9","update_available":true,"status":"dry_run","detail":"would install tau 99.9.9 via https://raw.githubusercontent.com/javimosch/tau/v99.9.9/install.sh into <HOME>/ug-dest","release_url":"https://github.com/javimosch/tau/releases/tag/v99.9.9","install_dir":"<HOME>/ug-dest"}

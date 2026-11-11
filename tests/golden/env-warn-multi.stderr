@@ -1,0 +1,1 @@
+{"warn":{"message":"environment has unrecognized TAU_* variables (ignored): \"TAU_ENDPONT\" — did you mean \"TAU_ENDPOINT\"?, \"TAU_ZZZ\" — the recognized set is documented at https://github.com/javimosch/tau/blob/master/docs/env.md"}}

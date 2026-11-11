@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-setup.schema.json",
+  "title": "tau setup --json NDJSON event",
+  "description": "Schema for one line of `tau setup [--json]` output. Setup streams newline-delimited JSON: one event per step — init (config scaffold), completions (shell completion installs), clients (editor ACP wiring), doctor (embedded health report) — plus exactly one terminal verdict_event (always the last line, always \"done\":true). Step order is fixed: init, completions, clients, doctor, verdict. Removal mode (`tau setup --remove`/`--uninstall`) emits a different fixed sequence: remove_clients (editor wiring reversal), verdict — the verdict carries \"remove\":true there. Detect mode (`tau setup --detect`) emits detect_clients (read-only client inventory), verdict — the verdict carries \"detect\":true there. The event types are mutually exclusive — validate each NDJSON line against this schema individually. The process exit code mirrors the verdict's ok (0 when true, 1 when false).",
+  "oneOf": [
+    { "$ref": "#/$defs/init_event" },
+    { "$ref": "#/$defs/completions_event" },
+    { "$ref": "#/$defs/clients_event" },
+    { "$ref": "#/$defs/remove_clients_event" },
+    { "$ref": "#/$defs/doctor_event" },
+    { "$ref": "#/$defs/detect_clients_event" },
+    { "$ref": "#/$defs/verdict_event" }
+  ],
+  "$defs": {
+    "file_preview": {
+      "type": "object",
+      "description": "One file a real run would change, rendered under --dry-run: the exact unified diff that would be applied plus, for in-place rewrites, backup_path — the <path>.bak where the real run preserves the original before overwriting.",
+      "required": ["path", "action", "diff"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "File the change touches." },
+        "action": { "type": "string", "enum": ["create", "modify", "delete"], "description": "\"create\" (file absent — the diff reads from /dev/null), \"modify\" (existing file rewritten — the original lands at backup_path), \"delete\" (file removed — the diff writes to /dev/null)." },
+        "diff": { "type": "string", "description": "Unified diff of the current bytes to the would-be bytes (---/+++ headers, @@ hunks, \\ No newline markers)." },
+        "backup_path": { "type": "string", "description": "<path>.bak written by a real run before overwriting an existing file; absent for creates and deletes." }
+      }
+    },
+    "init_event": {
+      "type": "object",
+      "description": "First event: the config scaffold step. status is \"created\" on a fresh write, \"exists\" when a config was already present, \"would_create\" under --dry-run, \"failed\" when the path could not be resolved or written.",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "init" },
+        "status": { "type": "string", "enum": ["created", "exists", "would_create", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "config_path": { "type": "string", "description": "Path of the config file; absent on failure." },
+        "provider": { "type": "string", "description": "Provider the scaffold was seeded for; absent on failure." },
+        "detected_env_keys": {
+          "type": "array",
+          "description": "Provider API-key env var names found set (names only, never values); absent on failure.",
+          "items": { "type": "string" }
+        },
+        "files": {
+          "type": "array",
+          "description": "Under --dry-run: one entry per file this step would create, rewrite, or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+          "items": { "$ref": "#/$defs/file_preview" }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
+    "completions_event": {
+      "type": "object",
+      "description": "Second event: shell completion installs. status is \"installed\" (covers already-current installs), \"would_install\" under --dry-run, \"skipped\" when no shell could be detected, or \"failed\" when an install errored.",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "completions" },
+        "status": { "type": "string", "enum": ["installed", "would_install", "skipped", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "reason": { "type": "string", "description": "Why the step was skipped (e.g. could not detect shell from $SHELL)." },
+        "hint": { "type": "string", "description": "Remediation hint on skipped steps (re-run with --shell ...)." },
+        "shells": {
+          "type": "array",
+          "description": "One entry per resolved shell, in resolution order; absent on skipped/failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["shell", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "shell": { "type": "string", "enum": ["bash", "zsh", "fish", "pwsh"] },
+              "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "failed"] },
+              "path": { "type": "string", "description": "Installed completion script path; absent on failure." },
+              "rc": { "type": "string", "description": "Rc/profile file the autoload hook was appended to (zsh/pwsh only)." },
+              "rc_status": { "type": "string", "enum": ["appended", "present", "would_append", "failed"], "description": "Outcome of the rc-hook append (zsh/pwsh only)." },
+              "note": { "type": "string", "description": "Shell-specific note (e.g. bash-completion requirement)." },
+              "message": { "type": "string", "description": "Failure detail for this shell." },
+              "files": {
+                "type": "array",
+                "description": "Under --dry-run: one entry per file this shell's install would create, rewrite, or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+                "items": { "$ref": "#/$defs/file_preview" }
+              }
+            }
+          }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
+    "clients_event": {
+      "type": "object",
+      "description": "Third event: editor ACP client wiring. Without --client the step is \"skipped\" and reports detected editor config dirs. status is \"installed\", \"would_install\" under --dry-run, \"manual\" when every client needed a paste-ready snippet, \"skipped\", or \"failed\".",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "clients" },
+        "status": { "type": "string", "enum": ["installed", "would_install", "manual", "skipped", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "hint": { "type": "string", "description": "Remediation hint on skipped steps (re-run with --client ...)." },
+        "detected": {
+          "type": "array",
+          "description": "Editor config dirs that appear installed; emitted on the skipped (no --client) outcome.",
+          "items": { "type": "string" }
+        },
+        "clients": {
+          "type": "array",
+          "description": "One entry per resolved client, in resolution order; absent on skipped/failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["client", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq", "codex"] },
+              "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"] },
+              "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
+              "command": { "type": "string", "description": "Absolute tau path written into the client config." },
+              "next": { "type": "string", "description": "The in-editor action that finishes the integration." },
+              "snippet_path": { "type": "string", "description": "Paste-ready fragment path; emitted on manual outcomes." },
+              "reason": { "type": "string", "description": "Why the outcome is manual (existing settings file unparsed or missing the tau entry)." },
+              "editor_detected": { "type": "boolean", "description": "Whether the editor's config dir exists; emitted on nvim's always-manual entry." },
+              "message": { "type": "string", "description": "Failure detail for this client." },
+              "bridge_path": { "type": "string", "description": "mcacp bridge config path (~/.config/mcacp/mcacp.json); MCP-bridge clients only." },
+              "bridge_status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "manual", "failed"], "description": "Outcome of the bridge-side wiring; MCP-bridge clients only." },
+              "bridge_snippet_path": { "type": "string", "description": "Paste-ready bridge fragment when the existing mcacp.json could not be spliced." },
+              "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side write." },
+              "imported": {
+                "type": "array",
+                "description": "MCP server entries merged into this client's settings file by --import, each with the client it was imported from. Always emitted for MCP-bridge clients under --import (empty when nothing was merged).",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "from"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": { "type": "string", "description": "Server entry name as written into the client's server section." },
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq", "codex"], "description": "Supported client whose settings file supplied the entry." }
+                  }
+                }
+              },
+              "import_skipped": {
+                "type": "array",
+                "description": "MCP server entries or source settings files --import could not merge, each with a reason. Entry-level skips carry \"name\"; file-level findings (unreadable/unparseable source) omit it.",
+                "items": {
+                  "type": "object",
+                  "required": ["from", "reason"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": { "type": "string", "description": "Server entry name; absent on file-level findings." },
+                    "from": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq", "codex"], "description": "Supported client whose settings file the entry or finding came from." },
+                    "reason": { "type": "string", "description": "Why the entry or file was not imported." }
+                  }
+                }
+              },
+              "files": {
+                "type": "array",
+                "description": "Under --dry-run: one entry per file this client's wiring would create, rewrite, or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+                "items": { "$ref": "#/$defs/file_preview" }
+              }
+            }
+          }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
+    "remove_clients_event": {
+      "type": "object",
+      "description": "Removal-mode step event (`tau setup --remove`/`--uninstall`), emitted where the install stream would put init — the only step event before the verdict. Reverses per-client editor wiring: the tau (or mcacp) entry is spliced out of each settings file without re-rendering, files left with no settings are deleted, setup-generated snippets are cleaned, and the shared mcacp bridge entry is dropped once no client outside the removal set still uses it. --client scopes the sweep; without it every client is processed. status is \"removed\", \"would_remove\" under --dry-run, \"manual\" when nothing was removed but hand-work remains (init-file wiring, unreadable/unparseable files), \"absent\" when nothing was wired, or \"failed\".",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "remove_clients" },
+        "status": { "type": "string", "enum": ["removed", "would_remove", "manual", "absent", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "clients": {
+          "type": "array",
+          "description": "One entry per processed client, in client order; absent on failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["client", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq", "codex"] },
+              "status": { "type": "string", "enum": ["removed", "would_remove", "absent", "manual", "failed"] },
+              "path": { "type": "string", "description": "Editor settings file path (direct clients only)." },
+              "file_deleted": { "const": true, "description": "The settings file was (or, under --dry-run, would be) deleted entirely — it held no settings besides the tau wiring." },
+              "snippet_path": { "type": "string", "description": "Setup-generated snippet file that was cleaned; emitted when a snippet existed." },
+              "snippet_status": { "type": "string", "enum": ["removed", "would_remove", "failed"], "description": "Outcome of the snippet cleanup; emitted with snippet_path." },
+              "snippet_message": { "type": "string", "description": "Failure detail for the snippet cleanup." },
+              "reason": { "type": "string", "description": "Why the outcome is manual (init-file wiring, unreadable or unparseable settings file)." },
+              "next": { "type": "string", "description": "The hand-step that finishes the removal; emitted on manual outcomes." },
+              "message": { "type": "string", "description": "Failure detail for this client." },
+              "bridge_path": { "type": "string", "description": "mcacp bridge config path (~/.config/mcacp/mcacp.json); MCP-bridge clients only." },
+              "bridge_status": { "type": "string", "enum": ["removed", "would_remove", "kept", "absent", "manual", "failed"], "description": "Outcome of the shared bridge-side entry: kept when another MCP client outside the removal set still uses it." },
+              "bridge_file_deleted": { "const": true, "description": "The bridge config was (or would be) deleted entirely." },
+              "bridge_reason": { "type": "string", "description": "Why the bridge entry was kept or needs hand-removal." },
+              "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side removal." },
+              "bridge_snippet_path": { "type": "string", "description": "mcacp paste-snippet cleaned once the bridge entry went away; emitted when it existed." },
+              "bridge_snippet_status": { "type": "string", "enum": ["removed", "would_remove"], "description": "Outcome of the bridge snippet cleanup; emitted with bridge_snippet_path." },
+              "files": {
+                "type": "array",
+                "description": "Under --dry-run: one entry per file this client's unwiring would rewrite or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+                "items": { "$ref": "#/$defs/file_preview" }
+              }
+            }
+          }
+        },
+        "dry_run": { "const": true, "description": "Present under --dry-run." }
+      }
+    },
+    "doctor_event": {
+      "type": "object",
+      "description": "Fourth event: the embedded `tau doctor` health report — the same single-object shape `tau doctor` prints without --json (see docs/doctor-json.md).",
+      "required": ["step", "report"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "doctor" },
+        "report": { "type": "object", "description": "The doctor single-object report {\"ok\",\"version\",\"build\",\"checks\",\"summary\"}." }
+      }
+    },
+    "detect_clients_event": {
+      "type": "object",
+      "description": "Detect-mode step event (`tau setup --detect`), emitted where the install stream would put init — the only step event before the verdict. A read-only inventory of supported clients: each entry reports the config dir probed, whether the client was detected there, and the wiring state `tau doctor` would classify (settings path and stale reason included when they apply; \"bridge\":true marks the MCP clients wired through the shared mcacp bridge). --client scopes the sweep; without it every client is listed. Nothing is written. status is \"ok\" or \"failed\" (e.g. HOME unset).",
+      "required": ["step", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "detect_clients" },
+        "status": { "type": "string", "enum": ["ok", "failed"] },
+        "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\"." },
+        "clients": {
+          "type": "array",
+          "description": "One entry per surveyed client, in client order; absent on failed-to-resolve outcomes.",
+          "items": {
+            "type": "object",
+            "required": ["client", "detected", "wiring", "config_dir"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq", "codex"] },
+              "detected": { "type": "boolean", "description": "Whether the client's config dir exists on this machine." },
+              "wiring": { "type": "string", "enum": ["not_detected", "manual_only", "missing_file", "unreadable", "unparseable", "no_entry", "stale", "ok"], "description": "Wiring state as `tau doctor` classifies it: \"not_detected\" (no config dir), \"manual_only\" (snippet-only client — Lua/elisp/YAML), \"missing_file\", \"unreadable\", \"unparseable\", \"no_entry\" (settings file without a tau/mcacp entry), \"stale\" (broken entry), \"ok\" (wired)." },
+              "config_dir": { "type": "string", "description": "Editor config dir probed — the detection anchor." },
+              "path": { "type": "string", "description": "Editor settings file path; emitted for JSON clients once detected." },
+              "reason": { "type": "string", "description": "What makes the entry broken; emitted with wiring \"stale\"." },
+              "bridge": { "const": true, "description": "Present on MCP-bridge clients — their entry launches the mcacp MCP->ACP bridge, and wiring covers the shared ~/.config/mcacp/mcacp.json side too." }
+            }
+          }
+        },
+        "detected": { "type": "integer", "minimum": 0, "description": "How many surveyed clients were detected (config dir exists)." },
+        "hint": { "type": "string", "description": "Remediation hint emitted when no client was detected." }
+      }
+    },
+    "verdict_event": {
+      "type": "object",
+      "description": "Terminal verdict — always the last NDJSON line, always \"done\":true. ok mirrors the process exit code (0 when true, 1 when false): any failed step or a failing doctor report flips it.",
+      "required": ["step", "ok", "version", "done"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "const": "setup" },
+        "ok": { "type": "boolean", "description": "true when every step passed (skipped/manual outcomes still pass)." },
+        "version": { "type": "string", "description": "tau version that produced the stream, e.g. \"0.4.0\"." },
+        "remove": { "const": true, "description": "Present in removal mode (`tau setup --remove`/`--uninstall`) — the stream then carries only the remove_clients step event and this verdict." },
+        "detect": { "const": true, "description": "Present in detect mode (`tau setup --detect`) — the stream then carries only the detect_clients step event and this verdict." },
+        "non_interactive": { "const": true, "description": "Present when the run was declared unattended (--yes/--non-interactive or env equivalents)." },
+        "yes": { "const": true, "description": "Present when --yes approved all write steps." },
+        "dry_run": { "const": true, "description": "Present under --dry-run." },
+        "done": { "const": true, "description": "End-of-stream marker — true on the verdict line only; the same convention `tau doctor --json` uses." }
+      }
+    }
+  }
+}
