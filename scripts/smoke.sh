@@ -1381,6 +1381,27 @@ test_group_doctor() {
   contains "curl hint is actionable" "$doc_nocurl_out" 'install curl'
   contains "endpoint skipped without curl" "$doc_nocurl_out" '"name":"endpoint_reachable","status":"skip","message":"skipped (curl unavailable)"'
   contains "auth_probe skipped without curl" "$doc_nocurl_out" '"name":"auth_probe","status":"skip","message":"skipped (curl unavailable)"'
+  contains "path_shadowing ok with no tau on PATH" "$doc_nocurl_out" '"name":"path_shadowing","status":"ok"'
+
+  # 9b. PATH shadowing: a stale tau earlier on PATH warns and names both
+  #     binaries + the stale --version; being first on PATH is ok. The stale
+  #     shim is a shell script so the probe has a deterministic report.
+  local shadow_dir real_dir
+  shadow_dir="$(mktemp -d)"; register_temp_dir "$shadow_dir"
+  real_dir="$(mktemp -d)"; register_temp_dir "$real_dir"
+  printf '#!/bin/sh\necho "tau 0.0.1-stale"\n' > "$shadow_dir/tau"
+  chmod +x "$shadow_dir/tau"
+  ln -s "$(realpath "$BIN")" "$real_dir/tau"
+  capture doc_shadow env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-shadow HOME="$mock_home" PATH="$shadow_dir:$real_dir:$PATH" "$BIN" doctor --offline --provider openai
+  ok "shadowed PATH still exits 0 (warn only)" "$doc_shadow_rc" 0
+  contains "path_shadowing warns" "$doc_shadow_out" '"name":"path_shadowing","status":"warn"'
+  contains "shadow row names stale path" "$doc_shadow_out" "$shadow_dir/tau"
+  contains "shadow row reports stale version" "$doc_shadow_out" '0.0.1-stale'
+  contains "shadow hint names remediation" "$doc_shadow_out" 'reorder PATH'
+  capture doc_noshadow env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    OPENAI_API_KEY=sk-shadow HOME="$mock_home" PATH="$real_dir:$shadow_dir:$PATH" "$BIN" doctor --offline --provider openai
+  contains "first-on-PATH is ok" "$doc_noshadow_out" '"name":"path_shadowing","status":"ok","message":"the first '"'"'tau'"'"' on PATH is this binary"'
 
   # 10. Warn does not fail the run: config file names an unknown provider but a
   #     valid --provider flag + key resolve everything else -> exit 0.
