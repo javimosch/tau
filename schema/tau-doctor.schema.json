@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-doctor.schema.json",
+  "title": "tau doctor --json NDJSON event",
+  "description": "Schema for one line of `tau doctor --json` output. With --json, doctor streams newline-delimited JSON: one check_event per diagnostic as it finishes, fix_event records interleaved when --fix runs, and exactly one terminal verdict_event (always the last line, always \"done\":true). The three event types are mutually exclusive — validate each NDJSON line against this schema individually. The single-object report printed without --json shares the check, fix, summary, and build object shapes below.",
+  "oneOf": [
+    { "$ref": "#/$defs/check_event" },
+    { "$ref": "#/$defs/fix_event" },
+    { "$ref": "#/$defs/verdict_event" }
+  ],
+  "$defs": {
+    "check_event": {
+      "type": "object",
+      "description": "One diagnostic check result, emitted as the check finishes. Order is fixed by the check pipeline; every check appears exactly once per diagnosis pass (checks re-diagnosed after an applied --fix emit a second event with the post-fix outcome).",
+      "required": ["check", "done"],
+      "additionalProperties": false,
+      "properties": {
+        "check": { "$ref": "#/$defs/check" },
+        "done": {
+          "const": false,
+          "description": "Stream-continuation marker — false on every non-terminal event."
+        }
+      },
+      "examples": [
+        {
+          "check": { "name": "api_key", "status": "fail", "message": "no API key resolved", "hint": "set XIAOMI_API_KEY or add keys.<provider> to config.json" },
+          "done": false
+        }
+      ]
+    },
+    "fix_event": {
+      "type": "object",
+      "description": "One remediation outcome, emitted only under `--fix` as each planned fix is approved, declined, skipped, or applied. Fix events appear between the first-pass check events and the verdict.",
+      "required": ["fix", "done"],
+      "additionalProperties": false,
+      "properties": {
+        "fix": { "$ref": "#/$defs/fix" },
+        "done": {
+          "const": false,
+          "description": "Stream-continuation marker — false on every non-terminal event."
+        }
+      },
+      "examples": [
+        {
+          "fix": { "id": "scaffold_config", "check": "config_file", "status": "applied", "detail": "wrote starter config to ~/.config/tau/config.json" },
+          "done": false
+        }
+      ]
+    },
+    "verdict_event": {
+      "type": "object",
+      "description": "Terminal verdict — always the last NDJSON line, always \"done\":true. Carries the whole-run outcome so a consumer reading only the last line gets the full verdict; the process exit code mirrors ok (0 when true, 1 when false).",
+      "required": ["ok", "version", "build", "summary", "done"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "true when no check ended in fail status (warn/skip still count as passing)."
+        },
+        "version": {
+          "type": "string",
+          "description": "tau version that produced the report, e.g. \"0.4.0\"."
+        },
+        "build": { "$ref": "#/$defs/build" },
+        "summary": { "$ref": "#/$defs/summary" },
+        "fixes": {
+          "type": "array",
+          "description": "Present only when --fix ran — every remediation outcome in decision order.",
+          "items": { "$ref": "#/$defs/fix" }
+        },
+        "done": {
+          "const": true,
+          "description": "End-of-stream marker — true on the verdict line only."
+        }
+      },
+      "examples": [
+        {
+          "ok": false,
+          "version": "0.4.0",
+          "build": { "commit": "abc1234", "target": "x86_64-linux-gnu", "build_date": "2026-10-27T12:00:00Z", "zig": "0.16.0" },
+          "summary": { "ok": 5, "warn": 1, "fail": 1, "skip": 3 },
+          "done": true
+        }
+      ]
+    },
+    "check": {
+      "type": "object",
+      "description": "A single diagnostic outcome — the same object shape the single-object report carries in its \"checks\" array.",
+      "required": ["name", "status", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable machine name of the check, e.g. \"config_file\", \"api_key\", \"endpoint_reachable\"."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ok", "warn", "fail", "skip"],
+          "description": "Outcome of the check. warn counts toward ok:true; fail flips the verdict and the exit code to 1; skip means the check did not run (offline mode, missing prerequisite, or platform gating)."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable result — what was found, never secret material."
+        },
+        "hint": {
+          "type": "string",
+          "description": "Optional remediation hint shown on non-ok outcomes."
+        }
+      }
+    },
+    "fix": {
+      "type": "object",
+      "description": "A remediation outcome — the same object shape the report and verdict carry in their \"fixes\" arrays.",
+      "required": ["id", "check", "status", "detail"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable machine name of the remediation, e.g. \"scaffold_config\", \"chmod_config\", \"install_completions\"."
+        },
+        "check": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the check whose outcome triggered this fix."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["applied", "declined", "skipped", "failed"],
+          "description": "What happened to the remediation. declined: the user answered no at the confirmation prompt; skipped: no approval channel (non-interactive run without --yes); failed: the fix was attempted and errored."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Human-readable detail — what was done or why nothing was."
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Per-status tally over every check in the run.",
+      "required": ["ok", "warn", "fail", "skip"],
+      "additionalProperties": false,
+      "properties": {
+        "ok": { "type": "integer", "minimum": 0, "description": "Checks that passed." },
+        "warn": { "type": "integer", "minimum": 0, "description": "Checks that passed with a warning." },
+        "fail": { "type": "integer", "minimum": 0, "description": "Checks that failed — nonzero here forces ok:false and exit 1." },
+        "skip": { "type": "integer", "minimum": 0, "description": "Checks that did not run." }
+      }
+    },
+    "build": {
+      "type": "object",
+      "description": "Build metadata identifying the exact binary — the same object `tau version --verbose` emits.",
+      "required": ["commit", "target", "build_date", "zig"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": { "type": "string", "description": "Short git hash of HEAD at build time (\"unknown\" for tarball builds, \"-dirty\" suffix for uncommitted changes)." },
+        "target": { "type": "string", "description": "arch-os-abi target triple, e.g. \"x86_64-linux-gnu\"." },
+        "build_date": { "type": "string", "description": "UTC build stamp YYYY-MM-DDTHH:MM:SSZ (SOURCE_DATE_EPOCH honored for reproducible builds)." },
+        "zig": { "type": "string", "description": "Zig compiler version that produced the binary, e.g. \"0.16.0\"." }
+      }
+    }
+  }
+}

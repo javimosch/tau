@@ -1,0 +1,11 @@
+# tau via the mcacp MCP->ACP bridge — merge into ~/.continue/config.yaml.
+# If a top-level "mcpServers:" list already exists, append just the
+# list item to it; otherwise add the whole block. The bridge itself
+# is configured separately — see snippets/mcacp.jsonc.
+mcpServers:
+  - name: mcacp
+    command: npx
+    args:
+      - "-y"
+      - "mcacp"
+    env: {}

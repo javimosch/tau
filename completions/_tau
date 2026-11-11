@@ -26,15 +26,15 @@ _tau() {
         '--mode=[output mode]:mode:(text json)'
         '--stream[enable streaming output]'
         '--no-stream[disable streaming output]'
-        '--debug[show performance stats and tool calls]'
+        '--debug[show perf stats and tool calls; write redacted log to ~/.config/tau/debug/]'
         '--dry-run[report tool calls without executing them]'
         '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)'
         '--model=[model ID or provider/model shorthand]:model:'
         '--api-key=[API key (overrides env vars)]:key:'
         '--system-prompt=[set (replace) system prompt]:prompt:'
         '--append-system-prompt=[append to system prompt (repeatable)]:prompt:'
-        '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
-        '--exclude-tools=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find)'
+        '(-t --tools)'{-t,--tools}'=[allowlist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
+        '(-xt --exclude-tools)'{-xt,--exclude-tools}'=[denylist of tool names, comma-separated]:tools:(bash ls read write edit grep find calculator)'
         '(-nt --no-tools)'{-nt,--no-tools}'[disable all built-in tools]'
         '--temperature=[sampling temperature (0.0–2.0)]:float:'
         '--max-tokens=[maximum output tokens]:n:'
@@ -66,6 +66,16 @@ _tau() {
                 'models:list available providers and models'
                 'skills:manage skills autodiscovery (list|search|load)'
                 'fleet:multi-agent orchestration (run|status|list|logs|cancel)'
+                'init:write a commented starter config (~/.config/tau/config.json)'
+                'config:inspect, validate, or edit the config (show|validate|set|get|unset|edit|schema)'
+                'setup:one-shot onboarding (init + completions + doctor)'
+                'completions:install generated shell completions (install)'
+                'doctor:validate setup (config, provider, key, connectivity)'
+                'bug:file a pre-filled GitHub issue with doctor diagnostics'
+                'guide:print the embedded operator manual'
+                'version:print version (--verbose adds build metadata)'
+                'upgrade:self-update in place via the verified install.sh'
+                'explain:offline error-catalog lookup (cause + remediation)'
             )
             _alternative \
                 'commands:subcommand:_describe subcommand commands' \
@@ -83,6 +93,19 @@ _tau() {
 
                 fleet)
                     local curcontext="$curcontext" state line
+                    local -a fleet_flags=(
+                        '--goal=[fleet objective (natural language)]:text:'
+                        '--id=[fleet identifier]:id:'
+                        '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)'
+                        '--model=[model ID]:model:'
+                        '--api-key=[API key]:key:'
+                        '--coordinator-model=[coordinator agent model override]:model:'
+                        '--worker-model=[worker agent model override]:model:'
+                        '--sequential[run worker agents sequentially]'
+                        '--parallel[run worker agents in parallel (default)]'
+                        '--items=[pre-supplied work items, skips coordinator (JSON)]:json:'
+                        '--schema=[JSON Schema for work-item breakdown]:schema:_files'
+                    )
                     _arguments -C \
                         '1: :->fleet_sub' \
                         '*:: :->fleet_opts'
@@ -95,21 +118,11 @@ _tau() {
                                 'logs:stream worker session logs for a fleet ID'
                                 'cancel:cancel a running fleet by ID'
                             )
-                            _describe 'fleet subcommand' fleet_cmds
+                            # Flags are valid before the sub-subcommand too.
+                            _arguments '1: :_describe "fleet subcommand" fleet_cmds' $fleet_flags
                             ;;
                         fleet_opts)
-                            _arguments \
-                                '--goal=[fleet objective (natural language)]:text:' \
-                                '--id=[fleet identifier]:id:' \
-                                '--provider=[LLM provider]:provider:(xiaomi openai deepseek opencode-go)' \
-                                '--model=[model ID]:model:' \
-                                '--api-key=[API key]:key:' \
-                                '--coordinator-model=[coordinator agent model override]:model:' \
-                                '--worker-model=[worker agent model override]:model:' \
-                                '--sequential[run worker agents sequentially]' \
-                                '--parallel[run worker agents in parallel (default)]' \
-                                '--items=[pre-supplied work items, skips coordinator (JSON)]:json:' \
-                                '--schema=[JSON Schema for work-item breakdown]:schema:_files'
+                            _arguments $fleet_flags
                             ;;
                     esac
                     ;;
@@ -123,8 +136,257 @@ _tau() {
                     _arguments '1: :_describe skill_subcommand skill_cmds'
                     ;;
 
+                config)
+                    local curcontext="$curcontext" state line
+                    _arguments -C \
+                        '1: :->config_sub' \
+                        '*:: :->config_opts'
+                    case $state in
+                        config_sub)
+                            local -a config_cmds=(
+                                'show:print the resolved effective config (keys redacted)'
+                                'validate:check a config file (CI/pre-commit)'
+                                'set:set a config key to a value'
+                                'get:print a config key value (secrets redacted)'
+                                'unset:remove a config key'
+                                'edit:open the config in $EDITOR (validates on save)'
+                                'schema:print the config file JSON Schema (draft 2020-12)'
+                            )
+                            _describe 'config subcommand' config_cmds
+                            ;;
+                        config_opts)
+                            # $line[1] is the config subcommand just typed.
+                            case ${line[1]} in
+                                validate)
+                                    _arguments \
+                                        '--json[emit the stable JSON report (schema-pinned)]' \
+                                        '--mode=[report format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                set)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '2:value:' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                get)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '--raw[print secret values unredacted]' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                unset)
+                                    _arguments \
+                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '--mode=[output format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                edit)
+                                    _arguments \
+                                        '--mode=[report format]:mode:(text json)' \
+                                        '*:config file:_files -g "*.json"'
+                                    ;;
+                                schema)
+                                    _arguments \
+                                        '--mode=[output format]:mode:(text json)'
+                                    ;;
+                                *)
+                                    # `config show` accepts the normal override
+                                    # flags so the merged result is previewed.
+                                    _arguments \
+                                        '--json[emit the stable JSON object (schema-pinned)]' \
+                                        '--origin[annotate each value with its source layer]' \
+                                        $global_opts
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+
+                init)
+                    _arguments \
+                        '--force[overwrite an existing config file]' \
+                        '--stdout[print the starter config without writing it]' \
+                        '--provider=[scaffold for a specific provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--json[emit the stable schema-checked result object]'
+                    ;;
+
+                setup)
+                    _arguments \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--client=[editor ACP client]:client:(zed nvim emacs vscode cursor jetbrains windsurf gemini claude-desktop opencode cline goose continue roo-code kilo-code amazonq codex all)' \
+                        '--offline[skip network checks in the doctor step]' \
+                        '--deep[run an authenticated probe in the doctor step]' \
+                        '(-y --yes)'{-y,--yes}'[unattended: approve all write steps]' \
+                        '--non-interactive[unattended contract for scripts/CI]' \
+                        '--dry-run[preview write steps; change nothing]' \
+                        '--remove[reverse per-client editor wiring]' \
+                        '--uninstall[alias for --remove]' \
+                        '--import[merge existing MCP server entries into wired MCP clients]' \
+                        '--detect[read-only client inventory: config paths + wiring status]' \
+                        '--provider=[seed scaffold + diagnose provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:' \
+                        '--json[emit the stable schema-checked NDJSON stream]'
+                    ;;
+
+                completions)
+                    _arguments \
+                        '1: :(install)' \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--dry-run[preview the install; change nothing]' \
+                        '--json[emit the stable schema-checked result object]'
+                    ;;
+
+                doctor)
+                    _arguments \
+                        '--offline[skip network checks]' \
+                        '--deep[run an authenticated probe (spends ~1 token)]' \
+                        '--probe[live-verify connectivity and credentials for every provider]' \
+                        '--selftest[credential-free end-to-end session against a loopback stub]' \
+                        '--fix[remediate fixable checks (prompts per fix)]' \
+                        '--yes[apply --fix remediations without prompting]' \
+                        '--json[stream NDJSON check/fix events + done:true verdict]' \
+                        '--report[Markdown diagnostics bundle for bug reports]' \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:'
+                    ;;
+
+                bug)
+                    _arguments \
+                        '--title=[issue title]:title:' \
+                        '--body=[description above the bundle]:text:' \
+                        '--labels=[issue labels (csv)]:labels:' \
+                        '--open[open the issue URL in the system browser]' \
+                        '--out=[write the diagnostics bundle to a file]:file:_files' \
+                        '--no-report[omit the diagnostics bundle]' \
+                        '--attach-report=[use an existing report file as the bundle]:file:_files' \
+                        '--offline[skip network checks]' \
+                        '--deep[run an authenticated probe (spends ~1 token)]' \
+                        '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
+                        '--model=[diagnose an override model]:model:' \
+                        '--api-key=[diagnose an override API key]:key:' \
+                        '--json[emit the stable schema-checked JSON form]'
+                    ;;
+
+                guide)
+                    _arguments '--human[render the guide as markdown]'
+                    ;;
+
                 models)
                     # `tau models` takes no further arguments.
+                    ;;
+
+                version)
+                    _arguments \
+                        '--verbose[include build metadata (commit, target, build date, zig version)]' \
+                        '--check[non-blocking update check against the latest release]' \
+                        '--json[emit the stable {"name","version",...} object]' \
+                        '--mode=[output mode]:mode:(text json)'
+                    ;;
+
+                upgrade)
+                    _arguments \
+                        '(-y --yes)'{-y,--yes}'[upgrade without prompting]' \
+                        '--dir=[install destination]:dir:_files -/' \
+                        '--dry-run[print the resolved plan; install nothing]' \
+                        '--verify-signature[verify the cosign signature bundle before the swap]' \
+                        '--json[emit the stable schema-checked report object]'
+                    ;;
+
+                explain)
+                    # Exit codes mirror the stable catalog in src/errors.zig;
+                    # config keys mirror the generated docs/config.md table;
+                    # doctor.* ids mirror the CheckSpec catalog in
+                    # src/doctorcatalog.zig; TAU_* names mirror the Spec
+                    # registry in src/envvars.zig.
+                    local -a err_codes=(
+                        '1:not_found'
+                        '80:invalid_argument'
+                        '82:missing_required_field'
+                        '105:Timeout'
+                        '106:AuthFailed'
+                        '110:internal_error'
+                        '111:unimplemented'
+                    )
+                    local -a cfg_keys=(
+                        '$schema:config key' 'provider:config key' 'model:config key'
+                        'api_key:config key' 'keys:config key' 'mode:config key'
+                        'stream:config key' 'thinking:config key' 'debug:config key'
+                        'temperature:config key' 'max_tokens:config key'
+                        'timeout_ms:config key' 'context_window:config key'
+                        'auto_compact:config key' 'compact_threshold:config key'
+                        'compact_keep_recent:deprecated config key' 'compact_keep_recent_tokens:config key'
+                        'goal_max_iterations:config key' 'goal_max_continues:config key'
+                        'keys.xiaomi:config key' 'keys.openai:config key'
+                        'keys.deepseek:config key' 'keys.opencode-go:config key'
+                    )
+                    local -a checks=(
+                        'doctor.config_deprecated_keys:doctor check' 'doctor.config_file:doctor check'
+                        'doctor.config_permissions:doctor check'
+                        'doctor.plaintext_secrets:doctor check'
+                        'doctor.shell_completions:doctor check'
+                        'doctor.provider_resolution:doctor check'
+                        'doctor.api_key:doctor check'
+                        'doctor.curl:doctor check'
+                        'doctor.proxy_env:doctor check'
+                        'doctor.tls_ca:doctor check'
+                        'doctor.endpoint_reachable:doctor check'
+                        'doctor.auth_probe:doctor check'
+                        'doctor.client_wiring:doctor check'
+                        'doctor.client_permissions:doctor check'
+                        'doctor.provider_probes:doctor check'
+                        'doctor.update_available:doctor check'
+                        'doctor.selftest:doctor check'
+                        'doctor.client_zed:doctor check'
+                        'doctor.client_nvim:doctor check'
+                        'doctor.client_emacs:doctor check'
+                        'doctor.client_vscode:doctor check'
+                        'doctor.client_cursor:doctor check'
+                        'doctor.client_jetbrains:doctor check'
+                        'doctor.client_windsurf:doctor check'
+                        'doctor.client_gemini:doctor check'
+                        'doctor.client_claude_desktop:doctor check'
+                        'doctor.client_opencode:doctor check'
+                        'doctor.client_cline:doctor check'
+                        'doctor.client_goose:doctor check'
+                        'doctor.client_continue:doctor check'
+                        'doctor.client_roo_code:doctor check'
+                        'doctor.client_kilo_code:doctor check'
+                        'doctor.client_amazonq:doctor check'
+                        'doctor.client_codex:doctor check'
+                        'doctor.probe_xiaomi:doctor check'
+                        'doctor.probe_xiaomi_auth:doctor check'
+                        'doctor.probe_openai:doctor check'
+                        'doctor.probe_openai_auth:doctor check'
+                        'doctor.probe_deepseek:doctor check'
+                        'doctor.probe_deepseek_auth:doctor check'
+                        'doctor.probe_opencode-go:doctor check'
+                        'doctor.probe_opencode-go_auth:doctor check'
+                    )
+                    local -a env_vars=(
+                        'TAU_API_KEY:env var' 'TAU_ENDPOINT:env var'
+                        'TAU_DEBUG_LOG:env var' 'TAU_EDITOR:env var'
+                        'TAU_YES:env var' 'TAU_NONINTERACTIVE:env var'
+                        'TAU_SETUP_SHELL:env var' 'TAU_SETUP_CLIENT:env var'
+                        'TAU_SETUP_IMPORT:env var' 'TAU_NO_UPDATE_CHECK:env var'
+                        'TAU_UPDATE_URL:env var' 'TAU_INSTALL_URL:env var'
+                        'TAU_CHANGELOG_URL:env var' 'TAU_INSTALL_DIR:env var'
+                        'TAU_VERIFY_SIGSTORE:env var' 'TAU_VERSION:env var'
+                        'TAU_BASE_URL:env var' 'TAU_OS:env var'
+                        'TAU_ARCH:env var' 'TAU_SKIP_CHECKSUM:env var'
+                        'TAU_BIN:env var' 'TAU_TOOLS:env var'
+                        'TAU_THINKING:env var' 'TAU_DEBUG:env var'
+                    )
+                    _arguments \
+                        '1: :_describe "error code/type, config key, doctor check, or TAU_* env var" err_codes cfg_keys checks env_vars' \
+                        '--json[emit the stable schema-checked JSON form]' \
+                        '--human[render the entry as prose instead of JSON]'
                     ;;
             esac
             ;;

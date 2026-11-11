@@ -39,7 +39,80 @@ tau --session myproject "/goal status"
 
 Zero to your first response in five steps. Every command below is copy-pasteable.
 
-### 1. Prerequisites
+### 1. Get tau
+
+**Prebuilt binary (recommended — no Zig toolchain needed):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+```
+
+The installer detects your OS/arch (Linux and macOS, x86_64 and aarch64),
+downloads the matching `tau-<os>-<arch>.tar.gz` from the latest GitHub release,
+verifies it against `SHA256SUMS.txt`, and installs to `~/.local/bin`. Options:
+`--version X.Y.Z` to pin a release, `--dir DIR` to change the install location,
+`--dry-run` to see the plan. Checksum verification is mandatory and fail-fast:
+the install aborts if the `SHA256SUMS.txt` manifest is unreachable, the asset
+isn't listed in it, no `sha256sum`/`shasum` is available, or the digest
+mismatches — so a tampered or corrupted binary can never be installed
+(`TAU_SKIP_CHECKSUM=1` opts out, e.g. for air-gapped mirrors). All assets are
+built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on
+version tags — and before publish, each archive is smoke-tested on its
+matching OS/arch runner by installing it through `install.sh`/`install.ps1`
+and running `tau --version`/`--help`.
+
+**Updating:** `tau upgrade` checks the latest release, shows the release
+notes since your version before changing anything (a `[y/N]` prompt on a
+terminal, `--yes` for scripts), then re-runs this same verified installer
+over the running binary — no separate update channel to trust. `tau
+upgrade --dry-run` prints the plan plus the pending changelog entries;
+`tau version --check` is the read-only form. `tau upgrade
+--verify-signature` additionally asks the installer to verify the
+asset's cosign/Sigstore signature bundle before the swap (requires
+`cosign` on `PATH`, fails closed; `TAU_VERIFY_SIGSTORE=1` is the env
+equivalent). Audit what changed between
+releases in [CHANGELOG.md](CHANGELOG.md) — its tagged-release sections are
+generated from the release notes themselves.
+
+**Windows (PowerShell — installs `tau-windows-x86_64.zip` to
+`%LOCALAPPDATA%\Programs\tau`):**
+
+```powershell
+irm https://raw.githubusercontent.com/javimosch/tau/master/install.ps1 | iex
+```
+
+`install.ps1` mirrors the `install.sh` contract: `-Version X.Y.Z`,
+`-Dir DIR`, `-DryRun`, plus `TAU_VERSION`/`TAU_INSTALL_DIR`/`TAU_BASE_URL`/
+`TAU_SKIP_CHECKSUM` overrides, and the same fail-closed `SHA256SUMS.txt`
+verification via `Get-FileHash`. Scoop and winget manifests are generated and
+validated on every release by the `scoop`/`winget` jobs in
+[`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+**Homebrew (macOS and Linux — `brew upgrade` tracks new releases):**
+
+```bash
+brew install javimosch/tap/tau
+```
+
+The [`javimosch/homebrew-tap`](https://github.com/javimosch/homebrew-tap)
+formula is regenerated with the correct per-platform checksums and pushed by
+the release workflow on every stable version tag, so `brew update && brew
+upgrade tau` always lands on the latest release.
+
+**In GitHub Actions (one `uses:` line):**
+
+```yaml
+- uses: javimosch/tau@master        # or pin a release tag, e.g. @v0.5.0
+  with:
+    version: "0.4.0"                # optional — defaults to the latest release
+```
+
+The repo-root [`action.yml`](action.yml) is a composite action wrapping
+`install.sh`: it puts `tau` on `PATH` for later steps and exposes
+`tau-path`/`version` outputs. The same smoke suite verifies the action
+end-to-end via `uses: ./` before every release.
+
+**From source:**
 
 - **[Zig 0.16.0](https://ziglang.org/download/)** — the exact version tau is built against
 - **`curl`** on your `PATH` — tau shells out to it for HTTP
@@ -51,6 +124,8 @@ curl --version | head -1
 ```
 
 ### 2. Clone and build
+
+(Skip this step if you installed a prebuilt binary above.)
 
 ```bash
 git clone https://github.com/javimosch/tau.git
@@ -66,6 +141,39 @@ export PATH="$PWD/zig-out/bin:$PATH"
 
 ### 3. Configure an API key
 
+Optional — scaffold a commented starter config first (detects which provider
+API keys are already exported, picks a matching provider, never copies secret
+values into the file):
+
+```bash
+./zig-out/bin/tau init          # writes ~/.config/tau/config.json
+./zig-out/bin/tau init --stdout # preview without writing
+```
+
+Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
+installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
+to override), can write ACP client config for your editor
+(`--client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all` — step-by-step guide in
+[docs/editors.md](docs/editors.md), all clients in [docs/acp.md](docs/acp.md),
+per-client setup guides in [docs/clients/](docs/clients/zed.md)),
+and finishes with the `tau doctor` health report:
+
+```bash
+./zig-out/bin/tau setup                    # detect everything, write nothing extra
+./zig-out/bin/tau setup --client zed       # also configure Zed's agent_servers
+./zig-out/bin/tau setup --dry-run          # preview every write, change nothing
+# preview merging your existing MCP servers into the wired MCP client:
+./zig-out/bin/tau setup --client windsurf --import --dry-run --offline
+./zig-out/bin/tau setup --remove           # cleanly unwire every configured client
+./zig-out/bin/tau setup --detect           # read-only inventory: clients found, config paths, wiring status
+./zig-out/bin/tau setup --non-interactive --shell bash --client zed \
+    --offline                              # unattended: devcontainers, dotfiles, CI
+```
+
+Already running MCP servers you configured by hand? `--import` merges them
+into the wired client without overwriting anything — the full walkthrough
+is [MIGRATING.md](MIGRATING.md).
+
 tau needs an API key for its configured provider. Export the matching environment variable:
 
 ```bash
@@ -77,7 +185,7 @@ export OPENAI_API_KEY="sk-..."       # use with --model openai/gpt-4o-mini
 export DEEPSEEK_API_KEY="..."        # use with --model deepseek/deepseek-chat
 ```
 
-Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table and [docs/configuration.md](docs/configuration.md) for the full reference.
+Key resolution order: `--api-key` flag → config `keys[provider]` → provider env var → config `api_key` → `TAU_API_KEY` → built-in key. See [Configuration](#-configuration) for the provider table, [docs/providers.md](docs/providers.md) for per-provider credential setup, and [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ### 4. First run
 
@@ -130,8 +238,15 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
+- **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, editor ACP client wiring (`client_<name>` rows flag missing or stale `tau acp serve` entries for detected Zed/VS Code/Cursor/JetBrains/Neovim installs, plus the mcacp bridge config for Windsurf/Gemini CLI/Claude Desktop), curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); secret-hygiene rows warn on plaintext credentials on disk (`plaintext_secrets` — `api_key`/`keys.*` config values and `env` blocks in client settings, reporting key names never values) and on client files readable by group/other (`client_permissions`); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling (stream contract + JSON Schema: [docs/doctor-json.md](docs/doctor-json.md)); `--fix` remediates common issues (missing config, loose config and client-file permissions, missing completions, missing/stale client wiring) behind per-fix confirmation, and `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network; an `update_available` check warns when a newer release exists (`tau version --check` is the standalone form; opt out via `TAU_NO_UPDATE_CHECK=1`)
+- **Update check** — `tau version --check` compares the running binary against the latest GitHub release and prints `update_available` + the release URL; non-blocking (always exits 0, short timeout) and opt-out via `TAU_NO_UPDATE_CHECK`. `tau version --json` prints the stable `{"name","version"}` object for scripts
+- **Self-update** — `tau upgrade` reuses that check, shows a pre-upgrade summary of the release notes since your version (the tag's `CHANGELOG.md`, overridable via `TAU_CHANGELOG_URL`), confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan + pending changes
+- **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all` — MCP clients are wired through the mcacp bridge), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI, `--dry-run` previews every write step (`would_*` statuses + `"dry_run":true`) without touching the filesystem, `--import` merges your existing MCP server entries from the other supported clients into each wired MCP client (JSONC-safe splice — comments and current entries survive, nothing is overwritten; mutually exclusive with `--remove`), `--remove`/`--uninstall` cleanly reverses the client wiring (`--client` scopes the sweep), and `--detect` prints a read-only inventory of every supported client — config dir, detection status, and wiring state with settings paths (`--client` scopes it)
+- **Bug reports** — `tau bug` builds a pre-filled GitHub issue URL carrying the redacted `doctor --report` diagnostics bundle (`--open` launches the system browser, `--out` also writes the bundle to a file, `--no-report` omits diagnostics)
+- **Offline explain catalog** — `tau explain <code|type|key|doctor.<check>|TAU_*>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md)), a config key's type/constraints/description (from [docs/config.md](docs/config.md)), a doctor check's fails-when + remediation, or a `TAU_*` env var's consumers + summary (from [docs/env.md](docs/env.md))
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
+- **Standard color policy** — `NO_COLOR`, `CLICOLOR=0`, and `TERM=dumb` keep output byte-clean; `CLICOLOR_FORCE` overrides. Only interactive prompts are styled (e.g. `tau upgrade`, `tau doctor --fix`); stdout JSON/NDJSON and error envelopes never carry escapes — see [docs/configuration.md](docs/configuration.md#color-policy)
 
 With tau:
 1. **Execute** single-shot commands with `tau "prompt"` — JSON output by default
@@ -207,6 +322,7 @@ tau --session s "/goal obj"     # Goal mode with persistence
 tau --session s "/goal status"  # Check progress
 tau --role critic "review X"    # Adversarial review (read-only)
 tau fleet run --goal "ship X"   # Multi-agent dispatch
+tau fleet --help                # Per-subcommand usage + runnable examples
 ```
 
 ---
@@ -424,7 +540,8 @@ Streaming output:
 
 ### Config File
 
-Optional config at `~/.config/tau/config.json`:
+Optional config at `~/.config/tau/config.json`. `tau init` writes a commented
+starter (the file is JSONC — `//` and `/* */` comments are ignored on load):
 
 ```json
 {
@@ -437,7 +554,33 @@ Optional config at `~/.config/tau/config.json`:
 }
 ```
 
-CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md).
+CLI flags override config file values. Full key reference: [docs/configuration.md](docs/configuration.md) (generated, drift-checked key table: [docs/config.md](docs/config.md)); the generated `TAU_*` env-var catalog is [docs/env.md](docs/env.md) — unrecognized `TAU_*` names warn on stderr with a did-you-mean hint.
+
+Inspect the resolved effective config (config file + env + CLI flags merged) with `tau config show` — output is JSON and API keys are always redacted:
+
+```bash
+tau config show                          # what tau would use right now
+tau config show --provider openai        # preview flag overrides without running
+tau config show --json                   # pin the stable JSON form for scripts
+tau config show --origin                 # which layer supplied each value
+```
+
+`tau config show`, `tau config validate`, and `tau version` all accept
+`--json`: the explicit opt-in to the **stable** stdout shape, pinned by
+checked-in JSON Schemas ([schema/](schema/)) that CI validates real binary
+output against — see [docs/stability.md](docs/stability.md).
+
+Edit the file programmatically (git-config style — comments preserved, values
+schema-checked, writes atomic):
+
+```bash
+tau config set provider openai           # creates the file if missing
+tau config set keys.openai sk-...        # per-provider API key
+tau config get provider                  # read a value (secrets redacted)
+tau config unset keys.openai             # remove a key
+tau config validate                      # offline schema check (CI/pre-commit)
+tau config schema                        # JSON Schema for editor autocomplete
+```
 
 ### Providers
 
@@ -471,16 +614,28 @@ zig build test
 ./scripts/smoke.sh --net
 ```
 
-Requires Zig 0.16.0 and `curl` on PATH.
+Requires Zig 0.16.0 and `curl` on PATH. To install a prebuilt binary instead,
+run `./install.sh` (or `install.ps1` on Windows) — no Zig needed; see
+[Getting Started](#-getting-started).
+
+### Shell Completions
+
+Tab-completion scripts for Bash (`tau.bash`), Zsh (`_tau`), Fish (`tau.fish`),
+and PowerShell (`tau.ps1`) live in [`completions/`](completions/README.md) with
+per-shell install instructions — or let `tau completions install` (also part of
+`tau setup`) wire the detected shell for you (`--shell bash|zsh|fish|pwsh|all`,
+`--dry-run` to preview).
 
 ---
 
 ## 🔧 Troubleshooting
 
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**, or readable offline via `tau explain <code|type|key>` (e.g. `tau explain 106` or `tau explain timeout_ms`; `--json` pins the schema-checked JSON form, `--human` for prose, no argument to list all). Building automation on tau? **[docs/stability.md](docs/stability.md)** is the public stability and deprecation contract — which exit codes, `--json` schemas, config keys, env vars, and wire formats scripts may rely on, and how breaking changes are announced and phased out.
+
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | Empty response with no args | Expected behavior (shows help) | Use `tau --help` or provide a prompt |
-| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var |
+| Auth failed (exit 106) | No API key | Set `TAU_API_KEY` or provider-specific env var — [docs/providers.md](docs/providers.md) |
 | Timeout (exit 105) | Request too slow | Increase `--timeout-ms` (default: 120000) |
 | Tool not found | Tool name mismatch | Check tool name in tool_calls |
 

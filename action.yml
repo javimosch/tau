@@ -1,0 +1,69 @@
+# action.yml — `setup-tau` composite GitHub Action.
+#
+# Adopters install tau in CI with a single line:
+#
+#   - uses: javimosch/tau@master        # or pin a release tag, e.g. @v0.5.0
+#
+# The action runs the repo's own install.sh via $GITHUB_ACTION_PATH, so the
+# installer version always matches the action ref. install.sh downloads the
+# checksum-verified prebuilt tau-<os>-<arch>.tar.gz from GitHub Releases —
+# no Zig toolchain required. Linux/macOS runners, x86_64/aarch64.
+
+name: setup-tau
+description: >-
+  Install the tau CLI (agent-first, JSON-first AI CLI) from prebuilt release
+  binaries — no Zig toolchain required.
+author: javimosch
+branding:
+  icon: terminal
+  color: blue
+
+inputs:
+  version:
+    description: >-
+      Release version to install, e.g. "0.5.0" or "v0.5.0".
+      Leave empty to install the latest release.
+    required: false
+    default: ""
+  install-dir:
+    description: >-
+      Directory to install the `tau` binary into (default: ~/.local/bin).
+      Always appended to $GITHUB_PATH so `tau` is on PATH for later steps.
+    required: false
+    default: ""
+  base-url:
+    description: >-
+      Override the GitHub Releases base URL (install.sh's TAU_BASE_URL) —
+      only needed to test installs against a staging dir or mirror.
+    required: false
+    default: ""
+
+outputs:
+  tau-path:
+    description: Absolute path to the installed `tau` binary.
+    value: ${{ steps.install.outputs.tau-path }}
+  version:
+    description: Version string reported by `tau --version` (e.g. "tau 0.4.0").
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      name: Install tau via install.sh
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_INSTALL_DIR: ${{ inputs.install-dir }}
+        INPUT_BASE_URL: ${{ inputs.base-url }}
+      run: |
+        set -euo pipefail
+        DEST="${INPUT_INSTALL_DIR:-$HOME/.local/bin}"
+        export TAU_INSTALL_DIR="$DEST"
+        export TAU_VERSION="$INPUT_VERSION" TAU_BASE_URL="$INPUT_BASE_URL"
+        sh "$GITHUB_ACTION_PATH/install.sh"
+        echo "$DEST" >> "$GITHUB_PATH"
+        echo "tau-path=$DEST/tau" >> "$GITHUB_OUTPUT"
+        version="$("$DEST/tau" --version 2>/dev/null | head -n1 || true)"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "::notice::tau installed at $DEST/tau${version:+ ($version)}"

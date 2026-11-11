@@ -1,0 +1,2 @@
+{"step":"remove_clients","status":"absent","clients":[{"client":"zed","path":"<HOME>/.config/zed/settings.json","status":"absent"}]}
+{"step":"setup","ok":true,"version":"0.4.0","remove":true,"done":true}

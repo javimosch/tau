@@ -1,0 +1,2119 @@
+//! `tau config set|get|unset` — schema-validated, comment-preserving edits to
+//! a JSONC config file. Mutations are surgical text splices: a string/comment-
+//! aware scanner locates the target key's tokens and only that span is
+//! rewritten, so the commented `tau init` scaffold and hand-written comments
+//! survive a `config set` round-trip.
+//!
+//! Type coercion and semantic checks mirror `config validate` (derived at
+//! comptime from configfile.FileConfig), so a value `config set` accepts is
+//! always one `config validate` reports clean. Secrets are never echoed:
+//! `api_key`/`keys.*` values are redacted in output unless `get --raw` is
+//! passed.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const cfgmod = @import("config.zig");
+const configfile = @import("configfile.zig");
+const jsonmod = @import("json.zig");
+const suggest = @import("suggest.zig");
+
+pub const Sub = enum { set, get, unset };
+
+/// Caller-facing failure: rendered as an {"err"} envelope on stderr, exit code.
+pub const Fail = struct {
+    code: u8,
+    type_name: []const u8,
+    message: []const u8,
+};
+
+/// Outcome of a set/get/unset: stdout payload on success, or an envelope to
+/// emit on stderr with its exit code.
+pub const Outcome = union(enum) {
+    ok: []const u8,
+    fail: Fail,
+};
+
+// Comptime view of the persisted file schema (same struct the loader and the
+// validator derive from — single source of truth).
+const file_fields = @typeInfo(configfile.FileConfig).@"struct".fields;
+
+/// All valid top-level config key names — the candidate list for did-you-mean
+/// suggestions on misspelled keys (same derivation as configvalidate.zig).
+const field_names: []const []const u8 = blk: {
+    var names: [file_fields.len][]const u8 = undefined;
+    for (file_fields, 0..) |f, i| names[i] = f.name;
+    const frozen = names;
+    break :blk &frozen;
+};
+
+const Kind = enum { string, boolean, integer, number, any_json };
+
+fn innerType(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .optional => |o| o.child,
+        else => T,
+    };
+}
+
+fn fieldKind(comptime T: type) Kind {
+    return switch (innerType(T)) {
+        []const u8 => .string,
+        bool => .boolean,
+        u32, u64, usize, i32, i64 => .integer,
+        f32, f64 => .number,
+        else => .any_json,
+    };
+}
+
+/// A parsed key address: top-level FileConfig field, or a `keys.<provider>`
+/// entry inside the per-provider key map.
+const KeyPath = union(enum) {
+    field: []const u8,
+    keys_entry: []const u8,
+};
+
+fn isKnownField(key: []const u8) bool {
+    inline for (file_fields) |f| {
+        if (std.mem.eql(u8, key, f.name)) return true;
+    }
+    return false;
+}
+
+fn knownFieldNames(arena: std.mem.Allocator) ![]const u8 {
+    var b: std.ArrayList(u8) = .empty;
+    inline for (file_fields, 0..) |f, i| {
+        if (i != 0) try b.appendSlice(arena, ", ");
+        try b.appendSlice(arena, f.name);
+    }
+    return b.toOwnedSlice(arena);
+}
+
+fn providerNames(arena: std.mem.Allocator) ![]const u8 {
+    var b: std.ArrayList(u8) = .empty;
+    for (cfgmod.providers, 0..) |p, i| {
+        if (i != 0) try b.appendSlice(arena, ", ");
+        try b.appendSlice(arena, p.name);
+    }
+    return b.toOwnedSlice(arena);
+}
+
+/// A `did you mean "<name>"?` fragment for a mistyped provider name, falling
+/// back to the full "valid providers: ..." list when nothing is close (same
+/// rule `config validate` uses for provider values).
+fn providerHint(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (cfgmod.providers) |p| try names.append(arena, p.name);
+    if (suggest.suggest(arena, name, names.items)) |s| {
+        return try std.fmt.allocPrint(arena, "did you mean \"{s}\"?", .{s});
+    }
+    return try std.fmt.allocPrint(arena, "valid providers: {s}", .{try providerNames(arena)});
+}
+
+/// Parse a user-supplied key path. `keys.<name>` addresses a per-provider API
+/// key; any other dotted path is rejected (the schema has no other objects).
+/// `strict_field` (set) additionally requires a known FileConfig key — for
+/// get/unset any syntactically valid path is accepted so unknown keys present
+/// in the file can still be inspected or removed.
+fn parseKeyPath(arena: std.mem.Allocator, key: []const u8, strict_field: bool) union(enum) { ok: KeyPath, fail: Fail } {
+    if (key.len == 0) return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = "empty config key" } };
+    const dot = std.mem.indexOfScalar(u8, key, '.');
+    if (dot == null) {
+        // Deprecated spellings are read-only: writes always go to the
+        // canonical key (the file's old member loads during the window).
+        if (strict_field) {
+            if (configfile.renamedKey(key)) |rk| {
+                const msg = std.fmt.allocPrint(arena, "\"{s}\" is a deprecated spelling — use \"{s}\"", .{ key, rk.new }) catch "deprecated config key";
+                return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
+            }
+        }
+        if (strict_field and !isKnownField(key)) {
+            // Did-you-mean on misspelled keys (same rule `config validate`
+            // reports for file typos); the full list is the fallback.
+            const msg = if (suggest.suggest(arena, key, field_names)) |s|
+                std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — did you mean \"{s}\"?", .{ key, s }) catch "unknown config key"
+            else blk: {
+                const names = knownFieldNames(arena) catch "see docs/configuration.md";
+                break :blk std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — valid keys: {s} (or keys.<provider>)", .{ key, names }) catch "unknown config key";
+            };
+            return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
+        }
+        return .{ .ok = .{ .field = key } };
+    }
+    const parent = key[0..dot.?];
+    const child = key[dot.? + 1 ..];
+    if (!std.mem.eql(u8, parent, "keys") or child.len == 0 or std.mem.indexOfScalar(u8, child, '.') != null) {
+        // A near-miss on the `keys` parent with a well-formed child almost
+        // always means keys.<provider> ("key.openai" -> "keys.openai").
+        const hint: []const u8 = blk: {
+            if (child.len > 0 and std.mem.indexOfScalar(u8, child, '.') == null) {
+                if (suggest.suggest(arena, parent, &.{"keys"})) |_| {
+                    break :blk std.fmt.allocPrint(arena, " — did you mean \"keys.{s}\"?", .{child}) catch "";
+                }
+            }
+            break :blk "";
+        };
+        const msg = std.fmt.allocPrint(arena, "unsupported config key path \"{s}\" — use a top-level key or keys.<provider>{s}", .{ key, hint }) catch "unsupported config key path";
+        return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
+    }
+    return .{ .ok = .{ .keys_entry = child } };
+}
+
+/// Secret-bearing key paths: their values are masked in all output unless
+/// `get --raw` is passed.
+fn isSecretPath(kp: KeyPath) bool {
+    return switch (kp) {
+        .field => |k| std.mem.eql(u8, k, "api_key") or std.mem.eql(u8, k, "keys"),
+        .keys_entry => true,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// JSONC scanner — locates object members on the ORIGINAL bytes (comments and
+// string contents respected), so splices preserve everything around them.
+// The pieces are pub so `tau setup --remove` can splice a named member out of
+// an arbitrary settings file (src/setup.zig) with the same guarantees.
+// ---------------------------------------------------------------------------
+
+pub const Member = struct {
+    key: []const u8, // decoded key name
+    key_start: usize, // index of the opening quote
+    value_start: usize,
+    value_end: usize, // one past the last value char
+    leading_comma: ?usize, // the ',' separating this member from the previous
+    trailing_comma: ?usize, // the ',' separating this member from the next
+};
+
+pub const Obj = struct {
+    open: usize, // index of '{'
+    close: usize, // index of '}'
+    members: []Member,
+};
+
+pub const ScanError = error{ InvalidJson, OutOfMemory };
+
+/// Advance past whitespace and JSONC comments.
+fn skipTrivia(bytes: []const u8, start: usize) usize {
+    var i = start;
+    while (i < bytes.len) {
+        const c = bytes[i];
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < bytes.len) {
+            if (bytes[i + 1] == '/') {
+                i += 2;
+                while (i < bytes.len and bytes[i] != '\n') i += 1;
+                continue;
+            }
+            if (bytes[i + 1] == '*') {
+                i += 2;
+                while (i + 1 < bytes.len and !(bytes[i] == '*' and bytes[i + 1] == '/')) i += 1;
+                i = if (i + 1 < bytes.len) i + 2 else bytes.len;
+                continue;
+            }
+        }
+        break;
+    }
+    return i;
+}
+
+/// Index one past the closing quote of the string literal at `i` (`bytes[i]`
+/// must be `"`). Escaped chars are skipped pairwise.
+fn stringEnd(bytes: []const u8, start: usize) ScanError!usize {
+    var i = start + 1;
+    while (i < bytes.len) {
+        const c = bytes[i];
+        if (c == '\\') {
+            i += 2;
+            continue;
+        }
+        if (c == '"') return i + 1;
+        i += 1;
+    }
+    return error.InvalidJson;
+}
+
+/// Index one past the JSON value starting at `i`. Objects/arrays are matched
+/// with a depth counter; scalars run to the next delimiter.
+fn valueEnd(bytes: []const u8, start: usize) ScanError!usize {
+    if (start >= bytes.len) return error.InvalidJson;
+    const c = bytes[start];
+    if (c == '"') return stringEnd(bytes, start);
+    if (c == '{' or c == '[') {
+        var depth: usize = 1;
+        var i = start + 1;
+        while (i < bytes.len) {
+            const ch = bytes[i];
+            if (ch == '"') {
+                i = try stringEnd(bytes, i);
+                continue;
+            }
+            if (ch == '/' and i + 1 < bytes.len and (bytes[i + 1] == '/' or bytes[i + 1] == '*')) {
+                i = skipTrivia(bytes, i);
+                continue;
+            }
+            if (ch == '{' or ch == '[') depth += 1;
+            if (ch == '}' or ch == ']') {
+                depth -= 1;
+                if (depth == 0) return i + 1;
+            }
+            i += 1;
+        }
+        return error.InvalidJson;
+    }
+    // Scalar: number/true/false/null — ends at a delimiter or comment start.
+    var i = start;
+    while (i < bytes.len) {
+        const ch = bytes[i];
+        if (ch == ',' or ch == '}' or ch == ']' or ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r' or ch == '/') break;
+        i += 1;
+    }
+    if (i == start) return error.InvalidJson;
+    return i;
+}
+
+/// Parse the member list of the object whose `{` is at `open`. All offsets are
+/// into the original `bytes`, comments included.
+pub fn scanObj(arena: std.mem.Allocator, bytes: []const u8, open: usize) ScanError!Obj {
+    var members: std.ArrayList(Member) = .empty;
+    var i = skipTrivia(bytes, open + 1);
+    var leading_comma: ?usize = null;
+    while (true) {
+        if (i >= bytes.len) return error.InvalidJson;
+        if (bytes[i] == '}') return .{ .open = open, .close = i, .members = members.items };
+        if (bytes[i] != '"') return error.InvalidJson;
+        const ks = i;
+        const ke = try stringEnd(bytes, i);
+        const decoded = jsonmod.unescapeAlloc(arena, bytes[ks + 1 .. ke - 1]) catch return error.InvalidJson;
+        i = skipTrivia(bytes, ke);
+        if (i >= bytes.len or bytes[i] != ':') return error.InvalidJson;
+        const vs = skipTrivia(bytes, i + 1);
+        const ve = try valueEnd(bytes, vs);
+        i = skipTrivia(bytes, ve);
+        var trailing_comma: ?usize = null;
+        if (i < bytes.len and bytes[i] == ',') {
+            trailing_comma = i;
+            i = skipTrivia(bytes, i + 1);
+        }
+        try members.append(arena, .{
+            .key = decoded,
+            .key_start = ks,
+            .value_start = vs,
+            .value_end = ve,
+            .leading_comma = leading_comma,
+            .trailing_comma = trailing_comma,
+        });
+        leading_comma = trailing_comma;
+        if (i >= bytes.len) return error.InvalidJson;
+        if (bytes[i] == '}') return .{ .open = open, .close = i, .members = members.items };
+        if (bytes[i] != '"') return error.InvalidJson;
+    }
+}
+
+/// Scan the top-level object of a whole config file. Rejects trailing garbage
+/// after the closing brace.
+pub fn scanDoc(arena: std.mem.Allocator, bytes: []const u8) ScanError!Obj {
+    const open = skipTrivia(bytes, 0);
+    if (open >= bytes.len or bytes[open] != '{') return error.InvalidJson;
+    const obj = try scanObj(arena, bytes, open);
+    if (skipTrivia(bytes, obj.close + 1) != bytes.len) return error.InvalidJson;
+    return obj;
+}
+
+/// Last member matching `key` (matches what the loader sees — a duplicate key
+/// later in the file shadows earlier ones).
+pub fn findMember(obj: Obj, key: []const u8) ?usize {
+    var found: ?usize = null;
+    for (obj.members, 0..) |m, i| {
+        if (std.mem.eql(u8, m.key, key)) found = i;
+    }
+    return found;
+}
+
+// ---------------------------------------------------------------------------
+// Splices
+// ---------------------------------------------------------------------------
+
+pub fn splice(arena: std.mem.Allocator, bytes: []const u8, start: usize, end: usize, with: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, bytes[0..start]);
+    try out.appendSlice(arena, with);
+    try out.appendSlice(arena, bytes[end..]);
+    return out.toOwnedSlice(arena);
+}
+
+/// Start of the line containing `pos` when everything before `pos` on that
+/// line is whitespace (member owns its line) — else `pos` itself.
+fn lineStart(bytes: []const u8, pos: usize) usize {
+    var i = pos;
+    while (i > 0 and (bytes[i - 1] == ' ' or bytes[i - 1] == '\t')) i -= 1;
+    if (i > 0 and bytes[i - 1] == '\n') return i;
+    return pos;
+}
+
+/// Indentation of the member's line (the ws run before it), or null when the
+/// member shares a line with preceding content.
+fn memberIndent(bytes: []const u8, m: Member) ?[]const u8 {
+    var i = m.key_start;
+    while (i > 0 and (bytes[i - 1] == ' ' or bytes[i - 1] == '\t')) i -= 1;
+    if (i > 0 and bytes[i - 1] == '\n') return bytes[i..m.key_start];
+    return null;
+}
+
+/// Build `"key": token` with the file's existing member indentation.
+fn renderMember(arena: std.mem.Allocator, bytes: []const u8, obj: Obj, key: []const u8, token: []const u8) !struct { text: []u8, pos: usize } {
+    var out: std.ArrayList(u8) = .empty;
+    if (obj.members.len == 0) {
+        // Empty (or comment-only) object: drop the inner region, write fresh.
+        try out.appendSlice(arena, "\n  \"");
+        try jsonmod.escapeInto(arena, &out, key);
+        try out.appendSlice(arena, "\": ");
+        try out.appendSlice(arena, token);
+        try out.append(arena, '\n');
+        return .{ .text = out.items, .pos = obj.open + 1 };
+    }
+    const last = obj.members[obj.members.len - 1];
+    const indent = memberIndent(bytes, last);
+    try out.append(arena, ',');
+    if (indent) |ind| {
+        try out.append(arena, '\n');
+        try out.appendSlice(arena, ind);
+    } else {
+        try out.append(arena, ' ');
+    }
+    try out.append(arena, '"');
+    try jsonmod.escapeInto(arena, &out, key);
+    try out.appendSlice(arena, "\": ");
+    try out.appendSlice(arena, token);
+    return .{ .text = out.items, .pos = last.value_end };
+}
+
+/// Insert `"key": token` into `obj`. For an empty object the region between
+/// the braces is replaced; otherwise the member is appended after the last one.
+fn insertMember(arena: std.mem.Allocator, bytes: []const u8, obj: Obj, key: []const u8, token: []const u8) ![]u8 {
+    const r = try renderMember(arena, bytes, obj, key, token);
+    const end = if (obj.members.len == 0) obj.close else r.pos;
+    return splice(arena, bytes, r.pos, end, r.text);
+}
+
+/// Removal span for one member, chosen so the result stays valid JSON and
+/// doesn't leave a dangling comma or a whitespace-only line.
+pub fn removalSpan(bytes: []const u8, m: Member) struct { start: usize, end: usize } {
+    if (m.trailing_comma) |c| {
+        // Member + its separator; eat the rest of the line if now empty.
+        var end = c + 1;
+        while (end < bytes.len and (bytes[end] == ' ' or bytes[end] == '\t')) end += 1;
+        if (end < bytes.len and bytes[end] == '\n') end += 1;
+        return .{ .start = lineStart(bytes, m.key_start), .end = end };
+    }
+    if (m.leading_comma) |c| {
+        // Last member: remove the preceding separator too; the '\n' before
+        // '}' survives so the file keeps its shape.
+        return .{ .start = c, .end = m.value_end };
+    }
+    // Only member: take its whole line.
+    var end = m.value_end;
+    while (end < bytes.len and (bytes[end] == ' ' or bytes[end] == '\t')) end += 1;
+    if (end < bytes.len and bytes[end] == '\n') end += 1;
+    return .{ .start = lineStart(bytes, m.key_start), .end = end };
+}
+
+/// What removing `entry` from `section` left behind. `spliced` is the new
+/// document bytes (the original is never re-rendered — comments, key order
+/// and sibling members are preserved verbatim); `empty` means nothing but a
+/// memberless object (plus stray comments) remains, so the caller should
+/// delete the file rather than write the husk.
+pub const NestedRemoval = union(enum) {
+    /// The section or the entry inside it isn't present — nothing to do.
+    absent,
+    /// New file bytes with the entry (and an emptied section husk) removed.
+    spliced: []u8,
+    /// Removing left a memberless document — delete the file.
+    empty,
+    /// The bytes don't scan as a JSONC object document.
+    invalid,
+};
+
+/// Remove `entry` from the object member `section` at the top level of a
+/// JSONC document — e.g. the "tau" member of "agent_servers" in an editor
+/// settings file (`tau setup --remove`). Comments and unrelated members are
+/// preserved byte-for-byte; when the removal empties the section object the
+/// section member is removed too, so no dead `"agent_servers": {}` husk is
+/// left behind.
+pub fn removeNestedMember(arena: std.mem.Allocator, bytes: []const u8, section: []const u8, entry: []const u8) !NestedRemoval {
+    const doc = scanDoc(arena, bytes) catch return .invalid;
+    const sm = doc.members[findMember(doc, section) orelse return .absent];
+    if (sm.value_start >= bytes.len or bytes[sm.value_start] != '{') return .absent;
+    const sobj = scanObj(arena, bytes, sm.value_start) catch return .invalid;
+    const em = sobj.members[findMember(sobj, entry) orelse return .absent];
+    const espan = removalSpan(bytes, em);
+    var out = try splice(arena, bytes, espan.start, espan.end, "");
+
+    // An emptied section husk goes too — the file keeps no dead shells.
+    const doc2 = scanDoc(arena, out) catch return .invalid;
+    if (findMember(doc2, section)) |smi2| {
+        const sm2 = doc2.members[smi2];
+        if (sm2.value_start < out.len and out[sm2.value_start] == '{') {
+            const sobj2 = scanObj(arena, out, sm2.value_start) catch return .invalid;
+            if (sobj2.members.len == 0) {
+                const husk = removalSpan(out, sm2);
+                out = try splice(arena, out, husk.start, husk.end, "");
+            }
+        }
+    }
+
+    const doc3 = scanDoc(arena, out) catch return .invalid;
+    if (doc3.members.len == 0) return .empty;
+    return .{ .spliced = out };
+}
+
+/// What inserting `entry` into `section` produced. `inserted` is the new
+/// document bytes — the original is never re-rendered, so comments, key
+/// order and sibling members survive byte-for-byte.
+pub const NestedInsert = union(enum) {
+    /// New file bytes with the entry added (and the section object created
+    /// when the document didn't carry it).
+    inserted: []u8,
+    /// The entry is already present inside the section — nothing to do.
+    present,
+    /// The bytes don't scan as a JSONC object document, or the section
+    /// exists but isn't an object.
+    invalid,
+};
+
+/// Insert `"entry": token` into the object member `section` at the top level
+/// of a JSONC document — e.g. an MCP server entry inside "mcpServers" in an
+/// editor settings file (`tau setup --import`). `token` is a raw JSON value
+/// (already rendered). When the document has no `section` member a fresh
+/// `"section": { "entry": token }` member is appended instead. Comments and
+/// unrelated members are preserved byte-for-byte; the entry is appended
+/// after the section's last member using the file's own indentation.
+pub fn insertNestedMember(arena: std.mem.Allocator, bytes: []const u8, section: []const u8, entry: []const u8, token: []const u8) !NestedInsert {
+    const doc = scanDoc(arena, bytes) catch return .invalid;
+    if (findMember(doc, section)) |smi| {
+        const sm = doc.members[smi];
+        if (sm.value_start >= bytes.len or bytes[sm.value_start] != '{') return .invalid;
+        const sobj = scanObj(arena, bytes, sm.value_start) catch return .invalid;
+        if (findMember(sobj, entry) != null) return .present;
+        return .{ .inserted = try insertMember(arena, bytes, sobj, entry, token) };
+    }
+    // No section member — append "section": { "entry": token } at top level.
+    var stok: std.ArrayList(u8) = .empty;
+    try stok.appendSlice(arena, "{ \"");
+    try jsonmod.escapeInto(arena, &stok, entry);
+    try stok.appendSlice(arena, "\": ");
+    try stok.appendSlice(arena, token);
+    try stok.appendSlice(arena, " }");
+    return .{ .inserted = try insertMember(arena, bytes, doc, section, stok.items) };
+}
+
+// ---------------------------------------------------------------------------
+// Deprecated-key migration (`tau doctor --fix`)
+// ---------------------------------------------------------------------------
+
+/// The result of rewriting deprecated config-key spellings.
+pub const KeyMigration = struct {
+    /// New document bytes — the original slice when nothing needed migrating.
+    out: []const u8,
+    /// Human-readable list of what changed, e.g. `"old" -> "new"`, or
+    /// `"old" removed ("new" already present)` for dead duplicates.
+    changes: []const u8,
+    /// Members renamed in place.
+    renamed: usize = 0,
+    /// Members removed because the canonical key was already present.
+    removed: usize = 0,
+
+    pub fn migrated(self: KeyMigration) bool {
+        return self.renamed + self.removed > 0;
+    }
+};
+
+/// Rewrite deprecated top-level config-key spellings per
+/// `configfile.renamed_keys` — the file-edit half of the docs/stability.md
+/// deprecation window (`tau doctor --fix` runs this on the real config):
+///
+/// * deprecated member, canonical absent → the `"old"` literal is renamed in
+///   place: value, position, comments, and key order survive byte-for-byte;
+/// * deprecated member, canonical present → the old member is dead config
+///   (the loader always prefers the canonical spelling) and is removed
+///   rather than duplicated.
+///
+/// Occurrences are processed last-to-first so duplicate `"old"` members keep
+/// the loader's last-wins semantics. Returns error.InvalidJson when `bytes`
+/// doesn't scan as a JSONC object document.
+pub fn migrateRenamedKeys(arena: std.mem.Allocator, bytes: []const u8) !KeyMigration {
+    var out: []const u8 = bytes;
+    var res: KeyMigration = .{ .out = out, .changes = "" };
+    var notes: std.ArrayList([]const u8) = .empty;
+    // Re-scan after every splice — offsets shift. Each pass handles the LAST
+    // deprecated member still in the doc; notes are prepended so the report
+    // reads in file order.
+    passes: while (true) {
+        const doc = try scanDoc(arena, out);
+        var i = doc.members.len;
+        while (i > 0) {
+            i -= 1;
+            const m = doc.members[i];
+            const rk = configfile.renamedKey(m.key) orelse continue;
+            if (findMember(doc, rk.new) != null) {
+                const span = removalSpan(out, m);
+                out = try splice(arena, out, span.start, span.end, "");
+                res.removed += 1;
+                try notes.insert(arena, 0, try std.fmt.allocPrint(arena, "\"{s}\" removed (\"{s}\" already present)", .{ rk.old, rk.new }));
+            } else {
+                var lit: std.ArrayList(u8) = .empty;
+                try lit.append(arena, '"');
+                try jsonmod.escapeInto(arena, &lit, rk.new);
+                try lit.append(arena, '"');
+                const ke = try stringEnd(out, m.key_start);
+                out = try splice(arena, out, m.key_start, ke, lit.items);
+                res.renamed += 1;
+                try notes.insert(arena, 0, try std.fmt.allocPrint(arena, "\"{s}\" -> \"{s}\"", .{ rk.old, rk.new }));
+            }
+            continue :passes;
+        }
+        break;
+    }
+    var changes: std.ArrayList(u8) = .empty;
+    for (notes.items, 0..) |note, i| {
+        if (i != 0) try changes.appendSlice(arena, ", ");
+        try changes.appendSlice(arena, note);
+    }
+    res.out = out;
+    res.changes = changes.items;
+    return res;
+}
+
+// ---------------------------------------------------------------------------
+// Value coercion (set) — same rules `config validate` enforces.
+// ---------------------------------------------------------------------------
+
+const Coerced = union(enum) { ok: []const u8, fail: Fail };
+
+fn badValue(arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) Coerced {
+    return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = std.fmt.allocPrint(arena, fmt, args) catch "invalid value" } };
+}
+
+/// Quote `raw` as a JSON string token.
+fn quoteString(arena: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    try b.append(arena, '"');
+    try jsonmod.escapeInto(arena, &b, raw);
+    try b.append(arena, '"');
+    return b.toOwnedSlice(arena);
+}
+
+/// Validate a `keys` whole-map JSON literal: object of provider-name →
+/// non-empty string. Returns the raw literal (it is already valid JSON).
+fn coerceKeysMap(arena: std.mem.Allocator, raw: []const u8) !Coerced {
+    const val = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch {
+        return badValue(arena, "\"keys\" expects a JSON object of provider→key pairs, e.g. '{{\"openai\":\"sk-...\"}}'", .{});
+    };
+    if (val != .object) {
+        return badValue(arena, "\"keys\" must be a JSON object of provider→key pairs", .{});
+    }
+    var it = val.object.iterator();
+    while (it.next()) |e| {
+        if (cfgmod.findProvider(e.key_ptr.*) == null) {
+            return badValue(arena, "\"keys.{s}\" is not a known provider — {s}", .{ e.key_ptr.*, try providerHint(arena, e.key_ptr.*) });
+        }
+        if (e.value_ptr.* != .string) {
+            return badValue(arena, "\"keys.{s}\" must be a string", .{e.key_ptr.*});
+        }
+        if (e.value_ptr.*.string.len == 0) {
+            return badValue(arena, "\"keys.{s}\" is an empty string — use `tau config unset keys.{s}` to remove it", .{ e.key_ptr.*, e.key_ptr.* });
+        }
+    }
+    return .{ .ok = raw };
+}
+
+/// Coerce the raw `set` value for `kp` into a JSON token, enforcing the same
+/// per-field rules `config validate` reports (type, provider, mode, ranges).
+fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced {
+    switch (kp) {
+        .keys_entry => |pname| {
+            if (cfgmod.findProvider(pname) == null) {
+                return badValue(arena, "\"keys.{s}\" is not a known provider — {s}", .{ pname, try providerHint(arena, pname) });
+            }
+            if (raw.len == 0) {
+                return badValue(arena, "empty API key — use `tau config unset keys.{s}` to remove it", .{pname});
+            }
+            return .{ .ok = try quoteString(arena, raw) };
+        },
+        .field => |name| {
+            if (std.mem.eql(u8, name, "keys")) return coerceKeysMap(arena, raw);
+            inline for (file_fields) |f| {
+                if (std.mem.eql(u8, name, f.name)) {
+                    switch (comptime fieldKind(f.type)) {
+                        .string => {
+                            if (comptime std.mem.eql(u8, f.name, "provider")) {
+                                if (cfgmod.findProvider(raw) == null) {
+                                    return badValue(arena, "\"provider\" is not a known provider: \"{s}\" — {s}", .{ raw, try providerHint(arena, raw) });
+                                }
+                            } else if (comptime std.mem.eql(u8, f.name, "mode")) {
+                                if (!std.mem.eql(u8, raw, "text") and !std.mem.eql(u8, raw, "json")) {
+                                    return badValue(arena, "\"mode\" must be \"text\" or \"json\", got \"{s}\"", .{raw});
+                                }
+                            } else if (comptime std.mem.eql(u8, f.name, "api_key")) {
+                                if (raw.len == 0) {
+                                    return badValue(arena, "empty API key — use `tau config unset api_key` to remove it", .{});
+                                }
+                            }
+                            return .{ .ok = try quoteString(arena, raw) };
+                        },
+                        .boolean => {
+                            if (std.mem.eql(u8, raw, "true")) return .{ .ok = "true" };
+                            if (std.mem.eql(u8, raw, "false")) return .{ .ok = "false" };
+                            return badValue(arena, "\"{s}\" must be a boolean (true/false), got \"{s}\"", .{ f.name, raw });
+                        },
+                        .integer => {
+                            const v = std.fmt.parseInt(i64, raw, 10) catch {
+                                return badValue(arena, "\"{s}\" must be an integer, got \"{s}\"", .{ f.name, raw });
+                            };
+                            if (v < 0) {
+                                return badValue(arena, "\"{s}\" must be >= 0, got {d}", .{ f.name, v });
+                            }
+                            const inner = innerType(f.type);
+                            if (comptime @typeInfo(inner).int.bits < 64) {
+                                if (v > std.math.maxInt(inner)) {
+                                    return badValue(arena, "\"{s}\" must be <= {d}, got {d}", .{ f.name, std.math.maxInt(inner), v });
+                                }
+                            }
+                            return .{ .ok = try std.fmt.allocPrint(arena, "{d}", .{v}) };
+                        },
+                        .number => {
+                            const v = std.fmt.parseFloat(f64, raw) catch {
+                                return badValue(arena, "\"{s}\" must be a number, got \"{s}\"", .{ f.name, raw });
+                            };
+                            if (!std.math.isFinite(v)) {
+                                return badValue(arena, "\"{s}\" must be a finite number, got \"{s}\"", .{ f.name, raw });
+                            }
+                            if (v < 0) {
+                                return badValue(arena, "\"{s}\" must be >= 0, got \"{s}\"", .{ f.name, raw });
+                            }
+                            if (comptime std.mem.eql(u8, f.name, "compact_threshold")) {
+                                if (v > 1) {
+                                    return badValue(arena, "\"compact_threshold\" must be between 0 and 1, got \"{s}\"", .{raw});
+                                }
+                            }
+                            return .{ .ok = try std.fmt.allocPrint(arena, "{d}", .{v}) };
+                        },
+                        .any_json => return .{ .ok = raw },
+                    }
+                }
+            }
+            unreachable; // set path validated the field name earlier
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File access
+// ---------------------------------------------------------------------------
+
+/// A file that passed both the structural scan and a strict JSON parse.
+const ParsedDoc = struct { bytes: []const u8, obj: Obj };
+
+/// Read + structurally scan the config file. `.missing` means the file does
+/// not exist; `.blank` carries a file with only whitespace/comments (set keeps
+/// them and appends a fresh object).
+const Doc = union(enum) {
+    missing,
+    blank: []const u8,
+    invalid: []const u8, // reason for the {"err"} message
+    parsed: ParsedDoc,
+};
+
+/// Suggestion suffix for a `get`/`unset` key that isn't in the file. The
+/// file's own member names are always candidates (a typo'd key in the file
+/// is the likely target). Schema field names / registered providers join in
+/// only when the queried name isn't already valid — a correctly-spelled but
+/// absent key must not suggest a sibling ("model" is absent, not a "mode"
+/// typo).
+fn notSetHint(arena: std.mem.Allocator, parsed: ?ParsedDoc, kp: KeyPath) ![]const u8 {
+    var cands: std.ArrayList([]const u8) = .empty;
+    var query: []const u8 = undefined;
+    var prefix: []const u8 = "";
+    switch (kp) {
+        .field => |name| {
+            query = name;
+            if (parsed) |p| for (p.obj.members) |m| try cands.append(arena, m.key);
+            if (!isKnownField(name)) try cands.appendSlice(arena, field_names);
+        },
+        .keys_entry => |pname| {
+            query = pname;
+            prefix = "keys.";
+            if (parsed) |p| {
+                if (findMember(p.obj, "keys")) |i| {
+                    const m = p.obj.members[i];
+                    if (m.value_start < p.bytes.len and p.bytes[m.value_start] == '{') {
+                        if (scanObj(arena, p.bytes, m.value_start) catch null) |inner| {
+                            for (inner.members) |mm| try cands.append(arena, mm.key);
+                        }
+                    }
+                }
+            }
+            if (cfgmod.findProvider(pname) == null) {
+                for (cfgmod.providers) |p| try cands.append(arena, p.name);
+            }
+        },
+    }
+    var filtered: std.ArrayList([]const u8) = .empty;
+    for (cands.items) |c| {
+        if (!std.mem.eql(u8, c, query)) try filtered.append(arena, c);
+    }
+    if (suggest.suggest(arena, query, filtered.items)) |s| {
+        return try std.fmt.allocPrint(arena, " — did you mean \"{s}{s}\"?", .{ prefix, s });
+    }
+    return "";
+}
+
+/// Reason string for an unparsable config file — carries the syntax error's
+/// line/column when one is known (same diagnostics `config validate` uses).
+fn invalidJsonReason(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    if (configfile.jsonErrorPos(arena, bytes)) |pos| {
+        return std.fmt.allocPrint(arena, "invalid JSON at line {d}, column {d} — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`", .{ pos.line, pos.col });
+    }
+    return "invalid JSON — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`";
+}
+
+fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
+        switch (err) {
+            error.FileNotFound => return .missing,
+            error.AccessDenied => return .{ .invalid = "permission denied" },
+            error.IsDir => return .{ .invalid = "path is a directory" },
+            else => return err,
+        }
+    };
+    if (skipTrivia(bytes, 0) == bytes.len) return .{ .blank = bytes };
+    const obj = scanDoc(arena, bytes) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidJson => return .{ .invalid = try invalidJsonReason(arena, bytes) },
+    };
+    // The scanner is structural only — confirm the document also parses as
+    // strict JSON (comments stripped) so we never splice into a file that
+    // `config validate` or configfile.load would reject.
+    const stripped = configfile.stripComments(arena, bytes) catch bytes;
+    _ = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{ .invalid = try invalidJsonReason(arena, bytes) };
+    };
+    return .{ .parsed = .{ .bytes = bytes, .obj = obj } };
+}
+
+/// Write `content` to `path` atomically (temp file + rename). Existing file
+/// permissions are preserved; a new file is created owner-only (0600) since it
+/// may hold API keys. `pub` so `tau doctor --fix` (deprecated-key migration)
+/// writes through the same atomic path.
+pub fn writeAtomic(io: std.Io, arena: std.mem.Allocator, path: []const u8, content: []const u8) !void {
+    const perms: std.Io.File.Permissions = if (std.Io.Dir.cwd().statFile(io, path, .{})) |st|
+        st.permissions
+    else |_| if (builtin.os.tag == .windows)
+        .default_file
+    else
+        .fromMode(0o600);
+
+    const stamp: u64 = @intCast(std.Io.Clock.Timestamp.now(io, .real).raw.toNanoseconds());
+    const tmp = try std.fmt.allocPrint(arena, "{s}.tmp-{d}", .{ path, stamp });
+    errdefer std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = content, .flags = .{ .permissions = perms } });
+    try std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), path, io);
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+fn appendJsonStr(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    try buf.append(arena, '"');
+    try jsonmod.escapeInto(arena, buf, s);
+    try buf.append(arena, '"');
+}
+
+/// Serialize a JSON value compactly. `redact` masks string values (used for
+/// secret key paths).
+fn appendValueJson(arena: std.mem.Allocator, buf: *std.ArrayList(u8), v: std.json.Value, redact: bool) std.mem.Allocator.Error!void {
+    switch (v) {
+        .null => try buf.appendSlice(arena, "null"),
+        .bool => |b| try buf.appendSlice(arena, if (b) "true" else "false"),
+        .integer => |i| try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}", .{i})),
+        .float => |f| try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "{d}", .{f})),
+        .number_string => |ns| try buf.appendSlice(arena, ns),
+        .string => |s| try appendJsonStr(arena, buf, if (redact) cfgmod.redactApiKey(arena, s) else s),
+        .array => |arr| {
+            try buf.append(arena, '[');
+            for (arr.items, 0..) |item, i| {
+                if (i != 0) try buf.append(arena, ',');
+                try appendValueJson(arena, buf, item, redact);
+            }
+            try buf.append(arena, ']');
+        },
+        .object => |obj| {
+            try buf.append(arena, '{');
+            var it = obj.iterator();
+            var first = true;
+            while (it.next()) |e| {
+                if (!first) try buf.append(arena, ',');
+                first = false;
+                try appendJsonStr(arena, buf, e.key_ptr.*);
+                try buf.append(arena, ':');
+                try appendValueJson(arena, buf, e.value_ptr.*, redact);
+            }
+            try buf.append(arena, '}');
+        },
+    }
+}
+
+/// Text-mode scalar form: strings bare, everything else as JSON.
+fn appendValueText(arena: std.mem.Allocator, buf: *std.ArrayList(u8), v: std.json.Value, redact: bool) !void {
+    switch (v) {
+        .string => |s| try buf.appendSlice(arena, if (redact) cfgmod.redactApiKey(arena, s) else s),
+        else => try appendValueJson(arena, buf, v, redact),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command entry point
+// ---------------------------------------------------------------------------
+
+/// Run `tau config <set|get|unset>`. Never emits output itself — returns the
+/// stdout payload or the error envelope fields for main.zig to print.
+pub fn run(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    sub: Sub,
+    key: []const u8,
+    value_opt: ?[]const u8,
+    path_opt: ?[]const u8,
+    env: *std.process.Environ.Map,
+    raw: bool,
+    mode: cfgmod.OutputMode,
+) !Outcome {
+    const path = path_opt orelse (configfile.path(arena, env) orelse {
+        const msg = std.fmt.allocPrint(arena, "no config path given and HOME is unset — pass a path: tau config {s} <key> <path>", .{@tagName(sub)}) catch "no config path and HOME is unset";
+        return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
+    });
+
+    const kp = switch (parseKeyPath(arena, key, sub == .set)) {
+        .ok => |k| k,
+        .fail => |f| return .{ .fail = f },
+    };
+    const redact = isSecretPath(kp) and !raw;
+
+    const doc = try readDoc(io, arena, path);
+
+    switch (sub) {
+        .get => {
+            const parsed = switch (doc) {
+                .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
+                .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
+                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .parsed => |p| p,
+            };
+            const slice = try lookupValue(arena, parsed, kp) orelse {
+                return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, parsed, kp) }) } };
+            };
+            const val = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, slice) catch slice, .{}) catch {
+                return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "value of \"{s}\" in {s} is not valid JSON", .{ key, path }) } };
+            };
+            return .{ .ok = try renderGet(arena, path, key, val, redact, mode) };
+        },
+        .set => {
+            const token = switch (try coerceValue(arena, kp, value_opt.?)) {
+                .ok => |t| t,
+                .fail => |f| return .{ .fail = f },
+            };
+            const src: []const u8 = switch (doc) {
+                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .missing => "{}\n",
+                // Blank (whitespace/comments only): append an empty object so
+                // the existing comment header survives.
+                .blank => |b| if (b.len == 0)
+                    "{}\n"
+                else if (b[b.len - 1] == '\n')
+                    try std.fmt.allocPrint(arena, "{s}{{\n}}\n", .{b})
+                else
+                    try std.fmt.allocPrint(arena, "{s}\n{{\n}}\n", .{b}),
+                .parsed => |p| p.bytes,
+            };
+            const created = doc != .parsed;
+            const obj = try scanDoc(arena, src);
+            const new_bytes = applySet(arena, src, obj, kp, token) catch |err| {
+                if (err == error.KeysNotObject) {
+                    return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "\"keys\" is not a JSON object in {s} — fix or remove it first", .{path}) } };
+                }
+                return err;
+            };
+            if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+                std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
+            }
+            try writeAtomic(io, arena, path, new_bytes);
+            return .{ .ok = try renderSet(arena, path, key, token, redact, created, mode) };
+        },
+        .unset => {
+            const parsed = switch (doc) {
+                .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
+                .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
+                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .parsed => |p| p,
+            };
+            const new_bytes = (applyUnset(arena, parsed, kp) catch |err| {
+                if (err == error.KeysNotObject) {
+                    return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "\"keys\" is not a JSON object in {s} — fix or remove it first", .{path}) } };
+                }
+                return err;
+            }) orelse {
+                return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, parsed, kp) }) } };
+            };
+            try writeAtomic(io, arena, path, new_bytes);
+            return .{ .ok = try renderUnset(arena, path, key, mode) };
+        },
+    }
+}
+
+/// Locate the raw value slice for `kp` inside a scanned document (comments
+/// intact). Follows `keys.<name>` into the `keys` object.
+fn lookupValue(arena: std.mem.Allocator, parsed: anytype, kp: KeyPath) !?[]const u8 {
+    switch (kp) {
+        .field => |name| {
+            const i = findMember(parsed.obj, name) orelse return null;
+            return parsed.bytes[parsed.obj.members[i].value_start..parsed.obj.members[i].value_end];
+        },
+        .keys_entry => |pname| {
+            const i = findMember(parsed.obj, "keys") orelse return null;
+            const m = parsed.obj.members[i];
+            if (parsed.bytes[m.value_start] != '{') return null;
+            const inner = try scanObj(arena, parsed.bytes, m.value_start);
+            const j = findMember(inner, pname) orelse return null;
+            return parsed.bytes[inner.members[j].value_start..inner.members[j].value_end];
+        },
+    }
+}
+
+fn applySet(arena: std.mem.Allocator, bytes: []const u8, obj: Obj, kp: KeyPath, token: []const u8) ![]u8 {
+    switch (kp) {
+        .field => |name| {
+            if (findMember(obj, name)) |i| {
+                const m = obj.members[i];
+                return splice(arena, bytes, m.value_start, m.value_end, token);
+            }
+            return insertMember(arena, bytes, obj, name, token);
+        },
+        .keys_entry => |pname| {
+            if (findMember(obj, "keys")) |i| {
+                const m = obj.members[i];
+                if (bytes[m.value_start] != '{') {
+                    return error.KeysNotObject;
+                }
+                const inner = try scanObj(arena, bytes, m.value_start);
+                if (findMember(inner, pname)) |j| {
+                    const im = inner.members[j];
+                    return splice(arena, bytes, im.value_start, im.value_end, token);
+                }
+                // Insert inside the existing keys object (inner offsets are
+                // absolute positions in `bytes`).
+                return insertMember(arena, bytes, inner, pname, token);
+            }
+            // No keys object yet: add `"keys": { "<p>": token }`.
+            var tok: std.ArrayList(u8) = .empty;
+            try tok.appendSlice(arena, "{ \"");
+            try jsonmod.escapeInto(arena, &tok, pname);
+            try tok.appendSlice(arena, "\": ");
+            try tok.appendSlice(arena, token);
+            try tok.appendSlice(arena, " }");
+            return insertMember(arena, bytes, obj, "keys", tok.items);
+        },
+    }
+}
+
+/// Remove every occurrence of `kp` (duplicates included). Returns null when
+/// the key is absent.
+fn applyUnset(arena: std.mem.Allocator, parsed: anytype, kp: KeyPath) !?[]const u8 {
+    switch (kp) {
+        .field => |name| {
+            var bytes = parsed.bytes;
+            var removed = false;
+            while (true) {
+                const obj = try scanDoc(arena, bytes);
+                const i = findMember(obj, name) orelse break;
+                const span = removalSpan(bytes, obj.members[i]);
+                bytes = try splice(arena, bytes, span.start, span.end, "");
+                removed = true;
+            }
+            return if (removed) bytes else null;
+        },
+        .keys_entry => |pname| {
+            var bytes = parsed.bytes;
+            var removed = false;
+            while (true) {
+                const obj = try scanDoc(arena, bytes);
+                const i = findMember(obj, "keys") orelse break;
+                const m = obj.members[i];
+                if (bytes[m.value_start] != '{') return error.KeysNotObject;
+                const inner = try scanObj(arena, bytes, m.value_start);
+                const j = findMember(inner, pname) orelse break;
+                const span = removalSpan(bytes, inner.members[j]);
+                bytes = try splice(arena, bytes, span.start, span.end, "");
+                removed = true;
+            }
+            return if (removed) bytes else null;
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output envelopes
+// ---------------------------------------------------------------------------
+
+fn renderGet(arena: std.mem.Allocator, path: []const u8, key: []const u8, val: std.json.Value, redact: bool, mode: cfgmod.OutputMode) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    if (mode == .text) {
+        try appendValueText(arena, &b, val, redact);
+        try b.append(arena, '\n');
+        return b.toOwnedSlice(arena);
+    }
+    try b.appendSlice(arena, "{\"path\":");
+    try appendJsonStr(arena, &b, path);
+    try b.appendSlice(arena, ",\"key\":");
+    try appendJsonStr(arena, &b, key);
+    try b.appendSlice(arena, ",\"set\":true,\"value\":");
+    try appendValueJson(arena, &b, val, redact);
+    if (redact) try b.appendSlice(arena, ",\"redacted\":true");
+    try b.appendSlice(arena, "}\n");
+    return b.toOwnedSlice(arena);
+}
+
+fn renderSet(arena: std.mem.Allocator, path: []const u8, key: []const u8, token: []const u8, redact: bool, created: bool, mode: cfgmod.OutputMode) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    const val = std.json.parseFromSliceLeaky(std.json.Value, arena, token, .{}) catch std.json.Value{ .string = token };
+    if (mode == .text) {
+        try b.appendSlice(arena, path);
+        try b.appendSlice(arena, ": \"");
+        try b.appendSlice(arena, key);
+        try b.appendSlice(arena, "\" = ");
+        try appendValueText(arena, &b, val, redact);
+        try b.append(arena, '\n');
+        return b.toOwnedSlice(arena);
+    }
+    try b.appendSlice(arena, "{\"ok\":true,\"path\":");
+    try appendJsonStr(arena, &b, path);
+    try b.appendSlice(arena, ",\"key\":");
+    try appendJsonStr(arena, &b, key);
+    try b.appendSlice(arena, ",\"value\":");
+    try appendValueJson(arena, &b, val, redact);
+    try b.appendSlice(arena, ",\"created\":");
+    try b.appendSlice(arena, if (created) "true" else "false");
+    if (redact) try b.appendSlice(arena, ",\"redacted\":true");
+    try b.appendSlice(arena, "}\n");
+    return b.toOwnedSlice(arena);
+}
+
+fn renderUnset(arena: std.mem.Allocator, path: []const u8, key: []const u8, mode: cfgmod.OutputMode) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    if (mode == .text) {
+        try b.appendSlice(arena, path);
+        try b.appendSlice(arena, ": \"");
+        try b.appendSlice(arena, key);
+        try b.appendSlice(arena, "\" removed\n");
+        return b.toOwnedSlice(arena);
+    }
+    try b.appendSlice(arena, "{\"ok\":true,\"path\":");
+    try appendJsonStr(arena, &b, path);
+    try b.appendSlice(arena, ",\"key\":");
+    try appendJsonStr(arena, &b, key);
+    try b.appendSlice(arena, ",\"removed\":true}\n");
+    return b.toOwnedSlice(arena);
+}
+
+// ---------------------------------------------------------------------------
+// `tau config edit` — interactive edit via $EDITOR, schema-checked on save
+// ---------------------------------------------------------------------------
+
+/// Outcome of `config edit`: `ok`/`invalid` carry a stdout payload (success
+/// object or validation report — the command's result, like
+/// `config validate`); `fail` carries an {"err"} envelope for stderr.
+pub const EditOutcome = union(enum) {
+    ok: []const u8,
+    invalid: []const u8,
+    fail: Fail,
+};
+
+/// Resolve the editor command: $TAU_EDITOR > $VISUAL > $EDITOR > platform
+/// fallback (vi / notepad) — git's editor-precedence model. Empty env values
+/// are skipped. The command may carry args (`EDITOR="code --wait"`); it runs
+/// through the system shell.
+fn editorCommand(env: *std.process.Environ.Map) []const u8 {
+    for ([_][]const u8{ "TAU_EDITOR", "VISUAL", "EDITOR" }) |name| {
+        if (env.get(name)) |v| {
+            if (v.len > 0) return v;
+        }
+    }
+    return if (builtin.os.tag == .windows) "notepad" else "vi";
+}
+
+/// Spawn `editor` on `path` through the system shell so commands with args
+/// work (`sh -c '<editor> "$@"'` — git's trick). stdio is inherited so
+/// full-screen editors get the tty.
+fn launchEditor(io: std.Io, arena: std.mem.Allocator, editor: []const u8, path: []const u8) !std.process.Child.Term {
+    const argv: []const []const u8 = if (builtin.os.tag == .windows)
+        &.{ "cmd", "/C", try std.fmt.allocPrint(arena, "{s} \"{s}\"", .{ editor, path }) }
+    else
+        &.{ "sh", "-c", try std.fmt.allocPrint(arena, "{s} \"$@\"", .{editor}), editor, path };
+    var child = try std.process.spawn(io, .{ .argv = argv });
+    return child.wait(io);
+}
+
+/// `tau config edit [path]` — open the config file in the user's editor, then
+/// validate the result with the same checks `config validate` runs (including
+/// did-you-mean hints on misspelled keys). A missing file is seeded with the
+/// commented `tau init` scaffold first.
+pub fn runEditor(
+    io: std.Io,
+    arena: std.mem.Allocator,
+    path_opt: ?[]const u8,
+    env: *std.process.Environ.Map,
+    mode: cfgmod.OutputMode,
+) !EditOutcome {
+    const path = path_opt orelse (configfile.path(arena, env) orelse {
+        return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = "no config path given and HOME is unset — pass a path: tau config edit <path>" } };
+    });
+
+    var created = false;
+    const missing = blk: {
+        _ = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| break :blk err == error.FileNotFound;
+        break :blk false;
+    };
+    if (missing) {
+        const initmod = @import("init.zig");
+        const det = try initmod.detectKeys(arena, env);
+        const body = try initmod.renderConfig(arena, det, initmod.pickProvider(det, null));
+        if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+            std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
+        }
+        try writeAtomic(io, arena, path, body);
+        created = true;
+    }
+
+    const editor = editorCommand(env);
+    const editor_term = launchEditor(io, arena, editor, path) catch |err| {
+        const msg = std.fmt.allocPrint(arena, "could not launch editor \"{s}\" ({s}) — set TAU_EDITOR, VISUAL, or EDITOR to an installed editor", .{ editor, @errorName(err) }) catch "could not launch editor";
+        return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+    };
+    switch (editor_term) {
+        .exited => |code| {
+            if (code != 0) {
+                const msg = std.fmt.allocPrint(arena, "editor \"{s}\" exited with status {d}", .{ editor, code }) catch "editor exited non-zero";
+                return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+            }
+        },
+        .signal, .stopped => |sig| {
+            const msg = std.fmt.allocPrint(arena, "editor \"{s}\" was killed by signal {s}", .{ editor, @tagName(sig) }) catch "editor killed by signal";
+            return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+        },
+        .unknown => |code| {
+            const msg = std.fmt.allocPrint(arena, "editor \"{s}\" exited abnormally ({d})", .{ editor, code }) catch "editor exited abnormally";
+            return .{ .fail = .{ .code = 1, .type_name = "editor_failed", .message = msg } };
+        },
+    }
+
+    // Validate whatever the editor left behind. The report shape (and the
+    // stdout channel) matches `config validate`; on failure the file stays on
+    // disk so the user can rerun `tau config edit` and fix the listed issues.
+    const cval = @import("configvalidate.zig");
+    const report = cval.validate(io, arena, path) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return .{ .fail = .{ .code = 110, .type_name = "internal_error", .message = "config validation failed" } };
+    };
+    if (!report.ok()) {
+        const out = if (mode == .text)
+            try cval.formatText(arena, report)
+        else
+            try cval.formatJson(arena, report);
+        return .{ .invalid = out };
+    }
+    return .{ .ok = try renderEditOk(arena, path, editor, created, mode) };
+}
+
+fn renderEditOk(arena: std.mem.Allocator, path: []const u8, editor: []const u8, created: bool, mode: cfgmod.OutputMode) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    if (mode == .text) {
+        try b.appendSlice(arena, path);
+        try b.appendSlice(arena, ": ok\n");
+        return b.toOwnedSlice(arena);
+    }
+    try b.appendSlice(arena, "{\"ok\":true,\"path\":");
+    try appendJsonStr(arena, &b, path);
+    try b.appendSlice(arena, ",\"editor\":");
+    try appendJsonStr(arena, &b, editor);
+    try b.appendSlice(arena, ",\"created\":");
+    try b.appendSlice(arena, if (created) "true" else "false");
+    try b.appendSlice(arena, ",\"valid\":true}\n");
+    return b.toOwnedSlice(arena);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+const testing = std.testing;
+
+fn testArena() std.heap.ArenaAllocator {
+    return std.heap.ArenaAllocator.init(testing.allocator);
+}
+
+/// Apply set/unset against an in-memory doc; return the new bytes.
+fn setOn(arena: std.mem.Allocator, bytes: []const u8, key: []const u8, token: []const u8) ![]u8 {
+    const kp = (parseKeyPath(arena, key, true)).ok;
+    const obj = try scanDoc(arena, bytes);
+    return applySet(arena, bytes, obj, kp, token);
+}
+
+fn unsetOn(arena: std.mem.Allocator, bytes: []const u8, key: []const u8) !?[]const u8 {
+    const kp = (parseKeyPath(arena, key, false)).ok;
+    return applyUnset(arena, .{ .bytes = bytes, .obj = try scanDoc(arena, bytes) }, kp);
+}
+
+test "scanDoc: parses members with comments and finds value spans" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const src =
+        \\{
+        \\  // leading comment
+        \\  "provider": "openai", /* inline */
+        \\  "stream": true,
+        \\  "keys": { "openai": "sk-x // not a comment" }
+        \\}
+    ;
+    const obj = try scanDoc(arena, src);
+    try testing.expectEqual(@as(usize, 3), obj.members.len);
+    const i = findMember(obj, "provider").?;
+    try testing.expectEqualStrings("\"openai\"", src[obj.members[i].value_start..obj.members[i].value_end]);
+    const j = findMember(obj, "stream").?;
+    try testing.expectEqualStrings("true", src[obj.members[j].value_start..obj.members[j].value_end]);
+}
+
+test "scanDoc: rejects non-object and trailing garbage" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    try testing.expectError(error.InvalidJson, scanDoc(arena, "[1,2]"));
+    try testing.expectError(error.InvalidJson, scanDoc(arena, "{} extra"));
+    try testing.expectError(error.InvalidJson, scanDoc(arena, "{\"a\":}"));
+}
+
+test "set: replaces an existing value and preserves comments" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const src = "{\n  // keep me\n  \"provider\": \"xiaomi\",\n  \"mode\": \"json\"\n}\n";
+    const out = try setOn(arena, src, "provider", "\"openai\"");
+    try testing.expectEqualStrings("{\n  // keep me\n  \"provider\": \"openai\",\n  \"mode\": \"json\"\n}\n", out);
+}
+
+test "set: inserts a new member with matching indentation" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const out = try setOn(arena, "{\n  \"provider\": \"xiaomi\"\n}\n", "mode", "\"text\"");
+    try testing.expectEqualStrings("{\n  \"provider\": \"xiaomi\",\n  \"mode\": \"text\"\n}\n", out);
+    // Single-line object stays single-line.
+    const out2 = try setOn(arena, "{\"a\":1}", "mode", "\"json\"");
+    try testing.expectEqualStrings("{\"a\":1, \"mode\": \"json\"}", out2);
+}
+
+test "set: fills an empty object and an empty file" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const out = try setOn(arena, "{}", "provider", "\"openai\"");
+    try testing.expectEqualStrings("{\n  \"provider\": \"openai\"\n}", out);
+}
+
+test "set: writes into keys.<provider>, creating or extending the map" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    // No keys object yet.
+    const out = try setOn(arena, "{\n  \"provider\": \"xiaomi\"\n}", "keys.openai", "\"sk-1\"");
+    try testing.expectEqualStrings("{\n  \"provider\": \"xiaomi\",\n  \"keys\": { \"openai\": \"sk-1\" }\n}", out);
+    // Extends an existing keys object.
+    const out2 = try setOn(arena, "{\n  \"keys\": {\n    \"openai\": \"sk-1\"\n  }\n}", "keys.deepseek", "\"sk-2\"");
+    try testing.expectEqualStrings("{\n  \"keys\": {\n    \"openai\": \"sk-1\",\n    \"deepseek\": \"sk-2\"\n  }\n}", out2);
+    // Replaces an existing entry.
+    const out3 = try setOn(arena, out2, "keys.openai", "\"sk-new\"");
+    try testing.expect(std.mem.indexOf(u8, out3, "\"openai\": \"sk-new\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out3, "sk-2") != null);
+    // keys present but not an object.
+    try testing.expectError(error.KeysNotObject, setOn(arena, "{\"keys\": 5}", "keys.openai", "\"sk\""));
+}
+
+test "unset: removes members and commas correctly" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const src = "{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}\n";
+    // First member (trailing comma).
+    try testing.expectEqualStrings("{\n  \"b\": 2,\n  \"c\": 3\n}\n", (try unsetOn(arena, src, "a")).?);
+    // Middle member.
+    try testing.expectEqualStrings("{\n  \"a\": 1,\n  \"c\": 3\n}\n", (try unsetOn(arena, src, "b")).?);
+    // Last member (leading comma).
+    try testing.expectEqualStrings("{\n  \"a\": 1,\n  \"b\": 2\n}\n", (try unsetOn(arena, src, "c")).?);
+    // Only member -> empty object.
+    try testing.expectEqualStrings("{\n}\n", (try unsetOn(arena, "{\n  \"a\": 1\n}\n", "a")).?);
+    try testing.expectEqualStrings("{}", (try unsetOn(arena, "{\"a\":1}", "a")).?);
+    // Single line, first of two.
+    try testing.expectEqualStrings("{\"b\":2}", (try unsetOn(arena, "{\"a\":1,\"b\":2}", "a")).?);
+    // Single line, last of two.
+    try testing.expectEqualStrings("{\"a\":1}", (try unsetOn(arena, "{\"a\":1,\"b\":2}", "b")).?);
+    // Missing key -> null.
+    try testing.expectEqual(@as(?[]u8, null), try unsetOn(arena, src, "zzz"));
+}
+
+test "unset: removes every duplicate occurrence" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const out = (try unsetOn(arena, "{\"a\":1,\"a\":2,\"b\":3}", "a")).?;
+    try testing.expectEqualStrings("{\"b\":3}", out);
+}
+
+test "unset: keys.<provider> leaves a valid object" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const src = "{\n  \"keys\": {\n    \"openai\": \"sk-1\",\n    \"deepseek\": \"sk-2\"\n  }\n}";
+    const out = (try unsetOn(arena, src, "keys.openai")).?;
+    try testing.expectEqualStrings("{\n  \"keys\": {\n    \"deepseek\": \"sk-2\"\n  }\n}", out);
+    // Last entry -> empty keys object (still valid config).
+    const out2 = (try unsetOn(arena, src, "keys.deepseek")).?;
+    const out3 = (try unsetOn(arena, out2, "keys.openai")).?;
+    try testing.expectEqualStrings("{\n  \"keys\": {\n  }\n}", out3);
+}
+
+test "parseKeyPath: dotted addressing rules" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    try testing.expect((parseKeyPath(arena, "provider", true)) == .ok);
+    try testing.expectEqualStrings("openai", (parseKeyPath(arena, "keys.openai", false)).ok.keys_entry);
+    try testing.expect((parseKeyPath(arena, "bogus", false)) == .ok); // get/unset allow unknown keys
+    try testing.expect((parseKeyPath(arena, "bogus", true)) == .fail); // set is schema-checked
+    try testing.expect((parseKeyPath(arena, "a.b.c", false)) == .fail);
+    try testing.expect((parseKeyPath(arena, "other.x", false)) == .fail);
+    try testing.expect((parseKeyPath(arena, "keys.", false)) == .fail);
+}
+
+test "coerceValue: type coercion mirrors config validate" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const ok = struct {
+        fn get(r: Coerced) []const u8 {
+            return switch (r) {
+                .ok => |t| t,
+                .fail => |f| @panic(f.message),
+            };
+        }
+    }.get;
+    try testing.expectEqualStrings("\"text\"", ok(try coerceValue(arena, .{ .field = "mode" }, "text")));
+    try testing.expectEqualStrings("true", ok(try coerceValue(arena, .{ .field = "stream" }, "true")));
+    try testing.expectEqualStrings("4096", ok(try coerceValue(arena, .{ .field = "max_tokens" }, "4096")));
+    try testing.expectEqualStrings("0.5", ok(try coerceValue(arena, .{ .field = "temperature" }, "0.5")));
+    try testing.expectEqualStrings("\"sk-1\"", ok(try coerceValue(arena, .{ .keys_entry = "openai" }, "sk-1")));
+
+    const fails = struct {
+        fn is(r: Coerced) bool {
+            return r == .fail;
+        }
+    }.is;
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "provider" }, "nope")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "mode" }, "yaml")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "stream" }, "yes")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "max_tokens" }, "-1")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "max_tokens" }, "9999999999")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "compact_threshold" }, "1.5")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "temperature" }, "nan")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "api_key" }, "")));
+    try testing.expect(fails(try coerceValue(arena, .{ .keys_entry = "notaprovider" }, "sk")));
+    try testing.expect(fails(try coerceValue(arena, .{ .field = "keys" }, "{\"bogus\":\"x\"}")));
+    try testing.expect((try coerceValue(arena, .{ .field = "keys" }, "{\"openai\":\"x\"}")) == .ok);
+}
+
+test "lookupValue: finds values incl. inside keys (comments tolerated)" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    const src = "{\n  \"keys\": { // per-provider\n    \"openai\": \"sk-x\"\n  }\n}";
+    const obj = try scanDoc(arena, src);
+    const P = struct { bytes: []const u8, obj: Obj };
+    const slice = (try lookupValue(arena, P{ .bytes = src, .obj = obj }, .{ .keys_entry = "openai" })).?;
+    try testing.expectEqualStrings("\"sk-x\"", slice);
+}
+
+test "writeAtomic: writes a file and preserves content" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/config.json", .{tmp.sub_path[0..]});
+    try writeAtomic(testing.io, arena, path, "{\n  \"a\": 1\n}\n");
+    const back = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, arena, .unlimited);
+    try testing.expectEqualStrings("{\n  \"a\": 1\n}\n", back);
+}
+
+test "editorCommand: TAU_EDITOR > VISUAL > EDITOR > platform default" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var env = std.process.Environ.Map.init(arena);
+    try testing.expectEqualStrings(if (builtin.os.tag == .windows) "notepad" else "vi", editorCommand(&env));
+
+    try env.put("EDITOR", "ed");
+    try env.put("VISUAL", "vis");
+    try testing.expectEqualStrings("vis", editorCommand(&env));
+    try env.put("TAU_EDITOR", "tau-ed");
+    try testing.expectEqualStrings("tau-ed", editorCommand(&env));
+    // Empty values are skipped.
+    try env.put("TAU_EDITOR", "");
+    try testing.expectEqualStrings("vis", editorCommand(&env));
+}
+
+test "runEditor: seeds the init scaffold, runs the editor, reports ok" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // sh -c is POSIX
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/nested/config.json", .{tmp.sub_path[0..]});
+
+    var env = std.process.Environ.Map.init(arena);
+    try env.put("TAU_EDITOR", "true"); // exits 0, leaves the scaffold untouched
+    const outcome = try runEditor(testing.io, arena, path, &env, .json);
+    const out = switch (outcome) {
+        .ok => |s| s,
+        .invalid => |s| @panic(s),
+        .fail => |f| @panic(f.message),
+    };
+    try testing.expect(std.mem.indexOf(u8, out, "\"created\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"valid\":true") != null);
+    // The scaffold on disk is the commented JSONC starter.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, arena, .unlimited);
+    try testing.expect(std.mem.indexOf(u8, bytes, "//") != null);
+    try testing.expect(std.mem.indexOf(u8, bytes, "\"provider\"") != null);
+}
+
+test "runEditor: invalid save reports issues on stdout payload with did-you-mean" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/config.json", .{tmp.sub_path[0..]});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = "{}\n" });
+
+    var env = std.process.Environ.Map.init(arena);
+    // "Editor" that overwrites the config with a misspelled key.
+    try env.put("TAU_EDITOR", "printf '{\"proivder\":\"openai\"}' >");
+    const outcome = try runEditor(testing.io, arena, path, &env, .json);
+    const out = switch (outcome) {
+        .invalid => |s| s,
+        .ok => |s| @panic(s),
+        .fail => |f| @panic(f.message),
+    };
+    try testing.expect(std.mem.indexOf(u8, out, "\"ok\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "not a tau config key") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "did you mean \\\"provider\\\"?") != null);
+    // The bad edit stays on disk — the user reruns edit/validate to fix it.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, arena, .unlimited);
+    try testing.expectEqualStrings("{\"proivder\":\"openai\"}", bytes);
+}
+
+test "runEditor: editor exit non-zero is an editor_failed envelope" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}/config.json", .{tmp.sub_path[0..]});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = "{}\n" });
+
+    var env = std.process.Environ.Map.init(arena);
+    try env.put("TAU_EDITOR", "false");
+    const outcome = try runEditor(testing.io, arena, path, &env, .json);
+    switch (outcome) {
+        .fail => |f| {
+            try testing.expectEqual(@as(u8, 1), f.code);
+            try testing.expectEqualStrings("editor_failed", f.type_name);
+            try testing.expect(std.mem.indexOf(u8, f.message, "status 1") != null);
+        },
+        else => @panic("expected editor_failed"),
+    }
+}
+
+test "runEditor: no path and no HOME is an argument error" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+    var env = std.process.Environ.Map.init(arena);
+    const outcome = try runEditor(testing.io, arena, null, &env, .json);
+    switch (outcome) {
+        .fail => |f| try testing.expectEqual(@as(u8, 80), f.code),
+        else => @panic("expected invalid_argument"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property / round-trip tests — drive `run` end-to-end (set → get → unset)
+// against a temp HOME so the same ~/.config/tau/config.json resolution as the
+// CLI is under test. Harness mirrors init.zig's InitHome.
+// ---------------------------------------------------------------------------
+
+/// Throwaway HOME rooted at a fresh tmp dir; env map carries only HOME so
+/// `run`'s path resolution ($HOME/.config/tau/config.json) is exercised.
+const EditHome = struct {
+    tmp: testing.TmpDir,
+    env: std.process.Environ.Map,
+    home: []const u8,
+
+    fn init(arena: std.mem.Allocator) !EditHome {
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const home = try std.fmt.allocPrint(arena, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+        var env = std.process.Environ.Map.init(arena);
+        try env.put("HOME", home);
+        return .{ .tmp = tmp, .env = env, .home = home };
+    }
+
+    fn configPath(self: *const EditHome, arena: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(arena, "{s}/.config/tau/config.json", .{self.home});
+    }
+
+    fn readConfig(self: *const EditHome, arena: std.mem.Allocator) ?[]u8 {
+        const p = self.configPath(arena) catch return null;
+        return std.Io.Dir.cwd().readFileAlloc(testing.io, p, arena, .unlimited) catch null;
+    }
+
+    fn sub(self: *EditHome, arena: std.mem.Allocator, s: Sub, key: []const u8, value: ?[]const u8, raw: bool) !Outcome {
+        return run(testing.io, arena, s, key, value, null, &self.env, raw, .json);
+    }
+
+    fn deinit(self: *EditHome) void {
+        self.tmp.cleanup();
+    }
+};
+
+fn expectOk(outcome: Outcome) ![]const u8 {
+    switch (outcome) {
+        .ok => |s| return s,
+        .fail => |f| {
+            std.debug.print("unexpected fail code={d} type={s}: {s}\n", .{ f.code, f.type_name, f.message });
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+
+fn expectFailCode(outcome: Outcome, code: u8) !void {
+    switch (outcome) {
+        .ok => |s| {
+            std.debug.print("expected fail {d}, got ok: {s}\n", .{ code, s });
+            return error.TestUnexpectedResult;
+        },
+        .fail => |f| try testing.expectEqual(code, f.code),
+    }
+}
+
+/// Structural JSON equality: objects compare order-insensitively, numbers
+/// compare across the integer/float split so `"5"` and `"5.0"` from different
+/// code paths still match.
+fn jsonEq(a: std.json.Value, b: std.json.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) {
+        if (a == .integer and b == .float)
+            return @as(f64, @floatFromInt(a.integer)) == b.float;
+        if (a == .float and b == .integer)
+            return a.float == @as(f64, @floatFromInt(b.integer));
+        return false;
+    }
+    return switch (a) {
+        .null => true,
+        .bool => |x| x == b.bool,
+        .integer => |x| x == b.integer,
+        .float => |x| x == b.float,
+        .number_string => |x| std.mem.eql(u8, x, b.number_string),
+        .string => |x| std.mem.eql(u8, x, b.string),
+        .array => |x| blk: {
+            if (x.items.len != b.array.items.len) break :blk false;
+            for (x.items, b.array.items) |av, bv| {
+                if (!jsonEq(av, bv)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |x| blk: {
+            if (x.count() != b.object.count()) break :blk false;
+            var it = x.iterator();
+            while (it.next()) |e| {
+                const bv = b.object.get(e.key_ptr.*) orelse break :blk false;
+                if (!jsonEq(e.value_ptr.*, bv)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
+/// Parse a `get`/`set` success payload and hand back its `"value"` member.
+fn payloadValue(arena: std.mem.Allocator, payload: []const u8) !std.json.Value {
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, arena, payload, .{});
+    return v.object.get("value") orelse error.TestUnexpectedResult;
+}
+
+/// Parse the config file on disk and return the member value for `key`
+/// (top-level only — `keys.<p>` handled by `fileKeysEntry`).
+fn fileMember(arena: std.mem.Allocator, th: *const EditHome, key: []const u8) !?std.json.Value {
+    const bytes = th.readConfig(arena) orelse return null;
+    const stripped = configfile.stripComments(arena, bytes) catch bytes;
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch return error.TestUnexpectedResult;
+    if (v != .object) return error.TestUnexpectedResult;
+    return v.object.get(key);
+}
+
+fn fileKeysEntry(arena: std.mem.Allocator, th: *const EditHome, pname: []const u8) !?std.json.Value {
+    const keys = (try fileMember(arena, th, "keys")) orelse return null;
+    if (keys != .object) return error.TestUnexpectedResult;
+    return keys.object.get(pname);
+}
+
+/// The raw CLI value `config set` accepts for each schema field.
+fn validRawFor(comptime f: std.builtin.Type.StructField) []const u8 {
+    if (comptime std.mem.eql(u8, f.name, "provider")) return "openai";
+    if (comptime std.mem.eql(u8, f.name, "mode")) return "text";
+    if (comptime std.mem.eql(u8, f.name, "keys")) return "{\"openai\":\"sk-rt-a\",\"deepseek\":\"sk-rt-b\"}";
+    return switch (comptime fieldKind(f.type)) {
+        .string => "rt-value",
+        .boolean => "true",
+        .integer => "123",
+        .number => "0.25",
+        .any_json => "{}",
+    };
+}
+
+test "property: every schema field round-trips set → get → unset in a temp HOME" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    // get on a missing file reports not_found (exit 1), never an envelope bug.
+    try expectFailCode(try th.sub(arena, .get, "provider", null, false), 1);
+
+    // Set every field, then confirm each reads back through get and through
+    // the file itself. get uses --raw so secret fields compare verbatim.
+    inline for (file_fields) |f| {
+        const raw = comptime validRawFor(f);
+        const kp = (parseKeyPath(arena, f.name, true)).ok;
+        const expected = try std.json.parseFromSliceLeaky(std.json.Value, arena, (try coerceValue(arena, kp, raw)).ok, .{});
+
+        const set_out = try expectOk(try th.sub(arena, .set, f.name, raw, false));
+        try testing.expect(std.mem.indexOf(u8, set_out, "\"ok\":true") != null);
+        try testing.expect(std.mem.indexOf(u8, set_out, "\"key\":\"" ++ f.name ++ "\"") != null);
+
+        const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, f.name, null, true)));
+        try testing.expect(jsonEq(expected, got));
+
+        const on_disk = (try fileMember(arena, &th, f.name)) orelse return error.TestUnexpectedResult;
+        try testing.expect(jsonEq(expected, on_disk));
+    }
+
+    // The whole file is one JSON object holding exactly the schema fields.
+    const full = (try fileMember(arena, &th, "provider")) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("openai", full.string);
+
+    // Unset each field: the key is gone while the remaining fields survive.
+    var remaining: usize = file_fields.len;
+    inline for (file_fields) |f| {
+        const unset_out = try expectOk(try th.sub(arena, .unset, f.name, null, false));
+        try testing.expect(std.mem.indexOf(u8, unset_out, "\"removed\":true") != null);
+        try expectFailCode(try th.sub(arena, .get, f.name, null, true), 1);
+        remaining -= 1;
+
+        const bytes = th.readConfig(arena) orelse return error.TestUnexpectedResult;
+        const stripped = configfile.stripComments(arena, bytes) catch bytes;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(u32, @intCast(remaining)), v.object.count());
+    }
+}
+
+test "property: keys.<provider> round-trips for every registered provider" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    for (cfgmod.providers) |p| {
+        const key = try std.fmt.allocPrint(arena, "keys.{s}", .{p.name});
+        const secret = try std.fmt.allocPrint(arena, "sk-rt-{s}", .{p.name});
+
+        _ = try expectOk(try th.sub(arena, .set, key, secret, false));
+        // Earlier entries survive each new set (nested-map preservation).
+        const stored = (try fileKeysEntry(arena, &th, p.name)) orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(secret, stored.string);
+
+        const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, key, null, true)));
+        try testing.expectEqualStrings(secret, got.string);
+
+        // Default get redacts — the secret never reaches stdout.
+        const masked = try expectOk(try th.sub(arena, .get, key, null, false));
+        try testing.expect(std.mem.indexOf(u8, masked, secret) == null);
+        try testing.expect(std.mem.indexOf(u8, masked, "\"redacted\":true") != null);
+    }
+
+    for (cfgmod.providers) |p| {
+        const key = try std.fmt.allocPrint(arena, "keys.{s}", .{p.name});
+        _ = try expectOk(try th.sub(arena, .unset, key, null, false));
+        try expectFailCode(try th.sub(arena, .get, key, null, true), 1);
+        // The keys object itself (possibly empty) stays a valid object.
+        if (try fileMember(arena, &th, "keys")) |kv| try testing.expect(kv == .object);
+    }
+}
+
+test "set/unset preserve unrelated members — arrays, nested objects, comments" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    const arr_literal = "[\"--fast\", \"a,b\", \"c}d\", {\"deep\": [1, {\"x\": \"y\"}]}]";
+    const seeded = "{\n  // user comment\n  \"plugin_flags\": " ++ arr_literal ++ ",\n  \"extra\": {\"list\": [[true, null], \"s\\\"q\"], \"n\": -3.5},\n  \"provider\": \"xiaomi\",\n  \"trailing\": \"keep\"\n}\n";
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = try th.configPath(arena), .data = seeded });
+
+    // get returns array values verbatim for non-schema members.
+    const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, "plugin_flags", null, false)));
+    const want = try std.json.parseFromSliceLeaky(std.json.Value, arena, arr_literal, .{});
+    try testing.expect(jsonEq(want, got));
+
+    // A set on a schema key leaves the unrelated members byte-identical.
+    _ = try expectOk(try th.sub(arena, .set, "mode", "text", false));
+    const after_set = th.readConfig(arena).?;
+    try testing.expect(std.mem.indexOf(u8, after_set, "\"plugin_flags\": " ++ arr_literal) != null);
+    try testing.expect(std.mem.indexOf(u8, after_set, "// user comment") != null);
+    try testing.expect(std.mem.indexOf(u8, after_set, "\"extra\": {\"list\": [[true, null], \"s\\\"q\"], \"n\": -3.5}") != null);
+
+    // unset removes an array-valued member cleanly and keeps the rest valid.
+    _ = try expectOk(try th.sub(arena, .unset, "plugin_flags", null, false));
+    try expectFailCode(try th.sub(arena, .get, "plugin_flags", null, false), 1);
+    const after_unset = th.readConfig(arena).?;
+    try testing.expect(std.mem.indexOf(u8, after_unset, "plugin_flags") == null);
+    try testing.expect(std.mem.indexOf(u8, after_unset, "\"trailing\": \"keep\"") != null);
+    const still = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, after_unset) catch after_unset, .{}) catch return error.TestUnexpectedResult;
+    try testing.expect(still == .object);
+}
+
+test "set rejects array/non-object values for schema fields without touching the file" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    _ = try expectOk(try th.sub(arena, .set, "provider", "openai", false));
+    const before = th.readConfig(arena).?;
+
+    try expectFailCode(try th.sub(arena, .set, "keys", "[\"openai\"]", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "keys", "{\"openai\":[1,2]}", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "keys", "{\"nope\":\"sk-x\"}", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "stream", "[true]", false), 80);
+    try expectFailCode(try th.sub(arena, .set, "provider", "[\"openai\"]", false), 80);
+    try testing.expectEqualStrings(before, th.readConfig(arena).?);
+}
+
+test "property: random set/unset sequence keeps the file valid and consistent" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    var prng = std.Random.DefaultPrng.init(0x7a9);
+    const rnd = prng.random();
+
+    // Key pool mixes scalar fields and nested keys.<provider> entries.
+    const keys_pool = [_][]const u8{ "provider", "model", "mode", "stream", "thinking", "temperature", "max_tokens", "timeout_ms", "compact_threshold", "keys.openai", "keys.deepseek", "keys.xiaomi" };
+    const providers = [_][]const u8{ "openai", "deepseek", "xiaomi" };
+
+    // Model of what should be stored, keyed by the dotted CLI path.
+    var model = std.StringHashMap(std.json.Value).init(arena);
+
+    var i: usize = 0;
+    while (i < 160) : (i += 1) {
+        const key = keys_pool[rnd.intRangeLessThan(usize, 0, keys_pool.len)];
+        const do_set = rnd.boolean();
+        if (do_set) {
+            const raw: []const u8 = blk: {
+                if (std.mem.eql(u8, key, "provider")) break :blk providers[rnd.intRangeLessThan(usize, 0, providers.len)];
+                if (std.mem.eql(u8, key, "mode")) break :blk if (rnd.boolean()) "text" else "json";
+                if (std.mem.eql(u8, key, "stream") or std.mem.eql(u8, key, "thinking")) break :blk if (rnd.boolean()) "true" else "false";
+                if (std.mem.eql(u8, key, "temperature") or std.mem.eql(u8, key, "compact_threshold"))
+                    break :blk try std.fmt.allocPrint(arena, "0.{d}", .{rnd.intRangeLessThan(u8, 1, 10)});
+                if (std.mem.eql(u8, key, "max_tokens") or std.mem.eql(u8, key, "timeout_ms"))
+                    break :blk try std.fmt.allocPrint(arena, "{d}", .{rnd.intRangeLessThan(u32, 1, 10000)});
+                if (std.mem.startsWith(u8, key, "keys."))
+                    break :blk try std.fmt.allocPrint(arena, "sk-r{d}", .{rnd.intRangeLessThan(u32, 0, 1000)});
+                break :blk try std.fmt.allocPrint(arena, "m-{d}", .{rnd.intRangeLessThan(u32, 0, 1000)});
+            };
+            _ = try expectOk(try th.sub(arena, .set, key, raw, false));
+            const kp = (parseKeyPath(arena, key, true)).ok;
+            const tok = (try coerceValue(arena, kp, raw)).ok;
+            try model.put(key, try std.json.parseFromSliceLeaky(std.json.Value, arena, tok, .{}));
+        } else {
+            if (model.contains(key)) {
+                _ = try expectOk(try th.sub(arena, .unset, key, null, false));
+                _ = model.remove(key);
+            } else {
+                try expectFailCode(try th.sub(arena, .unset, key, null, false), 1);
+            }
+        }
+
+        // Invariant after every op: the file is still one strict-JSON object.
+        const bytes = th.readConfig(arena) orelse return error.TestUnexpectedResult;
+        const v = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, bytes) catch bytes, .{}) catch return error.TestUnexpectedResult;
+        try testing.expect(v == .object);
+    }
+
+    // Final consistency: every key in the pool matches the model through get.
+    for (keys_pool) |key| {
+        if (model.get(key)) |want| {
+            const got = try payloadValue(arena, try expectOk(try th.sub(arena, .get, key, null, true)));
+            try testing.expect(jsonEq(want, got));
+        } else {
+            try expectFailCode(try th.sub(arena, .get, key, null, true), 1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Did-you-mean + line/column error enrichment (task #322)
+// ---------------------------------------------------------------------------
+
+fn failMessage(outcome: Outcome) !Fail {
+    switch (outcome) {
+        .ok => |s| {
+            std.debug.print("expected fail, got ok: {s}\n", .{s});
+            return error.TestUnexpectedResult;
+        },
+        .fail => |f| return f,
+    }
+}
+
+test "parseKeyPath: misspelled field suggests the nearest config key" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    // Transposition (d=2) is inside the suggestion boundary.
+    const near = parseKeyPath(arena, "proivder", true).fail;
+    try testing.expectEqual(@as(u8, 80), near.code);
+    try testing.expect(std.mem.indexOf(u8, near.message, "did you mean \"provider\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, near.message, "valid keys:") == null);
+
+    // d=3 is outside the boundary — the full key list is the fallback.
+    const far = parseKeyPath(arena, "prvdr", true).fail;
+    try testing.expect(std.mem.indexOf(u8, far.message, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, far.message, "valid keys:") != null);
+
+    // A near-miss `keys` parent points at keys.<provider>.
+    const dotted = parseKeyPath(arena, "key.openai", true).fail;
+    try testing.expect(std.mem.indexOf(u8, dotted.message, "did you mean \"keys.openai\"?") != null);
+
+    // get/unset accept unknown top-level keys (they may exist in the file).
+    try testing.expect(parseKeyPath(arena, "proivder", false) == .ok);
+}
+
+test "coerceValue: provider typos suggest the nearest provider" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    const keys_entry = parseKeyPath(arena, "keys.opnai", true).ok;
+    const f1 = (try coerceValue(arena, keys_entry, "sk-x")).fail;
+    try testing.expect(std.mem.indexOf(u8, f1.message, "did you mean \"openai\"?") != null);
+
+    const provider_field = parseKeyPath(arena, "provider", true).ok;
+    const f2 = (try coerceValue(arena, provider_field, "opnai")).fail;
+    try testing.expect(std.mem.indexOf(u8, f2.message, "did you mean \"openai\"?") != null);
+
+    // Far-off names fall back to the full provider list.
+    const f3 = (try coerceValue(arena, provider_field, "zzzcorp")).fail;
+    try testing.expect(std.mem.indexOf(u8, f3.message, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, f3.message, "valid providers:") != null);
+}
+
+test "run: set/get/unset surface did-you-mean hints and line/column" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data =
+        \\{
+        \\  "proivder": "openai",
+        \\  "keys": { "opnai": "sk-x" }
+        \\}
+    });
+
+    // set on a misspelled key: did-you-mean the real field.
+    const set_typo = try failMessage(try th.sub(arena, .set, "proivder", "x", false));
+    try testing.expectEqual(@as(u8, 80), set_typo.code);
+    try testing.expect(std.mem.indexOf(u8, set_typo.message, "did you mean \"provider\"?") != null);
+
+    // get of a valid-but-absent key when the file holds the typo'd member:
+    // the suggestion names the file's actual key.
+    const get_file_typo = try failMessage(try th.sub(arena, .get, "provider", null, false));
+    try testing.expectEqual(@as(u8, 1), get_file_typo.code);
+    try testing.expect(std.mem.indexOf(u8, get_file_typo.message, "did you mean \"proivder\"?") != null);
+
+    // get of a typo'd key resolves the real member in the file.
+    _ = try expectOk(try th.sub(arena, .get, "proivder", null, false));
+
+    // get keys.<typo> suggests the member actually present under keys.
+    const get_keys = try failMessage(try th.sub(arena, .get, "keys.openai", null, false));
+    try testing.expect(std.mem.indexOf(u8, get_keys.message, "did you mean \"keys.opnai\"?") != null);
+
+    // A correctly-spelled but absent key earns no hint — neither a sibling
+    // field name nor a sibling provider is "what was meant".
+    const absent = try failMessage(try th.sub(arena, .get, "model", null, false));
+    try testing.expect(std.mem.indexOf(u8, absent.message, "did you mean") == null);
+    const absent_provider = try failMessage(try th.sub(arena, .get, "keys.deepseek", null, false));
+    try testing.expect(std.mem.indexOf(u8, absent_provider.message, "did you mean") == null);
+
+    // unset mirrors get.
+    const unset_typo = try failMessage(try th.sub(arena, .unset, "provider", null, false));
+    try testing.expect(std.mem.indexOf(u8, unset_typo.message, "did you mean \"proivder\"?") != null);
+}
+
+test "run: malformed config file reports line/column in the invalid_config error" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data = "{\n  \"provider\": \"openai\",\n  bad\n}" });
+
+    const f = try failMessage(try th.sub(arena, .get, "provider", null, false));
+    try testing.expectEqual(@as(u8, 1), f.code);
+    try testing.expectEqualStrings("invalid_config", f.type_name);
+    try testing.expect(std.mem.indexOf(u8, f.message, "invalid JSON at line 3, column") != null);
+
+    // set refuses to touch the broken file with the same positioned error.
+    const fs = try failMessage(try th.sub(arena, .set, "mode", "text", false));
+    try testing.expect(std.mem.indexOf(u8, fs.message, "invalid JSON at line 3, column") != null);
+}
+
+test "migrateRenamedKeys: renames in place, preserving comments and order" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const res = try migrateRenamedKeys(arena,
+        \\{
+        \\  // leading comment
+        \\  "provider": "openai",
+        \\  "compact_keep_recent": 8000, // trailing note
+        \\  "mode": "json"
+        \\}
+    );
+    try testing.expect(res.migrated());
+    try testing.expectEqual(@as(usize, 1), res.renamed);
+    try testing.expectEqual(@as(usize, 0), res.removed);
+    try testing.expectEqualStrings(
+        \\{
+        \\  // leading comment
+        \\  "provider": "openai",
+        \\  "compact_keep_recent_tokens": 8000, // trailing note
+        \\  "mode": "json"
+        \\}
+    , res.out);
+    try testing.expect(std.mem.indexOf(u8, res.changes, "\"compact_keep_recent\" -> \"compact_keep_recent_tokens\"") != null);
+}
+
+test "migrateRenamedKeys: canonical already present removes the dead member" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const res = try migrateRenamedKeys(arena,
+        \\{
+        \\  "compact_keep_recent": 8000,
+        \\  "mode": "text",
+        \\  "compact_keep_recent_tokens": 4000
+        \\}
+    );
+    try testing.expect(res.migrated());
+    try testing.expectEqual(@as(usize, 0), res.renamed);
+    try testing.expectEqual(@as(usize, 1), res.removed);
+    try testing.expect(std.mem.indexOf(u8, res.out, "compact_keep_recent\"") == null);
+    try testing.expect(std.mem.indexOf(u8, res.out, "\"compact_keep_recent_tokens\": 4000") != null);
+    try testing.expect(std.mem.indexOf(u8, res.out, "\"mode\": \"text\"") != null);
+}
+
+test "migrateRenamedKeys: duplicate deprecated members keep last-wins value" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // Two "compact_keep_recent" members: the loader's last-wins rule makes the
+    // second effective — migration must keep its value, not the shadowed one.
+    const res = try migrateRenamedKeys(arena, "{ \"compact_keep_recent\": 1, \"compact_keep_recent\": 2 }");
+    try testing.expect(std.mem.indexOf(u8, res.out, "\"compact_keep_recent_tokens\": 2") != null);
+    try testing.expect(std.mem.indexOf(u8, res.out, "compact_keep_recent\"") == null);
+}
+
+test "migrateRenamedKeys: nothing to do returns the input verbatim" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const res = try migrateRenamedKeys(arena, "{ \"provider\": \"openai\" }");
+    try testing.expect(!res.migrated());
+    try testing.expectEqualStrings("{ \"provider\": \"openai\" }", res.out);
+
+    try testing.expectError(error.InvalidJson, migrateRenamedKeys(arena, "{ not json"));
+}
+
+test "parseKeyPath: config set rejects a deprecated spelling with the canonical name" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const r = parseKeyPath(arena, "compact_keep_recent", true);
+    try testing.expect(r == .fail);
+    try testing.expectEqual(@as(u8, 80), r.fail.code);
+    try testing.expect(std.mem.indexOf(u8, r.fail.message, "compact_keep_recent_tokens") != null);
+
+    // get/unset (non-strict) still accept the path — manual migration needs it.
+    const g = parseKeyPath(arena, "compact_keep_recent", false);
+    try testing.expect(g == .ok);
+}
