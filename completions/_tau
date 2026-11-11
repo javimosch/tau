@@ -339,6 +339,7 @@ _tau() {
                         'doctor.auth_probe:doctor check'
                         'doctor.client_wiring:doctor check'
                         'doctor.client_permissions:doctor check'
+                        'doctor.client_stale_binary:doctor check'
                         'doctor.provider_probes:doctor check'
                         'doctor.update_available:doctor check'
                         'doctor.selftest:doctor check'

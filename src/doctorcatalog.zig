@@ -123,6 +123,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself",
     },
     .{
+        .name = "client_stale_binary",
+        .fails_when = "a client config's `command` path resolves to a different file than the running tau binary — the client keeps spawning the stale install (warn only; MCP-bridge clients are checked through the shared mcacp bridge config)",
+        .remediation = "run `tau setup --client <name>` or `tau doctor --fix` for a corrected snippet to merge — the settings entry is never rewritten in place",
+    },
+    .{
         .name = "provider_probes",
         .fails_when = "placeholder row for the opt-in sweep — skipped unless --probe is passed",
         .remediation = "run `tau doctor --probe` to live-verify connectivity and credentials for every registered provider",

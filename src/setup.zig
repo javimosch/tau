@@ -1195,6 +1195,70 @@ fn inspectBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, p
     return .{ .state = .ok, .path = path };
 }
 
+/// One tau-spawning command found in a client config — a direct ACP
+/// client's "tau" entry `command`, or the shared mcacp bridge config's
+/// `agent_servers.tau.command` (reported once with source "mcacp").
+pub const WiredCommand = struct {
+    /// What invokes the command: the client name, or "mcacp" for the shared
+    /// bridge config every MCP-bridge client funnels through.
+    source: []const u8,
+    /// The settings file carrying the entry.
+    path: []const u8,
+    /// The raw "command" string from the entry.
+    command: []const u8,
+};
+
+/// Parse a JSON/JSONC client settings file and return the named entry
+/// object under the named section. Null when the file is missing,
+/// unreadable, unparseable, or carries no such entry — those distinctions
+/// are the client_<name> wiring row's job, not the caller's.
+fn entryFromFile(io: std.Io, arena: std.mem.Allocator, path: []const u8, section_key: []const u8, entry_name: []const u8) ?std.json.ObjectMap {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch return null;
+    const stripped = configfile.stripComments(arena, bytes) catch return null;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch return null;
+    if (parsed != .object) return null;
+    const section = parsed.object.get(section_key) orelse return null;
+    if (section != .object) return null;
+    return switch (section.object.get(entry_name) orelse return null) {
+        .object => |o| o,
+        else => null,
+    };
+}
+
+/// Collect every command string a client config uses to spawn tau: each
+/// detected direct-ACP client's "tau" entry `command`, plus — once, since
+/// every MCP-bridge client shares it — the mcacp bridge config's
+/// `agent_servers.tau.command`. Snippet-only clients (nvim's Lua, Emacs's
+/// elisp, the YAML/TOML MCP configs) can't be inspected, and bridge client
+/// files launch the bridge rather than tau, so neither contributes an
+/// entry. Missing/unparseable files and entries with no "command" string
+/// are skipped — the client_<name> wiring rows already flag them. Used by
+/// `tau doctor`'s stale-binary check.
+pub fn wiredTauCommands(io: std.Io, arena: std.mem.Allocator, home: []const u8) ![]WiredCommand {
+    var list: std.ArrayList(WiredCommand) = .empty;
+    for (all_clients) |k| {
+        if (k == .nvim or k == .emacs or k == .goose or k == .continue_ or k == .codex) continue;
+        if (clientUsesBridge(k)) continue;
+        if (!dirExists(io, try clientConfigDir(arena, home, k))) continue;
+        const path = (try clientSettingsPath(arena, home, k)).?;
+        const e = entryFromFile(io, arena, path, clientSectionKey(k), "tau") orelse continue;
+        const cmd = e.get("command");
+        if (cmd == null or cmd.? != .string) continue;
+        try list.append(arena, .{ .source = clientName(k), .path = path, .command = cmd.?.string });
+    }
+    // The shared mcacp bridge config is inspected whenever the file exists:
+    // its agent_servers.tau entry is the command every wired MCP-bridge
+    // client actually spawns — including the manual-only ones (goose,
+    // continue, codex) whose own configs can't be parsed.
+    const bpath = try mcacpConfigPath(arena, home);
+    if (entryFromFile(io, arena, bpath, "agent_servers", "tau")) |e| {
+        const cmd = e.get("command");
+        if (cmd != null and cmd.? == .string)
+            try list.append(arena, .{ .source = "mcacp", .path = bpath, .command = cmd.?.string });
+    }
+    return list.toOwnedSlice(arena);
+}
+
 /// The `tau doctor --fix` remediation for one client. Mirrors `tau setup
 /// --client`: a missing settings file gets a fresh minimal one (the wiring
 /// is actually repaired); anything else gets the paste-ready snippet under
@@ -3047,6 +3111,46 @@ test "opencode bridge: mcp.local entry writes and classifies" {
     const wrong_shape = try inspectClientWiring(io, a, home, .opencode);
     try testing.expectEqual(WiringState.stale, wrong_shape.state);
     try testing.expect(std.mem.indexOf(u8, wrong_shape.reason.?, "command") != null);
+}
+
+test "wiredTauCommands: direct entries plus the shared bridge, detection-gated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // Nothing installed -> empty.
+    try testing.expectEqual(@as(usize, 0), (try wiredTauCommands(io, a, home)).len);
+
+    // A direct client (zed) contributes its "tau" entry command.
+    const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, zed_dir);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/settings.json", .{zed_dir}),
+        "{\"agent_servers\": {\"tau\": {\"type\":\"custom\",\"command\":\"/opt/tau-old\",\"args\":[\"acp\",\"serve\"]}}}", false);
+    var wired = try wiredTauCommands(io, a, home);
+    try testing.expectEqual(@as(usize, 1), wired.len);
+    try testing.expectEqualStrings("zed", wired[0].source);
+    try testing.expectEqualStrings("/opt/tau-old", wired[0].command);
+
+    // A bridge client's own file launches mcacp, not tau — it contributes
+    // nothing; the shared bridge config contributes one "mcacp" entry.
+    const gem_dir = try std.fmt.allocPrint(a, "{s}/.gemini", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, gem_dir);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/settings.json", .{gem_dir}),
+        "{\"mcpServers\": {\"mcacp\": {\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}}}", false);
+    const mcacp_dir = try std.fmt.allocPrint(a, "{s}/.config/mcacp", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, mcacp_dir);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/mcacp.json", .{mcacp_dir}),
+        "{\"agent_servers\": {\"tau\": {\"command\":\"/opt/tau-bridge\",\"args\":[\"acp\",\"serve\"]}}}", false);
+    wired = try wiredTauCommands(io, a, home);
+    try testing.expectEqual(@as(usize, 2), wired.len);
+    try testing.expectEqualStrings("zed", wired[0].source);
+    try testing.expectEqualStrings("mcacp", wired[1].source);
+    try testing.expectEqualStrings("/opt/tau-bridge", wired[1].command);
 }
 
 test "remedyClientWiring bridge repairs both halves" {
