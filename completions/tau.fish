@@ -198,6 +198,7 @@ complete -c tau -n $doctor -f -s y -d 'apply --fix remediations without promptin
 complete -c tau -n $doctor -f -l json -d 'stream NDJSON check/fix events + done:true verdict'
 complete -c tau -n $doctor -f -l report -d 'markdown diagnostics bundle for bug reports'
 complete -c tau -n $doctor -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
+complete -c tau -n $doctor -f -l client -x -a 'zed nvim emacs vscode cursor jetbrains windsurf gemini claude-desktop opencode cline goose continue roo-code kilo-code amazonq codex all' -d 'scope client wiring rows to one client'
 complete -c tau -n $doctor -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'diagnose an override provider'
 complete -c tau -n $doctor -f -l model -x -d 'diagnose an override model'
 complete -c tau -n $doctor -f -l api-key -x -d 'diagnose an override API key'

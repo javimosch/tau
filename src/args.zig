@@ -366,7 +366,8 @@ pub fn parse(
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
-    // [--probe] [--selftest] [--fix] [--yes] [--shell sh] [--json] [--report]`
+    // [--probe] [--selftest] [--fix] [--yes] [--shell sh] [--client ed] [--json]
+    // [--report]`
     // — setup diagnostics; a command, not a prompt. An unknown provider is
     // carried into the report as a failed check instead of exiting 80. --fix
     // proposes remediations, --yes applies them without prompting
@@ -374,7 +375,10 @@ pub fn parse(
     // credentials for every provider in the registry (per-provider pass/fail
     // rows). --selftest runs a credential-free end-to-end session against a
     // loopback stub provider (self-spawned child; no real keys or network).
-    // --json streams NDJSON check/fix events instead of the single-object
+    // --client scopes the client_<name> wiring rows (and their --fix
+    // remediations) to one client — same accepted values as `tau setup
+    // --client`; "all" is the default all-client sweep. --json streams NDJSON
+    // check/fix events instead of the single-object
     // report; --report renders a redacted Markdown bundle for bug reports
     // (--json and --report are mutually exclusive).
     if (argv.len > 0 and eq(argv[0], "doctor")) {
@@ -423,6 +427,13 @@ pub fn parse(
                     !eq(s, "powershell") and !eq(s, "all"))
                     return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
                 dcfg.setup_shell = s;
+            } else if (eq(a, "--client")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const c = argv[j];
+                if (!validSetupClient(c))
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", .{c});
+                dcfg.doctor_client = c;
             } else return errResult(arena, "unknown doctor argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         if (dcfg.doctor_report and dcfg.doctor_json)
@@ -2445,6 +2456,32 @@ test "parse: doctor --json selects NDJSON event output" {
     try std.testing.expect(r.config.doctor_json);
     try std.testing.expect(r.config.doctor_fix);
     try std.testing.expect(r.config.doctor_yes);
+}
+
+test "parse: doctor --client scopes client wiring rows; 'all' is the default sweep" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--client", "zed" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expectEqualStrings("zed", p.config.doctor_client.?);
+
+    // Off by default; aliases and "all" accept like `tau setup --client`.
+    const q = try parseArgv(a, &.{ "tau", "doctor" }, .{});
+    try std.testing.expect(q.config.doctor_client == null);
+    const r = try parseArgv(a, &.{ "tau", "doctor", "--client", "kilo" }, .{});
+    try std.testing.expectEqualStrings("kilo", r.config.doctor_client.?);
+    const s = try parseArgv(a, &.{ "tau", "doctor", "--client", "all" }, .{});
+    try std.testing.expectEqualStrings("all", s.config.doctor_client.?);
+
+    // Invalid names and a missing value are arg errors (exit 80 path).
+    const bad = try parseArgv(a, &.{ "tau", "doctor", "--client", "vim" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("invalid --client: vim (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", bad.err_msg.?);
+    const missing_val = try parseArgv(a, &.{ "tau", "doctor", "--client" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --client", missing_val.err_msg.?);
 }
 
 test "parse: doctor carries an unknown provider as a failed check, not exit 80" {

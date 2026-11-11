@@ -10,6 +10,7 @@ Each section below lists the exact precedence order used by the code.
 > **Tip:** `tau doctor` validates this whole chain end-to-end and prints a JSON
 > report — config file parse + permission bits, resolved provider/model/endpoint,
 > which source supplied the API key (never the key itself), shell completions,
+> editor client wiring (`--client <name>` scopes it to one client),
 > curl availability, endpoint reachability, and (with `--deep`) an authenticated
 > probe. Exit code is `0` when no check fails, `1` otherwise; `--offline` skips
 > network checks. `tau doctor --selftest` adds a credential-free end-to-end

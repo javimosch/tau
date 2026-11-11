@@ -137,6 +137,10 @@ const doctor_help =
     \\                         for bug reports (mutex with --json)
     \\      --shell <name>     Completions shell: bash|zsh|fish|pwsh|all
     \\                         (default: detect from $SHELL)
+    \\      --client <name>    Scope the client_* wiring rows (and their
+    \\                         --fix remediations) to one client — same
+    \\                         names as `tau setup --client`; 'all' is the
+    \\                         default sweep
     \\
     \\Examples:
     \\  tau doctor
@@ -144,6 +148,7 @@ const doctor_help =
     \\  tau doctor --selftest
     \\  tau doctor --fix --yes
     \\  tau doctor --probe
+    \\  tau doctor --client zed
     \\  tau doctor --report
     \\
 ;

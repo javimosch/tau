@@ -132,7 +132,7 @@ _tau_complete() {
             ;;
 
         doctor)
-            COMPREPLY=($(compgen -W "--offline --deep --probe --selftest --fix --yes -y --json --report --shell --provider --model --api-key" -- "$cur"))
+            COMPREPLY=($(compgen -W "--offline --deep --probe --selftest --fix --yes -y --json --report --shell --client --provider --model --api-key" -- "$cur"))
             ;;
 
         bug)

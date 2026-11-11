@@ -842,19 +842,35 @@ fn clientWiringRow(arena: std.mem.Allocator, k: setup.ClientKind, w: setup.Clien
     };
 }
 
+/// Resolve `tau doctor --client <name>` to the single client the wiring
+/// rows scope to. "all" (and a name parseClientName can't map — unreachable
+/// via the CLI, which validates against the same table setup uses) means the
+/// default all-client sweep.
+fn clientScope(cfg: Config) ?setup.ClientKind {
+    const s = cfg.doctor_client orelse return null;
+    if (std.mem.eql(u8, s, "all")) return null;
+    return setup.parseClientName(s);
+}
+
 /// Check: every detected editor client carries live `tau acp serve` wiring.
 /// Emits one `client_<name>` row per detected editor (nvim is always a skip —
 /// its config is Lua); a single `client_wiring` skip row advertises the
 /// surface when HOME is unset or no editor config dir exists. Missing or
 /// stale wiring is a warn — the editor fails to spawn tau, but tau itself is
 /// healthy — and is remediated by `tau doctor --fix`.
-fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) ![]Check {
+/// `only` is the `--client` scope: when set, exactly one client is inspected
+/// and a not-installed client still answers with a `client_<name>` skip row
+/// instead of silence — the caller asked about it by name.
+fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, only: ?setup.ClientKind) ![]Check {
     var list: std.ArrayList(Check) = .empty;
     const home = env.get("HOME") orelse {
         try list.append(arena, .{ .name = "client_wiring", .status = .skip, .message = "skipped (HOME is not set)" });
         return list.toOwnedSlice(arena);
     };
     for (setup.all_clients) |k| {
+        if (only) |o| {
+            if (k != o) continue;
+        }
         const w = setup.inspectClientWiring(io, arena, home, k) catch |err| {
             try list.append(arena, .{
                 .name = clientCheckName(arena, k),
@@ -863,7 +879,15 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
             });
             continue;
         };
-        if (w.state == .not_detected) continue;
+        if (w.state == .not_detected) {
+            if (only != null) try list.append(arena, .{
+                .name = clientCheckName(arena, k),
+                .status = .skip,
+                .message = std.fmt.allocPrint(arena, "no {s} config dir detected — client does not appear to be installed", .{setup.clientName(k)}) catch "client not detected",
+                .hint = std.fmt.allocPrint(arena, "install {s} first, then run 'tau setup --client {s}' to wire it — or drop --client to scan every detected client", .{ setup.clientName(k), setup.clientName(k) }) catch "install the client first",
+            });
+            continue;
+        }
         try list.append(arena, clientWiringRow(arena, k, w));
     }
     if (list.items.len == 0)
@@ -1688,7 +1712,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     const rk = cfgmod.resolveApiKeyInfo(cfg, env);
     try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
-    for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
+    for (try clientWiringChecks(io, arena, env, clientScope(cfg))) |c| try addCheck(arena, &checks, c, cfg);
     try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
@@ -2930,14 +2954,14 @@ test "clientWiringChecks: no HOME and no editor dirs yield skip rows" {
     const a = arena.allocator();
 
     var env_no_home = std.process.Environ.Map.init(a);
-    const no_home = try clientWiringChecks(testing.io, a, &env_no_home);
+    const no_home = try clientWiringChecks(testing.io, a, &env_no_home, null);
     try testing.expectEqual(@as(usize, 1), no_home.len);
     try testing.expectEqualStrings("client_wiring", no_home[0].name);
     try testing.expectEqual(CheckStatus.skip, no_home[0].status);
 
     var home = try TestHome.init(a);
     defer home.deinit();
-    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    const rows = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqualStrings("client_wiring", rows[0].name);
     try testing.expectEqual(CheckStatus.skip, rows[0].status);
@@ -2953,7 +2977,7 @@ test "clientWiringChecks: detected nvim reports a manual-only skip" {
     defer home.deinit();
     try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/nvim", .{home.home}));
 
-    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    const rows = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqualStrings("client_nvim", rows[0].name);
     try testing.expectEqual(CheckStatus.skip, rows[0].status);
@@ -2970,7 +2994,7 @@ test "clientWiringChecks + wire_client_zed fix: missing settings file round-trip
     const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home.home});
     try std.Io.Dir.cwd().createDirPath(testing.io, zed_dir);
 
-    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    const rows = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqualStrings("client_zed", rows[0].name);
     try testing.expectEqual(CheckStatus.warn, rows[0].status);
@@ -2984,7 +3008,7 @@ test "clientWiringChecks + wire_client_zed fix: missing settings file round-trip
     try testing.expect(std.mem.indexOf(u8, body, "\"type\": \"custom\"") != null);
 
     // The written file pins this binary's absolute path, so re-diagnosis is ok.
-    const after = try clientWiringChecks(testing.io, a, &home.env);
+    const after = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(@as(usize, 1), after.len);
     try testing.expectEqual(CheckStatus.ok, after[0].status);
 }
@@ -3002,7 +3026,7 @@ test "clientWiringChecks: no-entry and stale states warn; fix writes a snippet o
 
     // Settings file parses but has no tau entry -> warn + wire_client fix.
     try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = sp, .data = "{\n  // user comment\n  \"vim\": true\n}\n" });
-    var rows = try clientWiringChecks(testing.io, a, &home.env);
+    var rows = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqualStrings("client_vscode", rows[0].name);
     try testing.expectEqual(CheckStatus.warn, rows[0].status);
@@ -3019,12 +3043,12 @@ test "clientWiringChecks: no-entry and stale states warn; fix writes a snippet o
     // so the re-diagnosed check honestly stays warn.
     const orig = try std.Io.Dir.cwd().readFileAlloc(testing.io, sp, a, .unlimited);
     try testing.expect(std.mem.indexOf(u8, orig, "user comment") != null);
-    rows = try clientWiringChecks(testing.io, a, &home.env);
+    rows = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(CheckStatus.warn, rows[0].status);
 
     // A tau entry pointing at a deleted binary is stale.
     try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = sp, .data = "{\"acp.agents\": {\"tau\": {\"command\": \"/definitely/missing/tau\", \"args\": [\"acp\", \"serve\"]}}}" });
-    rows = try clientWiringChecks(testing.io, a, &home.env);
+    rows = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(CheckStatus.warn, rows[0].status);
     try testing.expect(std.mem.indexOf(u8, rows[0].message, "stale tau wiring") != null);
     try testing.expect(std.mem.indexOf(u8, rows[0].message, "/definitely/missing/tau") != null);
@@ -3045,10 +3069,60 @@ test "clientWiringChecks: a sane entry is ok, including a bare command name" {
     // still have to be right, which they are here).
     try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = sp, .data = "{\"acp.agents\": {\"tau\": {\"command\": \"tau\", \"args\": [\"acp\", \"serve\"]}}}" });
 
-    const rows = try clientWiringChecks(testing.io, a, &home.env);
+    const rows = try clientWiringChecks(testing.io, a, &home.env, null);
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqual(CheckStatus.ok, rows[0].status);
     try testing.expect(std.mem.indexOf(u8, rows[0].message, "tau wired") != null);
+}
+
+test "clientScope: --client resolves names/aliases; 'all' means unscoped" {
+    try testing.expect(clientScope(.{}) == null);
+    try testing.expectEqual(setup.ClientKind.zed, clientScope(.{ .doctor_client = "zed" }).?);
+    try testing.expectEqual(setup.ClientKind.kilo, clientScope(.{ .doctor_client = "kilo" }).?);
+    try testing.expect(clientScope(.{ .doctor_client = "all" }) == null);
+    // Unreachable via the CLI (args validate first) — fails open to the sweep.
+    try testing.expect(clientScope(.{ .doctor_client = "vim" }) == null);
+}
+
+test "clientWiringChecks --client scope: one row for the named client" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    // Two detected clients: unscoped emits both rows, scoped emits one.
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home.home}));
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/Cursor/User", .{home.home}));
+
+    const all = try clientWiringChecks(testing.io, a, &home.env, null);
+    try testing.expectEqual(@as(usize, 2), all.len);
+
+    const scoped = try clientWiringChecks(testing.io, a, &home.env, .zed);
+    try testing.expectEqual(@as(usize, 1), scoped.len);
+    try testing.expectEqualStrings("client_zed", scoped[0].name);
+    try testing.expectEqual(CheckStatus.warn, scoped[0].status);
+    try testing.expectEqual(FixKind.wire_client_zed, scoped[0].fix.?);
+
+    // A scoped client that isn't installed still answers — a named skip row,
+    // not silence.
+    const not_installed = try clientWiringChecks(testing.io, a, &home.env, .kilo);
+    try testing.expectEqual(@as(usize, 1), not_installed.len);
+    try testing.expectEqualStrings("client_kilo_code", not_installed[0].name);
+    try testing.expectEqual(CheckStatus.skip, not_installed[0].status);
+    try testing.expect(std.mem.indexOf(u8, not_installed[0].message, "does not appear to be installed") != null);
+    try testing.expect(not_installed[0].fix == null);
+
+    // collectChecks honors cfg.doctor_client: the scoped row shows, the
+    // other detected client and the client_wiring placeholder stay out.
+    const scoped_checks = try collectChecks(testing.io, testing.allocator, a, .{ .doctor_client = "zed" }, &home.env);
+    var saw_zed = false;
+    for (scoped_checks) |c| {
+        if (std.mem.eql(u8, c.name, "client_zed")) saw_zed = true;
+        try testing.expect(!std.mem.eql(u8, c.name, "client_cursor"));
+        try testing.expect(!std.mem.eql(u8, c.name, "client_wiring"));
+    }
+    try testing.expect(saw_zed);
 }
 
 // ---------------------------------------------------------------------------
