@@ -25,7 +25,10 @@
 // env blocks inside client settings files) — not auto-fixable, since
 // deleting a credential is destructive; the hint names the remediation —
 // and `client_permissions` warns (fixable) when client files grant
-// group/other access.
+// group/other access. A `client_stale_binary` row warns when a client
+// config's wired command resolves to a different file than the running tau
+// — the client keeps spawning the stale install until the entry is
+// updated.
 //
 // `--report` renders the same run as a Markdown diagnostics bundle for
 // pasting into a GitHub issue: verdict, build metadata, the checks table,
@@ -692,6 +695,47 @@ fn checkClientPermissions(io: std.Io, arena: std.mem.Allocator, env: *std.proces
         .message = std.fmt.allocPrint(arena, "client files grant group/other access: {s}", .{loose.items}) catch "client files grant group/other access",
         .hint = "run 'tau doctor --fix' to restrict them to 0600 — env blocks can hold API keys",
         .fix = .chmod_client_files,
+    };
+}
+
+/// Check: every client config entry that spawns tau should resolve to the
+/// currently running binary. A config written by an older install location
+/// (or one the binary has since moved away from) keeps launching the stale
+/// path — the client<->agent handshake then runs a different tau than the
+/// one the user just upgraded. Warn-only and not auto-fixable: `tau doctor
+/// --fix`/`tau setup --client` writes a corrected snippet to merge —
+/// existing settings files are never rewritten in place.
+fn checkClientBinaryPath(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const name = "client_stale_binary";
+    const home = env.get("HOME") orelse
+        return .{ .name = name, .status = .skip, .message = "skipped (HOME is not set)" };
+    const wired = setup.wiredTauCommands(io, arena, home) catch |err|
+        return .{ .name = name, .status = .warn, .message = std.fmt.allocPrint(arena, "could not inspect client commands: {s}", .{@errorName(err)}) catch "could not inspect client commands" };
+    if (wired.len == 0)
+        return .{ .name = name, .status = .skip, .message = "no client config entries invoke a tau binary" };
+    const exe_raw = std.process.executablePathAlloc(io, arena) catch
+        return .{ .name = name, .status = .skip, .message = "skipped (cannot resolve the running executable's path)" };
+    // Canonicalize both sides so a symlinked install path and its target
+    // compare equal.
+    const exe = std.Io.Dir.realPathFileAbsoluteAlloc(io, exe_raw, arena) catch exe_raw;
+    var stale: std.ArrayList(u8) = .empty;
+    for (wired) |w| {
+        // A bare command name resolves through the client's own PATH at
+        // spawn time — it can't be compared to a binary path offline.
+        if (std.mem.indexOfAny(u8, w.command, "/\\") == null) continue;
+        // A dead path is the client_<name> wiring row's warn, not this one.
+        const resolved = std.Io.Dir.realPathFileAbsoluteAlloc(io, w.command, arena) catch continue;
+        if (std.mem.eql(u8, resolved, exe)) continue;
+        if (stale.items.len > 0) stale.appendSlice(arena, ", ") catch {};
+        tryFmt(&stale, arena, "{s}={s}", .{ w.source, w.command });
+    }
+    if (stale.items.len == 0)
+        return .{ .name = name, .status = .ok, .message = "client config entries resolve to the running tau binary" };
+    return .{
+        .name = name,
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "client configs invoke a different tau binary: {s}", .{stale.items}) catch "client configs invoke a different tau binary",
+        .hint = "run 'tau setup --client <name>' or 'tau doctor --fix' for a corrected snippet to merge — the client keeps spawning the stale binary until the entry is updated",
     };
 }
 
@@ -1690,6 +1734,10 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
     for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
     try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
+    // Stale-binary detection: a wired command path that resolves to a
+    // different file than the running tau keeps spawning the old install.
+    // Local-only — runs under --offline.
+    try addCheck(arena, &checks, checkClientBinaryPath(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try addCheck(arena, &checks, curl_check, cfg);
@@ -3049,6 +3097,76 @@ test "clientWiringChecks: a sane entry is ok, including a bare command name" {
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqual(CheckStatus.ok, rows[0].status);
     try testing.expect(std.mem.indexOf(u8, rows[0].message, "tau wired") != null);
+}
+
+test "checkClientBinaryPath: skip/ok/warn across wired command states" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> skip.
+    var env_no_home = std.process.Environ.Map.init(a);
+    const c_nohome = checkClientBinaryPath(testing.io, a, &env_no_home);
+    try testing.expectEqual(CheckStatus.skip, c_nohome.status);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // No client configs -> skip.
+    const c_none = checkClientBinaryPath(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_none.status);
+
+    const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, zed_dir);
+    const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{zed_dir});
+    const exe = try std.process.executablePathAlloc(testing.io, a);
+    const writeZed = struct {
+        fn write(io: std.Io, aa: std.mem.Allocator, path: []const u8, command: []const u8) !void {
+            var c: std.ArrayList(u8) = .empty;
+            try json.escapeInto(aa, &c, command);
+            try std.Io.Dir.cwd().writeFile(io, .{
+                .sub_path = path,
+                .data = try std.fmt.allocPrint(aa, "{{\"agent_servers\": {{\"tau\": {{\"type\":\"custom\",\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{c.items}),
+            });
+        }
+    }.write;
+
+    // Wired to the running binary -> ok.
+    try writeZed(testing.io, a, sp, exe);
+    const c_ok = checkClientBinaryPath(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+
+    // A bare command name resolves client-side — stays ok.
+    try writeZed(testing.io, a, sp, "tau");
+    try testing.expectEqual(CheckStatus.ok, checkClientBinaryPath(testing.io, a, &home.env).status);
+
+    // A dead path is the client_zed row's warn, not this check's — still ok.
+    try writeZed(testing.io, a, sp, "/definitely/missing/tau");
+    try testing.expectEqual(CheckStatus.ok, checkClientBinaryPath(testing.io, a, &home.env).status);
+
+    // A live path resolving to a different file -> warn naming source=path.
+    const old = try std.fmt.allocPrint(a, "{s}/old-tau", .{home.home});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = old, .data = "stale" });
+    const abs_old = try std.Io.Dir.cwd().realPathFileAlloc(testing.io, old, a);
+    try writeZed(testing.io, a, sp, abs_old);
+    const c_stale = checkClientBinaryPath(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_stale.status);
+    try testing.expect(std.mem.indexOf(u8, c_stale.message, "different tau binary") != null);
+    try testing.expect(std.mem.indexOf(u8, c_stale.message, "zed=") != null);
+    try testing.expect(std.mem.indexOf(u8, c_stale.message, abs_old) != null);
+    try testing.expect(c_stale.fix == null);
+
+    // The shared mcacp bridge's tau entry is checked too (source "mcacp").
+    try writeZed(testing.io, a, sp, exe);
+    const mcacp_dir = try std.fmt.allocPrint(a, "{s}/.config/mcacp", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, mcacp_dir);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fmt.allocPrint(a, "{s}/mcacp.json", .{mcacp_dir}),
+        .data = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{abs_old}),
+    });
+    const c_bridge = checkClientBinaryPath(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_bridge.status);
+    try testing.expect(std.mem.indexOf(u8, c_bridge.message, "mcacp=") != null);
 }
 
 // ---------------------------------------------------------------------------
