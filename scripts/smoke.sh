@@ -2320,6 +2320,7 @@ test_group_setup() {
   contains "line 4 embeds the doctor report" "$line4" '"step":"doctor","report":{"ok":true'
   contains "line 5 is the setup verdict" "$line5" '"step":"setup","ok":true'
   contains "verdict carries the version" "$line5" '"version":'
+  lacks "no checklist without --client" "$line5" '"checklist"'
 
   # Files actually landed.
   [ -f "$mock_home/.config/tau/config.json" ]; ok "config.json was written" "$?" 0
@@ -2395,6 +2396,8 @@ test_group_setup() {
   grep -q '"agent_servers"' "$mock_home7/.config/zed/settings.json"; ok "zed settings has agent_servers" "$?" 0
   grep -q '"type": "custom"' "$mock_home7/.config/zed/settings.json"; ok "zed entry has type custom" "$?" 0
   grep -q '"acp", "serve"' "$mock_home7/.config/zed/settings.json"; ok "zed args are acp serve" "$?" 0
+  contains "verdict carries the post-setup checklist" "$s8_out" '"checklist":[{"client":"zed","config_path":"'
+  contains "checklist has restart step + verify command" "$s8_out" '"restart":"open the Agent Panel, click +, and pick tau","verify":"tau doctor"}'
 
   # Re-run detects the existing tau entry -> already_installed, still exit 0.
   capture s9 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
@@ -2413,6 +2416,8 @@ test_group_setup() {
   contains "manual entry names the snippet" "$s10_out" '"snippet_path":'
   [ -f "$mock_home8/.config/tau/snippets/zed.jsonc" ]; ok "zed snippet file written" "$?" 0
   grep -q '// keep me' "$mock_home8/.config/zed/settings.json"; ok "existing settings untouched" "$?" 0
+  contains "manual checklist names config + snippet paths" "$s10_out" '"config_path":"'"$mock_home8"'/.config/zed/settings.json","snippet_path":"'
+  contains "manual checklist restart is the merge step" "$s10_out" '"restart":"merge the snippet into your settings file by hand","verify":"tau doctor"}'
 
   # --client nvim never writes into ~/.config/nvim — a lua snippet is emitted.
   local mock_home9; mock_home9="$(mktemp -d)"; register_temp_dir "$mock_home9"
@@ -2422,6 +2427,7 @@ test_group_setup() {
   contains "nvim step reports manual" "$s11_out" '"step":"clients","status":"manual"'
   [ -f "$mock_home9/.config/tau/snippets/nvim.lua" ]; ok "nvim lua snippet written" "$?" 0
   grep -q 'acp_providers' "$mock_home9/.config/tau/snippets/nvim.lua"; ok "nvim snippet has avante block" "$?" 0
+  contains "nvim checklist uses the snippet path" "$s11_out" '"checklist":[{"client":"nvim","config_path":"'"$mock_home9"'/.config/tau/snippets/nvim.lua"'
 
   # --client emacs never writes into ~/.emacs.d — an elisp snippet is emitted.
   local mock_home9b; mock_home9b="$(mktemp -d)"; register_temp_dir "$mock_home9b"

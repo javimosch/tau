@@ -289,6 +289,10 @@ const setup_help =
     \\                         cline|goose|continue|roo-code|kilo-code|
     \\                         amazonq|codex|all
     \\                         (env TAU_SETUP_CLIENT)
+    \\                         The verdict then prints a deterministic
+    \\                         post-setup checklist: each client's config
+    \\                         path, restart step, and the exact
+    \\                         `tau doctor` verification command.
     \\      --provider <name>  Seed the config scaffold for a provider
     \\      --model <id>       Passed through to the doctor step
     \\      --api-key <key>    Passed through to the doctor step
