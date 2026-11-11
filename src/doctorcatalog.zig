@@ -73,6 +73,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable",
     },
     .{
+        .name = "config_secret_permissions",
+        .fails_when = "the config file actually stores credentials (api_key or keys.<provider> values) and its mode grants group/other access — real exposure, not the hypothetical config_permissions covers (POSIX only; skipped when the file is missing or unparseable)",
+        .remediation = "run `tau doctor --fix` (chmod 0600 on config.json via the shared chmod_config remediation — it also tightens the dir to 0700) or chmod it yourself; `tau config unset` moves keys to env vars",
+    },
+    .{
         .name = "shell_completions",
         .fails_when = "completion scripts are missing or stale for the detected shells",
         .remediation = "run `tau doctor --fix` or `tau setup --yes` to (re)install them",

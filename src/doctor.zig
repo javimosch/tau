@@ -20,11 +20,13 @@
 // non-interactive runs report them as skipped. The emitted report reflects
 // the post-fix state when anything was applied.
 //
-// Two advisory checks watch secret hygiene: `plaintext_secrets` warns when
+// Advisory checks watch secret hygiene: `plaintext_secrets` warns when
 // credentials sit on disk as plaintext (config `api_key`/`keys.*` values or
 // env blocks inside client settings files) — not auto-fixable, since
 // deleting a credential is destructive; the hint names the remediation —
-// and `client_permissions` warns (fixable) when client files grant
+// `config_secret_permissions` warns (fixable) when a config file that
+// actually stores credentials grants group/other access, and
+// `client_permissions` warns (fixable) when client files grant
 // group/other access.
 //
 // `--report` renders the same run as a Markdown diagnostics bundle for
@@ -648,6 +650,64 @@ fn checkPlaintextSecrets(io: std.Io, arena: std.mem.Allocator, env: *std.process
         .status = .warn,
         .message = std.fmt.allocPrint(arena, "plaintext credentials on disk — {s}", .{findings.items}) catch "plaintext credentials on disk",
         .hint = "prefer env vars for credentials — 'tau config unset api_key|keys.<provider>' removes config keys; keep secret-bearing files at 0600 ('tau doctor --fix' restricts client files)",
+    };
+}
+
+/// Check (POSIX only): the config file actually stores credentials —
+/// `api_key` and/or `keys.<provider>` values — AND its mode grants
+/// group/other access. `config_permissions` flags the hypothetical (the
+/// file *can* hold keys); this row fires only when real secrets are
+/// exposed, and names which key fields are readable. Auto-fixable via the
+/// shared chmod_config remediation (config.json -> 0600). Skips on
+/// Windows, when HOME is unset, when there is no config file, or when the
+/// file doesn't parse (the config_file row owns the parse failure).
+/// Key names are reported; values never are.
+fn checkConfigSecretPermissions(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    if (comptime builtin.os.tag == .windows) {
+        return .{ .name = "config_secret_permissions", .status = .skip, .message = "skipped (POSIX permission bits do not apply on Windows)" };
+    }
+    const p = configfile.path(arena, env) orelse
+        return .{ .name = "config_secret_permissions", .status = .skip, .message = "skipped (HOME is not set)" };
+    const fstat = std.Io.Dir.cwd().statFile(io, p, .{}) catch |err| switch (err) {
+        error.FileNotFound => return .{ .name = "config_secret_permissions", .status = .skip, .message = "skipped (no config file)" },
+        else => return .{ .name = "config_secret_permissions", .status = .skip, .message = "skipped (config file unreadable)" },
+    };
+    const parsed = readJsonFile(io, arena, p) orelse
+        return .{ .name = "config_secret_permissions", .status = .skip, .message = "skipped (config file doesn't parse — see config_file)" };
+
+    var names: std.ArrayList(u8) = .empty;
+    if (parsed == .object) {
+        if (parsed.object.get("api_key")) |v| {
+            if (v == .string and v.string.len > 0) names.appendSlice(arena, "api_key") catch {};
+        }
+        if (parsed.object.get("keys")) |v| {
+            if (v == .object) {
+                var it = v.object.iterator();
+                while (it.next()) |e| {
+                    if (e.value_ptr.* == .string and e.value_ptr.string.len > 0) {
+                        if (names.items.len > 0) names.appendSlice(arena, ", ") catch {};
+                        tryFmt(&names, arena, "keys.{s}", .{e.key_ptr.*});
+                    }
+                }
+            }
+        }
+    }
+    if (names.items.len == 0)
+        return .{ .name = "config_secret_permissions", .status = .ok, .message = "config file stores no credentials" };
+
+    const file_mode = fstat.permissions.toMode() & 0o777;
+    if ((file_mode & 0o077) == 0)
+        return .{
+            .name = "config_secret_permissions",
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "config file stores credentials ({s}) with owner-only mode {o:0>3}", .{ names.items, file_mode }) catch "config file stores credentials and is owner-only",
+        };
+    return .{
+        .name = "config_secret_permissions",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "config file stores credentials ({s}) and mode {o:0>3} grants group/other access", .{ names.items, file_mode }) catch "config file stores credentials and grants group/other access",
+        .hint = "run 'tau doctor --fix' to restrict it to 0600 — other users on this host can read the stored API keys",
+        .fix = .chmod_config,
     };
 }
 
@@ -1684,6 +1744,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     try addCheck(arena, &checks, checkConfigDeprecatedKeys(io, arena, env), cfg);
     try addCheck(arena, &checks, checkConfigPermissions(io, arena, env), cfg);
     try addCheck(arena, &checks, checkPlaintextSecrets(io, arena, env), cfg);
+    try addCheck(arena, &checks, checkConfigSecretPermissions(io, arena, env), cfg);
     try addCheck(arena, &checks, checkProvider(arena, cfg), cfg);
     const rk = cfgmod.resolveApiKeyInfo(cfg, env);
     try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
@@ -2857,6 +2918,68 @@ test "countEnvSecrets: nested objects and arrays, only non-empty strings" {
     defer arena.deinit();
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), src, .{});
     try testing.expectEqual(@as(usize, 2), countEnvSecrets(parsed));
+}
+
+test "checkConfigSecretPermissions: only warns when secrets are stored AND the file is loose" {
+    if (comptime builtin.os.tag == .windows) return;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> skip.
+    var env_no_home = std.process.Environ.Map.init(a);
+    const c_nohome = checkConfigSecretPermissions(testing.io, a, &env_no_home);
+    try testing.expectEqual(CheckStatus.skip, c_nohome.status);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+
+    // No config file -> skip.
+    std.Io.Dir.cwd().deleteFile(testing.io, cfg_path) catch {};
+    const c_skip = checkConfigSecretPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_skip.status);
+
+    // Config without credentials stays ok even when the file is loose —
+    // the hypothetical case is config_permissions' job.
+    try home.writeConfig(a, "{\"provider\":\"openai\"}");
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, cfg_path, .fromMode(0o644), .{});
+    const c_none = checkConfigSecretPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_none.status);
+    try testing.expect(std.mem.indexOf(u8, c_none.message, "no credentials") != null);
+
+    // Credentials + loose mode -> warn naming the key fields (never values),
+    // auto-fixable via the shared chmod_config remediation.
+    try home.writeConfig(a, "{\"api_key\":\"sk-secret-aaa\",\"keys\":{\"openai\":\"sk-secret-bbb\",\"empty\":\"\"}}");
+    const c_warn = checkConfigSecretPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_warn.status);
+    try testing.expectEqual(FixKind.chmod_config, c_warn.fix.?);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "api_key") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "keys.openai") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "keys.empty") == null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "mode 644") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "sk-secret") == null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.hint.?, "doctor --fix") != null);
+
+    // Credentials + tight mode -> ok.
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, cfg_path, .fromMode(0o600), .{});
+    const c_tight = checkConfigSecretPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_tight.status);
+    try testing.expect(std.mem.indexOf(u8, c_tight.message, "owner-only") != null);
+    try testing.expect(std.mem.indexOf(u8, c_tight.message, "sk-secret") == null);
+}
+
+test "checkConfigSecretPermissions: unparseable config skips (config_file owns the failure)" {
+    if (comptime builtin.os.tag == .windows) return;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    try home.writeConfig(a, "{ not json ");
+    const c = checkConfigSecretPermissions(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c.status);
 }
 
 test "checkClientPermissions + chmod_client_files fix round-trips" {

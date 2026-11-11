@@ -1462,6 +1462,7 @@ test_group_doctor() {
   #     never printed, and loose client files are --fix-remediated to 0600.
   mkdir -p "$mock_home/.config/zed"
   printf '{"api_key":"sk-plain-doc","keys":{"openai":"sk-plain-doc2"}}' > "$mock_config/config.json"
+  chmod 644 "$mock_config/config.json"
   printf '{"agent_servers":{"tau":{"type":"custom","command":"tau","args":["acp","serve"],"env":{"TAU_API_KEY":"sk-env-doc"}}}}' > "$mock_home/.config/zed/settings.json"
   chmod 644 "$mock_home/.config/zed/settings.json"
   capture doc_secrets env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
@@ -1479,11 +1480,25 @@ test_group_doctor() {
   fi
   contains "client_permissions warns on loose file" "$doc_secrets_out" '"name":"client_permissions","status":"warn"'
   contains "client_permissions names the mode" "$doc_secrets_out" 'mode 644'
+  # config_secret_permissions: the 644 config.json above actually stores
+  # credentials -> warn naming the key fields (values stay unprinted).
+  contains "config_secret_permissions warns" "$doc_secrets_out" '"name":"config_secret_permissions","status":"warn"'
+  contains "secret perms check names the fields" "$doc_secrets_out" 'config file stores credentials (api_key, keys.openai)'
+  contains "secret perms check names the mode" "$doc_secrets_out" 'mode 644 grants group/other access'
+  contains "secret perms hint points at --fix" "$doc_secrets_out" 'run '"'"'tau doctor --fix'"'"' to restrict it to 0600'
   capture doc_chmod env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-env HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
   ok "chmod fix run exits 0" "$doc_chmod_rc" 0
   contains "chmod_client_files applied" "$doc_chmod_out" '"id":"chmod_client_files","check":"client_permissions","status":"applied"'
   contains "post-fix client_permissions ok" "$doc_chmod_out" '"name":"client_permissions","status":"ok"'
+  contains "chmod_config applied" "$doc_chmod_out" '"id":"chmod_config","check":"config_permissions","status":"applied"'
+  contains "post-fix config_secret_permissions ok" "$doc_chmod_out" '"name":"config_secret_permissions","status":"ok"'
+  contains "post-fix secret file owner-only" "$doc_chmod_out" 'owner-only mode 600'
+  if [ "$(stat -c %a "$mock_config/config.json" 2>/dev/null)" = "600" ]; then
+    ok "secret-bearing config restricted to 0600" 0 0
+  else
+    ok "secret-bearing config restricted to 0600" 1 0
+  fi
   if [ "$(stat -c %a "$mock_home/.config/zed/settings.json" 2>/dev/null)" = "600" ]; then
     ok "client settings restricted to 0600" 0 0
   else

@@ -178,6 +178,7 @@ network. Every row's meaning and remediation is also readable offline via
 | `config_deprecated_keys` | the config file still uses a deprecated or renamed key spelling (e.g. compact_keep_recent) — old spellings still load with a warn envelope during the deprecation window but are scheduled for removal (skipped when there is no config file or it doesn't parse) | run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name |
 | `config_permissions` | the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys) | run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself |
 | `plaintext_secrets` | credentials sit on disk as plaintext — api_key/keys.* values in the config file, or `env` blocks inside client settings files (warn only; reports key names and counts, never values) | move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable |
+| `config_secret_permissions` | the config file actually stores credentials (api_key or keys.<provider> values) and its mode grants group/other access — real exposure, not the hypothetical config_permissions covers (POSIX only; skipped when the file is missing or unparseable) | run `tau doctor --fix` (chmod 0600 on config.json via the shared chmod_config remediation — it also tightens the dir to 0700) or chmod it yourself; `tau config unset` moves keys to env vars |
 | `shell_completions` | completion scripts are missing or stale for the detected shells | run `tau doctor --fix` or `tau setup --yes` to (re)install them |
 | `provider_resolution` | the configured or --provider provider isn't registered | pick a registered provider — `tau models` lists them; `tau config set provider <name>` persists it |
 | `api_key` | no API key resolves at any level of the precedence chain | pass --api-key, set the provider env var or TAU_API_KEY, or add api_key/keys.<provider> to config.json — `tau init` scaffolds a starter |
@@ -254,7 +255,7 @@ several rows can share one fix) and applied each only after confirmation:
 |--------|--------------|--------------|
 | `scaffold_config` | `config_file` — no config exists | Writes the `tau init` starter config, creating `~/.config/tau` (0700/0600 on POSIX) |
 | `restore_config` | `config_file` — invalid JSON | Moves the broken file to `config.json.bak`, then scaffolds a fresh one |
-| `chmod_config` | `config_permissions` (or an unreadable `config_file`) | `chmod 0700` on `~/.config/tau`, `0600` on `config.json` |
+| `chmod_config` | `config_permissions`, `config_secret_permissions` (or an unreadable `config_file`) | `chmod 0700` on `~/.config/tau`, `0600` on `config.json` |
 | `install_completions` | `shell_completions` | Installs/refreshes completion scripts (+ rc hooks where needed) |
 | `chmod_client_files` | `client_permissions` | `chmod 0600` on every detected client settings file (and `mcacp.json`) — their `env` blocks can hold API keys |
 

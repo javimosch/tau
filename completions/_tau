@@ -329,6 +329,7 @@ _tau() {
                         'doctor.config_deprecated_keys:doctor check' 'doctor.config_file:doctor check'
                         'doctor.config_permissions:doctor check'
                         'doctor.plaintext_secrets:doctor check'
+                        'doctor.config_secret_permissions:doctor check'
                         'doctor.shell_completions:doctor check'
                         'doctor.provider_resolution:doctor check'
                         'doctor.api_key:doctor check'
