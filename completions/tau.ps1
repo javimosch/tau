@@ -46,7 +46,7 @@ $TauArgumentCompleter = {
         'doctor.provider_resolution', 'doctor.api_key', 'doctor.curl',
         'doctor.proxy_env', 'doctor.tls_ca', 'doctor.endpoint_reachable',
         'doctor.auth_probe', 'doctor.client_wiring', 'doctor.client_permissions',
-        'doctor.provider_probes', 'doctor.update_available', 'doctor.selftest',
+        'doctor.path_shadowing', 'doctor.provider_probes', 'doctor.update_available', 'doctor.selftest',
         'doctor.client_zed', 'doctor.client_nvim', 'doctor.client_emacs',
         'doctor.client_vscode', 'doctor.client_cursor', 'doctor.client_jetbrains',
         'doctor.client_windsurf', 'doctor.client_gemini',

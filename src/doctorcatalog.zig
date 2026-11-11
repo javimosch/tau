@@ -123,6 +123,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself",
     },
     .{
+        .name = "path_shadowing",
+        .fails_when = "the first `tau` PATH resolution is a different file than the running binary — a stale copy in an earlier PATH entry keeps winning shell lookups after install or upgrade, so `tau` silently runs the old build (warn only; skipped when PATH is unset)",
+        .remediation = "remove or upgrade the stale binary the row names, or reorder PATH so the current install's directory comes first — the row prints both paths and the shadowing binary's version when it answers `--version`; not auto-fixable",
+    },
+    .{
         .name = "provider_probes",
         .fails_when = "placeholder row for the opt-in sweep — skipped unless --probe is passed",
         .remediation = "run `tau doctor --probe` to live-verify connectivity and credentials for every registered provider",

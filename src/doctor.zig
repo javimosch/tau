@@ -876,6 +876,96 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
     return list.toOwnedSlice(arena);
 }
 
+/// Check: the first `tau` PATH resolution is this binary. After an install
+/// or upgrade a stale copy in an earlier PATH entry keeps winning shell
+/// lookups, so `tau` silently runs the old build — the classic "I upgraded
+/// but nothing changed" failure. Compares the canonicalized PATH hit against
+/// the running executable and probes the shadowing binary's `--version`
+/// best-effort. Warn-only (never fixable — deleting a binary is
+/// destructive); the ok message stays path-free so the golden report does
+/// not depend on the machine's install layout.
+fn checkPathShadowing(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const self_exe = std.process.executablePathAlloc(io, arena) catch
+        return .{ .name = "path_shadowing", .status = .skip, .message = "skipped (cannot resolve the running executable's path)" };
+    const self = std.Io.Dir.realPathFileAbsoluteAlloc(io, self_exe, arena) catch self_exe;
+    const path_env = env.get("PATH") orelse
+        return .{ .name = "path_shadowing", .status = .skip, .message = "skipped (PATH is not set)" };
+
+    const sep: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    const names: []const []const u8 = if (builtin.os.tag == .windows) &.{ "tau.exe", "tau" } else &.{"tau"};
+    var cwd: ?[:0]u8 = null;
+    var it = std.mem.splitScalar(u8, path_env, sep);
+    while (it.next()) |raw| {
+        // An empty PATH segment means the current directory.
+        const dir = if (raw.len == 0) "." else raw;
+        for (names) |base| {
+            const abs_dir = if (std.Io.Dir.path.isAbsolute(dir)) dir else blk: {
+                if (cwd == null) cwd = std.Io.Dir.cwd().realPathFileAlloc(io, ".", arena) catch null;
+                const c = cwd orelse break :blk null;
+                break :blk std.fmt.allocPrint(arena, "{s}/{s}", .{ c, dir }) catch null;
+            } orelse continue;
+            const cand = std.fmt.allocPrint(arena, "{s}/{s}", .{ abs_dir, base }) catch continue;
+            // Lstat semantics: a symlink counts as a PATH hit even when its
+            // target is gone — the shell still resolves there and fails.
+            const st = std.Io.Dir.cwd().statFile(io, cand, .{ .follow_symlinks = false }) catch continue;
+            switch (st.kind) {
+                .directory => continue,
+                .sym_link => {},
+                else => {
+                    if (comptime builtin.os.tag != .windows) {
+                        if ((st.permissions.toMode() & 0o111) == 0) continue;
+                    }
+                },
+            }
+            const canon = std.Io.Dir.realPathFileAbsoluteAlloc(io, cand, arena) catch cand;
+            if (std.mem.eql(u8, canon, self))
+                return .{ .name = "path_shadowing", .status = .ok, .message = "the first 'tau' on PATH is this binary" };
+            const detail = if (probeShadowedVersion(io, gpa, arena, cand)) |v|
+                std.fmt.allocPrint(arena, " ({s})", .{v}) catch ""
+            else
+                "";
+            return .{
+                .name = "path_shadowing",
+                .status = .warn,
+                .message = std.fmt.allocPrint(arena, "PATH resolves 'tau' to {s}{s}, shadowing this binary at {s}", .{ cand, detail, self }) catch "a different 'tau' binary shadows this one on PATH",
+                .hint = "remove or upgrade the stale binary, or reorder PATH so this binary's directory comes first",
+            };
+        }
+    }
+    return .{ .name = "path_shadowing", .status = .ok, .message = "no 'tau' binary found on PATH (running via explicit path)" };
+}
+
+/// Best-effort `<path> --version` probe for a shadowing binary — a short
+/// descriptor like `version 0.4.0` for the warn message. null on any
+/// failure: the binary may be a dangling install or not tau at all.
+fn probeShadowedVersion(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, path: []const u8) ?[]const u8 {
+    const res = std.process.run(gpa, io, .{
+        .argv = &.{ path, "--version" },
+        .stdout_limit = .limited(4 * 1024),
+        .stderr_limit = .limited(1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromSeconds(5), .clock = .awake } },
+    }) catch return null;
+    defer gpa.free(res.stdout);
+    defer gpa.free(res.stderr);
+    switch (res.term) {
+        .exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+    const end = std.mem.indexOfScalar(u8, res.stdout, '\n') orelse res.stdout.len;
+    const line = std.mem.trim(u8, res.stdout[0..end], " \t\r");
+    if (line.len == 0) return null;
+    // Stable --json shape is {"name":"tau","version":"x.y.z",...}; the bare
+    // form is `tau x.y.z`. Extract a version token when one is visible,
+    // else report the raw first line (truncated).
+    if (std.mem.indexOf(u8, line, "\"version\":\"")) |vi| {
+        const rest = line[vi + "\"version\":\"".len ..];
+        const vend = std.mem.indexOfScalar(u8, rest, '"') orelse return null;
+        return std.fmt.allocPrint(arena, "version {s}", .{rest[0..vend]}) catch null;
+    }
+    const max = @min(line.len, 48);
+    return std.fmt.allocPrint(arena, "reports '{s}'", .{line[0..max]}) catch null;
+}
+
 /// Check 3: effective provider/model/endpoint/context_window after overrides.
 fn checkProvider(arena: std.mem.Allocator, cfg: Config) Check {
     if (cfg.doctor_bad_provider) |bad| {
@@ -1690,6 +1780,9 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
     for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
     try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
+    // Local install footprint: a stale `tau` earlier on PATH keeps running
+    // the old build after install/upgrade — cheap PATH scan, no network.
+    try addCheck(arena, &checks, checkPathShadowing(io, gpa, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try addCheck(arena, &checks, curl_check, cfg);
