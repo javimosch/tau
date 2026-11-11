@@ -20,6 +20,9 @@
 // write-capable step object plus the verdict carry "dry_run":true. Read-only
 // outcomes (exists/already_installed/present/manual/skipped/failed) keep
 // their normal names so a dry run reports the plan in the same vocabulary.
+// Each pending change also renders under "files": the exact unified diff
+// the real run would apply and, for in-place rewrites, "backup_path" — the
+// <path>.bak where the real run preserves the original before overwriting.
 //
 // Removal mode (`--remove`/`--uninstall`): cleanly reverses the clients
 // step — the init/completions/doctor steps don't run. The tau (or mcacp)
@@ -48,6 +51,7 @@ const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const configedit = @import("configedit.zig");
 const initmod = @import("init.zig");
+const udiff = @import("udiff.zig");
 const doctor = @import("doctor.zig");
 const completions = @import("completions");
 const version = @import("version.zig").version;
@@ -144,14 +148,89 @@ pub fn rcBlock(arena: std.mem.Allocator, k: ShellKind) ![]u8 {
 /// Write `data` to `path` (creating parent dirs) only when the content
 /// differs. Returns whether the file was actually written. When `dry` is
 /// set nothing is written: a differing (or missing) file reports
-/// `.would_write` so callers can preview the change.
+/// `.would_write` so callers can preview the change. A real run that
+/// overwrites an existing file first preserves its bytes at `<path>.bak`.
 pub const WriteResult = enum { written, unchanged, would_write };
 
-pub fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8, dry: bool) !WriteResult {
-    if (std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited)) |cur| {
-        if (std.mem.eql(u8, cur, data)) return .unchanged;
-    } else |_| {}
-    if (dry) return .would_write;
+/// How a pending change touches a file — the dry-run "files" action word.
+pub const FileAction = enum { create, modify, delete };
+
+/// One file a real run would change, rendered for the `--dry-run` preview.
+pub const FilePreview = struct {
+    path: []const u8,
+    action: FileAction,
+    /// Unified diff of the current bytes to the would-be bytes (create
+    /// diffs read from /dev/null, delete diffs write to /dev/null).
+    diff: []const u8,
+    /// `<path>.bak` — where a real run preserves the original before an
+    /// in-place rewrite. Absent for creates and deletes (deletes only ever
+    /// drop files whose remaining content is tau wiring).
+    backup_path: ?[]const u8 = null,
+};
+
+/// Where pending file changes get collected for the dry-run "files" member.
+/// Entries only ever land under `--dry-run` — the write/remove helpers fill
+/// the list on their would_* path and emit nothing on real runs.
+const Previews = ?*std.ArrayList(FilePreview);
+
+/// Record a pending write of `new` bytes to `path` into `previews`.
+fn pushPreview(arena: std.mem.Allocator, previews: Previews, path: []const u8, old: ?[]const u8, new: ?[]const u8) !void {
+    const pv = previews orelse return;
+    try pv.append(arena, .{
+        .path = path,
+        .action = if (old == null) .create else if (new == null) .delete else .modify,
+        .diff = try udiff.unified(arena, path, old, new),
+        .backup_path = if (old != null and new != null)
+            try std.fmt.allocPrint(arena, "{s}.bak", .{path})
+        else
+            null,
+    });
+}
+
+/// Serialize collected previews as a `,"files":[...]` fragment — a no-op
+/// when the list is empty.
+fn appendFilePreviews(arena: std.mem.Allocator, buf: *std.ArrayList(u8), previews: []const FilePreview) !void {
+    if (previews.len == 0) return;
+    try buf.appendSlice(arena, ",\"files\":[");
+    for (previews, 0..) |p, i| {
+        if (i != 0) try buf.append(arena, ',');
+        try buf.appendSlice(arena, "{\"path\":");
+        try js(arena, buf, p.path);
+        try buf.appendSlice(arena, ",\"action\":");
+        try js(arena, buf, @tagName(p.action));
+        try buf.appendSlice(arena, ",\"diff\":");
+        try js(arena, buf, p.diff);
+        if (p.backup_path) |bp| {
+            try buf.appendSlice(arena, ",\"backup_path\":");
+            try js(arena, buf, bp);
+        }
+        try buf.append(arena, '}');
+    }
+    try buf.append(arena, ']');
+}
+
+pub fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, data: []const u8, dry: bool, previews: Previews) !WriteResult {
+    var cur: ?[]const u8 = null;
+    // A path that exists but can't be read previews nothing — "create" would
+    // claim a /dev/null diff against bytes we haven't seen. The would_write
+    // status and the real write attempt are unchanged either way.
+    var exists_unreadable = false;
+    if (std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited)) |b| {
+        if (std.mem.eql(u8, b, data)) return .unchanged;
+        cur = b;
+    } else |_| {
+        exists_unreadable = if (std.Io.Dir.cwd().statFile(io, path, .{})) |_| true else |_| false;
+    }
+    if (dry) {
+        if (!exists_unreadable) try pushPreview(arena, previews, path, cur, data);
+        return .would_write;
+    }
+    if (cur) |old| {
+        // The original is about to be overwritten — preserve it first so a
+        // bad splice never costs the user their file.
+        const bak = try std.fmt.allocPrint(arena, "{s}.bak", .{path});
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = bak, .data = old });
+    }
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
         std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
     }
@@ -163,16 +242,15 @@ pub fn writeIfChanged(io: std.Io, arena: std.mem.Allocator, path: []const u8, da
 /// `would_append` is returned in dry-run mode when the marker is absent.
 pub const RcResult = enum { appended, present, would_append };
 
-pub fn ensureRcBlock(io: std.Io, arena: std.mem.Allocator, path: []const u8, block: []const u8, dry: bool) !RcResult {
+pub fn ensureRcBlock(io: std.Io, arena: std.mem.Allocator, path: []const u8, block: []const u8, dry: bool, previews: Previews) !RcResult {
     const cur = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch "";
     if (std.mem.indexOf(u8, cur, rc_marker) != null) return .present;
-    if (dry) return .would_append;
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(arena, cur);
     if (cur.len > 0 and !std.mem.endsWith(u8, cur, "\n")) try out.append(arena, '\n');
     try out.appendSlice(arena, block);
-    _ = try writeIfChanged(io, arena, path, out.items, false);
-    return .appended;
+    _ = try writeIfChanged(io, arena, path, out.items, dry, previews);
+    return if (dry) .would_append else .appended;
 }
 
 /// True when `s` parses as a whole JSON value (only whitespace allowed
@@ -202,6 +280,7 @@ fn emit(buf: *std.ArrayList(u8)) void {
 fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
     const dry = cfg.setup_dry_run;
     var buf: std.ArrayList(u8) = .empty;
+    var previews: std.ArrayList(FilePreview) = .empty;
     try buf.appendSlice(arena, "{\"step\":\"init\",\"status\":");
 
     const path = configfile.path(arena, env) orelse {
@@ -225,7 +304,7 @@ fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
 
     if (!exists) {
         const body = try initmod.renderConfig(arena, det, p);
-        _ = writeIfChanged(io, arena, path, body, dry) catch |err| {
+        _ = writeIfChanged(io, arena, path, body, dry, &previews) catch |err| {
             try buf.appendSlice(arena, "\"failed\",\"message\":");
             const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
             try js(arena, &buf, msg);
@@ -253,6 +332,7 @@ fn stepInit(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
         try js(arena, &buf, "TAU_API_KEY");
     }
     try buf.appendSlice(arena, "]");
+    try appendFilePreviews(arena, &buf, previews.items);
     if (dry) try buf.appendSlice(arena, ",\"dry_run\":true");
     try buf.appendSlice(arena, "}");
     emit(&buf);
@@ -293,14 +373,15 @@ pub const CompletionInstall = struct {
 /// Write the completion script for shell `k` (creating parent dirs) and, for
 /// shells that need one, append the rc hook unless the marker is present.
 /// Shared by `tau setup` and `tau doctor --fix`. When `dry` is set nothing
-/// is written — `wrote`/`rc_status` report `.would_write`/`.would_append`.
-pub fn installCompletion(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ShellKind, dry: bool) !CompletionInstall {
+/// is written — `wrote`/`rc_status` report `.would_write`/`.would_append`
+/// and `previews` collects the file diffs for the dry-run "files" member.
+pub fn installCompletion(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ShellKind, dry: bool, previews: Previews) !CompletionInstall {
     const path = try installPath(arena, home, k);
-    const wrote = try writeIfChanged(io, arena, path, shellContent(k), dry);
+    const wrote = try writeIfChanged(io, arena, path, shellContent(k), dry, previews);
     var out: CompletionInstall = .{ .path = path, .wrote = wrote };
     if (try rcPath(arena, home, k)) |rp| {
         out.rc_path = rp;
-        if (ensureRcBlock(io, arena, rp, try rcBlock(arena, k), dry)) |r| {
+        if (ensureRcBlock(io, arena, rp, try rcBlock(arena, k), dry, previews)) |r| {
             out.rc_status = r;
         } else |_| {
             out.rc_failed = true;
@@ -340,10 +421,11 @@ const InstallOneOutcome = enum { failed, no_change, changed, would_change };
 fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), first: bool, home: []const u8, k: ShellKind, dry: bool) !InstallOneOutcome {
     if (!first) try shells.append(arena, ',');
 
+    var previews: std.ArrayList(FilePreview) = .empty;
     try shells.appendSlice(arena, "{\"shell\":");
     try js(arena, shells, shellName(k));
 
-    const inst = installCompletion(io, arena, home, k, dry) catch |err| {
+    const inst = installCompletion(io, arena, home, k, dry, &previews) catch |err| {
         const path = installPath(arena, home, k) catch "?";
         try shells.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
         const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
@@ -379,6 +461,7 @@ fn installOne(io: std.Io, arena: std.mem.Allocator, shells: *std.ArrayList(u8), 
         },
         else => {},
     }
+    try appendFilePreviews(arena, shells, previews.items);
     try shells.append(arena, '}');
     if (!ok) return .failed;
     if (inst.wrote == .would_write or inst.rc_status == .would_append) return .would_change;
@@ -1206,22 +1289,22 @@ pub fn remedyClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8
     switch (w.state) {
         .missing_file => {
             const path = w.path.?;
-            _ = try writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), false);
+            _ = try writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), false, null);
             if (clientUsesBridge(k)) {
-                const det = try ensureBridgeWiring(io, arena, home, command, false);
+                const det = try ensureBridgeWiring(io, arena, home, command, false, null);
                 return std.fmt.allocPrint(arena, "wrote minimal settings file: {s}; {s}", .{ path, det.detail });
             }
             return std.fmt.allocPrint(arena, "wrote minimal settings file: {s}", .{path});
         },
         .unreadable, .unparseable, .no_entry, .stale => {
             const snip = try snippetPath(arena, home, k);
-            const wrote = try writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), false);
+            const wrote = try writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), false, null);
             const base: []const u8 = switch (wrote) {
                 .unchanged => try std.fmt.allocPrint(arena, "snippet already up to date: {s} — merge the \"{s}\" block into {s} by hand", .{ snip, clientEntryName(k), w.path.? }),
                 else => try std.fmt.allocPrint(arena, "wrote paste-ready snippet: {s} — merge the \"{s}\" block into {s} by hand", .{ snip, clientEntryName(k), w.path.? }),
             };
             if (clientUsesBridge(k)) {
-                const det = try ensureBridgeWiring(io, arena, home, command, false);
+                const det = try ensureBridgeWiring(io, arena, home, command, false, null);
                 return std.fmt.allocPrint(arena, "{s}; {s}", .{ base, det.detail });
             }
             return base;
@@ -1249,7 +1332,7 @@ const BridgeDetail = struct {
 /// gets a fresh agent_servers.tau file when absent (the bridge's own config
 /// lives under our config dir, so writing it is safe), a paste-ready snippet
 /// when it exists but can't be touched or lacks the tau entry.
-fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, command: []const u8, dry: bool) !BridgeDetail {
+fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, command: []const u8, dry: bool, previews: Previews) !BridgeDetail {
     const bpath = try mcacpConfigPath(arena, home);
     var cur: ?[]const u8 = null;
     var unreadable = false;
@@ -1260,7 +1343,7 @@ fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, co
     }
 
     if (cur == null and !unreadable) {
-        const wrote = try writeIfChanged(io, arena, bpath, try renderMcacpJson(arena, command), dry);
+        const wrote = try writeIfChanged(io, arena, bpath, try renderMcacpJson(arena, command), dry, previews);
         return .{
             .detail = try std.fmt.allocPrint(arena, "wrote mcacp bridge config: {s}", .{bpath}),
             .status = if (dry) "would_install" else "installed",
@@ -1285,7 +1368,7 @@ fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, co
     // Exists but unreadable, unparseable, or missing the tau entry — never
     // rewrite; drop a paste-ready snippet instead.
     const snip = try mcacpSnippetPath(arena, home);
-    _ = try writeIfChanged(io, arena, snip, try renderMcacpSnippet(arena, command), dry);
+    _ = try writeIfChanged(io, arena, snip, try renderMcacpSnippet(arena, command), dry, previews);
     return .{
         .detail = try std.fmt.allocPrint(arena, "wrote mcacp paste-ready snippet: {s} — merge the \"tau\" block into {s} by hand", .{ snip, bpath }),
         .status = "manual",
@@ -1299,14 +1382,16 @@ fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, co
 /// bridge_path/bridge_status fields for the mcacp side first; a bridge-side
 /// "manual" or "failed" downgrades the client outcome (the wiring is only
 /// half done). Every other client just closes the object.
-fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, command: []const u8, dry: bool, oc: ClientOutcome) !ClientOutcome {
+fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, command: []const u8, dry: bool, previews: *std.ArrayList(FilePreview), oc: ClientOutcome) !ClientOutcome {
     if (!clientUsesBridge(k)) {
+        try appendFilePreviews(arena, entries, previews.items);
         try entries.append(arena, '}');
         return oc;
     }
-    const det = ensureBridgeWiring(io, arena, home, command, dry) catch |err| {
+    const det = ensureBridgeWiring(io, arena, home, command, dry, previews) catch |err| {
         try entries.appendSlice(arena, ",\"bridge_status\":\"failed\",\"bridge_message\":");
         try js(arena, entries, @errorName(err));
+        try appendFilePreviews(arena, entries, previews.items);
         try entries.append(arena, '}');
         return .failed;
     };
@@ -1318,6 +1403,7 @@ fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
         try entries.appendSlice(arena, ",\"bridge_snippet_path\":");
         try js(arena, entries, s);
     }
+    try appendFilePreviews(arena, entries, previews.items);
     try entries.append(arena, '}');
     return switch (det.outcome) {
         .failed => .failed,
@@ -1360,6 +1446,7 @@ const ClientOutcome = enum { installed, already_installed, manual, failed, would
 /// comments and existing members byte-for-byte.
 fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, command: []const u8, imp: bool, dry: bool) !ClientOutcome {
     if (!first) try entries.append(arena, ',');
+    var previews: std.ArrayList(FilePreview) = .empty;
     try entries.appendSlice(arena, "{\"client\":");
     try js(arena, entries, clientName(k));
 
@@ -1386,7 +1473,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
             else => try renderYamlBridgeSnippet(arena, k),
         };
         const snip = try snippetPath(arena, home, k);
-        _ = writeIfChanged(io, arena, snip, body, dry) catch |err| {
+        _ = writeIfChanged(io, arena, snip, body, dry, &previews) catch |err| {
             try fail(arena, entries, snip, err);
             return .failed;
         };
@@ -1400,7 +1487,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         if (imp and clientUsesBridge(k)) try entries.appendSlice(arena, ",\"imported\":[]");
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
-        return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
+        return closeClientEntry(io, arena, entries, home, k, command, dry, &previews, .manual);
     }
 
     const path = (try clientSettingsPath(arena, home, k)).?;
@@ -1420,13 +1507,13 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         // and the user's servers from the other supported clients are
         // spliced in. A file that can't be scanned falls through to the
         // manual snippet path below.
-        if (try wireBridgeClientImport(io, arena, entries, home, k, command, cur, dry)) |oc|
-            return closeClientEntry(io, arena, entries, home, k, command, dry, oc);
+        if (try wireBridgeClientImport(io, arena, entries, home, k, command, cur, dry, &previews)) |oc|
+            return closeClientEntry(io, arena, entries, home, k, command, dry, &previews, oc);
     }
 
     if (cur == null and !unreadable) {
         // No settings file — write a fresh minimal one.
-        const wrote = writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), dry) catch |err| {
+        const wrote = writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), dry, &previews) catch |err| {
             try fail(arena, entries, path, err);
             return .failed;
         };
@@ -1440,7 +1527,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         try js(arena, entries, command);
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
-        return closeClientEntry(io, arena, entries, home, k, command, dry, switch (wrote) {
+        return closeClientEntry(io, arena, entries, home, k, command, dry, &previews, switch (wrote) {
             .would_write => .would_install,
             .written => .installed,
             .unchanged => .already_installed,
@@ -1451,7 +1538,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         if (hasTauEntry(arena, k, b) orelse false) {
             try entries.appendSlice(arena, ",\"status\":\"already_installed\",\"next\":");
             try js(arena, entries, clientNextStep(k));
-            return closeClientEntry(io, arena, entries, home, k, command, dry, .already_installed);
+            return closeClientEntry(io, arena, entries, home, k, command, dry, &previews, .already_installed);
         }
     }
 
@@ -1465,7 +1552,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         "existing settings file has no \"tau\" entry";
 
     const snip = try snippetPath(arena, home, k);
-    _ = writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), dry) catch |err| {
+    _ = writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), dry, &previews) catch |err| {
         try fail(arena, entries, snip, err);
         return .failed;
     };
@@ -1476,7 +1563,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
     if (imp and clientUsesBridge(k)) try entries.appendSlice(arena, ",\"imported\":[]");
     try entries.appendSlice(arena, ",\"next\":");
     try js(arena, entries, "merge the snippet into your settings file by hand");
-    return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
+    return closeClientEntry(io, arena, entries, home, k, command, dry, &previews, .manual);
 }
 
 // --- --import: carry the user's MCP servers into bridge-client files --------
@@ -1729,7 +1816,7 @@ fn appendImportReport(arena: std.mem.Allocator, entries: *std.ArrayList(u8), imp
 /// caller falls back to the manual snippet path. `cur` is the current file
 /// bytes, or null when the file is absent (the caller only invokes this
 /// for absent-or-readable files).
-fn wireBridgeClientImport(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, command: []const u8, cur: ?[]const u8, dry: bool) !?ClientOutcome {
+fn wireBridgeClientImport(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, command: []const u8, cur: ?[]const u8, dry: bool, previews: *std.ArrayList(FilePreview)) !?ClientOutcome {
     var body: []const u8 = undefined;
     var changed = false;
     if (cur) |b| {
@@ -1770,7 +1857,7 @@ fn wireBridgeClientImport(io: std.Io, arena: std.mem.Allocator, entries: *std.Ar
         return .already_installed;
     }
 
-    const wrote = writeIfChanged(io, arena, path, body, dry) catch |err| {
+    const wrote = writeIfChanged(io, arena, path, body, dry, previews) catch |err| {
         try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
         const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
         try js(arena, entries, msg);
@@ -1876,14 +1963,23 @@ const RemoveOutcome = enum { removed, would_remove, absent, manual, failed };
 const FileRemove = enum { removed, absent, would_remove };
 
 /// Delete `path` when it exists. In dry-run mode an existing file reports
-/// .would_remove and is left alone; a missing one is .absent.
-fn removeFile(io: std.Io, path: []const u8, dry: bool) !FileRemove {
+/// .would_remove and is left alone; a missing one is .absent. The dry-run
+/// preview records a "delete" entry whose diff shows the bytes going away —
+/// deletes get no .bak because they only ever drop files whose remaining
+/// content is tau wiring. An unreadable file still reports .would_remove but
+/// previews nothing: without its bytes there is no honest diff to show.
+fn removeFile(io: std.Io, arena: std.mem.Allocator, path: []const u8, dry: bool, previews: Previews) !FileRemove {
     const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) return .absent;
         return err;
     };
     if (st.kind == .directory) return error.IsDir;
-    if (dry) return .would_remove;
+    if (dry) {
+        if (std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited)) |old| {
+            try pushPreview(arena, previews, path, old, null);
+        } else |_| {}
+        return .would_remove;
+    }
     try std.Io.Dir.cwd().deleteFile(io, path);
     return .removed;
 }
@@ -1899,9 +1995,9 @@ fn inSet(set: []const ClientKind, k: ClientKind) bool {
 /// under ~/.config/tau/snippets/ are tau-owned artifacts — removing them is
 /// part of the clean reversal. A failed delete is reported but never fails
 /// the client (the wiring itself is already gone).
-fn removeSnippetFields(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, dry: bool) !void {
+fn removeSnippetFields(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, dry: bool, previews: Previews) !void {
     const snip = try snippetPath(arena, home, k);
-    const fr = removeFile(io, snip, dry) catch |err| {
+    const fr = removeFile(io, arena, snip, dry, previews) catch |err| {
         try entries.appendSlice(arena, ",\"snippet_path\":");
         try js(arena, entries, snip);
         try entries.appendSlice(arena, ",\"snippet_status\":\"failed\",\"snippet_message\":");
@@ -1930,7 +2026,7 @@ const BridgeRemove = struct {
 /// else). The bridge is shared — when another MCP client outside the removal
 /// set still carries an "mcacp" entry the bridge is "kept" untouched. Files
 /// that can't be read or parsed report "manual" with the hand-step.
-fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool) !BridgeRemove {
+fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool, previews: Previews) !BridgeRemove {
     const bpath = try mcacpConfigPath(arena, home);
 
     var others: std.ArrayList(u8) = .empty;
@@ -1977,7 +2073,7 @@ fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k:
         },
         .absent => return .{ .status = "absent", .path = bpath, .outcome = .absent },
         .empty => {
-            const fr = try removeFile(io, bpath, dry);
+            const fr = try removeFile(io, arena, bpath, dry, previews);
             return .{
                 .status = if (fr == .would_remove) "would_remove" else "removed",
                 .path = bpath,
@@ -1986,7 +2082,7 @@ fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k:
             };
         },
         .spliced => |body| {
-            const w = try writeIfChanged(io, arena, bpath, body, dry);
+            const w = try writeIfChanged(io, arena, bpath, body, dry, previews);
             return .{
                 .status = if (w == .would_write) "would_remove" else "removed",
                 .path = bpath,
@@ -2001,14 +2097,16 @@ fn removeBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k:
 /// outcome (the wiring is only half undone); "kept" does not — the client's
 /// own wiring is still cleanly reversed. When the bridge entry actually went
 /// away, the mcacp paste-snippet is cleaned up too.
-fn closeRemoveEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool, oc: RemoveOutcome) !RemoveOutcome {
+fn closeRemoveEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool, previews: *std.ArrayList(FilePreview), oc: RemoveOutcome) !RemoveOutcome {
     if (!clientUsesBridge(k)) {
+        try appendFilePreviews(arena, entries, previews.items);
         try entries.append(arena, '}');
         return oc;
     }
-    const det = removeBridgeWiring(io, arena, home, k, set, dry) catch |err| {
+    const det = removeBridgeWiring(io, arena, home, k, set, dry, previews) catch |err| {
         try entries.appendSlice(arena, ",\"bridge_status\":\"failed\",\"bridge_message\":");
         try js(arena, entries, @errorName(err));
+        try appendFilePreviews(arena, entries, previews.items);
         try entries.append(arena, '}');
         return .failed;
     };
@@ -2025,7 +2123,7 @@ fn closeRemoveEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
         // The bridge entry is gone — its setup-generated paste snippet is
         // dead weight now. Report it like the per-client snippet fields.
         const snip = try mcacpSnippetPath(arena, home);
-        const fr = removeFile(io, snip, dry) catch null;
+        const fr = removeFile(io, arena, snip, dry, previews) catch null;
         if (fr != null and fr.? != .absent) {
             try entries.appendSlice(arena, ",\"bridge_snippet_path\":");
             try js(arena, entries, snip);
@@ -2033,6 +2131,7 @@ fn closeRemoveEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
             try js(arena, entries, if (fr.? == .would_remove) "would_remove" else "removed");
         }
     }
+    try appendFilePreviews(arena, entries, previews.items);
     try entries.append(arena, '}');
     if (oc == .failed or det.outcome == .failed) return .failed;
     if (oc == .manual or det.outcome == .manual) return .manual;
@@ -2050,6 +2149,7 @@ fn closeRemoveEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
 /// changes.
 fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, set: []const ClientKind, dry: bool) !RemoveOutcome {
     if (!first) try entries.append(arena, ',');
+    var previews: std.ArrayList(FilePreview) = .empty;
     try entries.appendSlice(arena, "{\"client\":");
     try js(arena, entries, clientName(k));
 
@@ -2059,7 +2159,7 @@ fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8
         // the rest off. Goose/Continue/Codex still close through
         // closeRemoveEntry so the shared mcacp bridge entry is reverted
         // like any MCP client.
-        try removeSnippetFields(io, arena, entries, home, k, dry);
+        try removeSnippetFields(io, arena, entries, home, k, dry, &previews);
         try entries.appendSlice(arena, ",\"status\":\"manual\",\"reason\":");
         try js(arena, entries, switch (k) {
             .goose, .continue_ => "YAML wiring cannot be inspected — remove the pasted mcacp block by hand",
@@ -2073,7 +2173,7 @@ fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8
             .codex => "delete the [mcp_servers.mcacp] table from ~/.codex/config.toml and restart Codex",
             else => "delete the tau block from your editor init file and restart",
         });
-        return closeRemoveEntry(io, arena, entries, home, k, set, dry, .manual);
+        return closeRemoveEntry(io, arena, entries, home, k, set, dry, &previews, .manual);
     }
 
     const path = (try clientSettingsPath(arena, home, k)).?;
@@ -2113,7 +2213,7 @@ fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8
                     try entries.appendSlice(arena, ",\"status\":\"absent\"");
                 },
                 .empty => {
-                    const fr = removeFile(io, path, dry) catch |err| {
+                    const fr = removeFile(io, arena, path, dry, &previews) catch |err| {
                         try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
                         const msg = try std.fmt.allocPrint(arena, "could not delete {s}: {s}", .{ path, @errorName(err) });
                         try js(arena, entries, msg);
@@ -2126,7 +2226,7 @@ fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8
                     oc = if (fr == .would_remove) .would_remove else .removed;
                 },
                 .spliced => |body| {
-                    const w = writeIfChanged(io, arena, path, body, dry) catch |err| {
+                    const w = writeIfChanged(io, arena, path, body, dry, &previews) catch |err| {
                         try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
                         const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
                         try js(arena, entries, msg);
@@ -2149,8 +2249,8 @@ fn unwireClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8
         }
     }
 
-    try removeSnippetFields(io, arena, entries, home, k, dry);
-    return closeRemoveEntry(io, arena, entries, home, k, set, dry, oc);
+    try removeSnippetFields(io, arena, entries, home, k, dry, &previews);
+    return closeRemoveEntry(io, arena, entries, home, k, set, dry, &previews, oc);
 }
 
 /// The `setup --remove` step: reverse per-client editor wiring. --client
@@ -2428,9 +2528,9 @@ test "writeIfChanged writes once then reports unchanged" {
     const root = try tmp.dir.realPathFileAlloc(io, ".", a);
     const p = try std.fmt.allocPrint(a, "{s}/sub/dir/f.txt", .{root});
 
-    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abc", false));
-    try testing.expectEqual(WriteResult.unchanged, try writeIfChanged(io, a, p, "abc", false));
-    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abd", false));
+    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abc", false, null));
+    try testing.expectEqual(WriteResult.unchanged, try writeIfChanged(io, a, p, "abc", false, null));
+    try testing.expectEqual(WriteResult.written, try writeIfChanged(io, a, p, "abd", false, null));
 }
 
 test "writeIfChanged in dry-run previews the write without touching the file" {
@@ -2445,17 +2545,111 @@ test "writeIfChanged in dry-run previews the write without touching the file" {
 
     // Missing file: reports would_write, creates nothing — parent dirs too.
     const p = try std.fmt.allocPrint(a, "{s}/sub/dir/f.txt", .{root});
-    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "abc", true));
+    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "abc", true, null));
     try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/sub", .{root})));
 
     // Identical content is still a no-op (unchanged, not would_write).
-    _ = try writeIfChanged(io, a, p, "abc", false);
-    try testing.expectEqual(WriteResult.unchanged, try writeIfChanged(io, a, p, "abc", true));
+    _ = try writeIfChanged(io, a, p, "abc", false, null);
+    try testing.expectEqual(WriteResult.unchanged, try writeIfChanged(io, a, p, "abc", true, null));
 
     // Differing content previews, and the real bytes survive.
-    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "abd", true));
+    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "abd", true, null));
     const got = try std.Io.Dir.cwd().readFileAlloc(io, p, a, .unlimited);
     try testing.expectEqualStrings("abc", got);
+}
+
+test "writeIfChanged real overwrite preserves the original at <path>.bak" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const p = try std.fmt.allocPrint(a, "{s}/f.txt", .{root});
+    const bak = try std.fmt.allocPrint(a, "{s}.bak", .{p});
+
+    _ = try writeIfChanged(io, a, p, "old-bytes", false, null);
+    _ = try writeIfChanged(io, a, p, "new-bytes", false, null);
+    const saved = try std.Io.Dir.cwd().readFileAlloc(io, bak, a, .unlimited);
+    try testing.expectEqualStrings("old-bytes", saved);
+
+    // A fresh write has nothing to preserve — no .bak appears.
+    const p2 = try std.fmt.allocPrint(a, "{s}/fresh.txt", .{root});
+    _ = try writeIfChanged(io, a, p2, "x", false, null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(io, try std.fmt.allocPrint(a, "{s}.bak", .{p2}), .{}));
+}
+
+test "writeIfChanged dry-run records the unified diff and backup path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const p = try std.fmt.allocPrint(a, "{s}/f.txt", .{root});
+
+    // Create: /dev/null source, no backup_path.
+    var pv: std.ArrayList(FilePreview) = .empty;
+    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "a\nb\n", true, &pv));
+    try testing.expectEqual(@as(usize, 1), pv.items.len);
+    try testing.expectEqual(FileAction.create, pv.items[0].action);
+    try testing.expect(pv.items[0].backup_path == null);
+    try testing.expect(std.mem.indexOf(u8, pv.items[0].diff, "--- /dev/null") != null);
+    try testing.expect(std.mem.indexOf(u8, pv.items[0].diff, "+a\n+b\n") != null);
+
+    // Modify: real diff hunks plus <path>.bak.
+    pv.clearRetainingCapacity();
+    _ = try writeIfChanged(io, a, p, "a\nb\n", false, null);
+    try testing.expectEqual(WriteResult.would_write, try writeIfChanged(io, a, p, "a\nB\n", true, &pv));
+    try testing.expectEqual(@as(usize, 1), pv.items.len);
+    try testing.expectEqual(FileAction.modify, pv.items[0].action);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}.bak", .{p}), pv.items[0].backup_path.?);
+    try testing.expect(std.mem.indexOf(u8, pv.items[0].diff, "-b\n+B\n") != null);
+}
+
+test "removeFile dry-run records a delete preview with no backup" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const p = try std.fmt.allocPrint(a, "{s}/gone.txt", .{root});
+    _ = try writeIfChanged(io, a, p, "tau-wiring\n", false, null);
+
+    var pv: std.ArrayList(FilePreview) = .empty;
+    try testing.expectEqual(FileRemove.would_remove, try removeFile(io, a, p, true, &pv));
+    try testing.expectEqual(@as(usize, 1), pv.items.len);
+    try testing.expectEqual(FileAction.delete, pv.items[0].action);
+    try testing.expect(pv.items[0].backup_path == null);
+    try testing.expect(std.mem.indexOf(u8, pv.items[0].diff, "+++ /dev/null") != null);
+    try testing.expect(std.mem.indexOf(u8, pv.items[0].diff, "-tau-wiring\n") != null);
+}
+
+test "appendFilePreviews renders the files member" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.append(a, '{');
+    try appendFilePreviews(a, &buf, &.{});
+    try testing.expectEqualStrings("{", buf.items);
+
+    try appendFilePreviews(a, &buf, &.{
+        .{ .path = "/h/f", .action = .modify, .diff = "-x\n+y\n", .backup_path = "/h/f.bak" },
+        .{ .path = "/h/g", .action = .create, .diff = "+g\n" },
+    });
+    try buf.append(a, '}');
+    try testing.expectEqualStrings(
+        \\{,"files":[{"path":"/h/f","action":"modify","diff":"-x\n+y\n","backup_path":"/h/f.bak"},{"path":"/h/g","action":"create","diff":"+g\n"}]}
+    , buf.items);
 }
 
 test "ensureRcBlock appends the marker once and is idempotent" {
@@ -2470,16 +2664,16 @@ test "ensureRcBlock appends the marker once and is idempotent" {
     const rc = try std.fmt.allocPrint(a, "{s}/.zshrc", .{root});
 
     // Missing file -> created with the block.
-    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false));
+    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false, null));
     // Second run detects the marker -> no duplicate.
-    try testing.expectEqual(RcResult.present, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false));
+    try testing.expectEqual(RcResult.present, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false, null));
 
     const got = try std.Io.Dir.cwd().readFileAlloc(io, rc, a, .unlimited);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, got, rc_marker));
 
     // Existing content without a trailing newline still gets a clean join.
-    _ = try writeIfChanged(io, a, rc, "export A=1", false);
-    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false));
+    _ = try writeIfChanged(io, a, rc, "export A=1", false, null);
+    try testing.expectEqual(RcResult.appended, try ensureRcBlock(io, a, rc, "# tau completions\nfpath=(x $fpath)\n", false, null));
     const got2 = try std.Io.Dir.cwd().readFileAlloc(io, rc, a, .unlimited);
     try testing.expect(std.mem.indexOf(u8, got2, "export A=1\n# tau completions\n") != null);
 }
@@ -2745,7 +2939,7 @@ test "configureClient dry-run keeps manual outcome and writes no snippet" {
 
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     const orig = "{\n  // keep me\n  \"vim_mode\": true\n}\n";
-    _ = try writeIfChanged(io, a, sp, orig, false);
+    _ = try writeIfChanged(io, a, sp, orig, false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, true);
@@ -2771,7 +2965,7 @@ test "configureClient leaves an existing settings file alone and emits a snippet
 
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     const orig = "{\n  // user comment must survive\n  \"vim_mode\": true\n}\n";
-    _ = try writeIfChanged(io, a, sp, orig, false);
+    _ = try writeIfChanged(io, a, sp, orig, false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
@@ -2838,14 +3032,14 @@ test "inspectClientWiring: detection, missing/unparseable/no-entry, staleness si
 
     try testing.expectEqual(WiringState.missing_file, (try inspectClientWiring(io, a, home, .zed)).state);
 
-    _ = try writeIfChanged(io, a, sp, "{ not json", false);
+    _ = try writeIfChanged(io, a, sp, "{ not json", false, null);
     try testing.expectEqual(WiringState.unparseable, (try inspectClientWiring(io, a, home, .zed)).state);
 
-    _ = try writeIfChanged(io, a, sp, "{\"agent_servers\": {}}", false);
+    _ = try writeIfChanged(io, a, sp, "{\"agent_servers\": {}}", false, null);
     try testing.expectEqual(WiringState.no_entry, (try inspectClientWiring(io, a, home, .zed)).state);
 
     // Entry whose command names a dead path -> stale.
-    _ = try writeIfChanged(io, a, sp, "{\"agent_servers\": {\"tau\": {\"type\":\"custom\",\"command\":\"/missing/tau\",\"args\":[\"acp\",\"serve\"]}}}", false);
+    _ = try writeIfChanged(io, a, sp, "{\"agent_servers\": {\"tau\": {\"type\":\"custom\",\"command\":\"/missing/tau\",\"args\":[\"acp\",\"serve\"]}}}", false, null);
     const dead = try inspectClientWiring(io, a, home, .zed);
     try testing.expectEqual(WiringState.stale, dead.state);
     try testing.expect(std.mem.indexOf(u8, dead.reason.?, "/missing/tau") != null);
@@ -2855,7 +3049,7 @@ test "inspectClientWiring: detection, missing/unparseable/no-entry, staleness si
     var esc: std.ArrayList(u8) = .empty;
     try json.escapeInto(a, &esc, exe);
     const bad_args = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"type\":\"custom\",\"command\":\"{s}\",\"args\":[\"serve\"]}}}}}}", .{esc.items});
-    _ = try writeIfChanged(io, a, sp, bad_args, false);
+    _ = try writeIfChanged(io, a, sp, bad_args, false, null);
     const st_args = try inspectClientWiring(io, a, home, .zed);
     try testing.expectEqual(WiringState.stale, st_args.state);
     try testing.expect(std.mem.indexOf(u8, st_args.reason.?, "args") != null);
@@ -2863,17 +3057,17 @@ test "inspectClientWiring: detection, missing/unparseable/no-entry, staleness si
     // Zed without "type":"custom" -> stale; the same entry is fine for
     // jetbrains (no type requirement).
     const no_type = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{esc.items});
-    _ = try writeIfChanged(io, a, sp, no_type, false);
+    _ = try writeIfChanged(io, a, sp, no_type, false, null);
     try testing.expectEqual(WiringState.stale, (try inspectClientWiring(io, a, home, .zed)).state);
 
     const jb_dir = try std.fmt.allocPrint(a, "{s}/.jetbrains", .{home});
     try std.Io.Dir.cwd().createDirPath(io, jb_dir);
-    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/acp.json", .{jb_dir}), no_type, false);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/acp.json", .{jb_dir}), no_type, false, null);
     try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .jetbrains)).state);
 
     // Fully correct zed entry -> ok.
     const good = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"type\":\"custom\",\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{esc.items});
-    _ = try writeIfChanged(io, a, sp, good, false);
+    _ = try writeIfChanged(io, a, sp, good, false, null);
     try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .zed)).state);
 }
 
@@ -2901,7 +3095,7 @@ test "remedyClientWiring: missing file gets a minimal one; no-entry gets a snipp
     try std.Io.Dir.cwd().createDirPath(io, code_dir);
     const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{code_dir});
     const orig = "{\n  // keep me\n  \"vim\": true\n}\n";
-    _ = try writeIfChanged(io, a, sp, orig, false);
+    _ = try writeIfChanged(io, a, sp, orig, false, null);
 
     const d2 = try remedyClientWiring(io, a, home, .vscode, exe);
     try testing.expect(std.mem.indexOf(u8, d2, "snippet") != null);
@@ -2994,7 +3188,7 @@ test "inspectClientWiring bridge: client entry plus mcacp.json both classify" {
     const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{gdir});
 
     // Client entry present but the bridge config is missing -> stale.
-    _ = try writeIfChanged(io, a, sp, "{\"mcpServers\": {\"mcacp\": {\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}}}", false);
+    _ = try writeIfChanged(io, a, sp, "{\"mcpServers\": {\"mcacp\": {\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}}}", false, null);
     const half = try inspectClientWiring(io, a, home, .gemini);
     try testing.expectEqual(WiringState.stale, half.state);
     try testing.expect(std.mem.indexOf(u8, half.reason.?, "mcacp") != null);
@@ -3003,11 +3197,11 @@ test "inspectClientWiring bridge: client entry plus mcacp.json both classify" {
     const bpath = try mcacpConfigPath(a, home);
     var esc: std.ArrayList(u8) = .empty;
     try json.escapeInto(a, &esc, exe);
-    _ = try writeIfChanged(io, a, bpath, try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{esc.items}), false);
+    _ = try writeIfChanged(io, a, bpath, try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{esc.items}), false, null);
     try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .gemini)).state);
 
     // A bridge config without the tau entry -> stale naming the bridge file.
-    _ = try writeIfChanged(io, a, bpath, "{\"agent_servers\": {}}", false);
+    _ = try writeIfChanged(io, a, bpath, "{\"agent_servers\": {}}", false, null);
     const no_tau = try inspectClientWiring(io, a, home, .gemini);
     try testing.expectEqual(WiringState.stale, no_tau.state);
     try testing.expect(std.mem.indexOf(u8, no_tau.reason.?, "no \"tau\" entry") != null);
@@ -3043,7 +3237,7 @@ test "opencode bridge: mcp.local entry writes and classifies" {
     try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .opencode)).state);
 
     // A command string (the mcpServers shape) is stale for opencode.
-    _ = try writeIfChanged(io, a, sp, "{\"mcp\": {\"mcacp\": {\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}}}", false);
+    _ = try writeIfChanged(io, a, sp, "{\"mcp\": {\"mcacp\": {\"command\":\"npx\",\"args\":[\"-y\",\"mcacp\"]}}}", false, null);
     const wrong_shape = try inspectClientWiring(io, a, home, .opencode);
     try testing.expectEqual(WiringState.stale, wrong_shape.state);
     try testing.expect(std.mem.indexOf(u8, wrong_shape.reason.?, "command") != null);
@@ -3244,7 +3438,7 @@ test "unwireClient splices the entry out and preserves user bytes" {
     const set = [_]ClientKind{.zed};
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     const orig = "{\n  // user comment must survive\n  \"vim_mode\": true,\n  \"agent_servers\": {\n    \"tau\": { \"type\": \"custom\", \"command\": \"/x/tau\", \"args\": [\"acp\", \"serve\"] }\n  },\n  \"theme\": \"dark\"\n}\n";
-    _ = try writeIfChanged(io, a, sp, orig, false);
+    _ = try writeIfChanged(io, a, sp, orig, false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const oc = try unwireClient(io, a, &entries, true, home, .zed, &set, false);
@@ -3359,7 +3553,7 @@ test "unwireClient unparseable settings reports manual and leaves bytes" {
     const set = [_]ClientKind{.zed};
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     const orig = "{ not json at all";
-    _ = try writeIfChanged(io, a, sp, orig, false);
+    _ = try writeIfChanged(io, a, sp, orig, false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const oc = try unwireClient(io, a, &entries, true, home, .zed, &set, false);
@@ -3380,10 +3574,10 @@ test "removeFile: absent, removed, and would_remove under dry-run" {
     const root = try tmp.dir.realPathFileAlloc(io, ".", a);
     const p = try std.fmt.allocPrint(a, "{s}/f.txt", .{root});
 
-    try testing.expectEqual(FileRemove.absent, try removeFile(io, p, false));
-    _ = try writeIfChanged(io, a, p, "x", false);
-    try testing.expectEqual(FileRemove.would_remove, try removeFile(io, p, true));
-    try testing.expectEqual(FileRemove.removed, try removeFile(io, p, false));
+    try testing.expectEqual(FileRemove.absent, try removeFile(io, a, p, false, null));
+    _ = try writeIfChanged(io, a, p, "x", false, null);
+    try testing.expectEqual(FileRemove.would_remove, try removeFile(io, a, p, true, null));
+    try testing.expectEqual(FileRemove.removed, try removeFile(io, a, p, false, null));
 }
 
 test "collectImportable gathers stdio servers, skips mcacp/remote, dedups by name" {
@@ -3408,12 +3602,12 @@ test "collectImportable gathers stdio servers, skips mcacp/remote, dedups by nam
         \\  }
         \\}
         \\
-    , false);
+    , false, null);
     // Gemini: one new server + a name that collides with Claude's.
     _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
         \\{"mcpServers": {"fs2": {"command": "uvx"}, "github": {"command": "other"}}}
         \\
-    , false);
+    , false, null);
 
     const plan = try collectImportable(io, a, home, .windsurf);
     try testing.expectEqual(@as(usize, 3), plan.servers.items.len);
@@ -3451,7 +3645,7 @@ test "collectImportable unparseable source reports a file-level skip" {
     defer tmp.cleanup();
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
-    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}), "{ not json", false);
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}), "{ not json", false, null);
     const plan = try collectImportable(io, a, home, .windsurf);
     try testing.expectEqual(@as(usize, 0), plan.servers.items.len);
     try testing.expectEqual(@as(usize, 1), plan.skipped.items.len);
@@ -3535,13 +3729,13 @@ test "configureClient --import splices mcacp + imported servers into an existing
         \\}
         \\
     ;
-    _ = try writeIfChanged(io, a, wpath, before, false);
+    _ = try writeIfChanged(io, a, wpath, before, false, null);
 
     // Source: claude_desktop carries a server to import.
     _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
         \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}
         \\
-    , false);
+    , false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
@@ -3573,11 +3767,11 @@ test "configureClient --import dry-run previews the merge, writes nothing" {
 
     const wpath = try std.fmt.allocPrint(a, "{s}/.codeium/windsurf/mcp_config.json", .{home});
     const before = "{\"mcpServers\": {}}\n";
-    _ = try writeIfChanged(io, a, wpath, before, false);
+    _ = try writeIfChanged(io, a, wpath, before, false, null);
     _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
         \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}
         \\
-    , false);
+    , false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, true);
@@ -3603,7 +3797,7 @@ test "configureClient --import on an already-wired file merges only missing serv
     _ = try writeIfChanged(io, a, wpath,
         \\{"mcpServers": {"mcacp": {"command": "npx", "args": ["-y", "mcacp"]}}}
         \\
-    , false);
+    , false, null);
     const plan_home = home;
 
     // Nothing to import yet -> already_installed.
@@ -3616,7 +3810,7 @@ test "configureClient --import on an already-wired file merges only missing serv
     _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
         \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}}}
         \\
-    , false);
+    , false, null);
     entries.clearRetainingCapacity();
     const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
@@ -3637,7 +3831,7 @@ test "configureClient --import falls back to manual on an unparseable file" {
 
     const wpath = try std.fmt.allocPrint(a, "{s}/.codeium/windsurf/mcp_config.json", .{home});
     const before = "{ not json\n";
-    _ = try writeIfChanged(io, a, wpath, before, false);
+    _ = try writeIfChanged(io, a, wpath, before, false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
@@ -3736,7 +3930,7 @@ test "property: wire then --remove restores user bytes for every JSONC client" {
             case_n += 1;
             const cpath = (try clientSettingsPath(a, home, k)).?;
             const orig = try rtBody(a, c.body, k);
-            _ = try writeIfChanged(io, a, cpath, orig, false);
+            _ = try writeIfChanged(io, a, cpath, orig, false, null);
 
             var entries: std.ArrayList(u8) = .empty;
             if (clientUsesBridge(k)) {
@@ -3751,7 +3945,7 @@ test "property: wire then --remove restores user bytes for every JSONC client" {
                     .inserted => |nb| nb,
                     else => return error.TestUnexpectedResult,
                 };
-                _ = try writeIfChanged(io, a, cpath, wired, false);
+                _ = try writeIfChanged(io, a, cpath, wired, false, null);
             }
             const wired_bytes = try std.Io.Dir.cwd().readFileAlloc(io, cpath, a, .unlimited);
             // hasTauEntry goes through std.json, which can't see JSONC's
@@ -3823,7 +4017,7 @@ test "wire then --remove edges: emptied-section husk and memberless docs" {
             const home = try std.fmt.allocPrint(a, "{s}/e{d}", .{ root, case_n });
             case_n += 1;
             const cpath = (try clientSettingsPath(a, home, k)).?;
-            _ = try writeIfChanged(io, a, cpath, try rtBody(a, c.body, k), false);
+            _ = try writeIfChanged(io, a, cpath, try rtBody(a, c.body, k), false, null);
 
             var entries: std.ArrayList(u8) = .empty;
             const woc = try configureClient(io, a, &entries, true, home, k, "/abs/tau", true, false);
@@ -3866,18 +4060,18 @@ test "--import merged servers survive --remove; original bytes return around the
         \\}
         \\
     ;
-    _ = try writeIfChanged(io, a, wpath, orig, false);
+    _ = try writeIfChanged(io, a, wpath, orig, false, null);
 
     // Two import sources — Claude Desktop wins "fs2" only because gemini's
     // file is missing here; order is all_clients (gemini before claude).
     _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.config/Claude/claude_desktop_config.json", .{home}),
         \\{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}, "gh": {"command": "gh"}}}
         \\
-    , false);
+    , false, null);
     _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.gemini/settings.json", .{home}),
         \\{"mcpServers": {"fs2": {"command": "uvx"}}}
         \\
-    , false);
+    , false, null);
 
     var entries: std.ArrayList(u8) = .empty;
     const woc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);

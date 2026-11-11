@@ -2602,6 +2602,11 @@ test_group_setup() {
   contains "dry-run marks the clients step" "$d3" '"step":"clients","status":"would_install"'
   contains "dry-run zed entry reports would_install" "$d3" '"status":"would_install"'
   contains "dry-run marks the clients object" "$d3" '"dry_run":true'
+  contains "dry-run init renders the file preview" "$d1" '"files":[{"path":"'
+  contains "dry-run init preview is a create" "$d1" '"action":"create"'
+  contains "dry-run init diff reads from /dev/null" "$d1" '--- /dev/null'
+  contains "dry-run completions renders file previews" "$d2" '"files":[{"path":"'
+  contains "dry-run clients renders the zed create" "$d3" '"action":"create"'
   contains "dry-run verdict is marked" "$d5" '"step":"setup","ok":true'
   contains "dry-run verdict carries the flag" "$d5" '"dry_run":true'
   [ ! -e "$mock_home19/.config/tau/config.json" ]; ok "dry-run wrote no config.json" "$?" 0
@@ -2629,6 +2634,7 @@ test_group_setup() {
   contains "noop dry-run reports already_installed" "$s22_out" '"status":"already_installed"'
   contains "noop dry-run rc reports present" "$s22_out" '"rc_status":"present"'
   contains "noop dry-run verdict is still marked" "$s22_out" '"dry_run":true'
+  printf '%s' "$s22_out" | grep -q '"files"'; ok "noop dry-run emits no file previews" "$?" 1
 
   # --client nvim in dry-run: manual outcome is unchanged, no snippet lands.
   local mock_home20; mock_home20="$(mktemp -d)"; register_temp_dir "$mock_home20"
@@ -2687,6 +2693,8 @@ test_group_setup() {
   ok "setup --uninstall --dry-run exits 0" "$s28_rc" 0
   contains "uninstall dry-run previews removal" "$s28_out" '"status":"would_remove"'
   contains "uninstall dry-run marks the step" "$s28_out" '"dry_run":true'
+  contains "uninstall dry-run renders the delete diff" "$s28_out" '"action":"delete"'
+  contains "uninstall dry-run delete diff writes /dev/null" "$s28_out" '+++ /dev/null'
   [ -f "$mock_home24/.gemini/settings.json" ]; ok "dry-run left gemini settings" "$?" 0
   [ -f "$mock_home24/.config/mcacp/mcacp.json" ]; ok "dry-run left bridge config" "$?" 0
 
@@ -2724,6 +2732,18 @@ test_group_setup() {
   printf '{\n  "mcpServers": {\n    "fs": { "command": "npx", "args": ["-y", "fs-mcp"] },\n    "remote-svc": { "url": "https://mcp.example.com/sse" }\n  }\n}\n' \
     > "$mock_home26/.config/Claude/claude_desktop_config.json"
   printf '{"mcpServers": {"fs2": {"command": "uvx"}}}\n' > "$mock_home26/.gemini/settings.json"
+  # --dry-run on the existing file previews the in-place rewrite: a modify
+  # entry carries the exact diff plus the <path>.bak the real run leaves —
+  # and neither the splice nor the backup lands.
+  capture s31d env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home26" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --dry-run
+  ok "setup --import --dry-run on existing file exits 0" "$s31d_rc" 0
+  contains "import dry-run previews the modify" "$s31d_out" '"action":"modify"'
+  contains "import dry-run names the backup path" "$s31d_out" "\"backup_path\":\"$mock_home26/.codeium/windsurf/mcp_config.json.bak\""
+  contains "import dry-run diff shows the splice" "$s31d_out" 'mcacp'
+  [ ! -e "$mock_home26/.codeium/windsurf/mcp_config.json.bak" ]; ok "import dry-run wrote no .bak" "$?" 0
+  grep -q '"mcacp"' "$mock_home26/.codeium/windsurf/mcp_config.json" 2>/dev/null
+  ok "import dry-run did not splice" "$?" 1
   capture s32 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
     HOME="$mock_home26" XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import
   ok "setup --import exits 0" "$s32_rc" 0
@@ -2737,6 +2757,12 @@ test_group_setup() {
   grep -q '"theme": "dark"' "$mock_home26/.codeium/windsurf/mcp_config.json"; ok "sibling setting survives" "$?" 0
   grep -q 'remote-svc' "$mock_home26/.codeium/windsurf/mcp_config.json" 2>/dev/null
   ok "remote server was not imported" "$?" 1
+  # The real run honored the advertised backup path: <path>.bak holds the
+  # exact pre-splice bytes (comment + user entry, no mcacp yet).
+  [ -f "$mock_home26/.codeium/windsurf/mcp_config.json.bak" ]; ok "real splice left the .bak" "$?" 0
+  grep -q '// keep me' "$mock_home26/.codeium/windsurf/mcp_config.json.bak"; ok ".bak holds the pre-splice bytes" "$?" 0
+  grep -q '"mcacp"' "$mock_home26/.codeium/windsurf/mcp_config.json.bak" 2>/dev/null
+  ok ".bak predates the mcacp splice" "$?" 1
 
   # --dry-run previews the merge without writing anything.
   local mock_home27; mock_home27="$(mktemp -d)"; register_temp_dir "$mock_home27"

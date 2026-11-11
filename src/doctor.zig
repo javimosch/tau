@@ -1813,7 +1813,7 @@ fn writeScaffold(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ
     const det = try initmod.detectKeys(arena, env);
     const p = initmod.pickProvider(det, null);
     const body = try initmod.renderConfig(arena, det, p);
-    _ = try setup.writeIfChanged(io, arena, path, body, false);
+    _ = try setup.writeIfChanged(io, arena, path, body, false, null);
     if (comptime builtin.os.tag != .windows) {
         // The scaffold can hold API keys later — start restrictive so the
         // config_permissions check is clean after one --fix pass.
@@ -1871,7 +1871,7 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             if (shells.len == 0) break :blk error.NoShellDetected;
             var names: std.ArrayList(u8) = .empty;
             for (shells, 0..) |k, i| {
-                _ = setup.installCompletion(io, arena, home, k, false) catch |err| break :blk err;
+                _ = setup.installCompletion(io, arena, home, k, false, null) catch |err| break :blk err;
                 if (i != 0) names.appendSlice(arena, ",") catch {};
                 names.appendSlice(arena, setup.shellName(k)) catch {};
             }

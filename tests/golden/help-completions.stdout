@@ -17,7 +17,8 @@ Options:
                     bash|zsh|fish|pwsh|all
                     (default: detect $SHELL)
       --dry-run       Preview the install — "would_install"/
-                    "would_append" statuses plus "dry_run":true;
+                    "would_append" statuses, per-file unified
+                    diffs ("files") plus "dry_run":true;
                     nothing is written
       --json          Pin the stable schema-checked result object
                     (schema/tau-completions.schema.json; output is

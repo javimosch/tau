@@ -298,7 +298,10 @@ const setup_help =
     \\      --non-interactive  Unattended contract for scripts/CI: never
     \\                         prompts, never reads stdin
     \\                         (env TAU_NONINTERACTIVE=1)
-    \\      --dry-run          Preview every write step; change nothing
+    \\      --dry-run          Preview every write step — each pending file
+    \\                         change renders a "files" entry with the exact
+    \\                         unified diff and the <path>.bak backup path
+    \\                         a real run leaves; change nothing
     \\      --import           Merge your existing MCP server entries from
     \\                         the other supported clients' settings files
     \\                         into each wired MCP client (windsurf|gemini|
@@ -359,7 +362,8 @@ const completions_help =
     \\                    bash|zsh|fish|pwsh|all
     \\                    (default: detect $SHELL)
     \\      --dry-run       Preview the install — "would_install"/
-    \\                    "would_append" statuses plus "dry_run":true;
+    \\                    "would_append" statuses, per-file unified
+    \\                    diffs ("files") plus "dry_run":true;
     \\                    nothing is written
     \\      --json          Pin the stable schema-checked result object
     \\                    (schema/tau-completions.schema.json; output is

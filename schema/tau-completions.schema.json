@@ -27,7 +27,12 @@
           "rc": { "type": "string", "description": "Rc/profile file the autoload hook was appended to (zsh/pwsh only)." },
           "rc_status": { "type": "string", "enum": ["appended", "present", "would_append", "failed"], "description": "Outcome of the rc-hook append (zsh/pwsh only)." },
           "note": { "type": "string", "description": "Shell-specific note (e.g. bash-completion requirement)." },
-          "message": { "type": "string", "description": "Failure detail for this shell." }
+          "message": { "type": "string", "description": "Failure detail for this shell." },
+          "files": {
+            "type": "array",
+            "description": "Under --dry-run: one entry per file this shell's install would create, rewrite, or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+            "items": { "$ref": "#/$defs/file_preview" }
+          }
         }
       }
     },
@@ -37,6 +42,20 @@
     "dry_run": { "const": true, "description": "Present under --dry-run." },
     "version": { "type": "string", "description": "The tau version that produced this result (e.g. \"0.4.0\")." },
     "done": { "const": true, "description": "Terminal marker — always true on the result object." }
+  },
+  "$defs": {
+    "file_preview": {
+      "type": "object",
+      "description": "One file a real run would change, rendered under --dry-run: the exact unified diff that would be applied plus, for in-place rewrites, backup_path — the <path>.bak where the real run preserves the original before overwriting.",
+      "required": ["path", "action", "diff"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "File the change touches." },
+        "action": { "type": "string", "enum": ["create", "modify", "delete"], "description": "\"create\" (file absent — the diff reads from /dev/null), \"modify\" (existing file rewritten — the original lands at backup_path), \"delete\" (file removed — the diff writes to /dev/null)." },
+        "diff": { "type": "string", "description": "Unified diff of the current bytes to the would-be bytes (---/+++ headers, @@ hunks, \\ No newline markers)." },
+        "backup_path": { "type": "string", "description": "<path>.bak written by a real run before overwriting an existing file; absent for creates and deletes." }
+      }
+    }
   },
   "examples": [
     {

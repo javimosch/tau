@@ -74,7 +74,10 @@ Setup:
                               prompts, never reads stdin (env
                               TAU_NONINTERACTIVE=1)
       --dry-run               Preview every write step (would_* statuses
-                              + "dry_run":true); change nothing
+                              + per-file "files" entries with the exact
+                              unified diff and the <path>.bak a real
+                              run leaves + "dry_run":true); change
+                              nothing
       --import                Merge existing MCP server entries from the
                               other supported clients into each wired
                               MCP client (env TAU_SETUP_IMPORT; not with
@@ -92,7 +95,8 @@ Setup:
                               bash|zsh|fish|pwsh|all) into your shell
                               profile — the same machinery the setup
                               completions step uses
-      --dry-run               Preview the install; change nothing
+      --dry-run               Preview the install (per-file unified
+                              diffs included); change nothing
       --json                  Pin the stable schema-checked result object
                               (schema/tau-completions.schema.json)
 

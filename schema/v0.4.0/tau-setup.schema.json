@@ -13,6 +13,18 @@
     { "$ref": "#/$defs/verdict_event" }
   ],
   "$defs": {
+    "file_preview": {
+      "type": "object",
+      "description": "One file a real run would change, rendered under --dry-run: the exact unified diff that would be applied plus, for in-place rewrites, backup_path — the <path>.bak where the real run preserves the original before overwriting.",
+      "required": ["path", "action", "diff"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "File the change touches." },
+        "action": { "type": "string", "enum": ["create", "modify", "delete"], "description": "\"create\" (file absent — the diff reads from /dev/null), \"modify\" (existing file rewritten — the original lands at backup_path), \"delete\" (file removed — the diff writes to /dev/null)." },
+        "diff": { "type": "string", "description": "Unified diff of the current bytes to the would-be bytes (---/+++ headers, @@ hunks, \\ No newline markers)." },
+        "backup_path": { "type": "string", "description": "<path>.bak written by a real run before overwriting an existing file; absent for creates and deletes." }
+      }
+    },
     "init_event": {
       "type": "object",
       "description": "First event: the config scaffold step. status is \"created\" on a fresh write, \"exists\" when a config was already present, \"would_create\" under --dry-run, \"failed\" when the path could not be resolved or written.",
@@ -28,6 +40,11 @@
           "type": "array",
           "description": "Provider API-key env var names found set (names only, never values); absent on failure.",
           "items": { "type": "string" }
+        },
+        "files": {
+          "type": "array",
+          "description": "Under --dry-run: one entry per file this step would create, rewrite, or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+          "items": { "$ref": "#/$defs/file_preview" }
         },
         "dry_run": { "const": true, "description": "Present under --dry-run." }
       }
@@ -57,7 +74,12 @@
               "rc": { "type": "string", "description": "Rc/profile file the autoload hook was appended to (zsh/pwsh only)." },
               "rc_status": { "type": "string", "enum": ["appended", "present", "would_append", "failed"], "description": "Outcome of the rc-hook append (zsh/pwsh only)." },
               "note": { "type": "string", "description": "Shell-specific note (e.g. bash-completion requirement)." },
-              "message": { "type": "string", "description": "Failure detail for this shell." }
+              "message": { "type": "string", "description": "Failure detail for this shell." },
+              "files": {
+                "type": "array",
+                "description": "Under --dry-run: one entry per file this shell's install would create, rewrite, or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+                "items": { "$ref": "#/$defs/file_preview" }
+              }
             }
           }
         },
@@ -126,6 +148,11 @@
                     "reason": { "type": "string", "description": "Why the entry or file was not imported." }
                   }
                 }
+              },
+              "files": {
+                "type": "array",
+                "description": "Under --dry-run: one entry per file this client's wiring would create, rewrite, or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+                "items": { "$ref": "#/$defs/file_preview" }
               }
             }
           }
@@ -166,7 +193,12 @@
               "bridge_reason": { "type": "string", "description": "Why the bridge entry was kept or needs hand-removal." },
               "bridge_message": { "type": "string", "description": "Failure detail for the bridge-side removal." },
               "bridge_snippet_path": { "type": "string", "description": "mcacp paste-snippet cleaned once the bridge entry went away; emitted when it existed." },
-              "bridge_snippet_status": { "type": "string", "enum": ["removed", "would_remove"], "description": "Outcome of the bridge snippet cleanup; emitted with bridge_snippet_path." }
+              "bridge_snippet_status": { "type": "string", "enum": ["removed", "would_remove"], "description": "Outcome of the bridge snippet cleanup; emitted with bridge_snippet_path." },
+              "files": {
+                "type": "array",
+                "description": "Under --dry-run: one entry per file this client's unwiring would rewrite or delete — the exact unified diff plus the <path>.bak a real run would leave on in-place rewrites. Absent when nothing would change.",
+                "items": { "$ref": "#/$defs/file_preview" }
+              }
             }
           }
         },
