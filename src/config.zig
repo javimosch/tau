@@ -252,6 +252,11 @@ pub const Config = struct {
     /// provider with a credential-free environment to verify the installed
     /// binary works end-to-end.
     doctor_selftest: bool = false,
+    /// `tau doctor --client <name>` — scope the client_<name> wiring rows
+    /// (and their wire_client_* fixes) to one client; every other check is
+    /// unchanged. Same accepted values as `tau setup --client`; "all" is the
+    /// default sweep. Null means every detected client is reported.
+    doctor_client: ?[]const u8 = null,
 
     // --- Setup (src/setup.zig) ---
     /// `--shell <name>` completions shell override (bash|zsh|fish|pwsh|all) —

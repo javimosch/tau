@@ -33,7 +33,7 @@ pub const CheckSpec = struct {
 
 /// Shared spec text for the per-client wiring rows (`client_<name>` — one
 /// per ClientKind, only emitted when that client's settings dir exists).
-pub const client_fails_when = "tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed";
+pub const client_fails_when = "tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed — except under `tau doctor --client <name>`, which reports a not-installed skip instead of silence";
 
 /// Remediation template for `client_<name>` rows: the first `{s}` is the
 /// `--client` name, the second the per-client guide file under docs/clients/.

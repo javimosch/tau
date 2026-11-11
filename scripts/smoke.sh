@@ -1491,6 +1491,45 @@ test_group_doctor() {
   fi
   rm -rf "$mock_home/.config/zed"; rm -f "$mock_config/config.json"
 
+  # 14c. --client <name> scopes the client_* wiring rows (and their --fix
+  #     remediations) to one client — every other check is untouched. A
+  #     scoped client that isn't installed answers with a named skip row,
+  #     and "all" is the default sweep.
+  mkdir -p "$mock_home/.config/zed" "$mock_home/.config/Cursor/User"
+  printf '{"agent_servers":{"tau":{"type":"custom","command":"tau","args":["acp","serve"]}}}' > "$mock_home/.config/zed/settings.json"
+  chmod 600 "$mock_home/.config/zed/settings.json"
+  capture doc_scope_zed env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-scope HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --client zed
+  ok "doctor --client zed exits 0" "$doc_scope_zed_rc" 0
+  contains "scoped report carries client_zed" "$doc_scope_zed_out" '"name":"client_zed","status":"ok"'
+  lacks "scoped report hides client_cursor" "$doc_scope_zed_out" '"name":"client_cursor"'
+  lacks "scoped report hides the client_wiring placeholder" "$doc_scope_zed_out" '"name":"client_wiring"'
+  contains "non-client checks still run" "$doc_scope_zed_out" '"name":"curl"'
+  capture doc_scope_cur env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-scope HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --client cursor
+  contains "scoped cursor warns on missing settings" "$doc_scope_cur_out" '"name":"client_cursor","status":"warn"'
+  lacks "scoped cursor report hides client_zed" "$doc_scope_cur_out" '"name":"client_zed"'
+  capture doc_scope_all env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-scope HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --client all
+  contains "--client all keeps client_zed" "$doc_scope_all_out" '"name":"client_zed"'
+  contains "--client all keeps client_cursor" "$doc_scope_all_out" '"name":"client_cursor"'
+  capture doc_scope_kilo env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-scope HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --client kilo
+  contains "not-installed scoped client reports a named skip" "$doc_scope_kilo_out" '"name":"client_kilo_code","status":"skip"'
+  contains "skip explains the client is absent" "$doc_scope_kilo_out" 'does not appear to be installed'
+  "$BIN" doctor --client vim >/dev/null 2>&1; ok "doctor --client vim -> exit 80" "$?" 80
+  "$BIN" doctor --client >/dev/null 2>&1; ok "doctor --client missing value -> exit 80" "$?" 80
+  capture doc_scope_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-scope HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes --client cursor
+  contains "scoped --fix applies only the named client's fix" "$doc_scope_fix_out" '"id":"wire_client_cursor","check":"client_cursor","status":"applied"'
+  lacks "scoped --fix never touches client_zed" "$doc_scope_fix_out" 'wire_client_zed'
+  if [ -f "$mock_home/.config/Cursor/User/settings.json" ]; then
+    ok "scoped --fix wrote the cursor settings file" 0 0
+  else
+    ok "scoped --fix wrote the cursor settings file" 1 0
+  fi
+  rm -rf "$mock_home/.config/zed" "$mock_home/.config/Cursor"
+
   # 15. Live probe paths against a local stub HTTP server: endpoint_reachable
   #     treats ANY HTTP response as reachable, and --deep maps the auth probe's
   #     HTTP status to ok/fail/warn. Requires python3 + curl.

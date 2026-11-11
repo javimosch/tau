@@ -250,6 +250,7 @@ _tau() {
                         '--json[stream NDJSON check/fix events + done:true verdict]' \
                         '--report[Markdown diagnostics bundle for bug reports]' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
+                        '--client=[scope client wiring rows to one client]:client:(zed nvim emacs vscode cursor jetbrains windsurf gemini claude-desktop opencode cline goose continue roo-code kilo-code amazonq codex all)' \
                         '--provider=[diagnose an override provider]:provider:(xiaomi openai deepseek opencode-go)' \
                         '--model=[diagnose an override model]:model:' \
                         '--api-key=[diagnose an override API key]:key:'
