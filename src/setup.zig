@@ -1299,8 +1299,9 @@ fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, co
 /// bridge_path/bridge_status fields for the mcacp side first; a bridge-side
 /// "manual" or "failed" downgrades the client outcome (the wiring is only
 /// half done). Every other client just closes the object.
-fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), home: []const u8, k: ClientKind, command: []const u8, dry: bool, oc: ClientOutcome) !ClientOutcome {
+fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), check: *std.ArrayList(CheckItem), home: []const u8, k: ClientKind, command: []const u8, dry: bool, oc: ClientOutcome, item: CheckItem) !ClientOutcome {
     if (!clientUsesBridge(k)) {
+        try check.append(arena, item);
         try entries.append(arena, '}');
         return oc;
     }
@@ -1308,6 +1309,7 @@ fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
         try entries.appendSlice(arena, ",\"bridge_status\":\"failed\",\"bridge_message\":");
         try js(arena, entries, @errorName(err));
         try entries.append(arena, '}');
+        try check.append(arena, item);
         return .failed;
     };
     try entries.appendSlice(arena, ",\"bridge_path\":");
@@ -1319,6 +1321,9 @@ fn closeClientEntry(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayLis
         try js(arena, entries, s);
     }
     try entries.append(arena, '}');
+    var full = item;
+    full.bridge_path = det.path;
+    try check.append(arena, full);
     return switch (det.outcome) {
         .failed => .failed,
         .manual => .manual,
@@ -1346,6 +1351,46 @@ fn resolveClients(arena: std.mem.Allocator, cfg: Config) ![]ClientKind {
 /// counterpart of `installed`: the write was previewed, not performed.
 const ClientOutcome = enum { installed, already_installed, manual, failed, would_install };
 
+/// One entry of the deterministic post-setup checklist the verdict prints:
+/// the client's config path (settings file when the client has one, else the
+/// paste-ready snippet setup wrote), the in-editor step that finishes the
+/// wiring (mirrors the clients entry's "next"), and — when they apply — the
+/// snippet path a manual outcome dropped plus the shared mcacp bridge file.
+const CheckItem = struct {
+    client: ClientKind,
+    config_path: []const u8,
+    restart: []const u8,
+    snippet_path: ?[]const u8 = null,
+    bridge_path: ?[]const u8 = null,
+};
+
+/// Render the verdict's "checklist" array — one object per configured client
+/// in resolution order, each ending with the exact verification command.
+fn renderChecklist(arena: std.mem.Allocator, items: []const CheckItem) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.append(arena, '[');
+    for (items, 0..) |it, i| {
+        if (i != 0) try buf.append(arena, ',');
+        try buf.appendSlice(arena, "{\"client\":");
+        try js(arena, &buf, clientName(it.client));
+        try buf.appendSlice(arena, ",\"config_path\":");
+        try js(arena, &buf, it.config_path);
+        if (it.snippet_path) |sp| {
+            try buf.appendSlice(arena, ",\"snippet_path\":");
+            try js(arena, &buf, sp);
+        }
+        if (it.bridge_path) |bp| {
+            try buf.appendSlice(arena, ",\"bridge_path\":");
+            try js(arena, &buf, bp);
+        }
+        try buf.appendSlice(arena, ",\"restart\":");
+        try js(arena, &buf, it.restart);
+        try buf.appendSlice(arena, ",\"verify\":\"tau doctor\"}");
+    }
+    try buf.append(arena, ']');
+    return buf.items;
+}
+
 /// Configure one client and append its JSON entry to `entries` — a
 /// `[`-opened list where `first` suppresses the comma. Never touches an
 /// existing settings file: when the file is absent a minimal one is written,
@@ -1358,7 +1403,7 @@ const ClientOutcome = enum { installed, already_installed, manual, failed, would
 /// the settings file in place — the mcacp entry plus the user's servers
 /// collected from the other supported clients are spliced in, preserving
 /// comments and existing members byte-for-byte.
-fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), first: bool, home: []const u8, k: ClientKind, command: []const u8, imp: bool, dry: bool) !ClientOutcome {
+fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList(u8), check: *std.ArrayList(CheckItem), first: bool, home: []const u8, k: ClientKind, command: []const u8, imp: bool, dry: bool) !ClientOutcome {
     if (!first) try entries.append(arena, ',');
     try entries.appendSlice(arena, "{\"client\":");
     try js(arena, entries, clientName(k));
@@ -1388,6 +1433,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         const snip = try snippetPath(arena, home, k);
         _ = writeIfChanged(io, arena, snip, body, dry) catch |err| {
             try fail(arena, entries, snip, err);
+            try check.append(arena, .{ .client = k, .config_path = snip, .restart = clientNextStep(k) });
             return .failed;
         };
         try entries.appendSlice(arena, ",\"status\":\"manual\",\"snippet_path\":");
@@ -1400,7 +1446,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         if (imp and clientUsesBridge(k)) try entries.appendSlice(arena, ",\"imported\":[]");
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
-        return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
+        return closeClientEntry(io, arena, entries, check, home, k, command, dry, .manual, .{ .client = k, .config_path = snip, .restart = clientNextStep(k) });
     }
 
     const path = (try clientSettingsPath(arena, home, k)).?;
@@ -1421,13 +1467,14 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         // spliced in. A file that can't be scanned falls through to the
         // manual snippet path below.
         if (try wireBridgeClientImport(io, arena, entries, home, k, command, cur, dry)) |oc|
-            return closeClientEntry(io, arena, entries, home, k, command, dry, oc);
+            return closeClientEntry(io, arena, entries, check, home, k, command, dry, oc, .{ .client = k, .config_path = path, .restart = clientNextStep(k) });
     }
 
     if (cur == null and !unreadable) {
         // No settings file — write a fresh minimal one.
         const wrote = writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), dry) catch |err| {
             try fail(arena, entries, path, err);
+            try check.append(arena, .{ .client = k, .config_path = path, .restart = clientNextStep(k) });
             return .failed;
         };
         try entries.appendSlice(arena, ",\"status\":");
@@ -1440,18 +1487,18 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         try js(arena, entries, command);
         try entries.appendSlice(arena, ",\"next\":");
         try js(arena, entries, clientNextStep(k));
-        return closeClientEntry(io, arena, entries, home, k, command, dry, switch (wrote) {
+        return closeClientEntry(io, arena, entries, check, home, k, command, dry, switch (wrote) {
             .would_write => .would_install,
             .written => .installed,
             .unchanged => .already_installed,
-        });
+        }, .{ .client = k, .config_path = path, .restart = clientNextStep(k) });
     }
 
     if (cur) |b| {
         if (hasTauEntry(arena, k, b) orelse false) {
             try entries.appendSlice(arena, ",\"status\":\"already_installed\",\"next\":");
             try js(arena, entries, clientNextStep(k));
-            return closeClientEntry(io, arena, entries, home, k, command, dry, .already_installed);
+            return closeClientEntry(io, arena, entries, check, home, k, command, dry, .already_installed, .{ .client = k, .config_path = path, .restart = clientNextStep(k) });
         }
     }
 
@@ -1467,6 +1514,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
     const snip = try snippetPath(arena, home, k);
     _ = writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), dry) catch |err| {
         try fail(arena, entries, snip, err);
+        try check.append(arena, .{ .client = k, .config_path = path, .restart = "merge the snippet into your settings file by hand" });
         return .failed;
     };
     try entries.appendSlice(arena, ",\"status\":\"manual\",\"snippet_path\":");
@@ -1476,7 +1524,7 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
     if (imp and clientUsesBridge(k)) try entries.appendSlice(arena, ",\"imported\":[]");
     try entries.appendSlice(arena, ",\"next\":");
     try js(arena, entries, "merge the snippet into your settings file by hand");
-    return closeClientEntry(io, arena, entries, home, k, command, dry, .manual);
+    return closeClientEntry(io, arena, entries, check, home, k, command, dry, .manual, .{ .client = k, .config_path = path, .restart = "merge the snippet into your settings file by hand", .snippet_path = snip });
 }
 
 // --- --import: carry the user's MCP servers into bridge-client files --------
@@ -1799,7 +1847,7 @@ fn wireBridgeClientImport(io: std.Io, arena: std.mem.Allocator, entries: *std.Ar
 /// nothing is written: the step status is "would_install" when any client
 /// has a pending fresh-file write, "installed" when everything is already
 /// configured.
-fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !bool {
+fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, checklist_out: *?[]const u8) !bool {
     const dry = cfg.setup_dry_run;
     var buf: std.ArrayList(u8) = .empty;
     const home = env.get("HOME") orelse {
@@ -1834,11 +1882,12 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
 
     var entries: std.ArrayList(u8) = .empty;
     try entries.append(arena, '[');
+    var items: std.ArrayList(CheckItem) = .empty;
     var ok = true;
     var all_manual = true;
     var any_would = false;
     for (clients, 0..) |k, i| {
-        const outcome = try configureClient(io, arena, &entries, i == 0, home, k, command, cfg.setup_import, dry);
+        const outcome = try configureClient(io, arena, &entries, &items, i == 0, home, k, command, cfg.setup_import, dry);
         if (outcome == .failed) ok = false;
         if (outcome != .manual) all_manual = false;
         if (outcome == .would_install) any_would = true;
@@ -1860,6 +1909,7 @@ fn stepClients(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.proc
     if (dry) try buf.appendSlice(arena, ",\"dry_run\":true");
     try buf.appendSlice(arena, "}");
     emit(&buf);
+    checklist_out.* = try renderChecklist(arena, items.items);
     return ok;
 }
 
@@ -2291,7 +2341,10 @@ pub fn unattended(cfg: Config) bool {
 /// verdict carries "non_interactive":true (and "yes":true when --yes was
 /// given) so scripts can confirm the contract was requested. Under
 /// --dry-run the write steps preview their changes (`would_*` statuses) and
-/// the verdict carries "dry_run":true.
+/// the verdict carries "dry_run":true. When --client wired at least one
+/// client the verdict also carries a deterministic "checklist" — per-client
+/// config path, the restart/in-editor step, and the exact `tau doctor`
+/// verification command.
 /// Removal mode (`--remove`/`--uninstall`): the stream is just the
 /// remove_clients step + verdict (which carries "remove":true) — the
 /// init/completions/doctor steps don't run.
@@ -2300,6 +2353,7 @@ pub fn unattended(cfg: Config) bool {
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     var buf: std.ArrayList(u8) = .empty;
     var ok = true;
+    var checklist: ?[]const u8 = null;
     if (cfg.setup_remove) {
         ok = try stepRemoveClients(io, arena, cfg, env);
     } else if (cfg.setup_detect) {
@@ -2307,7 +2361,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     } else {
         ok = try stepInit(io, arena, cfg, env);
         if (!try stepCompletions(io, arena, cfg, env)) ok = false;
-        if (!try stepClients(io, arena, cfg, env)) ok = false;
+        if (!try stepClients(io, arena, cfg, env, &checklist)) ok = false;
 
         const rep = try doctor.collectReport(io, gpa, arena, cfg, env);
         try buf.appendSlice(arena, "{\"step\":\"doctor\",\"report\":");
@@ -2326,6 +2380,13 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     if (unattended(cfg)) try buf.appendSlice(arena, ",\"non_interactive\":true");
     if (cfg.setup_yes) try buf.appendSlice(arena, ",\"yes\":true");
     if (cfg.setup_dry_run) try buf.appendSlice(arena, ",\"dry_run\":true");
+    // Post-setup checklist: one entry per --client-resolved client — the
+    // config path, the restart/in-editor step, and the exact `tau doctor`
+    // verification command.
+    if (checklist) |cl| {
+        try buf.appendSlice(arena, ",\"checklist\":");
+        try buf.appendSlice(arena, cl);
+    }
     // The stream's terminal marker — the same done:true convention
     // `tau doctor --json` and the chat stream use.
     try buf.appendSlice(arena, ",\"done\":true}");
@@ -2342,6 +2403,23 @@ fn envWith(arena: std.mem.Allocator, pairs: []const [2][]const u8) !std.process.
     var env = std.process.Environ.Map.init(arena);
     for (pairs) |kv| try env.put(kv[0], kv[1]);
     return env;
+}
+
+test "renderChecklist emits one deterministic entry per client" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const items = [_]CheckItem{
+        .{ .client = .zed, .config_path = "/h/.config/zed/settings.json", .restart = "open the Agent Panel, click +, and pick tau" },
+        .{ .client = .windsurf, .config_path = "/h/.codeium/windsurf/mcp_config.json", .restart = "merge the snippet into your settings file by hand", .snippet_path = "/h/.config/tau/snippets/windsurf.jsonc", .bridge_path = "/h/.config/mcacp/mcacp.json" },
+    };
+    const expected =
+        \\[{"client":"zed","config_path":"/h/.config/zed/settings.json","restart":"open the Agent Panel, click +, and pick tau","verify":"tau doctor"},{"client":"windsurf","config_path":"/h/.codeium/windsurf/mcp_config.json","snippet_path":"/h/.config/tau/snippets/windsurf.jsonc","bridge_path":"/h/.config/mcacp/mcacp.json","restart":"merge the snippet into your settings file by hand","verify":"tau doctor"}]
+    ;
+    try testing.expectEqualStrings(expected, try renderChecklist(a, &items));
+
+    try testing.expectEqualStrings("[]", try renderChecklist(a, &.{}));
 }
 
 test "unattended is true for --yes or --non-interactive" {
@@ -2688,7 +2766,8 @@ test "configureClient installs a fresh zed settings file, then detects it" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"installed\"") != null);
 
@@ -2702,7 +2781,7 @@ test "configureClient installs a fresh zed settings file, then detects it" {
 
     // Second run: the tau entry is detected, nothing is rewritten.
     entries.clearRetainingCapacity();
-    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    const oc2 = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.already_installed, oc2);
 }
 
@@ -2717,7 +2796,8 @@ test "configureClient in dry-run previews a fresh settings file without writing"
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, true);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.would_install, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"would_install\"") != null);
 
@@ -2727,9 +2807,9 @@ test "configureClient in dry-run previews a fresh settings file without writing"
     try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home})));
 
     // Dry-run on an already-configured client still reports already_installed.
-    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    _ = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, false);
     entries.clearRetainingCapacity();
-    const oc2 = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, true);
+    const oc2 = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.already_installed, oc2);
 }
 
@@ -2748,7 +2828,8 @@ test "configureClient dry-run keeps manual outcome and writes no snippet" {
     _ = try writeIfChanged(io, a, sp, orig, false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, true);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
 
@@ -2774,7 +2855,8 @@ test "configureClient leaves an existing settings file alone and emits a snippet
     _ = try writeIfChanged(io, a, sp, orig, false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"manual\"") != null);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
@@ -2804,7 +2886,8 @@ test "configureClient nvim always writes a lua snippet and reports manual" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .nvim, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"editor_detected\":false") != null);
 
@@ -2929,7 +3012,8 @@ test "configureClient windsurf writes the mcp entry and the mcacp bridge config"
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"installed\"") != null);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_path\":") != null);
@@ -2955,7 +3039,7 @@ test "configureClient windsurf writes the mcp entry and the mcacp bridge config"
 
     // Second run is fully idempotent.
     entries.clearRetainingCapacity();
-    const oc2 = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false, false);
+    const oc2 = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", false, false);
     try testing.expectEqual(ClientOutcome.already_installed, oc2);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"already_installed\"") != null);
 }
@@ -2971,7 +3055,8 @@ test "configureClient bridge in dry-run previews both files without writing" {
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", false, true);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .gemini, "/abs/tau", false, true);
     try testing.expectEqual(ClientOutcome.would_install, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"would_install\"") != null);
     try testing.expect(!dirExists(io, try std.fmt.allocPrint(a, "{s}/.gemini", .{home})));
@@ -3029,7 +3114,8 @@ test "opencode bridge: mcp.local entry writes and classifies" {
     const sp = try std.fmt.allocPrint(a, "{s}/opencode.json", .{odir});
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .opencode, exe, false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .opencode, exe, false, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"bridge_status\":\"installed\"") != null);
 
@@ -3216,7 +3302,8 @@ test "unwireClient deletes a setup-written file and reports absent on re-run" {
     const set = [_]ClientKind{.zed};
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    _ = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, false);
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     _ = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
 
@@ -3273,7 +3360,8 @@ test "unwireClient dry-run previews and changes nothing" {
     const set = [_]ClientKind{.zed};
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    _ = try configureClient(io, a, &entries, &check, true, home, .zed, "/abs/tau", false, false);
     const sp = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
     const before = try std.Io.Dir.cwd().readFileAlloc(io, sp, a, .unlimited);
 
@@ -3300,8 +3388,9 @@ test "unwireClient bridge: shared mcacp kept while another bridge client is wire
     const home = try tmp.dir.realPathFileAlloc(io, ".", a);
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", false, false);
-    _ = try configureClient(io, a, &entries, true, home, .gemini, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    _ = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", false, false);
+    _ = try configureClient(io, a, &entries, &check, true, home, .gemini, "/abs/tau", false, false);
     const bpath = try mcacpConfigPath(a, home);
 
     // Removing only windsurf keeps the shared bridge for gemini.
@@ -3336,7 +3425,8 @@ test "unwireClient nvim reports manual and removes the setup snippet" {
     const set = [_]ClientKind{.nvim};
 
     var entries: std.ArrayList(u8) = .empty;
-    _ = try configureClient(io, a, &entries, true, home, .nvim, "/abs/tau", false, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    _ = try configureClient(io, a, &entries, &check, true, home, .nvim, "/abs/tau", false, false);
     const snip = try snippetPath(a, home, .nvim);
     _ = try std.Io.Dir.cwd().readFileAlloc(io, snip, a, .unlimited);
 
@@ -3544,7 +3634,8 @@ test "configureClient --import splices mcacp + imported servers into an existing
     , false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", true, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[{\"name\":\"fs\",\"from\":\"claude-desktop\"}]") != null);
 
@@ -3580,7 +3671,8 @@ test "configureClient --import dry-run previews the merge, writes nothing" {
     , false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, true);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", true, true);
     try testing.expectEqual(ClientOutcome.would_install, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[{\"name\":\"fs\",\"from\":\"gemini\"}]") != null);
 
@@ -3608,7 +3700,8 @@ test "configureClient --import on an already-wired file merges only missing serv
 
     // Nothing to import yet -> already_installed.
     var entries: std.ArrayList(u8) = .empty;
-    const oc0 = try configureClient(io, a, &entries, true, plan_home, .windsurf, "/abs/tau", true, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc0 = try configureClient(io, a, &entries, &check, true, plan_home, .windsurf, "/abs/tau", true, false);
     try testing.expectEqual(ClientOutcome.already_installed, oc0);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[]") != null);
 
@@ -3618,7 +3711,7 @@ test "configureClient --import on an already-wired file merges only missing serv
         \\
     , false);
     entries.clearRetainingCapacity();
-    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    const oc = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", true, false);
     try testing.expectEqual(ClientOutcome.installed, oc);
 
     const after = try std.Io.Dir.cwd().readFileAlloc(io, wpath, a, .unlimited);
@@ -3640,7 +3733,8 @@ test "configureClient --import falls back to manual on an unparseable file" {
     _ = try writeIfChanged(io, a, wpath, before, false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const oc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const oc = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", true, false);
     try testing.expectEqual(ClientOutcome.manual, oc);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"snippet_path\":") != null);
     try testing.expect(std.mem.indexOf(u8, entries.items, "\"imported\":[]") != null);
@@ -3739,10 +3833,11 @@ test "property: wire then --remove restores user bytes for every JSONC client" {
             _ = try writeIfChanged(io, a, cpath, orig, false);
 
             var entries: std.ArrayList(u8) = .empty;
+            var check: std.ArrayList(CheckItem) = .empty;
             if (clientUsesBridge(k)) {
                 // The real wiring path: --import splices the mcacp entry
                 // into the existing file.
-                const woc = try configureClient(io, a, &entries, true, home, k, "/abs/tau", true, false);
+                const woc = try configureClient(io, a, &entries, &check, true, home, k, "/abs/tau", true, false);
                 try testing.expectEqual(ClientOutcome.installed, woc);
             } else {
                 // A direct client's entry lands the way the user pastes it —
@@ -3826,7 +3921,8 @@ test "wire then --remove edges: emptied-section husk and memberless docs" {
             _ = try writeIfChanged(io, a, cpath, try rtBody(a, c.body, k), false);
 
             var entries: std.ArrayList(u8) = .empty;
-            const woc = try configureClient(io, a, &entries, true, home, k, "/abs/tau", true, false);
+            var check: std.ArrayList(CheckItem) = .empty;
+            const woc = try configureClient(io, a, &entries, &check, true, home, k, "/abs/tau", true, false);
             try testing.expectEqual(ClientOutcome.installed, woc);
 
             entries.clearRetainingCapacity();
@@ -3880,7 +3976,8 @@ test "--import merged servers survive --remove; original bytes return around the
     , false);
 
     var entries: std.ArrayList(u8) = .empty;
-    const woc = try configureClient(io, a, &entries, true, home, .windsurf, "/abs/tau", true, false);
+    var check: std.ArrayList(CheckItem) = .empty;
+    const woc = try configureClient(io, a, &entries, &check, true, home, .windsurf, "/abs/tau", true, false);
     try testing.expectEqual(ClientOutcome.installed, woc);
 
     // Expected post-remove bytes: the original document plus each merged
@@ -3928,7 +4025,8 @@ test "setup-written file round-trips to absent for every JSONC client" {
         if ((try clientSettingsPath(a, root, k)) == null) continue;
         const home = try std.fmt.allocPrint(a, "{s}/f{d}", .{ root, i });
         var entries: std.ArrayList(u8) = .empty;
-        const woc = try configureClient(io, a, &entries, true, home, k, "/abs/tau", false, false);
+        var check: std.ArrayList(CheckItem) = .empty;
+        const woc = try configureClient(io, a, &entries, &check, true, home, k, "/abs/tau", false, false);
         try testing.expectEqual(ClientOutcome.installed, woc);
         const cpath = (try clientSettingsPath(a, home, k)).?;
 

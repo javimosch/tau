@@ -228,6 +228,23 @@
         "non_interactive": { "const": true, "description": "Present when the run was declared unattended (--yes/--non-interactive or env equivalents)." },
         "yes": { "const": true, "description": "Present when --yes approved all write steps." },
         "dry_run": { "const": true, "description": "Present under --dry-run." },
+        "checklist": {
+          "type": "array",
+          "description": "Deterministic post-setup checklist — present when --client resolved at least one client: one entry per client in resolution order with the config path, the restart/in-editor step (mirroring the clients entry's \"next\"), and the exact `tau doctor` verification command.",
+          "items": {
+            "type": "object",
+            "required": ["client", "config_path", "restart", "verify"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "type": "string", "enum": ["zed", "nvim", "emacs", "vscode", "cursor", "jetbrains", "windsurf", "gemini", "claude-desktop", "opencode", "cline", "goose", "continue", "roo-code", "kilo-code", "amazonq", "codex"] },
+              "config_path": { "type": "string", "description": "The client's settings file (attempted path on failure); the paste-ready snippet path for snippet-only clients (nvim/emacs/goose/continue/codex)." },
+              "snippet_path": { "type": "string", "description": "Paste-ready fragment path; emitted on manual outcomes for clients that also have a settings path." },
+              "bridge_path": { "type": "string", "description": "mcacp bridge config path (~/.config/mcacp/mcacp.json); MCP-bridge clients only." },
+              "restart": { "type": "string", "description": "The in-editor action that finishes the integration — mirrors the clients entry's \"next\"." },
+              "verify": { "const": "tau doctor", "description": "Exact command that re-checks the wiring." }
+            }
+          }
+        },
         "done": { "const": true, "description": "End-of-stream marker — true on the verdict line only; the same convention `tau doctor --json` uses." }
       }
     }
