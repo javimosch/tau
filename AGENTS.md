@@ -557,11 +557,19 @@ release tree, installed through `install.sh` (POSIX) / `install.ps1`
 drives `tau setup --yes` + `tau setup --client zed|claude-desktop` +
 `tau doctor --selftest` in a scratch HOME with all credentials scrubbed —
 the direct-ACP (zed) and MCP-bridge (claude-desktop → mcacp.json) wiring
-paths are asserted end to end on every platform, Windows included. The same
-driver runs standalone:
+paths are asserted end to end on every platform, Windows included. Its
+`upgrade` job adds the upgrade-path e2e per platform: `scripts/e2e-upgrade.
+{sh,ps1}` stages the built binary as both a pinned older release
+(`download/v0.3.9/`) and a newer one (`download/v99.9.9/`) under a file://
+tree, installs the pin, wires a zed client at the installed path, upgrades
+in place (`tau upgrade` on POSIX; the Windows leg pins the exit-111
+"re-run install.ps1" contract and drives that documented re-run), then
+asserts `tau doctor` is clean with the wiring still ok. Both drivers run
+standalone:
 
 ```bash
 ./scripts/e2e-first-run.sh ./zig-out/bin/tau   # local first-run e2e (offline)
+./scripts/e2e-upgrade.sh ./zig-out/bin/tau     # local upgrade e2e (offline)
 ```
 
 #### Zig 0.16 Gotchas

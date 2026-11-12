@@ -89,6 +89,7 @@ ALL_TEST_GROUPS=(
   "version:test_group_version"
   "release:test_group_release"
   "first-run:test_group_first_run"
+  "upgrade-e2e:test_group_upgrade_e2e"
   "golden-errors:test_group_golden_errors"
   "golden-color:test_group_golden_color"
   "golden-onboarding:test_group_golden_onboarding"
@@ -7146,6 +7147,71 @@ test_group_first_run() {
     rm -rf "$fh"
   else
     skip_test "e2e-first-run end-to-end" "no built tau binary at $BIN"
+  fi
+}
+
+# Group: upgrade-path e2e — pinned install → tau upgrade → doctor clean.
+# The drivers stage a file:// release tree (v0.3.9 pinned + v99.9.9 latest)
+# so the whole chain runs offline; the POSIX driver is exercised end-to-end
+# right here against $BIN.
+test_group_upgrade_e2e() {
+  local out rc wk
+  local shdrv="$ROOT/scripts/e2e-upgrade.sh"
+  local psdrv="$ROOT/scripts/e2e-upgrade.ps1"
+  local ci="$ROOT/.github/workflows/ci.yml"
+
+  note "upgrade-e2e: drivers + CI wiring"
+
+  # ── POSIX driver surface ──
+  [ -f "$shdrv" ];  ok "e2e-upgrade.sh exists" "$?" 0
+  [ -x "$shdrv" ];  ok "e2e-upgrade.sh is executable" "$?" 0
+  bash -n "$shdrv" 2>/dev/null; ok "e2e-upgrade.sh passes bash -n" "$?" 0
+  contains "e2e driver pins an older version" "$(cat "$shdrv")" 'install.sh" --version "$OLD"'
+  contains "e2e driver stages a versioned release dir" "$(cat "$shdrv")" 'srv/download/v$v'
+  contains "e2e driver runs the real upgrade" "$(cat "$shdrv")" 'upgrade --yes'
+  contains "e2e driver checks doctor post-upgrade" "$(cat "$shdrv")" 'doctor --offline --selftest'
+  contains "e2e driver asserts the upgrade verdict" "$(cat "$shdrv")" '"status":"upgraded"'
+  contains "e2e driver asserts wiring survives" "$(cat "$shdrv")" '"name":"client_zed","status":"ok"'
+  contains "e2e driver scrubs provider keys" "$(cat "$shdrv")" "XIAOMI_API_KEY"
+  contains "e2e driver uses a scratch HOME" "$(cat "$shdrv")" 'HOME="$FH"'
+  contains "e2e driver keeps the check offline" "$(cat "$shdrv")" 'TAU_UPDATE_URL="file://'
+
+  # ── PowerShell driver surface ──
+  # Windows pins the POSIX-only contract: `tau upgrade` must exit 111 and
+  # point at install.ps1, which the driver then re-runs as the documented
+  # upgrade path.
+  [ -f "$psdrv" ]; ok "e2e-upgrade.ps1 exists" "$?" 0
+  contains "ps1 driver pins the older install" "$(cat "$psdrv")" 'install.ps1'
+  contains "ps1 driver pins a version" "$(cat "$psdrv")" '-Version $Old'
+  contains "ps1 driver pins the 111 contract" "$(cat "$psdrv")" 'want 111'
+  contains "ps1 driver re-runs install.ps1 at the new tag" "$(cat "$psdrv")" '-Version $New'
+  contains "ps1 driver checks doctor post-upgrade" "$(cat "$psdrv")" 'doctor --offline --selftest'
+  contains "ps1 driver asserts wiring survives" "$(cat "$psdrv")" '"name":"client_zed","status":"ok"'
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -LiteralPath '$psdrv' -Raw)) | Out-Null" 2>/dev/null
+    ok "e2e-upgrade.ps1 parses under pwsh" "$?" 0
+  else
+    note "upgrade-e2e: skipping ps1 parse check (pwsh unavailable)"
+  fi
+
+  # ── ci.yml wiring (drift guards for the upgrade job) ──
+  contains "ci has an upgrade job" "$(cat "$ci")" "upgrade:"
+  contains "ci upgrade job runs the POSIX driver" "$(cat "$ci")" "e2e-upgrade.sh"
+  contains "ci upgrade job runs the Windows driver" "$(cat "$ci")" "e2e-upgrade.ps1"
+  contains "ci upgrade job covers windows" "$(cat "$ci")" "windows-x86_64"
+  contains "ci upgrade job covers macOS" "$(cat "$ci")" "macos-15-intel"
+
+  # ── end-to-end: run the POSIX driver against $BIN ──
+  if [ -x "$BIN" ]; then
+    wk="$(mktemp -d)"; register_temp_dir "$wk"
+    out=$("$shdrv" "$BIN" "$wk/work" 2>&1); rc=$?
+    ok "e2e-upgrade.sh exit" "$rc" 0
+    contains "e2e-upgrade reports PASS" "$out" "e2e-upgrade: PASS"
+    contains "e2e pinned install ran" "$out" "pinned install v0.3.9 ok"
+    contains "e2e upgraded in place" "$out" "upgraded in place"
+    contains "e2e post-upgrade doctor clean" "$out" "post-upgrade doctor clean"
+  else
+    skip_test "e2e-upgrade end-to-end" "no built tau binary at $BIN"
   fi
 }
 
