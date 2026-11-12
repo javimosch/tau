@@ -338,6 +338,7 @@ _tau() {
                         'doctor.endpoint_reachable:doctor check'
                         'doctor.auth_probe:doctor check'
                         'doctor.client_wiring:doctor check'
+                        'doctor.client_config_files:doctor check'
                         'doctor.client_permissions:doctor check'
                         'doctor.provider_probes:doctor check'
                         'doctor.update_available:doctor check'
