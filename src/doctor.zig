@@ -876,6 +876,87 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
     return list.toOwnedSlice(arena);
 }
 
+/// One client-native config file outside the `client_<name>` rows' scope.
+/// `json` files get a real JSONC parse; the rest only a UTF-8 sanity check —
+/// tau ships no YAML/TOML/Lua/elisp parsers, so deeper syntax validation is
+/// the editor's job.
+const ClientConfigFile = struct {
+    path: []const u8,
+    json: bool,
+};
+
+/// The client config files no `client_<name>` row classifies: the mcacp
+/// bridge config every MCP client shares (a `client_<name>` row only audits
+/// it when that client's own entry already parses, so it needs an
+/// unconditional look) plus the five snippet-only clients' native configs.
+/// The JSON settings files of the direct/bridge clients are deliberately
+/// absent — an unreadable/unparseable one already warns under the client's
+/// own row (the plaintext_secrets rule: one file-health row per file).
+fn clientConfigFiles(arena: std.mem.Allocator, home: []const u8) ![]ClientConfigFile {
+    const F = ClientConfigFile;
+    return try arena.dupe(F, &.{
+        .{ .path = try setup.mcacpConfigPath(arena, home), .json = true },
+        .{ .path = try std.fmt.allocPrint(arena, "{s}/.config/nvim/init.lua", .{home}), .json = false },
+        .{ .path = try std.fmt.allocPrint(arena, "{s}/.emacs.d/init.el", .{home}), .json = false },
+        .{ .path = try std.fmt.allocPrint(arena, "{s}/.config/emacs/init.el", .{home}), .json = false },
+        .{ .path = try std.fmt.allocPrint(arena, "{s}/.config/goose/config.yaml", .{home}), .json = false },
+        .{ .path = try std.fmt.allocPrint(arena, "{s}/.continue/config.yaml", .{home}), .json = false },
+        .{ .path = try std.fmt.allocPrint(arena, "{s}/.codex/config.toml", .{home}), .json = false },
+    });
+}
+
+/// Check: the client config files outside the `client_<name>` rows' scope —
+/// the shared mcacp bridge config and the snippet-only clients' native
+/// configs — are readable and well-formed. Missing files are silent (the
+/// wiring rows own absence); an unreadable file warns, and so does a
+/// malformed one (the bridge config must parse as JSON/JSONC, the
+/// editor-native files as UTF-8 text). Warns rather than fails: a broken
+/// client file breaks that editor's MCP wiring, not tau itself. Not
+/// auto-fixable — doctor never rewrites an existing client file; the hint
+/// points at the paste-ready snippet remediation and the explain catalog.
+fn checkClientConfigFiles(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const home = env.get("HOME") orelse
+        return .{ .name = "client_config_files", .status = .skip, .message = "skipped (HOME is not set)" };
+    var findings: std.ArrayList(u8) = .empty;
+    var inspected: usize = 0;
+    for (clientConfigFiles(arena, home) catch return .{
+        .name = "client_config_files",
+        .status = .skip,
+        .message = "skipped (could not resolve client config paths)",
+    }) |f| {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(io, f.path, arena, .unlimited) catch |err| {
+            if (err == error.FileNotFound) continue;
+            if (findings.items.len > 0) findings.appendSlice(arena, "; ") catch {};
+            tryFmt(&findings, arena, "{s}: unreadable ({s})", .{ f.path, @errorName(err) });
+            continue;
+        };
+        inspected += 1;
+        const malformed: ?[]const u8 = if (f.json) blk: {
+            const stripped = configfile.stripComments(arena, bytes) catch break :blk "not valid JSON/JSONC";
+            _ = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch break :blk "not valid JSON/JSONC";
+            break :blk null;
+        } else if (!std.unicode.utf8ValidateSlice(bytes)) "not valid UTF-8 text" else null;
+        if (malformed) |m| {
+            if (findings.items.len > 0) findings.appendSlice(arena, "; ") catch {};
+            tryFmt(&findings, arena, "{s}: {s}", .{ f.path, m });
+        }
+    }
+    if (inspected == 0 and findings.items.len == 0)
+        return .{ .name = "client_config_files", .status = .skip, .message = "skipped (no client config files found)" };
+    if (findings.items.len == 0)
+        return .{
+            .name = "client_config_files",
+            .status = .ok,
+            .message = std.fmt.allocPrint(arena, "client config files readable and well-formed ({d} inspected)", .{inspected}) catch "client config files readable and well-formed",
+        };
+    return .{
+        .name = "client_config_files",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "client config files need attention: {s}", .{findings.items}) catch "client config files need attention",
+        .hint = "fix the file's permissions or syntax by hand — 'tau setup --client <name>' regenerates a paste-ready snippet to merge in; 'tau explain doctor.client_config_files' explains this row",
+    };
+}
+
 /// Check 3: effective provider/model/endpoint/context_window after overrides.
 fn checkProvider(arena: std.mem.Allocator, cfg: Config) Check {
     if (cfg.doctor_bad_provider) |bad| {
@@ -1689,6 +1770,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
     for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
+    try addCheck(arena, &checks, checkClientConfigFiles(io, arena, env), cfg);
     try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
@@ -2891,6 +2973,83 @@ test "checkClientPermissions + chmod_client_files fix round-trips" {
     try testing.expectEqual(@as(std.posix.mode_t, 0o600), st.permissions.toMode() & 0o777);
     const c_ok = checkClientPermissions(testing.io, a, &home.env);
     try testing.expectEqual(CheckStatus.ok, c_ok.status);
+}
+
+test "checkClientConfigFiles: missing files skip, clean files ok" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> skip.
+    var env_no_home = std.process.Environ.Map.init(a);
+    try testing.expectEqual(CheckStatus.skip, checkClientConfigFiles(testing.io, a, &env_no_home).status);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // Nothing on disk -> skip (missing files are the wiring rows' concern).
+    try testing.expectEqual(CheckStatus.skip, checkClientConfigFiles(testing.io, a, &home.env).status);
+
+    // A valid bridge config plus a native client config -> ok.
+    const bdir = try std.fmt.allocPrint(a, "{s}/.config/mcacp", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, bdir);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fmt.allocPrint(a, "{s}/mcacp.json", .{bdir}),
+        .data = "{\n  // bridge comment\n  \"agent_servers\": {}\n}\n",
+    });
+    const gdir = try std.fmt.allocPrint(a, "{s}/.config/goose", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, gdir);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fmt.allocPrint(a, "{s}/config.yaml", .{gdir}),
+        .data = "extensions:\n  mcacp:\n    enabled: true\n",
+    });
+    const c_ok = checkClientConfigFiles(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+    try testing.expect(std.mem.indexOf(u8, c_ok.message, "2 inspected") != null);
+}
+
+test "checkClientConfigFiles: unreadable and malformed files warn" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // Malformed bridge config (JSONC family gets a real parse).
+    const bdir = try std.fmt.allocPrint(a, "{s}/.config/mcacp", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, bdir);
+    const bpath = try std.fmt.allocPrint(a, "{s}/mcacp.json", .{bdir});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = bpath, .data = "{ not json" });
+    // A directory where codex's config.toml belongs fails the read (IsDir)
+    // — the privilege-independent way to stage an unreadable file.
+    const cdir = try std.fmt.allocPrint(a, "{s}/.codex/config.toml", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, cdir);
+    // Non-UTF-8 bytes in a native config — the only malformedness signal
+    // available without a YAML parser.
+    const cont = try std.fmt.allocPrint(a, "{s}/.continue", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, cont);
+    const cpath = try std.fmt.allocPrint(a, "{s}/config.yaml", .{cont});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cpath, .data = "\xff\xfe\x00binary" });
+    // A clean file alongside the flagged ones stays unflagged.
+    const nvim = try std.fmt.allocPrint(a, "{s}/.config/nvim", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, nvim);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fmt.allocPrint(a, "{s}/init.lua", .{nvim}),
+        .data = "require('config')\n",
+    });
+
+    const c = checkClientConfigFiles(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "mcacp.json: not valid JSON/JSONC") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "config.toml: unreadable") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "config.yaml: not valid UTF-8 text") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "init.lua") == null);
+    // The hint carries the explain pointer — this branch has no explain
+    // field on check rows, so the remediation pointer lives in the hint.
+    try testing.expect(std.mem.indexOf(u8, c.hint.?, "tau explain doctor.client_config_files") != null);
+    // Never auto-fixable: existing client files are never rewritten.
+    try testing.expect(c.fix == null);
 }
 
 test "collectChecks: fixable outcomes are attached to the right checks" {

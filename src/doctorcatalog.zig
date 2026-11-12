@@ -118,6 +118,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "install the editor you want wired, then run `tau setup --client <name>`",
     },
     .{
+        .name = "client_config_files",
+        .fails_when = "the mcacp bridge config or a snippet-only client's native config (nvim init.lua, Emacs init.el, Goose/Continue config.yaml, Codex config.toml) exists but is unreadable or malformed — mcacp.json must parse as JSON/JSONC, the editor-native files as UTF-8 text; the JSON clients' settings files report under their own client_<name> row",
+        .remediation = "fix the file's permissions or syntax by hand, or delete it — `tau setup --client <name>` regenerates a paste-ready snippet to merge in; not auto-fixable, doctor never rewrites an existing client file",
+    },
+    .{
         .name = "client_permissions",
         .fails_when = "a detected client settings file (or the mcacp bridge config) grants group/other access — `env` blocks inside it can hold API keys (POSIX only)",
         .remediation = "run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself",

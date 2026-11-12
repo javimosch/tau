@@ -1947,6 +1947,48 @@ PYEOF
     ok "deprecated key renamed in the file" 1 0
   fi
   rm -f "$mock_config/config.json"
+
+  # 25. client_config_files: the client config files no client_<name> row
+  #     classifies — the shared mcacp bridge config (JSONC parse) and the
+  #     snippet-only clients' native configs (UTF-8 text). Missing files are
+  #     silent; unreadable or malformed files warn with an explain pointer
+  #     in the hint.
+  local ccf_home
+  ccf_home="$(mktemp -d)"
+  register_temp_dir "$ccf_home"
+
+  capture doc_ccf_none env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$ccf_home" "$BIN" doctor --offline
+  contains "no client files -> client_config_files skip" "$doc_ccf_none_out" '"name":"client_config_files","status":"skip"'
+
+  mkdir -p "$ccf_home/.config/mcacp" "$ccf_home/.config/nvim" "$ccf_home/.continue"
+  printf '{ not json' > "$ccf_home/.config/mcacp/mcacp.json"
+  mkdir -p "$ccf_home/.codex/config.toml"   # a directory in the file's place -> unreadable
+  printf '\377\376 binary\n' > "$ccf_home/.continue/config.yaml"
+  printf 'require("cfg")\n' > "$ccf_home/.config/nvim/init.lua"
+  capture doc_ccf_bad env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$ccf_home" "$BIN" doctor --offline --provider openai --api-key k
+  ok "malformed client configs keep exit 0" "$doc_ccf_bad_rc" 0
+  contains "client_config_files warns" "$doc_ccf_bad_out" '"name":"client_config_files","status":"warn"'
+  contains "malformed bridge config named" "$doc_ccf_bad_out" 'mcacp.json: not valid JSON/JSONC'
+  contains "unreadable codex config named" "$doc_ccf_bad_out" 'config.toml: unreadable'
+  contains "non-UTF8 native config named" "$doc_ccf_bad_out" 'config.yaml: not valid UTF-8 text'
+  lacks "clean init.lua not flagged" "$doc_ccf_bad_out" 'init.lua'
+  contains "hint carries the explain pointer" "$doc_ccf_bad_out" 'tau explain doctor.client_config_files'
+
+  rm -rf "$ccf_home/.config/mcacp" "$ccf_home/.codex" "$ccf_home/.continue"
+  mkdir -p "$ccf_home/.config/goose"
+  printf 'extensions:\n  mcacp: {}\n' > "$ccf_home/.config/goose/config.yaml"
+  capture doc_ccf_ok env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$ccf_home" "$BIN" doctor --offline --provider openai --api-key k
+  contains "clean client files report ok" "$doc_ccf_ok_out" '"name":"client_config_files","status":"ok"'
+  contains "ok row reports the inspected count" "$doc_ccf_ok_out" 'inspected'
+
+  # The catalog entry behind the explain pointer resolves offline.
+  capture doc_ccf_xpl "$BIN" explain doctor.client_config_files
+  ok "explain resolves the new check id" "$doc_ccf_xpl_rc" 0
+  contains "explain entry names the check" "$doc_ccf_xpl_out" '"check":"client_config_files"'
+  contains "explain entry carries remediation" "$doc_ccf_xpl_out" '"remediation":'
 }
 
 # Group: tau bug — pre-filled GitHub issue carrying the redacted doctor bundle
