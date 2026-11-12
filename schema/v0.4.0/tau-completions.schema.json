@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-completions.schema.json",
+  "title": "tau completions install --json output",
+  "description": "Schema for the single JSON object `tau completions install [--json]` prints on stdout after installing (or previewing with --dry-run) the generated shell completions. The object carries the same status/shells payload the `tau setup` completions step emits inside its {\"step\":\"completions\",...} event, wrapped in an ok/version/done envelope. The process exit code mirrors ok: 0 on success or a shell-detection skip, 1 when an install failed. New keys may be added (additive); existing keys keep their names and types.",
+  "type": "object",
+  "required": ["ok", "status", "version", "done"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": { "type": "boolean", "description": "true unless an install failed. A detection skip (no --shell and an undetectable $SHELL) is reported as status \"skipped\" with ok true — it is not a failure." },
+    "status": {
+      "type": "string",
+      "enum": ["installed", "would_install", "skipped", "failed"],
+      "description": "\"installed\" covers fresh installs and already-current installs alike; \"would_install\" under --dry-run (any shell has a pending change); \"skipped\" when no shell could be detected; \"failed\" when an install errored (e.g. HOME unset)."
+    },
+    "shells": {
+      "type": "array",
+      "description": "One entry per resolved shell, in resolution order; absent on skipped/failed-to-resolve outcomes.",
+      "items": {
+        "type": "object",
+        "required": ["shell", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "shell": { "type": "string", "enum": ["bash", "zsh", "fish", "pwsh"] },
+          "status": { "type": "string", "enum": ["installed", "already_installed", "would_install", "failed"] },
+          "path": { "type": "string", "description": "Installed completion script path; absent on failure." },
+          "rc": { "type": "string", "description": "Rc/profile file the autoload hook was appended to (zsh/pwsh only)." },
+          "rc_status": { "type": "string", "enum": ["appended", "present", "would_append", "failed"], "description": "Outcome of the rc-hook append (zsh/pwsh only)." },
+          "note": { "type": "string", "description": "Shell-specific note (e.g. bash-completion requirement)." },
+          "message": { "type": "string", "description": "Failure detail for this shell." }
+        }
+      }
+    },
+    "reason": { "type": "string", "description": "Why the install was skipped (e.g. could not detect shell from $SHELL)." },
+    "hint": { "type": "string", "description": "Remediation hint on skipped installs (re-run with --shell ...)." },
+    "message": { "type": "string", "description": "Failure detail; emitted with status \"failed\" before shell resolution." },
+    "dry_run": { "const": true, "description": "Present under --dry-run." },
+    "version": { "type": "string", "description": "The tau version that produced this result (e.g. \"0.4.0\")." },
+    "done": { "const": true, "description": "Terminal marker — always true on the result object." }
+  },
+  "examples": [
+    {
+      "ok": true, "status": "installed",
+      "shells": [{ "shell": "zsh", "rc": "/home/u/.zshrc", "rc_status": "appended", "status": "installed", "path": "/home/u/.zsh/completions/_tau" }],
+      "version": "0.4.0", "done": true
+    },
+    {
+      "ok": true, "status": "skipped",
+      "reason": "could not detect shell from $SHELL",
+      "hint": "re-run with --shell bash|zsh|fish|pwsh|all",
+      "version": "0.4.0", "done": true
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"warn":{"message":"config file <HOME>/.config/tau/config.json uses deprecated key \"compact_keep_recent\" (renamed to \"compact_keep_recent_tokens\") — the old spelling still loads during the deprecation window; run 'tau doctor --fix' to migrate"}}

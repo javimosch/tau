@@ -1,0 +1,1 @@
+{"err":{"code":110,"type":"HTTPRequestFailed","message":"request failed","recoverable":false,"hint":"re-run with --debug to write a diagnostic log, then file a bug report","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md","explain":"tau explain 110","catalog":"https://github.com/javimosch/tau/blob/master/docs/errors.md"}}

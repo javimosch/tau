@@ -1,9 +1,10 @@
 const std = @import("std");
 const cfgmod = @import("config.zig");
 const goalmod = @import("goal.zig");
+const suggest = @import("suggest.zig");
 const Config = cfgmod.Config;
 
-pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, err };
+pub const Action = enum { run, help, version, help_json, acp, fleet, skills, models, guide, init, doctor, setup, completions, config, bug, upgrade, explain, err };
 
 pub const Parsed = struct {
     action: Action = .run,
@@ -30,6 +31,140 @@ fn splitCsv(arena: std.mem.Allocator, s: []const u8) ![]const []const u8 {
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
+}
+
+/// `tau setup --shell` / `TAU_SETUP_SHELL` accepted values.
+fn validSetupShell(s: []const u8) bool {
+    return eq(s, "bash") or eq(s, "zsh") or eq(s, "fish") or eq(s, "pwsh") or
+        eq(s, "powershell") or eq(s, "all");
+}
+
+/// `tau setup --client` / `TAU_SETUP_CLIENT` accepted values.
+fn validSetupClient(s: []const u8) bool {
+    return eq(s, "zed") or eq(s, "nvim") or eq(s, "emacs") or eq(s, "vscode") or
+        eq(s, "cursor") or eq(s, "jetbrains") or eq(s, "code") or
+        eq(s, "windsurf") or eq(s, "gemini") or eq(s, "gemini-cli") or
+        eq(s, "claude-desktop") or eq(s, "claude") or eq(s, "opencode") or
+        eq(s, "cline") or eq(s, "goose") or eq(s, "continue") or
+        eq(s, "roo-code") or eq(s, "roo") or eq(s, "kilo-code") or
+        eq(s, "kilo") or eq(s, "amazonq") or eq(s, "amazon-q") or
+        eq(s, "codex") or eq(s, "codex-cli") or
+        eq(s, "all");
+}
+
+/// Interpret an env var as a boolean: "1", "true", "yes", "on"
+/// (case-insensitive) are true; unset, empty, "0", "false", "no", "off" —
+/// and anything else — are false, so `VAR=0` never surprises.
+fn envTruthy(v: ?[]const u8) bool {
+    const s = v orelse return false;
+    for ([_][]const u8{ "1", "true", "yes", "on" }) |t| {
+        if (std.ascii.eqlIgnoreCase(s, t)) return true;
+    }
+    return false;
+}
+
+// ── did-you-mean pools ─────────────────────────────────────────────────────
+// Two suggestion vocabularies back every "unknown X argument/option" error:
+// the registered --flag spellings, and each subcommand's positional words.
+// The flag pool is comptime-scanned from this file's own dash literals — the
+// same source-scan the surface-drift tests in main.zig/subhelp.zig run — so
+// a flag added anywhere in the parser joins the pool automatically.
+
+const args_source = @embedFile("args.zig");
+
+/// Iterate `eq(<expr>, "<literal>")` where the literal starts with '-' — the
+/// registered flags (global and subcommand-scoped alike). Mirrors
+/// nextFlagLiteral in main.zig.
+fn nextFlagLiteral(pos: *usize) ?[]const u8 {
+    while (std.mem.indexOfPos(u8, args_source, pos.*, "eq(")) |i| {
+        const close = std.mem.indexOfPos(u8, args_source, i + 3, ")") orelse return null;
+        const q1 = std.mem.indexOfPos(u8, args_source, i + 3, "\"") orelse return null;
+        pos.* = i + 3;
+        if (q1 > close) continue;
+        const q2 = std.mem.indexOfPos(u8, args_source, q1 + 1, "\"") orelse return null;
+        pos.* = q2 + 1;
+        const lit = args_source[q1 + 1 .. q2];
+        if (lit.len > 1 and lit[0] == '-') return lit;
+    }
+    return null;
+}
+
+/// Every registered --flag spelling — the suggestion pool for unknown-option
+/// errors. Two-char shorts (-h/-v/-p/-t/-y) are excluded: every stray
+/// dash-token sits within an edit of one, which would make the hint noise.
+const flag_pool = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (nextFlagLiteral(&pos)) |f| {
+        if (f.len > 2) count += 1;
+    }
+    var pool: [count][]const u8 = undefined;
+    pos = 0;
+    var i: usize = 0;
+    while (nextFlagLiteral(&pos)) |f| {
+        if (f.len > 2) {
+            pool[i] = f;
+            i += 1;
+        }
+    }
+    break :blk pool;
+};
+
+/// Each subcommand's positional vocabulary — the word pool for tokens
+/// rejected in a slot that takes words rather than flags.
+const acp_words = [_][]const u8{ "serve", "start", "stop", "status" };
+const skills_words = [_][]const u8{ "list", "search", "load" };
+const fleet_words = [_][]const u8{ "run", "status", "list", "logs", "cancel" };
+const completions_words = [_][]const u8{"install"};
+const config_words = [_][]const u8{ "show", "validate", "set", "get", "unset", "edit", "schema" };
+
+/// The top-level `tau <sub>` surface plus the arg words that make a mistyped
+/// line unambiguously a subcommand call (see the typo guard in parse).
+const TopSub = struct { name: []const u8, args: []const []const u8 = &.{} };
+const top_subs = [_]TopSub{
+    .{ .name = "acp", .args = &acp_words },
+    .{ .name = "models" },
+    .{ .name = "version" },
+    .{ .name = "upgrade" },
+    .{ .name = "doctor" },
+    .{ .name = "bug" },
+    .{ .name = "guide" },
+    .{ .name = "explain" },
+    .{ .name = "skills", .args = &skills_words },
+    .{ .name = "init" },
+    .{ .name = "setup" },
+    .{ .name = "completions", .args = &completions_words },
+    .{ .name = "fleet", .args = &fleet_words },
+    .{ .name = "config", .args = &config_words },
+};
+
+const top_sub_names = blk: {
+    var names: [top_subs.len][]const u8 = undefined;
+    for (top_subs, 0..) |t, i| names[i] = t.name;
+    break :blk names;
+};
+
+fn subSpec(name: []const u8) TopSub {
+    for (top_subs) |t| {
+        if (eq(t.name, name)) return t;
+    }
+    unreachable; // `near` always comes from top_sub_names
+}
+
+fn containsWord(words: []const []const u8, w: []const u8) bool {
+    for (words) |x| {
+        if (eq(x, w)) return true;
+    }
+    return false;
+}
+
+/// ` — did you mean "X"?` suffix for a rejected token: `-`-led tokens are
+/// matched against flag_pool, bare words against `words` (that slot's
+/// positional vocabulary — empty when the slot takes none).
+fn argHint(arena: std.mem.Allocator, a: []const u8, words: []const []const u8) ![]const u8 {
+    const pool: []const []const u8 = if (a.len > 0 and a[0] == '-') &flag_pool else words;
+    return suggest.hint(arena, a, pool);
 }
 
 /// Resolve `cfg.provider`/`endpoint`/`model` and `context_window` from CLI
@@ -80,22 +215,39 @@ fn resolveProviderAndModel(
     return null;
 }
 
-/// Parse argv into an Action + Config. All retained strings are allocated in
+/// `tau <sub> -h|--help` — every subcommand accepts the help flags anywhere
+/// in its own argv (help wins over other errors, the conventional CLI
+/// contract). Detected here so each subcommand block can bail out before
+/// validating its own grammar (e.g. `tau skills --help` never trips the
+/// "subcommand required" error).
+fn wantsHelp(args: []const []const u8) bool {
+    for (args) |a| {
+        if (eq(a, "-h") or eq(a, "--help")) return true;
+    }
+    return false;
+}
+
+/// The .help result for `tau <name> --help` — config.help_sub names the
+/// subcommand so main.zig prints its dedicated page (with runnable
+/// Examples:) from subhelp.zig instead of the global help_text.
+fn subHelp(name: []const u8, base: Config) Parsed {
+    var cfg = base;
+    cfg.help_sub = name;
+    return .{ .action = .help, .config = cfg, .help_requested = true };
+}
+
+/// Parse argv into an Action + Config. `argv` is the full argument vector
+/// (argv[0] included, skipped here). All retained strings are allocated in
 /// `arena` (freed automatically at process exit, so no leak bookkeeping). `io`
 /// is used to read `@file` arguments.
 pub fn parse(
     io: std.Io,
     arena: std.mem.Allocator,
-    args: std.process.Args,
+    argv_full: []const []const u8,
     env: *std.process.Environ.Map,
     base: Config,
 ) !Parsed {
-    var it = try std.process.Args.Iterator.initAllocator(args, arena);
-    _ = it.next(); // skip argv[0]
-
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    while (it.next()) |a| try argv_list.append(arena, try arena.dupe(u8, a));
-    const argv = argv_list.items;
+    var argv = if (argv_full.len > 0) argv_full[1..] else argv_full; // skip argv[0]
 
     // Fleet-subcommand scratch state (declared up here so the fleet subcommand
     // block above can write into them before the generic flag loop runs).
@@ -106,6 +258,7 @@ pub fn parse(
     // `tau acp <start|stop|status|serve> [--acp-socket PATH]` — handled before
     // the generic flag/prompt parsing (acp is a command, not a prompt).
     if (argv.len > 0 and eq(argv[0], "acp")) {
+        if (wantsHelp(argv[1..])) return subHelp("acp", base);
         var acfg: Config = base;
         acfg.acp_sub = .serve;
         // ACP loop: the turn ends naturally when the model stops calling tools
@@ -125,41 +278,490 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 acfg.max_iterations = std.fmt.parseInt(u32, argv[j], 10) catch
                     return errResult(arena, "invalid --max-iterations: {s}", .{argv[j]});
-            } else return errResult(arena, "unknown acp argument: {s}", .{a});
+            } else return errResult(arena, "unknown acp argument: {s}{s}", .{ a, try argHint(arena, a, &acp_words) });
         }
         return .{ .action = .acp, .config = acfg };
     }
 
     // `tau models` — list available providers and their models.
     if (argv.len > 0 and eq(argv[0], "models")) {
+        if (wantsHelp(argv[1..])) return subHelp("models", base);
         return .{ .action = .models, .config = base };
+    }
+
+    // `tau version [--verbose] [--check] [--json] [--mode text|json]` —
+    // command form of -v/--version. Bare output is `tau 0.4.0` either way;
+    // --json upgrades it to the stable {"name","version"} object form for
+    // scripts (mutually exclusive with --mode text). --verbose adds build
+    // metadata (commit, target triple, build date, zig version) as a JSON
+    // object, or key: value lines under --mode text. --check adds a
+    // non-blocking, opt-out (TAU_NO_UPDATE_CHECK) update check against the
+    // latest GitHub release; it always exits 0 and reports checked:false
+    // rather than failing when the lookup cannot run.
+    if (argv.len > 0 and eq(argv[0], "version")) {
+        if (wantsHelp(argv[1..])) return subHelp("version", base);
+        var vcfg: Config = base;
+        var saw_text_mode = false;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--verbose")) {
+                vcfg.version_verbose = true;
+            } else if (eq(a, "--check")) {
+                vcfg.version_check = true;
+            } else if (eq(a, "--json")) {
+                if (saw_text_mode) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                vcfg.cli_json = true;
+                vcfg.mode = .json;
+            } else if (eq(a, "--mode")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const v = argv[j];
+                if (eq(v, "text")) {
+                    if (vcfg.cli_json) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                    saw_text_mode = true;
+                    vcfg.mode = .text;
+                } else if (eq(v, "json")) {
+                    vcfg.mode = .json;
+                } else {
+                    return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
+                }
+            } else return errResult(arena, "unknown version argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+        }
+        return .{ .action = .version, .config = vcfg };
+    }
+
+    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--verify-signature] [--json]` — self-update
+    // in place: run the same release lookup as `tau version --check`, confirm,
+    // then fetch and exec the release tag's own install.sh so the fail-closed
+    // SHA256-verified install path is reused verbatim. The prompt only
+    // appears on a TTY; automation passes --yes (env TAU_YES=1). The stdout
+    // report is already a single JSON object; --json is the stable-contract
+    // spelling that pins it (schema/tau-upgrade.schema.json). POSIX-only —
+    // Windows re-runs install.ps1.
+    if (argv.len > 0 and eq(argv[0], "upgrade")) {
+        if (wantsHelp(argv[1..])) return subHelp("upgrade", base);
+        var ucfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--yes") or eq(a, "-y")) {
+                ucfg.upgrade_yes = true;
+            } else if (eq(a, "--dir")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                ucfg.upgrade_dir = argv[j];
+            } else if (eq(a, "--dry-run")) {
+                ucfg.upgrade_dry_run = true;
+            } else if (eq(a, "--verify-signature")) {
+                ucfg.upgrade_verify_signature = true;
+            } else if (eq(a, "--json")) {
+                ucfg.cli_json = true;
+                ucfg.mode = .json;
+            } else return errResult(arena, "unknown upgrade argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+        }
+        if (envTruthy(env.get("TAU_YES"))) ucfg.upgrade_yes = true;
+        if (envTruthy(env.get("TAU_VERIFY_SIGSTORE"))) ucfg.upgrade_verify_signature = true;
+        return .{ .action = .upgrade, .config = ucfg };
+    }
+
+    // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
+    // [--probe] [--selftest] [--fix] [--yes] [--shell sh] [--json] [--report]`
+    // — setup diagnostics; a command, not a prompt. An unknown provider is
+    // carried into the report as a failed check instead of exiting 80. --fix
+    // proposes remediations, --yes applies them without prompting
+    // (non-interactive use). --probe live-verifies connectivity and
+    // credentials for every provider in the registry (per-provider pass/fail
+    // rows). --selftest runs a credential-free end-to-end session against a
+    // loopback stub provider (self-spawned child; no real keys or network).
+    // --json streams NDJSON check/fix events instead of the single-object
+    // report; --report renders a redacted Markdown bundle for bug reports
+    // (--json and --report are mutually exclusive).
+    if (argv.len > 0 and eq(argv[0], "doctor")) {
+        if (wantsHelp(argv[1..])) return subHelp("doctor", base);
+        var dcfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                dcfg.api_key = argv[j];
+            } else if (eq(a, "--offline")) {
+                dcfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                dcfg.doctor_deep = true;
+            } else if (eq(a, "--probe")) {
+                dcfg.doctor_probe = true;
+            } else if (eq(a, "--selftest")) {
+                dcfg.doctor_selftest = true;
+            } else if (eq(a, "--fix")) {
+                dcfg.doctor_fix = true;
+            } else if (eq(a, "--yes") or eq(a, "-y")) {
+                // --yes implies --fix (nothing else to approve).
+                dcfg.doctor_fix = true;
+                dcfg.doctor_yes = true;
+            } else if (eq(a, "--json")) {
+                dcfg.doctor_json = true;
+            } else if (eq(a, "--report")) {
+                dcfg.doctor_report = true;
+            } else if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!eq(s, "bash") and !eq(s, "zsh") and !eq(s, "fish") and !eq(s, "pwsh") and
+                    !eq(s, "powershell") and !eq(s, "all"))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                dcfg.setup_shell = s;
+            } else return errResult(arena, "unknown doctor argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+        }
+        if (dcfg.doctor_report and dcfg.doctor_json)
+            return errResult(arena, "--report and --json are mutually exclusive", .{});
+        if (try resolveProviderAndModel(&dcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            dcfg.doctor_bad_provider = bad;
+        }
+        return .{ .action = .doctor, .config = dcfg };
+    }
+
+    // `tau bug [--title T] [--body TEXT] [--labels CSV] [--open] [--out PATH]
+    // [--no-report] [--attach-report PATH] [--offline] [--deep] [--provider P]
+    // [--model M] [--api-key K] [--shell sh] [--json]` — build a pre-filled
+    // GitHub issue carrying the redacted `tau doctor --report` bundle; a
+    // command, not a prompt. The diagnostic sweep honors the same overrides
+    // as `tau doctor`, so an unknown provider rides into the report as a
+    // failed check (exit-80 only for malformed arguments). --out and
+    // --no-report conflict: there is no bundle to write. --attach-report
+    // reads an existing report file at parse time, secret-redacts it, and
+    // bundles it in place of the live sweep — it conflicts with --no-report
+    // for the same reason. The stdout object is already JSON; --json is the
+    // stable-contract spelling that pins it (schema/tau-bug.schema.json).
+    if (argv.len > 0 and eq(argv[0], "bug")) {
+        if (wantsHelp(argv[1..])) return subHelp("bug", base);
+        var bcfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--title")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_title = argv[j];
+            } else if (eq(a, "--body")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_body = argv[j];
+            } else if (eq(a, "--labels")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_labels = argv[j];
+            } else if (eq(a, "--open")) {
+                bcfg.bug_open = true;
+            } else if (eq(a, "--out")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_out = argv[j];
+            } else if (eq(a, "--no-report")) {
+                bcfg.bug_no_report = true;
+            } else if (eq(a, "--attach-report")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.bug_attach_report = std.Io.Dir.cwd().readFileAlloc(io, argv[j], arena, .unlimited) catch
+                    return errResult(arena, "cannot read report file: {s}", .{argv[j]});
+            } else if (eq(a, "--offline")) {
+                bcfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                bcfg.doctor_deep = true;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                bcfg.api_key = argv[j];
+            } else if (eq(a, "--json")) {
+                bcfg.cli_json = true;
+                bcfg.mode = .json;
+            } else if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!eq(s, "bash") and !eq(s, "zsh") and !eq(s, "fish") and !eq(s, "pwsh") and
+                    !eq(s, "powershell") and !eq(s, "all"))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                bcfg.setup_shell = s;
+            } else return errResult(arena, "unknown bug argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+        }
+        if (bcfg.bug_out != null and bcfg.bug_no_report)
+            return errResult(arena, "--out and --no-report are mutually exclusive", .{});
+        if (bcfg.bug_attach_report != null and bcfg.bug_no_report)
+            return errResult(arena, "--attach-report and --no-report are mutually exclusive", .{});
+        if (try resolveProviderAndModel(&bcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            bcfg.doctor_bad_provider = bad;
+        }
+        return .{ .action = .bug, .config = bcfg };
     }
 
     // `tau guide [--human]` — embedded operator manual (cli-guide-spec, https://cli-specs.intrane.fr/).
     // JSON to stdout by default; `--human` renders the same content as markdown. Command, not a prompt.
     if (argv.len > 0 and eq(argv[0], "guide")) {
+        if (wantsHelp(argv[1..])) return subHelp("guide", base);
         var gcfg: Config = base;
         var j: usize = 1;
         while (j < argv.len) : (j += 1) {
-            if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResult(arena, "unknown guide argument: {s}", .{argv[j]});
+            if (eq(argv[j], "--human")) gcfg.guide_human = true else return errResult(arena, "unknown guide argument: {s}{s}", .{ argv[j], try argHint(arena, argv[j], &.{}) });
         }
         return .{ .action = .guide, .config = gcfg };
     }
 
+    // `tau explain [<code|type|key>] [--json|--human]` — offline catalog
+    // lookup (the error Spec registry behind docs/errors.md plus the
+    // config-key catalog behind docs/config.md). The output is JSON by
+    // default; --json is the stable-contract spelling that
+    // pins the schema-checked form (schema/tau-explain.schema.json), --human
+    // renders prose — the two are mutually exclusive. Command, not a prompt:
+    // `explain` is always consumed as the subcommand word.
+    if (argv.len > 0 and eq(argv[0], "explain")) {
+        if (wantsHelp(argv[1..])) return subHelp("explain", base);
+        var ecfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--human")) {
+                if (ecfg.cli_json) return errResult(arena, "--json and --human are mutually exclusive", .{});
+                ecfg.explain_human = true;
+            } else if (eq(a, "--json")) {
+                if (ecfg.explain_human) return errResult(arena, "--json and --human are mutually exclusive", .{});
+                ecfg.cli_json = true;
+                ecfg.mode = .json;
+            } else if (a.len > 0 and a[0] != '-') {
+                if (ecfg.explain_arg != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
+                ecfg.explain_arg = a;
+            } else {
+                return errResult(arena, "unknown explain argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+            }
+        }
+        return .{ .action = .explain, .config = ecfg };
+    }
+
     // `tau skills <list|search|load> [args]` — parallel to `tau acp` / `tau fleet`.
     if (argv.len > 0 and eq(argv[0], "skills")) {
+        if (wantsHelp(argv[1..])) return subHelp("skills", base);
         var scfg: Config = base;
         if (argv.len < 2) return errResult(arena, "skills subcommand required: list | search | load", .{});
         scfg.skills_sub = argv[1];
         if (argv.len > 2) scfg.skills_arg = argv[2];
         if (!eq(argv[1], "list") and !eq(argv[1], "search") and !eq(argv[1], "load")) {
-            return errResult(arena, "invalid skills subcommand (want list|search|load): {s}", .{argv[1]});
+            return errResult(arena, "invalid skills subcommand (want list|search|load): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &skills_words) });
         }
         return .{ .action = .skills, .config = scfg };
     }
 
+    // `tau init [--force] [--stdout] [--provider <name>] [--json]` — write a
+    // commented starter ~/.config/tau/config.json seeded from detected provider
+    // env keys. The write-path stdout result is already a JSON object; --json
+    // is the stable-contract spelling that pins it
+    // (schema/tau-init.schema.json). --stdout prints the JSONC scaffold
+    // itself, not the result object, so it is mutually exclusive with --json.
+    if (argv.len > 0 and eq(argv[0], "init")) {
+        if (wantsHelp(argv[1..])) return subHelp("init", base);
+        var icfg: Config = base;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--force")) {
+                icfg.init_force = true;
+            } else if (eq(a, "--stdout")) {
+                if (icfg.cli_json) return errResult(arena, "--json and --stdout are mutually exclusive", .{});
+                icfg.init_stdout = true;
+            } else if (eq(a, "--json")) {
+                if (icfg.init_stdout) return errResult(arena, "--json and --stdout are mutually exclusive", .{});
+                icfg.cli_json = true;
+                icfg.mode = .json;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                if (cfgmod.findProvider(argv[j]) == null) return unknownProviderErr(arena, argv[j]);
+                icfg.init_provider = argv[j];
+            } else return errResult(arena, "unknown init argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+        }
+        return .{ .action = .init, .config = icfg };
+    }
+
+    // `tau setup [--shell <bash|zsh|fish|pwsh|all>] [--provider P] [--model M]
+    // [--api-key K] [--offline] [--deep] [--client <zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all>]
+    // [--yes|-y] [--non-interactive] [--dry-run] [--json] [--remove|--uninstall]
+    // [--import]`
+    // — one-shot onboarding: scaffold the config (init), install shell
+    // completions, write/detect editor ACP client config, embed a doctor
+    // health report. --remove/--uninstall reverses the clients step instead
+    // (init/completions/doctor don't run): --client scopes the sweep, no
+    // --client unwires every client that carries tau wiring. --import opts
+    // into editing existing MCP-client settings files: the mcacp entry and
+    // the user's server entries from the other supported clients are
+    // spliced in (comments preserved), mutually exclusive with --remove.
+    // --detect is the read-only counterpart: a detect_clients inventory of
+    // every supported client's config dir, detection status, and wiring
+    // state — mutually exclusive with both write modes.
+    // The stdout
+    // stream is already NDJSON; --json is the
+    // stable-contract spelling that pins it (schema/tau-setup.schema.json).
+    // A command, not a prompt; an unknown provider rides into the doctor step
+    // as a failed check (same convention as `tau doctor`).
+    // Unattended use (devcontainers, dotfiles scripts, CI): --yes and
+    // --non-interactive declare the contract explicitly — setup never prompts
+    // or reads stdin either way — and TAU_YES / TAU_NONINTERACTIVE /
+    // TAU_SETUP_SHELL / TAU_SETUP_CLIENT are env equivalents (flag > env >
+    // detect). CI is NOT auto-detected: scripts opt in, no surprise behavior.
+    if (argv.len > 0 and eq(argv[0], "setup")) {
+        if (wantsHelp(argv[1..])) return subHelp("setup", base);
+        var scfg: Config = base;
+        var provider_opt: ?[]const u8 = null;
+        var model_opt: ?[]const u8 = null;
+        var j: usize = 1;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!validSetupShell(s))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                scfg.setup_shell = s;
+            } else if (eq(a, "--client")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const c = argv[j];
+                if (!validSetupClient(c))
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", .{c});
+                scfg.setup_client = c;
+            } else if (eq(a, "--provider")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                provider_opt = argv[j];
+            } else if (eq(a, "--model")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                model_opt = argv[j];
+            } else if (eq(a, "--api-key")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                scfg.api_key = argv[j];
+            } else if (eq(a, "--offline")) {
+                scfg.doctor_offline = true;
+            } else if (eq(a, "--deep")) {
+                scfg.doctor_deep = true;
+            } else if (eq(a, "--yes") or eq(a, "-y")) {
+                scfg.setup_yes = true;
+            } else if (eq(a, "--non-interactive")) {
+                scfg.setup_non_interactive = true;
+            } else if (eq(a, "--dry-run")) {
+                scfg.setup_dry_run = true;
+            } else if (eq(a, "--remove") or eq(a, "--uninstall")) {
+                scfg.setup_remove = true;
+            } else if (eq(a, "--import")) {
+                scfg.setup_import = true;
+            } else if (eq(a, "--detect")) {
+                scfg.setup_detect = true;
+            } else if (eq(a, "--json")) {
+                scfg.cli_json = true;
+                scfg.mode = .json;
+            } else return errResult(arena, "unknown setup argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+        }
+        // Env equivalents so dotfiles/devcontainers configure setup without
+        // argv. Flag wins over env; an env value is only validated when it
+        // would actually apply, and invalid values fail like a bad flag.
+        if (scfg.setup_shell == null) {
+            if (env.get("TAU_SETUP_SHELL")) |s| {
+                if (s.len > 0) {
+                    if (!validSetupShell(s))
+                        return errResult(arena, "invalid TAU_SETUP_SHELL: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                    scfg.setup_shell = s;
+                }
+            }
+        }
+        if (scfg.setup_client == null) {
+            if (env.get("TAU_SETUP_CLIENT")) |c| {
+                if (c.len > 0) {
+                    if (!validSetupClient(c))
+                        return errResult(arena, "invalid TAU_SETUP_CLIENT: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", .{c});
+                    scfg.setup_client = c;
+                }
+            }
+        }
+        if (envTruthy(env.get("TAU_YES"))) scfg.setup_yes = true;
+        if (envTruthy(env.get("TAU_NONINTERACTIVE"))) scfg.setup_non_interactive = true;
+        if (envTruthy(env.get("TAU_SETUP_IMPORT"))) scfg.setup_import = true;
+        // Importing servers into client files is the opposite of unwiring
+        // them — the two modes are mutually exclusive.
+        if (scfg.setup_import and scfg.setup_remove)
+            return errResult(arena, "--import and --remove/--uninstall are mutually exclusive", .{});
+        // --detect is a read-only inventory — it can't run inside the
+        // write modes.
+        if (scfg.setup_detect and scfg.setup_remove)
+            return errResult(arena, "--detect and --remove/--uninstall are mutually exclusive", .{});
+        if (scfg.setup_detect and scfg.setup_import)
+            return errResult(arena, "--detect and --import are mutually exclusive", .{});
+        if (try resolveProviderAndModel(&scfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
+            scfg.doctor_bad_provider = bad;
+        }
+        // Seed the scaffold when --provider names a known provider;
+        // pickProvider ignores unknown names (doctor reports that failure).
+        scfg.init_provider = provider_opt;
+        return .{ .action = .setup, .config = scfg };
+    }
+
+    // `tau completions install [--shell <sh>] [--dry-run] [--json]` — the
+    // setup completions step as a standalone command: write the embedded
+    // completion script for the detected (or --shell-named) shell and wire
+    // its rc/profile hook. The install flags share setup_shell/setup_dry_run
+    // — the fields the shared machinery in setup.zig consumes. Output is a
+    // single stable JSON result object; --json is the contract spelling.
+    if (argv.len > 0 and eq(argv[0], "completions")) {
+        if (wantsHelp(argv[1..])) return subHelp("completions", base);
+        var ccfg: Config = base;
+        if (argv.len < 2) return errResult(arena, "completions subcommand required: install", .{});
+        if (!eq(argv[1], "install"))
+            return errResult(arena, "invalid completions subcommand (want install): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &completions_words) });
+        ccfg.completions_sub = argv[1];
+        var j: usize = 2;
+        while (j < argv.len) : (j += 1) {
+            const a = argv[j];
+            if (eq(a, "--shell")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                const s = argv[j];
+                if (!validSetupShell(s))
+                    return errResult(arena, "invalid --shell: {s} (want bash|zsh|fish|pwsh|all)", .{s});
+                ccfg.setup_shell = s;
+            } else if (eq(a, "--dry-run")) {
+                ccfg.setup_dry_run = true;
+            } else if (eq(a, "--json")) {
+                ccfg.cli_json = true;
+                ccfg.mode = .json;
+            } else return errResult(arena, "unknown completions argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+        }
+        return .{ .action = .completions, .config = ccfg };
+    }
+
     // `tau fleet <run|status|list|logs|cancel> ...` — parallel to `tau acp`.
     if (argv.len > 0 and eq(argv[0], "fleet")) {
+        if (wantsHelp(argv[1..])) return subHelp("fleet", base);
         var fcfg: Config = base;
         var provider_opt: ?[]const u8 = null;
         var model_opt: ?[]const u8 = null;
@@ -222,7 +824,7 @@ pub fn parse(
                 if (fleet_id != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 fleet_id = a;
             } else {
-                return errResult(arena, "unknown fleet argument: {s}", .{a});
+                return errResult(arena, "unknown fleet argument: {s}{s}", .{ a, try argHint(arena, a, &fleet_words) });
             }
         }
         const m = mode orelse return errResult(arena, "fleet subcommand required: run | status | list | logs | cancel", .{});
@@ -239,6 +841,184 @@ pub fn parse(
         return .{ .action = .fleet, .config = fcfg };
     }
 
+    // `tau config <show|validate|set|get|unset|edit|schema>` — config
+    // inspection, programmatic/interactive editing, and schema emission.
+    // `show` falls through to the generic flag loop below so every override
+    // flag (--provider/--model/--api-key/--mode/...) is reflected in the
+    // merged output. `validate` checks a config FILE (default:
+    // ~/.config/tau/config.json) and returns early like acp/fleet — the
+    // override flags don't apply to file validation. `set`/`get`/`unset`
+    // also return early: they edit or read the FILE (like git config), not
+    // the merged view — use `config show` for effective values. `edit` opens
+    // the file in $EDITOR and validates on save.
+    var config_show = false;
+    if (argv.len > 0 and eq(argv[0], "config")) {
+        if (wantsHelp(argv[1..])) return subHelp("config", base);
+        if (argv.len < 2) return errResult(arena, "config subcommand required: show | validate | set | get | unset | edit | schema", .{});
+        if (eq(argv[1], "validate")) {
+            var vcfg: Config = base;
+            vcfg.config_sub = "validate";
+            var saw_text_mode = false;
+            var j: usize = 2;
+            while (j < argv.len) : (j += 1) {
+                const a = argv[j];
+                if (eq(a, "--json")) {
+                    // --json pins the stable JSON report form for scripts
+                    // (same shape as --mode json; mutex with --mode text).
+                    if (saw_text_mode) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                    vcfg.cli_json = true;
+                    vcfg.mode = .json;
+                } else if (eq(a, "--mode")) {
+                    j += 1;
+                    if (j >= argv.len) return missing(arena, a);
+                    if (eq(argv[j], "text")) {
+                        if (vcfg.cli_json) return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                        saw_text_mode = true;
+                        vcfg.mode = .text;
+                    } else if (eq(argv[j], "json")) {
+                        vcfg.mode = .json;
+                    } else {
+                        return errResult(arena, "invalid --mode (want text|json): {s}", .{argv[j]});
+                    }
+                } else if (a.len > 0 and a[0] != '-') {
+                    if (vcfg.validate_path != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
+                    vcfg.validate_path = a;
+                } else {
+                    return errResult(arena, "unknown config validate argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+                }
+            }
+            return .{ .action = .config, .config = vcfg };
+        }
+        if (eq(argv[1], "schema")) {
+            // tau config schema [--mode text|json] — prints the config file's
+            // JSON Schema (draft 2020-12) on stdout for editor autocomplete
+            // and validation tooling. The schema IS a JSON document, so both
+            // modes emit the same output; --mode is accepted only for
+            // config-family consistency. No other arguments are meaningful.
+            var scfg: Config = base;
+            scfg.config_sub = "schema";
+            var j: usize = 2;
+            while (j < argv.len) : (j += 1) {
+                const a = argv[j];
+                if (eq(a, "--mode")) {
+                    j += 1;
+                    if (j >= argv.len) return missing(arena, a);
+                    if (eq(argv[j], "text")) {
+                        scfg.mode = .text;
+                    } else if (eq(argv[j], "json")) {
+                        scfg.mode = .json;
+                    } else {
+                        return errResult(arena, "invalid --mode (want text|json): {s}", .{argv[j]});
+                    }
+                } else {
+                    return errResult(arena, "unknown config schema argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+                }
+            }
+            return .{ .action = .config, .config = scfg };
+        }
+        if (eq(argv[1], "edit")) {
+            // tau config edit [path] [--mode text|json]
+            var ecfg: Config = base;
+            ecfg.config_sub = "edit";
+            var j: usize = 2;
+            while (j < argv.len) : (j += 1) {
+                const a = argv[j];
+                if (eq(a, "--mode")) {
+                    j += 1;
+                    if (j >= argv.len) return missing(arena, a);
+                    if (eq(argv[j], "text")) {
+                        ecfg.mode = .text;
+                    } else if (eq(argv[j], "json")) {
+                        ecfg.mode = .json;
+                    } else {
+                        return errResult(arena, "invalid --mode (want text|json): {s}", .{argv[j]});
+                    }
+                } else if (a.len > 0 and a[0] != '-') {
+                    if (ecfg.edit_path != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
+                    ecfg.edit_path = a;
+                } else {
+                    return errResult(arena, "unknown config edit argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+                }
+            }
+            return .{ .action = .config, .config = ecfg };
+        }
+        if (eq(argv[1], "set") or eq(argv[1], "get") or eq(argv[1], "unset")) {
+            // tau config set <key> <value> [path] [--mode text|json]
+            // tau config get <key> [path] [--raw] [--mode text|json]
+            // tau config unset <key> [path] [--mode text|json]
+            var ecfg: Config = base;
+            ecfg.config_sub = argv[1];
+            const need_val = eq(argv[1], "set");
+            var j: usize = 2;
+            var pos_count: usize = 0;
+            while (j < argv.len) : (j += 1) {
+                const a = argv[j];
+                if (eq(a, "--mode")) {
+                    j += 1;
+                    if (j >= argv.len) return missing(arena, a);
+                    if (eq(argv[j], "text")) {
+                        ecfg.mode = .text;
+                    } else if (eq(argv[j], "json")) {
+                        ecfg.mode = .json;
+                    } else {
+                        return errResult(arena, "invalid --mode (want text|json): {s}", .{argv[j]});
+                    }
+                } else if (eq(a, "--raw")) {
+                    ecfg.config_raw = true;
+                } else if (a.len > 0 and a[0] != '-') {
+                    pos_count += 1;
+                    if (pos_count == 1) {
+                        ecfg.config_key = a;
+                    } else if (pos_count == 2) {
+                        if (need_val) ecfg.config_value = a else ecfg.edit_path = a;
+                    } else if (pos_count == 3 and need_val) {
+                        ecfg.edit_path = a;
+                    } else {
+                        return errResult(arena, "unexpected extra argument: {s}", .{a});
+                    }
+                } else {
+                    return errResult(arena, "unknown config {s} argument: {s}{s}", .{ argv[1], a, try argHint(arena, a, &.{}) });
+                }
+            }
+            if (ecfg.config_key == null) {
+                return errResult(arena, "config {s} requires a key: tau config {s} <key>{s}", .{ argv[1], argv[1], if (need_val) " <value> [path]" else " [path]" });
+            }
+            if (need_val and ecfg.config_value == null) {
+                return errResult(arena, "config set requires a value: tau config set <key> <value> [path]", .{});
+            }
+            if (ecfg.config_raw and !eq(argv[1], "get")) {
+                return errResult(arena, "--raw only applies to config get", .{});
+            }
+            return .{ .action = .config, .config = ecfg };
+        }
+        if (!eq(argv[1], "show")) {
+            return errResult(arena, "invalid config subcommand (want show|validate|set|get|unset|edit|schema): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &config_words) });
+        }
+        config_show = true;
+        argv = argv[2..];
+    }
+
+    // `tau docter --json` — the first token is not a registered subcommand
+    // (those all dispatched above) but sits within typo distance of one, and
+    // the rest of the line is shaped like a subcommand call: bare (`tau
+    // versoin`), flag next (`tau docter --probe`), or one of that
+    // subcommand's own args (`tau conifg show`). Error with a suggestion
+    // instead of silently running the token as a prompt; a real prompt whose
+    // first word happens to sit near a subcommand name (`tau model the auth
+    // flow`) still parses because what follows is neither a flag nor a
+    // subcommand arg.
+    if (!config_show and argv.len > 0 and argv[0].len > 0 and argv[0][0] != '-' and argv[0][0] != '@') {
+        if (suggest.suggest(arena, argv[0], &top_sub_names)) |near| {
+            if (!eq(near, argv[0])) {
+                const looks_like_call = argv.len == 1 or
+                    (argv[1].len > 0 and argv[1][0] == '-') or
+                    containsWord(subSpec(near).args, argv[1]);
+                if (looks_like_call)
+                    return errResult(arena, "unknown subcommand: {s} — did you mean \"{s}\"?", .{ argv[0], near });
+            }
+        }
+    }
+
     // Start from `base` (config-file defaults). CLI flags below override it.
     var cfg: Config = base;
     var provider_opt: ?[]const u8 = null;
@@ -249,6 +1029,9 @@ pub fn parse(
     var msg_parts: std.ArrayList([]const u8) = .empty;
     var file_parts: std.ArrayList([]const u8) = .empty;
     var help_requested = false;
+    // Tracks an explicit `--mode text` so `config show --json` can reject the
+    // contradictory pair in either order (the chat path ignores it).
+    var saw_text_mode = false;
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
@@ -369,12 +1152,28 @@ pub fn parse(
         if (eq(a, "--mode")) {
             const v = val(argv, &i) orelse return missing(arena, a);
             if (eq(v, "text")) {
+                if (config_show and cfg.cli_json)
+                    return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+                saw_text_mode = true;
                 cfg.mode = .text;
             } else if (eq(v, "json")) {
                 cfg.mode = .json;
             } else {
                 return errResult(arena, "invalid --mode (want text|json): {s}", .{v});
             }
+            continue;
+        }
+        if (eq(a, "--json")) {
+            // `tau config show --json` — the effective-config output is
+            // always JSON; the flag pins the stable contract explicitly
+            // (same spelling as `tau doctor --json`). Not a global flag —
+            // version/validate parse their own --json; anything else is an
+            // unknown option.
+            if (!config_show) return errResult(arena, "unknown option: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+            if (saw_text_mode)
+                return errResult(arena, "--json and --mode text are mutually exclusive", .{});
+            cfg.cli_json = true;
+            cfg.mode = .json;
             continue;
         }
         if (eq(a, "--tools") or eq(a, "-t")) {
@@ -421,7 +1220,7 @@ pub fn parse(
             continue;
         }
         if (a.len > 1 and a[0] == '-') {
-            return errResult(arena, "unknown option: {s}", .{a});
+            return errResult(arena, "unknown option: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
         try msg_parts.append(arena, a); // positional message part
     }
@@ -475,6 +1274,18 @@ pub fn parse(
     // -h/--help always shows human-readable text; --help-json is the machine form.
     if (help_requested) return .{ .action = .help, .config = cfg, .help_requested = true };
 
+    // `tau config show` takes no prompt — any positional (or @file) is an error.
+    if (config_show) {
+        if (cfg.prompt != null) {
+            const bad = if (msg_parts.items.len > 0)
+                msg_parts.items[0]
+            else
+                try std.fmt.allocPrint(arena, "@{s}", .{file_parts.items[0]});
+            return errResult(arena, "config show takes no prompt; unexpected argument: {s}", .{bad});
+        }
+        return .{ .action = .config, .config = cfg };
+    }
+
     // No args and no prompt: show human-readable help (not JSON),
     // unless a standalone flag like --scan-agents or --load-agents-md is set.
     const has_standalone_flag = cfg.scan_agents or cfg.load_agents_md != null or cfg.auto_agents_md;
@@ -496,20 +1307,26 @@ fn errResult(arena: std.mem.Allocator, comptime fmt: []const u8, fmtargs: anytyp
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 //
-// `parse` consumes a `std.process.Args` (the platform argv vector) and a
-// `std.process.Environ.Map`. On the test host both are constructed directly:
-// `Args.vector` is just a `[]const [*:0]const u8`, so an array of string
-// literals (with a dummy argv[0], which `parse` skips) drives the parser. The
-// env map is left empty — env-key resolution happens later in main, not here.
+// `parse` consumes a plain argv slice (argv[0] included) and a
+// `std.process.Environ.Map`, so tests drive it with arrays of string literals
+// (a dummy argv[0], which `parse` skips) on every platform. The env map is
+// left empty by default — env-key resolution happens later in main, except
+// for the setup/env overrides tested via parseArgvEnv.
 
 const provider_mod = @import("llm/provider.zig");
 
 /// Run `parse` over an explicit argv (caller supplies argv[0]). All retained
 /// strings land in `arena`, freed together by the caller's arena.deinit().
-fn parseArgv(arena: std.mem.Allocator, argv: []const [*:0]const u8, base: Config) !Parsed {
+fn parseArgv(arena: std.mem.Allocator, argv: []const []const u8, base: Config) !Parsed {
+    return parseArgvEnv(arena, argv, &.{}, base);
+}
+
+/// Like parseArgv but seeds the environment with the given key=value pairs —
+/// for the setup env fallbacks (TAU_SETUP_*, TAU_YES, TAU_NONINTERACTIVE).
+fn parseArgvEnv(arena: std.mem.Allocator, argv: []const []const u8, pairs: []const [2][]const u8, base: Config) !Parsed {
     var env = std.process.Environ.Map.init(arena);
-    const args: std.process.Args = .{ .vector = argv };
-    return parse(std.testing.io, arena, args, &env, base);
+    for (pairs) |kv| try env.put(kv[0], kv[1]);
+    return parse(std.testing.io, arena, argv, &env, base);
 }
 
 test "parse: bare positional becomes a run prompt" {
@@ -613,9 +1430,16 @@ test "parse: unknown option is rejected" {
     defer ar.deinit();
     const a = ar.allocator();
 
-    const p = try parseArgv(a, &.{ "tau", "--nope" }, .{});
+    const p = try parseArgv(a, &.{ "tau", "--zztopp" }, .{});
     try std.testing.expectEqual(Action.err, p.action);
-    try std.testing.expectEqualStrings("unknown option: --nope", p.err_msg.?);
+    // Clearly-unrelated flags get no did-you-mean noise (anything within two
+    // edits — e.g. --nope, d=2 from --mode — would earn a hint).
+    try std.testing.expectEqualStrings("unknown option: --zztopp", p.err_msg.?);
+
+    // A close typo earns the nearest registered flag.
+    const typo = try parseArgv(a, &.{ "tau", "--mod", "text", "x" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expectEqualStrings("unknown option: --mod — did you mean \"--mode\"?", typo.err_msg.?);
 }
 
 test "parse: --role accepts known roles and rejects others" {
@@ -848,9 +1672,14 @@ test "parse: acp subcommands and validation" {
     try std.testing.expectEqual(cfgmod.AcpSub.start, start.config.acp_sub);
     try std.testing.expectEqualStrings("/tmp/tau.sock", start.config.acp_socket.?);
 
-    const bad = try parseArgv(a, &.{ "tau", "acp", "--frob" }, .{});
+    const bad = try parseArgv(a, &.{ "tau", "acp", "--zztopp" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
-    try std.testing.expectEqualStrings("unknown acp argument: --frob", bad.err_msg.?);
+    try std.testing.expectEqualStrings("unknown acp argument: --zztopp", bad.err_msg.?);
+
+    // A mistyped sub-command word suggests the nearest acp verb.
+    const typo = try parseArgv(a, &.{ "tau", "acp", "stats" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expectEqualStrings("unknown acp argument: stats — did you mean \"status\"?", typo.err_msg.?);
 
     const bad_iter = try parseArgv(a, &.{ "tau", "acp", "--max-iterations", "ten" }, .{});
     try std.testing.expectEqual(Action.err, bad_iter.action);
@@ -864,6 +1693,88 @@ test "parse: models subcommand" {
 
     const p = try parseArgv(a, &.{ "tau", "models" }, .{});
     try std.testing.expectEqual(Action.models, p.action);
+}
+
+test "parse: <sub> --help routes to per-subcommand help" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Every registered subcommand accepts -h/--help anywhere in its argv;
+    // help wins over missing subcommand-grammar args (skills/fleet/config
+    // would otherwise error before a help flag was ever seen).
+    const subs = [_][]const u8{ "acp", "models", "version", "upgrade", "doctor", "bug", "guide", "explain", "skills", "init", "setup", "fleet", "config" };
+    for (subs) |s| {
+        const p = try parseArgv(a, &.{ "tau", s, "--help" }, .{});
+        try std.testing.expectEqual(Action.help, p.action);
+        try std.testing.expectEqualStrings(s, p.config.help_sub.?);
+        const h = try parseArgv(a, &.{ "tau", s, "-h" }, .{});
+        try std.testing.expectEqual(Action.help, h.action);
+        try std.testing.expectEqualStrings(s, h.config.help_sub.?);
+    }
+
+    // Help wins mid-argv too, and over otherwise-invalid grammar.
+    const mid = try parseArgv(a, &.{ "tau", "fleet", "run", "--goal", "x", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, mid.action);
+    try std.testing.expectEqualStrings("fleet", mid.config.help_sub.?);
+    const bad = try parseArgv(a, &.{ "tau", "skills", "--bogus", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, bad.action);
+
+    // Nested sub-words still reach the top-level page.
+    const nested = try parseArgv(a, &.{ "tau", "config", "validate", "--help" }, .{});
+    try std.testing.expectEqualStrings("config", nested.config.help_sub.?);
+    const show = try parseArgv(a, &.{ "tau", "config", "show", "-h" }, .{});
+    try std.testing.expectEqualStrings("config", show.config.help_sub.?);
+
+    // The global --help keeps help_sub null (prints help_text).
+    const global = try parseArgv(a, &.{ "tau", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, global.action);
+    try std.testing.expect(global.config.help_sub == null);
+}
+
+test "parse: explain subcommand" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "explain" }, .{});
+    try std.testing.expectEqual(Action.explain, bare.action);
+    try std.testing.expect(bare.config.explain_arg == null);
+    try std.testing.expect(!bare.config.explain_human);
+
+    const code = try parseArgv(a, &.{ "tau", "explain", "106" }, .{});
+    try std.testing.expectEqualStrings("106", code.config.explain_arg.?);
+
+    const tagged = try parseArgv(a, &.{ "tau", "explain", "--human", "AuthFailed" }, .{});
+    try std.testing.expectEqualStrings("AuthFailed", tagged.config.explain_arg.?);
+    try std.testing.expect(tagged.config.explain_human);
+
+    // --json pins the schema-checked contract spelling (JSON is the default).
+    const pinned = try parseArgv(a, &.{ "tau", "explain", "--json", "80" }, .{});
+    try std.testing.expectEqualStrings("80", pinned.config.explain_arg.?);
+    try std.testing.expect(pinned.config.cli_json);
+    try std.testing.expect(!pinned.config.explain_human);
+
+    // --json and --human are mutually exclusive in either order.
+    const mutex_a = try parseArgv(a, &.{ "tau", "explain", "--json", "--human" }, .{});
+    try std.testing.expectEqual(Action.err, mutex_a.action);
+    try std.testing.expectEqualStrings("--json and --human are mutually exclusive", mutex_a.err_msg.?);
+
+    const mutex_b = try parseArgv(a, &.{ "tau", "explain", "--human", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, mutex_b.action);
+    try std.testing.expectEqualStrings("--json and --human are mutually exclusive", mutex_b.err_msg.?);
+
+    const bad_flag = try parseArgv(a, &.{ "tau", "explain", "--zztopp" }, .{});
+    try std.testing.expectEqual(Action.err, bad_flag.action);
+    try std.testing.expectEqualStrings("unknown explain argument: --zztopp", bad_flag.err_msg.?);
+
+    const typo_flag = try parseArgv(a, &.{ "tau", "explain", "--jsson" }, .{});
+    try std.testing.expectEqual(Action.err, typo_flag.action);
+    try std.testing.expectEqualStrings("unknown explain argument: --jsson — did you mean \"--json\"?", typo_flag.err_msg.?);
+
+    const extra = try parseArgv(a, &.{ "tau", "explain", "80", "106" }, .{});
+    try std.testing.expectEqual(Action.err, extra.action);
+    try std.testing.expectEqualStrings("unexpected extra argument: 106", extra.err_msg.?);
 }
 
 test "parse: skills subcommand validation" {
@@ -886,6 +1797,271 @@ test "parse: skills subcommand validation" {
     const bad = try parseArgv(a, &.{ "tau", "skills", "frob" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
     try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): frob", bad.err_msg.?);
+
+    const typo = try parseArgv(a, &.{ "tau", "skills", "lst" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expectEqualStrings("invalid skills subcommand (want list|search|load): lst — did you mean \"list\"?", typo.err_msg.?);
+}
+
+test "parse: mistyped top-level subcommand suggests, prompt-shaped lines still parse" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Flag next → clearly a subcommand call, not a prompt.
+    const flag_next = try parseArgv(a, &.{ "tau", "docter", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, flag_next.action);
+    try std.testing.expectEqualStrings("unknown subcommand: docter — did you mean \"doctor\"?", flag_next.err_msg.?);
+
+    // Bare mistyped token.
+    const bare = try parseArgv(a, &.{ "tau", "versoin" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    try std.testing.expectEqualStrings("unknown subcommand: versoin — did you mean \"version\"?", bare.err_msg.?);
+
+    // Next token is one of that subcommand's own args.
+    const sub_arg = try parseArgv(a, &.{ "tau", "conifg", "show" }, .{});
+    try std.testing.expectEqual(Action.err, sub_arg.action);
+    try std.testing.expectEqualStrings("unknown subcommand: conifg — did you mean \"config\"?", sub_arg.err_msg.?);
+    const fleet_arg = try parseArgv(a, &.{ "tau", "flet", "status" }, .{});
+    try std.testing.expectEqual(Action.err, fleet_arg.action);
+    try std.testing.expectEqualStrings("unknown subcommand: flet — did you mean \"fleet\"?", fleet_arg.err_msg.?);
+
+    // Prompt-shaped lines still parse: 'model' is d=1 from 'models' but
+    // 'the' is neither a flag nor a subcommand arg.
+    const prompt = try parseArgv(a, &.{ "tau", "model", "the", "auth", "flow" }, .{});
+    try std.testing.expectEqual(Action.run, prompt.action);
+    try std.testing.expectEqualStrings("model the auth flow", prompt.config.prompt.?);
+
+    // Unrelated first tokens are prompts, not subcommand errors.
+    const plain = try parseArgv(a, &.{ "tau", "zebra" }, .{});
+    try std.testing.expectEqual(Action.run, plain.action);
+    try std.testing.expectEqualStrings("zebra", plain.config.prompt.?);
+}
+
+test "parse: init subcommand and validation" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "init" }, .{});
+    try std.testing.expectEqual(Action.init, bare.action);
+    try std.testing.expect(!bare.config.init_force);
+    try std.testing.expect(!bare.config.init_stdout);
+    try std.testing.expectEqual(@as(?[]const u8, null), bare.config.init_provider);
+
+    const full = try parseArgv(a, &.{ "tau", "init", "--force", "--stdout", "--provider", "openai" }, .{});
+    try std.testing.expectEqual(Action.init, full.action);
+    try std.testing.expect(full.config.init_force);
+    try std.testing.expect(full.config.init_stdout);
+    try std.testing.expectEqualStrings("openai", full.config.init_provider.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "init", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown init argument: --bogus", bad.err_msg.?);
+
+    const badp = try parseArgv(a, &.{ "tau", "init", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.err, badp.action);
+    try std.testing.expect(std.mem.indexOf(u8, badp.err_msg.?, "unknown provider 'acme'") != null);
+
+    const missingv = try parseArgv(a, &.{ "tau", "init", "--provider" }, .{});
+    try std.testing.expectEqual(Action.err, missingv.action);
+    try std.testing.expectEqualStrings("missing value for --provider", missingv.err_msg.?);
+}
+
+test "parse: init --json pins the stable result object; --stdout mutex" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "init", "--json" }, .{});
+    try std.testing.expectEqual(Action.init, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // --stdout prints the JSONC scaffold, not the pinned result object —
+    // the two spellings conflict in either order.
+    const fwd = try parseArgv(a, &.{ "tau", "init", "--json", "--stdout" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --stdout are mutually exclusive", fwd.err_msg.?);
+
+    const rev = try parseArgv(a, &.{ "tau", "init", "--stdout", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --stdout are mutually exclusive", rev.err_msg.?);
+}
+
+test "parse: setup --json pins the stable NDJSON stream contract" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "setup", "--json" }, .{});
+    try std.testing.expectEqual(Action.setup, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // --json composes with the rest of the setup surface.
+    const q = try parseArgv(a, &.{ "tau", "setup", "--json", "--dry-run", "--yes" }, .{});
+    try std.testing.expectEqual(Action.setup, q.action);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expect(q.config.setup_dry_run);
+    try std.testing.expect(q.config.setup_yes);
+}
+
+test "parse: setup --remove/--uninstall set setup_remove" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expect(!bare.config.setup_remove);
+
+    const rm = try parseArgv(a, &.{ "tau", "setup", "--remove" }, .{});
+    try std.testing.expectEqual(Action.setup, rm.action);
+    try std.testing.expect(rm.config.setup_remove);
+
+    // --uninstall is the same flag spelled the other way; it composes with
+    // --client scoping and --dry-run.
+    const un = try parseArgv(a, &.{ "tau", "setup", "--uninstall", "--client", "zed", "--dry-run" }, .{});
+    try std.testing.expect(un.config.setup_remove);
+    try std.testing.expectEqualStrings("zed", un.config.setup_client.?);
+    try std.testing.expect(un.config.setup_dry_run);
+}
+
+test "parse: setup --import sets setup_import, mutex with --remove/--uninstall" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expect(!bare.config.setup_import);
+
+    const imp = try parseArgv(a, &.{ "tau", "setup", "--import", "--client", "windsurf" }, .{});
+    try std.testing.expectEqual(Action.setup, imp.action);
+    try std.testing.expect(imp.config.setup_import);
+    try std.testing.expectEqualStrings("windsurf", imp.config.setup_client.?);
+
+    // Merging servers into client files is the opposite of unwiring them —
+    // both spellings of the removal flag conflict, in either order.
+    const rm_first = try parseArgv(a, &.{ "tau", "setup", "--remove", "--import" }, .{});
+    try std.testing.expectEqual(Action.err, rm_first.action);
+    try std.testing.expectEqualStrings("--import and --remove/--uninstall are mutually exclusive", rm_first.err_msg.?);
+    const imp_first = try parseArgv(a, &.{ "tau", "setup", "--import", "--uninstall" }, .{});
+    try std.testing.expectEqual(Action.err, imp_first.action);
+    try std.testing.expectEqualStrings("--import and --remove/--uninstall are mutually exclusive", imp_first.err_msg.?);
+}
+
+test "parse: setup --detect sets setup_detect, mutex with --remove/--import" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expect(!bare.config.setup_detect);
+
+    // --client scopes the inventory; --json composes with it.
+    const det = try parseArgv(a, &.{ "tau", "setup", "--detect", "--client", "zed", "--json" }, .{});
+    try std.testing.expectEqual(Action.setup, det.action);
+    try std.testing.expect(det.config.setup_detect);
+    try std.testing.expectEqualStrings("zed", det.config.setup_client.?);
+    try std.testing.expect(det.config.cli_json);
+
+    // The read-only inventory can't run inside either write mode.
+    const rm = try parseArgv(a, &.{ "tau", "setup", "--detect", "--remove" }, .{});
+    try std.testing.expectEqual(Action.err, rm.action);
+    try std.testing.expectEqualStrings("--detect and --remove/--uninstall are mutually exclusive", rm.err_msg.?);
+    const un = try parseArgv(a, &.{ "tau", "setup", "--uninstall", "--detect" }, .{});
+    try std.testing.expectEqual(Action.err, un.action);
+    try std.testing.expectEqualStrings("--detect and --remove/--uninstall are mutually exclusive", un.err_msg.?);
+    const imp = try parseArgv(a, &.{ "tau", "setup", "--import", "--detect" }, .{});
+    try std.testing.expectEqual(Action.err, imp.action);
+    try std.testing.expectEqualStrings("--detect and --import are mutually exclusive", imp.err_msg.?);
+}
+
+test "parse: completions install flags + validation" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Bare `tau completions` requires a subcommand; only `install` is valid.
+    const bare = try parseArgv(a, &.{ "tau", "completions" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    const bogus = try parseArgv(a, &.{ "tau", "completions", "bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bogus.action);
+
+    const p = try parseArgv(a, &.{ "tau", "completions", "install" }, .{});
+    try std.testing.expectEqual(Action.completions, p.action);
+    try std.testing.expectEqualStrings("install", p.config.completions_sub.?);
+    try std.testing.expect(!p.config.setup_dry_run);
+    try std.testing.expect(!p.config.cli_json);
+
+    // --shell/--dry-run feed the shared install machinery's fields; --json
+    // is the contract-pinned spelling of the same result object.
+    const q = try parseArgv(a, &.{ "tau", "completions", "install", "--shell", "zsh", "--dry-run", "--json" }, .{});
+    try std.testing.expectEqual(Action.completions, q.action);
+    try std.testing.expectEqualStrings("zsh", q.config.setup_shell.?);
+    try std.testing.expect(q.config.setup_dry_run);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, q.config.mode);
+
+    // --shell all expands like `tau setup --shell all`.
+    const all = try parseArgv(a, &.{ "tau", "completions", "install", "--shell", "all" }, .{});
+    try std.testing.expectEqualStrings("all", all.config.setup_shell.?);
+
+    // Bad shell, missing value, and unknown flags are invalid arguments.
+    const tcsh = try parseArgv(a, &.{ "tau", "completions", "install", "--shell", "tcsh" }, .{});
+    try std.testing.expectEqual(Action.err, tcsh.action);
+    const miss = try parseArgv(a, &.{ "tau", "completions", "install", "--shell" }, .{});
+    try std.testing.expectEqual(Action.err, miss.action);
+    const unk = try parseArgv(a, &.{ "tau", "completions", "install", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, unk.action);
+
+    // `tau completions --help` routes to the dedicated help page, and help
+    // wins over a bad subcommand (the conventional CLI contract).
+    const h = try parseArgv(a, &.{ "tau", "completions", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, h.action);
+    try std.testing.expectEqualStrings("completions", h.config.help_sub.?);
+    const h2 = try parseArgv(a, &.{ "tau", "completions", "bogus", "--help" }, .{});
+    try std.testing.expectEqual(Action.help, h2.action);
+    try std.testing.expectEqualStrings("completions", h2.config.help_sub.?);
+}
+
+test "parse: TAU_SETUP_IMPORT env enables setup --import" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_IMPORT", "1" },
+    }, .{});
+    try std.testing.expect(p.config.setup_import);
+
+    // Falsy values leave the flag off.
+    const q = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_IMPORT", "0" },
+    }, .{});
+    try std.testing.expect(!q.config.setup_import);
+}
+
+test "parse: upgrade --json pins the stable report object" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade", "--json" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+}
+
+test "parse: bug --json pins the stable issue object" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--json" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
 }
 
 test "parse: fleet run resolves provider and captures goal" {
@@ -900,6 +2076,665 @@ test "parse: fleet run resolves provider and captures goal" {
     try std.testing.expect(!p.config.fleet_parallel);
     // Provider resolution happens inline for the fleet early-return path.
     try std.testing.expectEqualStrings(provider_mod.providers[0].endpoint, p.config.endpoint);
+}
+
+// ── `tau config show` ────────────────────────────────────────────────────────
+
+test "parse: config show selects the config action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    // Provider/endpoint/model are resolved like a normal run.
+    const want = provider_mod.providers[0];
+    try std.testing.expectEqualStrings(want.name, p.config.provider);
+    try std.testing.expectEqualStrings(want.endpoint, p.config.endpoint);
+    try std.testing.expectEqualStrings(want.default_model, p.config.model);
+}
+
+test "parse: config show merges override flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "--provider", "openai", "--model", "gpt-x", "--no-stream", "--api-key", "sk-flag" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    const oai = provider_mod.findProvider("openai").?;
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(oai.endpoint, p.config.endpoint);
+    try std.testing.expectEqualStrings("gpt-x", p.config.model);
+    try std.testing.expect(!p.config.stream);
+    try std.testing.expectEqualStrings("sk-flag", p.config.api_key.?);
+}
+
+test "parse: config show reflects config-file base values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const base = Config{ .provider = "deepseek", .timeout_ms = 9000 };
+    const p = try parseArgv(a, &.{ "tau", "config", "show" }, base);
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expectEqualStrings("deepseek", p.config.provider);
+    try std.testing.expectEqual(@as(i64, 9000), p.config.timeout_ms);
+}
+
+test "parse: config requires a subcommand and validates it" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "config" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    try std.testing.expectEqualStrings("config subcommand required: show | validate | set | get | unset | edit | schema", bare.err_msg.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "config", "bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("invalid config subcommand (want show|validate|set|get|unset|edit|schema): bogus", bad.err_msg.?);
+
+    // A close typo gets a did-you-mean hint.
+    const typo = try parseArgv(a, &.{ "tau", "config", "edti" }, .{});
+    try std.testing.expectEqual(Action.err, typo.action);
+    try std.testing.expect(std.mem.indexOf(u8, typo.err_msg.?, "did you mean \"edit\"?") != null);
+}
+
+test "parse: config edit accepts an optional path and --mode" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "config", "edit" }, .{});
+    try std.testing.expectEqual(Action.config, bare.action);
+    try std.testing.expectEqualStrings("edit", bare.config.config_sub.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), bare.config.edit_path);
+
+    const with_path = try parseArgv(a, &.{ "tau", "config", "edit", "ci.json", "--mode", "text" }, .{});
+    try std.testing.expectEqualStrings("edit", with_path.config.config_sub.?);
+    try std.testing.expectEqualStrings("ci.json", with_path.config.edit_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, with_path.config.mode);
+
+    const extra = try parseArgv(a, &.{ "tau", "config", "edit", "a", "b" }, .{});
+    try std.testing.expectEqual(Action.err, extra.action);
+    const bad_flag = try parseArgv(a, &.{ "tau", "config", "edit", "--raw" }, .{});
+    try std.testing.expectEqual(Action.err, bad_flag.action);
+}
+
+test "parse: config set|get|unset capture key, value, path, --raw" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const s = try parseArgv(a, &.{ "tau", "config", "set", "provider", "openai", "ci.json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.config, s.action);
+    try std.testing.expectEqualStrings("set", s.config.config_sub.?);
+    try std.testing.expectEqualStrings("provider", s.config.config_key.?);
+    try std.testing.expectEqualStrings("openai", s.config.config_value.?);
+    try std.testing.expectEqualStrings("ci.json", s.config.edit_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, s.config.mode);
+
+    const g = try parseArgv(a, &.{ "tau", "config", "get", "keys.openai", "--raw" }, .{});
+    try std.testing.expectEqualStrings("get", g.config.config_sub.?);
+    try std.testing.expectEqualStrings("keys.openai", g.config.config_key.?);
+    try std.testing.expect(g.config.config_raw);
+
+    const u = try parseArgv(a, &.{ "tau", "config", "unset", "mode", "f.json" }, .{});
+    try std.testing.expectEqualStrings("unset", u.config.config_sub.?);
+    try std.testing.expectEqualStrings("mode", u.config.config_key.?);
+    try std.testing.expectEqualStrings("f.json", u.config.edit_path.?);
+
+    // Missing positionals and misplaced flags are argument errors.
+    const no_val = try parseArgv(a, &.{ "tau", "config", "set", "provider" }, .{});
+    try std.testing.expectEqual(Action.err, no_val.action);
+    const no_key = try parseArgv(a, &.{ "tau", "config", "get" }, .{});
+    try std.testing.expectEqual(Action.err, no_key.action);
+    const extra = try parseArgv(a, &.{ "tau", "config", "get", "k", "p", "x" }, .{});
+    try std.testing.expectEqual(Action.err, extra.action);
+    const raw_on_set = try parseArgv(a, &.{ "tau", "config", "set", "k", "v", "--raw" }, .{});
+    try std.testing.expectEqual(Action.err, raw_on_set.action);
+}
+
+test "parse: config show rejects positional prompt arguments" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "hello" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expectEqualStrings("config show takes no prompt; unexpected argument: hello", p.err_msg.?);
+}
+
+test "parse: config show still honours -h" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "-h" }, .{});
+    try std.testing.expectEqual(Action.help, p.action);
+    try std.testing.expect(p.help_requested);
+}
+
+test "parse: config show --json pins the stable output contract" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "show", "--json" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // --json composes with the usual override flags.
+    const q = try parseArgv(a, &.{ "tau", "config", "show", "--json", "--provider", "openai" }, .{});
+    try std.testing.expectEqual(Action.config, q.action);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expectEqualStrings("openai", q.config.provider);
+}
+
+test "parse: config show --json and --mode text are mutually exclusive" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const fwd = try parseArgv(a, &.{ "tau", "config", "show", "--json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", fwd.err_msg.?);
+
+    const rev = try parseArgv(a, &.{ "tau", "config", "show", "--mode", "text", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", rev.err_msg.?);
+}
+
+test "parse: --json outside the pinned subcommands is an unknown option" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "--json", "hello" }, .{});
+    try std.testing.expectEqual(Action.err, p.action);
+    try std.testing.expectEqualStrings("unknown option: --json", p.err_msg.?);
+}
+
+// ── `tau config validate` ────────────────────────────────────────────────────
+
+test "parse: config validate defaults to the resolved config path" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "validate" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expectEqualStrings("validate", p.config.config_sub.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), p.config.validate_path);
+}
+
+test "parse: config validate accepts a positional path and --mode" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "validate", "ci/config.json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expectEqualStrings("validate", p.config.config_sub.?);
+    try std.testing.expectEqualStrings("ci/config.json", p.config.validate_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, p.config.mode);
+}
+
+test "parse: config validate rejects a second positional and unknown flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const two = try parseArgv(a, &.{ "tau", "config", "validate", "a.json", "b.json" }, .{});
+    try std.testing.expectEqual(Action.err, two.action);
+    try std.testing.expectEqualStrings("unexpected extra argument: b.json", two.err_msg.?);
+
+    const flag = try parseArgv(a, &.{ "tau", "config", "validate", "--force" }, .{});
+    try std.testing.expectEqual(Action.err, flag.action);
+    try std.testing.expectEqualStrings("unknown config validate argument: --force", flag.err_msg.?);
+
+    const badmode = try parseArgv(a, &.{ "tau", "config", "validate", "--mode", "yaml" }, .{});
+    try std.testing.expectEqual(Action.err, badmode.action);
+    try std.testing.expect(std.mem.indexOf(u8, badmode.err_msg.?, "invalid --mode") != null);
+}
+
+test "parse: config validate --json forces the stable JSON report" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "config", "validate", "--json" }, .{});
+    try std.testing.expectEqual(Action.config, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    // A config-file mode:text default does not conflict — only an explicit
+    // flag does.
+    const base = Config{ .mode = .text };
+    const q = try parseArgv(a, &.{ "tau", "config", "validate", "--json" }, base);
+    try std.testing.expectEqual(Action.config, q.action);
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, q.config.mode);
+
+    // --json + explicit --mode text is rejected in either order.
+    const fwd = try parseArgv(a, &.{ "tau", "config", "validate", "--json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", fwd.err_msg.?);
+    const rev = try parseArgv(a, &.{ "tau", "config", "validate", "--mode", "text", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", rev.err_msg.?);
+}
+
+// ── `tau doctor` ────────────────────────────────────────────────────────────
+
+test "parse: doctor selects the doctor action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(!p.config.doctor_offline);
+    try std.testing.expect(!p.config.doctor_deep);
+    try std.testing.expect(!p.config.doctor_probe);
+    try std.testing.expect(!p.config.doctor_selftest);
+    try std.testing.expect(!p.config.doctor_json);
+    try std.testing.expect(!p.config.doctor_report);
+    try std.testing.expect(p.config.doctor_bad_provider == null);
+    // Default provider resolved like a normal run.
+    try std.testing.expectEqualStrings(provider_mod.providers[0].name, p.config.provider);
+}
+
+test "parse: doctor accepts --offline/--deep and provider/model/api-key overrides" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "openai", "--offline", "--deep" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_offline);
+    try std.testing.expect(p.config.doctor_deep);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings(provider_mod.findProvider("openai").?.default_model, p.config.model);
+
+    // --model provider/id shorthand resolves provider + model.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--model", "deepseek/deepseek-reasoner", "--api-key", "sk-x" }, .{});
+    try std.testing.expectEqualStrings("deepseek", q.config.provider);
+    try std.testing.expectEqualStrings("deepseek-reasoner", q.config.model);
+    try std.testing.expectEqualStrings("sk-x", q.config.api_key.?);
+}
+
+test "parse: doctor rejects unknown arguments and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "doctor", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown doctor argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "doctor", "--provider" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --provider", missing_val.err_msg.?);
+}
+
+test "parse: doctor --report sets the flag; --report + --json is invalid" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--report" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_report);
+    try std.testing.expect(!p.config.doctor_json);
+
+    const both = try parseArgv(a, &.{ "tau", "doctor", "--report", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, both.action);
+    try std.testing.expectEqualStrings("--report and --json are mutually exclusive", both.err_msg.?);
+
+    const both_rev = try parseArgv(a, &.{ "tau", "doctor", "--json", "--report" }, .{});
+    try std.testing.expectEqual(Action.err, both_rev.action);
+}
+
+test "parse: doctor --probe sets the flag and composes with other doctor flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--probe" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_probe);
+
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--probe", "--json", "--provider", "openai" }, .{});
+    try std.testing.expect(q.config.doctor_probe);
+    try std.testing.expect(q.config.doctor_json);
+    try std.testing.expectEqualStrings("openai", q.config.provider);
+}
+
+test "parse: doctor --selftest sets the flag and composes with other doctor flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--selftest" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_selftest);
+    try std.testing.expect(!p.config.doctor_probe);
+
+    // --selftest composes with --json/--offline/--provider like any check flag.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--selftest", "--json", "--provider", "openai" }, .{});
+    try std.testing.expect(q.config.doctor_selftest);
+    try std.testing.expect(q.config.doctor_json);
+    try std.testing.expectEqualStrings("openai", q.config.provider);
+}
+
+test "parse: doctor --json selects NDJSON event output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--json" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_json);
+
+    // Off by default and composable with --fix/--yes.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--fix" }, .{});
+    try std.testing.expect(!q.config.doctor_json);
+    const r = try parseArgv(a, &.{ "tau", "doctor", "--json", "--fix", "--yes" }, .{});
+    try std.testing.expect(r.config.doctor_json);
+    try std.testing.expect(r.config.doctor_fix);
+    try std.testing.expect(r.config.doctor_yes);
+}
+
+test "parse: doctor carries an unknown provider as a failed check, not exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // From a flag override...
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expectEqualStrings("acme", p.config.doctor_bad_provider.?);
+
+    // ...and from a config-file provider with no flag override.
+    const q = try parseArgv(a, &.{ "tau", "doctor" }, .{ .provider = "acme" });
+    try std.testing.expectEqual(Action.doctor, q.action);
+    try std.testing.expectEqualStrings("acme", q.config.doctor_bad_provider.?);
+}
+
+// ── `tau bug` ───────────────────────────────────────────────────────────────
+
+test "parse: bug selects the bug action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expect(p.config.bug_title == null);
+    try std.testing.expect(p.config.bug_body == null);
+    try std.testing.expect(p.config.bug_labels == null);
+    try std.testing.expect(!p.config.bug_open);
+    try std.testing.expect(p.config.bug_out == null);
+    try std.testing.expect(!p.config.bug_no_report);
+    try std.testing.expect(p.config.bug_attach_report == null);
+    try std.testing.expect(!p.config.doctor_offline);
+    try std.testing.expect(!p.config.doctor_deep);
+}
+
+test "parse: bug accepts title/body/labels/open/out/no-report + doctor overrides" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{
+        "tau",     "bug",       "--title", "crash on --deep",
+        "--body",  "it broke",  "--labels", "bug,triage",
+        "--open",  "--out",     "/tmp/r.md",
+        "--offline", "--deep",  "--provider", "openai",
+        "--api-key", "sk-x",
+    }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expectEqualStrings("crash on --deep", p.config.bug_title.?);
+    try std.testing.expectEqualStrings("it broke", p.config.bug_body.?);
+    try std.testing.expectEqualStrings("bug,triage", p.config.bug_labels.?);
+    try std.testing.expect(p.config.bug_open);
+    try std.testing.expectEqualStrings("/tmp/r.md", p.config.bug_out.?);
+    try std.testing.expect(!p.config.bug_no_report);
+    try std.testing.expect(p.config.doctor_offline);
+    try std.testing.expect(p.config.doctor_deep);
+    try std.testing.expectEqualStrings("openai", p.config.provider);
+    try std.testing.expectEqualStrings("sk-x", p.config.api_key.?);
+}
+
+test "parse: bug --out + --no-report is mutually exclusive; bad args exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const mutex = try parseArgv(a, &.{ "tau", "bug", "--out", "r.md", "--no-report" }, .{});
+    try std.testing.expectEqual(Action.err, mutex.action);
+    try std.testing.expectEqualStrings("--out and --no-report are mutually exclusive", mutex.err_msg.?);
+
+    const bad = try parseArgv(a, &.{ "tau", "bug", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown bug argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "bug", "--title" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --title", missing_val.err_msg.?);
+
+    const bad_shell = try parseArgv(a, &.{ "tau", "bug", "--shell", "tcsh" }, .{});
+    try std.testing.expectEqual(Action.err, bad_shell.action);
+}
+
+test "parse: bug --attach-report reads the file; mutex/unreadable exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/report.md", .{tmp.sub_path[0..]});
+    try std.Io.Dir.cwd().writeFile(std.testing.io, .{ .sub_path = path, .data = "# tau doctor report\nattached\n" });
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--attach-report", path }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expectEqualStrings("# tau doctor report\nattached\n", p.config.bug_attach_report.?);
+
+    const mutex = try parseArgv(a, &.{ "tau", "bug", "--attach-report", path, "--no-report" }, .{});
+    try std.testing.expectEqual(Action.err, mutex.action);
+    try std.testing.expectEqualStrings("--attach-report and --no-report are mutually exclusive", mutex.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "bug", "--attach-report" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --attach-report", missing_val.err_msg.?);
+
+    const unreadable = try parseArgv(a, &.{ "tau", "bug", "--attach-report", "/nonexistent/nope.md" }, .{});
+    try std.testing.expectEqual(Action.err, unreadable.action);
+    try std.testing.expectEqualStrings("cannot read report file: /nonexistent/nope.md", unreadable.err_msg.?);
+}
+
+test "parse: bug carries an unknown provider as a failed check, not exit 80" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--provider", "acme" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expectEqualStrings("acme", p.config.doctor_bad_provider.?);
+}
+
+test "parse: version subcommand selects the version action" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(!p.config.version_verbose);
+}
+
+test "parse: version --verbose/--mode select build-metadata output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version", "--verbose" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(p.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+
+    const q = try parseArgv(a, &.{ "tau", "version", "--verbose", "--mode", "text" }, .{});
+    try std.testing.expect(q.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, q.config.mode);
+}
+
+test "parse: version --check selects the update check and composes with --verbose/--mode" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version", "--check" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(p.config.version_check);
+    try std.testing.expect(!p.config.version_verbose);
+
+    const q = try parseArgv(a, &.{ "tau", "version", "--check", "--verbose", "--mode", "text" }, .{});
+    try std.testing.expect(q.config.version_check);
+    try std.testing.expect(q.config.version_verbose);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, q.config.mode);
+}
+
+test "parse: version rejects unknown arguments and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "version", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown version argument: --bogus", bad.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "version", "--mode" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --mode", missing_val.err_msg.?);
+
+    const bad_mode = try parseArgv(a, &.{ "tau", "version", "--mode", "yaml" }, .{});
+    try std.testing.expectEqual(Action.err, bad_mode.action);
+    try std.testing.expectEqualStrings("invalid --mode (want text|json): yaml", bad_mode.err_msg.?);
+}
+
+test "parse: version --json selects the stable object output" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "version", "--json" }, .{});
+    try std.testing.expectEqual(Action.version, p.action);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expectEqual(cfgmod.OutputMode.json, p.config.mode);
+    try std.testing.expect(!p.config.version_verbose);
+    try std.testing.expect(!p.config.version_check);
+
+    // Composes with --verbose/--check.
+    const q = try parseArgv(a, &.{ "tau", "version", "--json", "--verbose", "--check" }, .{});
+    try std.testing.expect(q.config.cli_json);
+    try std.testing.expect(q.config.version_verbose);
+    try std.testing.expect(q.config.version_check);
+
+    // --json + explicit --mode text is rejected in either order.
+    const fwd = try parseArgv(a, &.{ "tau", "version", "--json", "--mode", "text" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", fwd.err_msg.?);
+    const rev = try parseArgv(a, &.{ "tau", "version", "--mode", "text", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--json and --mode text are mutually exclusive", rev.err_msg.?);
+}
+
+test "parse: upgrade selects the upgrade action with defaults" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(!p.config.upgrade_yes);
+    try std.testing.expect(!p.config.upgrade_dry_run);
+    try std.testing.expect(p.config.upgrade_dir == null);
+}
+
+test "parse: upgrade accepts --yes/-y, --dir and --dry-run" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade", "--yes", "--dir", "/opt/bin", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.upgrade_yes);
+    try std.testing.expect(p.config.upgrade_dry_run);
+    try std.testing.expectEqualStrings("/opt/bin", p.config.upgrade_dir.?);
+
+    const q = try parseArgv(a, &.{ "tau", "upgrade", "-y" }, .{});
+    try std.testing.expect(q.config.upgrade_yes);
+}
+
+test "parse: upgrade --verify-signature opts into the cosign check" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade", "--verify-signature" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.upgrade_verify_signature);
+
+    const off = try parseArgv(a, &.{ "tau", "upgrade" }, .{});
+    try std.testing.expect(!off.config.upgrade_verify_signature);
+
+    const env_on = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_VERIFY_SIGSTORE", "1" },
+    }, .{});
+    try std.testing.expect(env_on.config.upgrade_verify_signature);
+
+    const env_off = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_VERIFY_SIGSTORE", "0" },
+    }, .{});
+    try std.testing.expect(!env_off.config.upgrade_verify_signature);
+}
+
+test "parse: upgrade TAU_YES env approves like --yes" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_YES", "1" },
+    }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.upgrade_yes);
+
+    const off = try parseArgvEnv(a, &.{ "tau", "upgrade" }, &.{
+        .{ "TAU_YES", "0" },
+    }, .{});
+    try std.testing.expect(!off.config.upgrade_yes);
+}
+
+test "parse: upgrade rejects unknown arguments, positionals and missing values" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bad = try parseArgv(a, &.{ "tau", "upgrade", "--bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
+    try std.testing.expectEqualStrings("unknown upgrade argument: --bogus", bad.err_msg.?);
+
+    const pos = try parseArgv(a, &.{ "tau", "upgrade", "now" }, .{});
+    try std.testing.expectEqual(Action.err, pos.action);
+    try std.testing.expectEqualStrings("unknown upgrade argument: now", pos.err_msg.?);
+
+    const missing_val = try parseArgv(a, &.{ "tau", "upgrade", "--dir" }, .{});
+    try std.testing.expectEqual(Action.err, missing_val.action);
+    try std.testing.expectEqualStrings("missing value for --dir", missing_val.err_msg.?);
 }
 
 test "parse: fleet run --provider and --model resolve endpoint and default model" {
@@ -986,6 +2821,117 @@ test "parse: /goal prompt switches into goal mode and disables streaming" {
     try std.testing.expectEqualStrings("build the parser", p.config.goal.?);
     // `/goal --tokens N` budgets, and a .set goal forces non-streaming.
     try std.testing.expect(!p.config.stream);
+}
+
+// ── `tau setup` unattended flags + env fallbacks ──────────────────────────
+
+test "parse: setup --yes/-y/--non-interactive set the unattended flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const bare = try parseArgv(a, &.{ "tau", "setup" }, .{});
+    try std.testing.expectEqual(Action.setup, bare.action);
+    try std.testing.expect(!bare.config.setup_yes);
+    try std.testing.expect(!bare.config.setup_non_interactive);
+    try std.testing.expect(!bare.config.setup_dry_run);
+
+    const y = try parseArgv(a, &.{ "tau", "setup", "--yes" }, .{});
+    try std.testing.expect(y.config.setup_yes);
+    const sy = try parseArgv(a, &.{ "tau", "setup", "-y" }, .{});
+    try std.testing.expect(sy.config.setup_yes);
+    const ni = try parseArgv(a, &.{ "tau", "setup", "--non-interactive" }, .{});
+    try std.testing.expect(ni.config.setup_non_interactive);
+    try std.testing.expect(!ni.config.setup_yes);
+    const dr = try parseArgv(a, &.{ "tau", "setup", "--dry-run" }, .{});
+    try std.testing.expect(dr.config.setup_dry_run);
+    try std.testing.expect(!dr.config.setup_yes);
+    // --dry-run composes with the other setup flags.
+    const dc = try parseArgv(a, &.{ "tau", "setup", "--client", "zed", "--dry-run", "--yes" }, .{});
+    try std.testing.expect(dc.config.setup_dry_run);
+    try std.testing.expect(dc.config.setup_yes);
+    try std.testing.expectEqualStrings("zed", dc.config.setup_client.?);
+}
+
+test "parse: setup TAU_YES/TAU_NONINTERACTIVE env enable unattended flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const y = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_YES", "1" },
+    }, .{});
+    try std.testing.expect(y.config.setup_yes);
+
+    const ni = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_NONINTERACTIVE", "true" },
+    }, .{});
+    try std.testing.expect(ni.config.setup_non_interactive);
+
+    // Falsy values never enable — "0"/"false"/empty are explicit nos.
+    for ([_][]const u8{ "0", "false", "", "nah" }) |v| {
+        const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+            .{ "TAU_YES", v },
+            .{ "TAU_NONINTERACTIVE", v },
+        }, .{});
+        try std.testing.expect(!p.config.setup_yes);
+        try std.testing.expect(!p.config.setup_non_interactive);
+    }
+}
+
+test "parse: setup TAU_SETUP_SHELL/TAU_SETUP_CLIENT fill unset flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "fish" },
+        .{ "TAU_SETUP_CLIENT", "zed" },
+    }, .{});
+    try std.testing.expectEqual(Action.setup, p.action);
+    try std.testing.expectEqualStrings("fish", p.config.setup_shell.?);
+    try std.testing.expectEqualStrings("zed", p.config.setup_client.?);
+
+    // Flag beats env.
+    const q = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "zsh", "--client", "nvim" }, &.{
+        .{ "TAU_SETUP_SHELL", "fish" },
+        .{ "TAU_SETUP_CLIENT", "zed" },
+    }, .{});
+    try std.testing.expectEqualStrings("zsh", q.config.setup_shell.?);
+    try std.testing.expectEqualStrings("nvim", q.config.setup_client.?);
+
+    // Empty env values are ignored entirely.
+    const e = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "" },
+        .{ "TAU_SETUP_CLIENT", "" },
+    }, .{});
+    try std.testing.expect(e.config.setup_shell == null);
+    try std.testing.expect(e.config.setup_client == null);
+}
+
+test "parse: setup invalid TAU_SETUP_* env values fail like a bad flag" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const s = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_SHELL", "tcsh" },
+    }, .{});
+    try std.testing.expectEqual(Action.err, s.action);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_SHELL: tcsh (want bash|zsh|fish|pwsh|all)", s.err_msg.?);
+
+    const c = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_CLIENT", "vim" },
+    }, .{});
+    try std.testing.expectEqual(Action.err, c.action);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_CLIENT: vim (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", c.err_msg.?);
+
+    // An explicit flag shadows a bad env value — flag > env.
+    const okp = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "bash" }, &.{
+        .{ "TAU_SETUP_SHELL", "tcsh" },
+    }, .{});
+    try std.testing.expectEqual(Action.setup, okp.action);
+    try std.testing.expectEqualStrings("bash", okp.config.setup_shell.?);
 }
 /// Build "unknown provider 'X' — valid providers: a, b, c (run 'tau models')" error.
 fn unknownProviderErr(arena: std.mem.Allocator, given: []const u8) !Parsed {

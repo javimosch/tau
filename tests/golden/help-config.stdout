@@ -1,0 +1,30 @@
+tau config - inspect and edit ~/.config/tau/config.json
+
+Usage:
+  tau config show [global flags]       Merged effective config as JSON
+                                       (file + env + flags; redacted)
+  tau config validate [path]           Validate a config file
+                                       (CI/pre-commit friendly)
+  tau config set <key> <value> [path]  Schema-checked edit to the FILE
+                                       (<field> or keys.<provider>)
+  tau config get <key> [path]          Print a value (secrets redacted)
+  tau config unset <key> [path]        Remove a key from the file
+  tau config edit [path]               Open in $EDITOR; validates on save
+  tau config schema                    Print the config file's JSON
+                                       Schema (draft 2020-12)
+
+Options:
+      --json             Stable schema-checked JSON (show, validate)
+      --mode text|json   Output mode
+      --raw              (get only) Print the value unredacted
+
+Examples:
+  tau config show
+  tau config show --provider openai
+  tau config validate
+  tau config set provider openai
+  tau config set keys.openai sk-your-key
+  tau config get provider
+  tau config unset model
+  tau config edit
+  tau config schema

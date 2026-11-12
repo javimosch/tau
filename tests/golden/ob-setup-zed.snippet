@@ -1,0 +1,11 @@
+// tau ACP agent — merge into your zed settings file.
+// If a top-level "agent_servers" object already exists, add just the inner
+// "tau" entry to it; otherwise add the whole block.
+"agent_servers": {
+  "tau": {
+    "type": "custom",
+    "command": "<TAU>",
+    "args": ["acp", "serve"],
+    "env": {}
+  }
+}
