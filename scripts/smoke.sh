@@ -1305,6 +1305,7 @@ test_group_doctor() {
   contains "endpoint_reachable skipped offline" "$doc_keyless_out" '"name":"endpoint_reachable","status":"skip"'
   contains "auth_probe skipped offline" "$doc_keyless_out" '"name":"auth_probe","status":"skip"'
   contains "curl check present" "$doc_keyless_out" '"name":"curl"'
+  contains "client_stale_binary check present" "$doc_keyless_out" '"name":"client_stale_binary"'
   contains "report has summary" "$doc_keyless_out" '"summary":{'
 
   # 2. Key via env + --provider override: local checks pass -> exit 0.
@@ -1879,6 +1880,35 @@ PYEOF
   else
     ok "cursor settings file written with acp.agents" 1 0
   fi
+
+  # 23b. client_stale_binary: a wired command path resolving to a different
+  #      file than the running tau warns; the running binary itself stays
+  #      ok, and the shared mcacp bridge's tau command is checked too.
+  local sb_home
+  sb_home="$(mktemp -d)"
+  register_temp_dir "$sb_home"
+  mkdir -p "$sb_home/.config/zed"
+
+  printf '{"agent_servers":{"tau":{"type":"custom","command":"%s","args":["acp","serve"]}}}' "$BIN" \
+    > "$sb_home/.config/zed/settings.json"
+  capture doc_sb_ok env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$sb_home" "$BIN" doctor --offline
+  contains "wired command == running binary -> ok" "$doc_sb_ok_out" '"name":"client_stale_binary","status":"ok"'
+
+  printf '{"agent_servers":{"tau":{"type":"custom","command":"/bin/sh","args":["acp","serve"]}}}' \
+    > "$sb_home/.config/zed/settings.json"
+  capture doc_sb_stale env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$sb_home" "$BIN" doctor --offline
+  contains "different binary -> warn" "$doc_sb_stale_out" '"name":"client_stale_binary","status":"warn"'
+  contains "warn names the wired stale path" "$doc_sb_stale_out" 'zed=/bin/sh'
+
+  mkdir -p "$sb_home/.config/mcacp"
+  printf '{"agent_servers":{"tau":{"command":"/bin/false","args":["acp","serve"]}}}' \
+    > "$sb_home/.config/mcacp/mcacp.json"
+  capture doc_sb_bridge env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$sb_home" "$BIN" doctor --offline
+  contains "bridge tau entry warns" "$doc_sb_bridge_out" 'mcacp=/bin/false'
+
   # 24. Proxy/TLS diagnostics (issue #332): proxy_env validates the proxy
   #     vars curl will see — credentials embedded in the URL are flagged and
   #     always redacted, NO_PROXY covering the endpoint host warns, and
