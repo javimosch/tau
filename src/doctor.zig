@@ -28,7 +28,9 @@
 // group/other access. A `client_stale_binary` row warns when a client
 // config's wired command resolves to a different file than the running tau
 // — the client keeps spawning the stale install until the entry is
-// updated.
+// updated. A `client_binary_not_executable` row warns (fixable) when a
+// wired command path exists but lost its execute bit — the client's spawn
+// fails with EACCES.
 //
 // `--report` renders the same run as a Markdown diagnostics bundle for
 // pasting into a GitHub issue: verdict, build metadata, the checks table,
@@ -100,6 +102,9 @@ pub const FixKind = enum {
     /// chmod 0600 on detected client settings files (+ mcacp.json) — env
     /// blocks inside them can carry API keys.
     chmod_client_files,
+    /// chmod +x on client-wired tau binaries that exist but lost their
+    /// execute bit (the client's spawn fails with EACCES).
+    chmod_client_binaries,
 };
 
 pub const Check = struct {
@@ -736,6 +741,49 @@ fn checkClientBinaryPath(io: std.Io, arena: std.mem.Allocator, env: *std.process
         .status = .warn,
         .message = std.fmt.allocPrint(arena, "client configs invoke a different tau binary: {s}", .{stale.items}) catch "client configs invoke a different tau binary",
         .hint = "run 'tau setup --client <name>' or 'tau doctor --fix' for a corrected snippet to merge — the client keeps spawning the stale binary until the entry is updated",
+    };
+}
+
+/// Check (POSIX only): every client config entry that spawns tau by path
+/// should point at an executable file. A wired binary that exists but lost
+/// its execute bit (a `chmod -x`, a copy or unzip that didn't preserve the
+/// mode) makes the client's spawn fail with EACCES — the wiring looks sane
+/// but the agent never starts. Auto-fixable: `tau doctor --fix` restores
+/// the execute bit (chmod +x). Bare command names resolve client-side and
+/// dead paths stay the client_<name> wiring row's warn — both skip.
+fn checkClientBinaryExecutable(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const name = "client_binary_not_executable";
+    if (comptime builtin.os.tag == .windows)
+        return .{ .name = name, .status = .skip, .message = "skipped (POSIX permission bits do not apply on Windows)" };
+    const home = env.get("HOME") orelse
+        return .{ .name = name, .status = .skip, .message = "skipped (HOME is not set)" };
+    const wired = setup.wiredTauCommands(io, arena, home) catch |err|
+        return .{ .name = name, .status = .warn, .message = std.fmt.allocPrint(arena, "could not inspect client commands: {s}", .{@errorName(err)}) catch "could not inspect client commands" };
+    if (wired.len == 0)
+        return .{ .name = name, .status = .skip, .message = "no client config entries invoke a tau binary" };
+    var bad: std.ArrayList(u8) = .empty;
+    var seen = std.StringHashMap(void).init(arena);
+    for (wired) |w| {
+        // A bare command name resolves through the client's own PATH at
+        // spawn time — its target can't be stat'ed offline.
+        if (std.mem.indexOfAny(u8, w.command, "/\\") == null) continue;
+        // A dead path is the client_<name> wiring row's warn, not this one.
+        const st = std.Io.Dir.cwd().statFile(io, w.command, .{}) catch continue;
+        if (st.kind != .file) continue;
+        if ((st.permissions.toMode() & 0o111) != 0) continue;
+        if (seen.contains(w.command)) continue;
+        seen.put(w.command, {}) catch {};
+        if (bad.items.len > 0) bad.appendSlice(arena, ", ") catch {};
+        tryFmt(&bad, arena, "{s}={s}", .{ w.source, w.command });
+    }
+    if (bad.items.len == 0)
+        return .{ .name = name, .status = .ok, .message = "client-wired tau binaries are executable" };
+    return .{
+        .name = name,
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "client-wired tau binaries are not executable: {s}", .{bad.items}) catch "client-wired tau binaries are not executable",
+        .hint = "run 'tau doctor --fix' to add the execute bit back (chmod +x), or chmod it yourself — the client's spawn fails with EACCES until then",
+        .fix = .chmod_client_binaries,
     };
 }
 
@@ -1738,6 +1786,10 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     // different file than the running tau keeps spawning the old install.
     // Local-only — runs under --offline.
     try addCheck(arena, &checks, checkClientBinaryPath(io, arena, env), cfg);
+    // Executable-bit detection: a wired command path that exists but lost
+    // its execute bit fails the client's spawn with EACCES. Local-only —
+    // runs under --offline; auto-fixable (chmod +x).
+    try addCheck(arena, &checks, checkClientBinaryExecutable(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
     try addCheck(arena, &checks, curl_check, cfg);
@@ -1832,6 +1884,7 @@ fn fixDescription(k: FixKind) []const u8 {
         .wire_client_kilo => "wire tau into Kilo Code via the mcacp bridge (minimal file, or paste-ready snippet)",
         .wire_client_amazonq => "wire tau into Amazon Q Developer via the mcacp bridge (minimal file, or paste-ready snippet)",
         .chmod_client_files => "restrict detected client settings files to 0600 (env blocks can hold API keys)",
+        .chmod_client_binaries => "add the execute bit to client-wired tau binaries (chmod +x)",
     };
 }
 
@@ -1961,6 +2014,25 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
             }
             if (did.items.len == 0) break :blk "nothing to restrict — all client files already 0600";
             break :blk std.fmt.allocPrint(arena, "restricted client files to 0600: {s}", .{did.items}) catch "restricted client files";
+        },
+        .chmod_client_binaries => blk: {
+            if (comptime builtin.os.tag == .windows) break :blk error.UnsupportedPlatform;
+            const home = env.get("HOME") orelse break :blk error.HomeUnset;
+            var did: std.ArrayList(u8) = .empty;
+            for (setup.wiredTauCommands(io, arena, home) catch break :blk error.OutOfMemory) |w| {
+                if (std.mem.indexOfAny(u8, w.command, "/\\") == null) continue;
+                const st = std.Io.Dir.cwd().statFile(io, w.command, .{}) catch continue;
+                if (st.kind != .file) continue;
+                const mode = st.permissions.toMode();
+                if ((mode & 0o111) != 0) continue;
+                // chmod +x: add the execute bit to every class, preserving
+                // the existing read/write bits.
+                std.Io.Dir.cwd().setFilePermissions(io, w.command, .fromMode(mode | 0o111), .{}) catch |err| break :blk err;
+                if (did.items.len > 0) did.appendSlice(arena, ", ") catch {};
+                did.appendSlice(arena, w.command) catch {};
+            }
+            if (did.items.len == 0) break :blk "nothing to chmod — all client-wired binaries already executable";
+            break :blk std.fmt.allocPrint(arena, "added the execute bit (chmod +x): {s}", .{did.items}) catch "added the execute bit";
         },
     } catch |err| {
         return .{
@@ -3165,6 +3237,86 @@ test "checkClientBinaryPath: skip/ok/warn across wired command states" {
         .data = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{abs_old}),
     });
     const c_bridge = checkClientBinaryPath(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_bridge.status);
+    try testing.expect(std.mem.indexOf(u8, c_bridge.message, "mcacp=") != null);
+}
+
+test "checkClientBinaryExecutable: skip/ok/warn and chmod_client_binaries fix" {
+    // POSIX permission bits only — the check itself skips on Windows.
+    if (comptime builtin.os.tag == .windows) return;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> skip.
+    var env_no_home = std.process.Environ.Map.init(a);
+    const c_nohome = checkClientBinaryExecutable(testing.io, a, &env_no_home);
+    try testing.expectEqual(CheckStatus.skip, c_nohome.status);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // No client configs -> skip.
+    const c_none = checkClientBinaryExecutable(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_none.status);
+
+    const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, zed_dir);
+    const sp = try std.fmt.allocPrint(a, "{s}/settings.json", .{zed_dir});
+    const writeZed = struct {
+        fn write(io: std.Io, aa: std.mem.Allocator, path: []const u8, command: []const u8) !void {
+            var c: std.ArrayList(u8) = .empty;
+            try json.escapeInto(aa, &c, command);
+            try std.Io.Dir.cwd().writeFile(io, .{
+                .sub_path = path,
+                .data = try std.fmt.allocPrint(aa, "{{\"agent_servers\": {{\"tau\": {{\"type\":\"custom\",\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{c.items}),
+            });
+        }
+    }.write;
+
+    // Wired to an executable file -> ok.
+    const exe = try std.process.executablePathAlloc(testing.io, a);
+    try writeZed(testing.io, a, sp, exe);
+    try testing.expectEqual(CheckStatus.ok, checkClientBinaryExecutable(testing.io, a, &home.env).status);
+
+    // A bare command name resolves client-side — stays ok.
+    try writeZed(testing.io, a, sp, "tau");
+    try testing.expectEqual(CheckStatus.ok, checkClientBinaryExecutable(testing.io, a, &home.env).status);
+
+    // A dead path is the client_zed row's warn, not this check's — still ok.
+    try writeZed(testing.io, a, sp, "/definitely/missing/tau");
+    try testing.expectEqual(CheckStatus.ok, checkClientBinaryExecutable(testing.io, a, &home.env).status);
+
+    // A live path without an execute bit -> warn naming source=path, fixable.
+    const noexec = try std.fmt.allocPrint(a, "{s}/noexec-tau", .{home.home});
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = noexec, .data = "binary" });
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, noexec, .fromMode(0o644), .{});
+    try writeZed(testing.io, a, sp, noexec);
+    const c_warn = checkClientBinaryExecutable(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_warn.status);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "not executable") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, "zed=") != null);
+    try testing.expect(std.mem.indexOf(u8, c_warn.message, noexec) != null);
+    try testing.expectEqual(FixKind.chmod_client_binaries, c_warn.fix.?);
+
+    // --fix restores the execute bit; the re-diagnosed check is ok again.
+    const out = applyFix(testing.io, a, .{}, &home.env, .{ .kind = .chmod_client_binaries, .check = "client_binary_not_executable", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    try testing.expect(std.mem.indexOf(u8, out.detail, noexec) != null);
+    const st = try std.Io.Dir.cwd().statFile(testing.io, noexec, .{});
+    try testing.expectEqual(@as(@TypeOf(st.permissions.toMode()), 0o755), st.permissions.toMode() & 0o777);
+    try testing.expectEqual(CheckStatus.ok, checkClientBinaryExecutable(testing.io, a, &home.env).status);
+
+    // The shared mcacp bridge's tau entry is checked too (source "mcacp").
+    try writeZed(testing.io, a, sp, exe);
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, noexec, .fromMode(0o600), .{});
+    const mcacp_dir = try std.fmt.allocPrint(a, "{s}/.config/mcacp", .{home.home});
+    try std.Io.Dir.cwd().createDirPath(testing.io, mcacp_dir);
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fmt.allocPrint(a, "{s}/mcacp.json", .{mcacp_dir}),
+        .data = try std.fmt.allocPrint(a, "{{\"agent_servers\": {{\"tau\": {{\"command\":\"{s}\",\"args\":[\"acp\",\"serve\"]}}}}}}", .{noexec}),
+    });
+    const c_bridge = checkClientBinaryExecutable(testing.io, a, &home.env);
     try testing.expectEqual(CheckStatus.warn, c_bridge.status);
     try testing.expect(std.mem.indexOf(u8, c_bridge.message, "mcacp=") != null);
 }

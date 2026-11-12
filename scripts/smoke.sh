@@ -1306,6 +1306,7 @@ test_group_doctor() {
   contains "auth_probe skipped offline" "$doc_keyless_out" '"name":"auth_probe","status":"skip"'
   contains "curl check present" "$doc_keyless_out" '"name":"curl"'
   contains "client_stale_binary check present" "$doc_keyless_out" '"name":"client_stale_binary"'
+  contains "client_binary_not_executable check present" "$doc_keyless_out" '"name":"client_binary_not_executable"'
   contains "report has summary" "$doc_keyless_out" '"summary":{'
 
   # 2. Key via env + --provider override: local checks pass -> exit 0.
@@ -1908,6 +1909,30 @@ PYEOF
   capture doc_sb_bridge env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
     HOME="$sb_home" "$BIN" doctor --offline
   contains "bridge tau entry warns" "$doc_sb_bridge_out" 'mcacp=/bin/false'
+
+  # 23c. client_binary_not_executable: a wired command path that exists but
+  #      lacks the execute bit warns and is --fix-remediated (chmod +x).
+  local ne_home
+  ne_home="$(mktemp -d)"
+  register_temp_dir "$ne_home"
+  mkdir -p "$ne_home/.config/zed" "$ne_home/bin"
+  printf 'binary' > "$ne_home/bin/tau"
+  chmod 0644 "$ne_home/bin/tau"
+  printf '{"agent_servers":{"tau":{"type":"custom","command":"%s","args":["acp","serve"]}}}' "$ne_home/bin/tau" \
+    > "$ne_home/.config/zed/settings.json"
+  capture doc_ne_warn env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$ne_home" "$BIN" doctor --offline
+  contains "non-executable wired binary -> warn" "$doc_ne_warn_out" '"name":"client_binary_not_executable","status":"warn"'
+  contains "warn names the wired path" "$doc_ne_warn_out" "zed=$ne_home/bin/tau"
+
+  capture doc_ne_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$ne_home" "$BIN" doctor --offline --fix --yes
+  contains "chmod fix applied" "$doc_ne_fix_out" '"id":"chmod_client_binaries","check":"client_binary_not_executable","status":"applied"'
+  [ -x "$ne_home/bin/tau" ]; ok "--fix restored the execute bit" "$?" 0
+
+  capture doc_ne_ok env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$ne_home" "$BIN" doctor --offline
+  contains "post-fix wired binary -> ok" "$doc_ne_ok_out" '"name":"client_binary_not_executable","status":"ok"'
 
   # 24. Proxy/TLS diagnostics (issue #332): proxy_env validates the proxy
   #     vars curl will see — credentials embedded in the URL are flagged and

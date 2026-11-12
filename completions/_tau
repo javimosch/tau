@@ -340,6 +340,7 @@ _tau() {
                         'doctor.client_wiring:doctor check'
                         'doctor.client_permissions:doctor check'
                         'doctor.client_stale_binary:doctor check'
+                        'doctor.client_binary_not_executable:doctor check'
                         'doctor.provider_probes:doctor check'
                         'doctor.update_available:doctor check'
                         'doctor.selftest:doctor check'
