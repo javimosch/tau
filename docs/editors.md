@@ -65,6 +65,19 @@ guide covers:
 | `manual` | Setup couldn't safely edit in place; it wrote a paste-ready snippet under `~/.config/tau/snippets/` instead. The entry's `reason` field says why. |
 | `failed` | A write failed (see the `message` field). |
 
+Every entry also carries two preflight fields:
+
+- **`editor_detected`** (`true`/`false`) — whether the editor's config dir
+  exists, i.e. the client looks installed. When it's `false` the write is
+  still performed — the config is pre-staged and the editor picks it up on
+  first install — and a **`note`** field says so instead of implying the
+  editor was found.
+- **`message`** on `failed` — actionable, never a bare errno name: the entry
+  names the blocked path and the fix, e.g.
+  `".../zed is not a directory — remove or rename it, then re-run"` or
+  `".../zed is not writable — fix permissions or ownership on the directory,
+  then re-run"`.
+
 The step status is `installed`, `manual`, `skipped`, or `failed`. A `manual`
 outcome still passes the overall setup verdict — it means "your turn to
 paste", not "broken" — while `failed` fails the run (exit 1).
@@ -105,7 +118,7 @@ file —
 — and reports:
 
 ```json
-{"client":"zed","path":"/home/you/.config/zed/settings.json","status":"installed","command":"/abs/path/to/tau","next":"open the Agent Panel, click +, and pick tau"}
+{"client":"zed","editor_detected":true,"path":"/home/you/.config/zed/settings.json","status":"installed","command":"/abs/path/to/tau","next":"open the Agent Panel, click +, and pick tau"}
 ```
 
 **Existing settings:** if your `settings.json` already exists, setup never
@@ -215,7 +228,7 @@ AI Chat's **Add Custom Agent** action creates — with the `agent_servers.tau`
 entry:
 
 ```json
-{"client":"jetbrains","path":"/home/you/.jetbrains/acp.json","status":"installed","command":"/abs/path/to/tau","next":"open the AI Chat tool window and pick tau in the agent selector"}
+{"client":"jetbrains","editor_detected":true,"path":"/home/you/.jetbrains/acp.json","status":"installed","command":"/abs/path/to/tau","next":"open the AI Chat tool window and pick tau in the agent selector"}
 ```
 
 JetBrains entries use the same `agent_servers` shape as Zed but **without**
@@ -236,7 +249,7 @@ splicing arbitrary user config isn't safe, so setup writes
 `~/.config/tau/snippets/nvim.lua` and reports:
 
 ```json
-{"client":"nvim","status":"manual","snippet_path":"/home/you/.config/tau/snippets/nvim.lua","editor_detected":true,"next":"pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)"}
+{"client":"nvim","editor_detected":true,"status":"manual","snippet_path":"/home/you/.config/tau/snippets/nvim.lua","next":"pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)"}
 ```
 
 `editor_detected` tells you whether `~/.config/nvim` exists. The generated
@@ -265,7 +278,7 @@ elisp and splicing arbitrary init files isn't safe, so setup writes
 `~/.config/tau/snippets/emacs.el` and reports:
 
 ```json
-{"client":"emacs","status":"manual","snippet_path":"/home/you/.config/tau/snippets/emacs.el","editor_detected":true,"next":"paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau"}
+{"client":"emacs","editor_detected":true,"status":"manual","snippet_path":"/home/you/.config/tau/snippets/emacs.el","next":"paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau"}
 ```
 
 `editor_detected` tells you whether `~/.emacs.d` exists. The snippet
@@ -320,7 +333,7 @@ and `"bridge_path"`/`"bridge_status"` for mcacp.json (with
 merge):
 
 ```json
-{"client":"gemini","path":"/home/you/.gemini/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"gemini","editor_detected":true,"path":"/home/you/.gemini/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 `--client all` writes the client entry for each bridge client but only

@@ -29,7 +29,7 @@ is the file to paste from and `"editor_detected"` tells you whether
 `~/.config/nvim` exists:
 
 ```json
-{"client":"nvim","status":"manual","snippet_path":"/home/you/.config/tau/snippets/nvim.lua","editor_detected":true,"next":"pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)"}
+{"client":"nvim","editor_detected":true,"status":"manual","snippet_path":"/home/you/.config/tau/snippets/nvim.lua","next":"pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)"}
 ```
 
 ## What gets written

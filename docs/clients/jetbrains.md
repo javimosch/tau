@@ -26,7 +26,7 @@ Setup reports the write in its clients step — `"path"` names the settings
 file and `"next"` is the remaining in-editor step:
 
 ```json
-{"client":"jetbrains","path":"/home/you/.jetbrains/acp.json","status":"installed","command":"/abs/path/to/tau","next":"open the AI Chat tool window and pick tau in the agent selector"}
+{"client":"jetbrains","editor_detected":true,"path":"/home/you/.jetbrains/acp.json","status":"installed","command":"/abs/path/to/tau","next":"open the AI Chat tool window and pick tau in the agent selector"}
 ```
 
 ## What gets written

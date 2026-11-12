@@ -25,7 +25,7 @@ Setup reports the write in its clients step — `"path"` names the settings
 file and `"next"` is the remaining in-editor step:
 
 ```json
-{"client":"cursor","path":"/home/you/.config/Cursor/User/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install the ACP Client extension (Open VSX), run 'ACP: Connect to Agent', pick tau"}
+{"client":"cursor","editor_detected":true,"path":"/home/you/.config/Cursor/User/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install the ACP Client extension (Open VSX), run 'ACP: Connect to Agent', pick tau"}
 ```
 
 ## What gets written

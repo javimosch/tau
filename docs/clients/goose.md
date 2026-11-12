@@ -33,7 +33,7 @@ is the YAML to merge) and writes the bridge side itself
 (`"bridge_path"` / `"bridge_status"`):
 
 ```json
-{"client":"goose","status":"manual","snippet_path":"/home/you/.config/tau/snippets/goose.yaml","editor_detected":false,"next":"install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.config/goose/config.yaml, then run 'goose session' and ask about the mcacp tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"goose","editor_detected":false,"note":"goose does not look installed (no /home/you/.config/goose) — the config is pre-staged and activates once goose is installed; run 'tau setup --detect' to list detected clients","status":"manual","snippet_path":"/home/you/.config/tau/snippets/goose.yaml","next":"install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.config/goose/config.yaml, then run 'goose session' and ask about the mcacp tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

@@ -24,7 +24,7 @@ Setup reports the write in its clients step — `"path"` names the settings
 file and `"next"` is the remaining in-editor step:
 
 ```json
-{"client":"zed","path":"/home/you/.config/zed/settings.json","status":"installed","command":"/abs/path/to/tau","next":"open the Agent Panel, click +, and pick tau"}
+{"client":"zed","editor_detected":true,"path":"/home/you/.config/zed/settings.json","status":"installed","command":"/abs/path/to/tau","next":"open the Agent Panel, click +, and pick tau"}
 ```
 
 ## What gets written

@@ -31,7 +31,7 @@ Setup reports both halves of the wiring in its clients step — `"path"` /
 for mcacp.json:
 
 ```json
-{"client":"cline","path":"/home/you/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Cline pane","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"cline","editor_detected":true,"path":"/home/you/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Cline pane","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

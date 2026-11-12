@@ -24,7 +24,7 @@ Setup reports the write in its clients step — `"path"` names the settings
 file and `"next"` is the remaining in-editor step:
 
 ```json
-{"client":"vscode","path":"/home/you/.config/Code/User/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install the ACP Client extension, run 'ACP: Connect to Agent', pick tau"}
+{"client":"vscode","editor_detected":true,"path":"/home/you/.config/Code/User/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install the ACP Client extension, run 'ACP: Connect to Agent', pick tau"}
 ```
 
 ## What gets written

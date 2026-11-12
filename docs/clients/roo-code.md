@@ -32,7 +32,7 @@ Setup reports both halves of the wiring in its clients step — `"path"` /
 for mcacp.json:
 
 ```json
-{"client":"roo-code","path":"/home/you/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Roo Code pane","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"roo-code","editor_detected":true,"path":"/home/you/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart VS Code, and confirm the mcacp server under MCP Servers in the Roo Code pane","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

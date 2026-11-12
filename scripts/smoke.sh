@@ -2505,6 +2505,43 @@ test_group_setup() {
   contains "no --client detects the zed config dir" "$s13_out" '"detected":["zed"'
   [ ! -f "$mock_home11/.config/zed/settings.json" ]; ok "detection wrote no settings file" "$?" 0
 
+  # ── --client preflight: missing clients are flagged, blocked paths fail ──
+
+  # An editor that isn't installed still gets its config pre-staged, and the
+  # entry says so instead of implying detection.
+  local mock_home11b; mock_home11b="$(mktemp -d)"; register_temp_dir "$mock_home11b"
+  capture s13b env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home11b" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed
+  ok "setup --client zed undetected still installs" "$s13b_rc" 0
+  contains "undetected zed flags editor_detected:false" "$s13b_out" '"client":"zed","editor_detected":false'
+  contains "undetected zed carries a preflight note" "$s13b_out" '"note":'
+  contains "note points at tau setup --detect" "$s13b_out" 'tau setup --detect'
+
+  # A FILE where the client's config dir belongs blocks the settings write —
+  # the entry fails and names the offending ancestor.
+  local mock_home11c; mock_home11c="$(mktemp -d)"; register_temp_dir "$mock_home11c"
+  mkdir -p "$mock_home11c/.config"
+  printf 'x' > "$mock_home11c/.config/zed"
+  capture s13c env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home11c" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed
+  ok "setup --client zed on file-blocked dir exits 1" "$s13c_rc" 1
+  contains "file-blocked client reports failed" "$s13c_out" '"client":"zed"'
+  contains "file-blocked client reports failed status" "$s13c_out" '"status":"failed"'
+  contains "file-blocked message names the component" "$s13c_out" 'is not a directory'
+  [ ! -f "$mock_home11c/.config/tau/snippets/zed.jsonc" ]; ok "file-blocked wrote no snippet" "$?" 0
+
+  # A config dir that denies write access fails with the fix spelled out.
+  local mock_home11d; mock_home11d="$(mktemp -d)"; register_temp_dir "$mock_home11d"
+  mkdir -p "$mock_home11d/.config/zed"
+  chmod 0555 "$mock_home11d/.config/zed"
+  capture s13d env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$mock_home11d" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed
+  chmod 0755 "$mock_home11d/.config/zed"
+  ok "setup --client zed on unwritable dir exits 1" "$s13d_rc" 1
+  contains "unwritable client reports failed" "$s13d_out" '"status":"failed"'
+  contains "unwritable message is actionable" "$s13d_out" 'not writable'
+  [ ! -f "$mock_home11d/.config/zed/settings.json" ]; ok "unwritable dir got no settings file" "$?" 0
+
   # ── Unattended mode (--yes / --non-interactive / TAU_* env) ──────────────
 
   # --yes --non-interactive on a fresh HOME, stdin closed: all steps still
@@ -2635,7 +2672,7 @@ test_group_setup() {
   capture s23 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
     HOME="$mock_home20" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --dry-run --client nvim
   ok "setup --dry-run --client nvim exits 0" "$s23_rc" 0
-  contains "nvim dry-run stays manual" "$s23_out" '"client":"nvim","status":"manual"'
+  contains "nvim dry-run stays manual" "$s23_out" '"status":"manual"'
   contains "nvim dry-run names the would-be snippet" "$s23_out" '"snippet_path":'
   [ ! -e "$mock_home20/.config/tau/snippets/nvim.lua" ]; ok "nvim dry-run wrote no snippet" "$?" 0
 

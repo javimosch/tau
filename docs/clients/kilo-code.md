@@ -32,7 +32,7 @@ Setup reports both halves of the wiring in its clients step — `"path"` /
 for mcacp.json:
 
 ```json
-{"client":"kilo-code","path":"/home/you/.config/kilo/kilo.jsonc","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Kilo Code, and confirm the mcacp server under Agent Behaviour > MCP Servers (or run 'kilo mcp list')","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"kilo-code","editor_detected":true,"path":"/home/you/.config/kilo/kilo.jsonc","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Kilo Code, and confirm the mcacp server under Agent Behaviour > MCP Servers (or run 'kilo mcp list')","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

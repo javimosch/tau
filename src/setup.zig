@@ -667,6 +667,67 @@ fn dirExists(io: std.Io, path: []const u8) bool {
     return st.kind == .directory;
 }
 
+/// Preflight check on a path the clients step is about to write. An
+/// existing file must allow write access; for a missing file the deepest
+/// existing ancestor must be a writable directory (writeIfChanged creates
+/// the missing tail itself). Returns the actionable failure message, or
+/// null when nothing blocks the write — a TOCTOU failure is still possible,
+/// so callers keep their catch arms. The probe is read-only (stat + access
+/// W_OK), so it reports the same blockers under --dry-run.
+fn writeBlocker(io: std.Io, arena: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    const st: ?std.Io.File.Stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => null,
+        error.NotDir => {
+            // A component between root and `path` is not a directory —
+            // walk down and name the offending ancestor.
+            var probe = path;
+            while (std.mem.lastIndexOfScalar(u8, probe, '/')) |idx| {
+                probe = if (idx == 0) "/" else probe[0..idx];
+                const ast = std.Io.Dir.cwd().statFile(io, probe, .{}) catch continue;
+                if (ast.kind != .directory)
+                    return try std.fmt.allocPrint(arena, "cannot write {s}: {s} is not a directory — remove or rename it, then re-run", .{ path, probe });
+                if (probe.len == 1) break;
+            }
+            return try std.fmt.allocPrint(arena, "cannot write {s}: a path component is not a directory — fix the path, then re-run", .{path});
+        },
+        else => null,
+    };
+    if (st) |s| {
+        if (s.kind == .directory)
+            return try std.fmt.allocPrint(arena, "cannot write {s}: a directory sits at that path — remove or rename it, then re-run", .{path});
+        std.Io.Dir.cwd().access(io, path, .{ .write = true }) catch |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied =>
+                return try std.fmt.allocPrint(arena, "cannot write {s}: the file exists but is not writable — run 'chmod u+w {s}' or fix its ownership, then re-run", .{ path, path }),
+            error.ReadOnlyFileSystem =>
+                return try std.fmt.allocPrint(arena, "cannot write {s}: the filesystem is read-only — remount it writable or pick a writable location, then re-run", .{path}),
+            else => return null, // undeterminable — the real write reports it
+        };
+        return null;
+    }
+
+    // The file is missing — the write creates it, so the deepest existing
+    // ancestor directory must grant write access.
+    var probe = path;
+    while (std.mem.lastIndexOfScalar(u8, probe, '/')) |idx| {
+        probe = if (idx == 0) "/" else probe[0..idx];
+        const ast = std.Io.Dir.cwd().statFile(io, probe, .{}) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return null, // undeterminable — the real write reports it
+        };
+        if (ast.kind != .directory)
+            return try std.fmt.allocPrint(arena, "cannot write {s}: {s} is not a directory — remove or rename it, then re-run", .{ path, probe });
+        std.Io.Dir.cwd().access(io, probe, .{ .write = true }) catch |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied =>
+                return try std.fmt.allocPrint(arena, "cannot write {s}: {s} is not writable — fix permissions or ownership on the directory, then re-run", .{ path, probe }),
+            error.ReadOnlyFileSystem =>
+                return try std.fmt.allocPrint(arena, "cannot write {s}: {s} is on a read-only filesystem — remount it writable, then re-run", .{ path, probe }),
+            else => return null,
+        };
+        return null;
+    }
+    return null;
+}
+
 /// Full settings-file content for a client whose file doesn't exist yet —
 /// a minimal document containing just the tau entry.
 fn renderClientJson(arena: std.mem.Allocator, k: ClientKind, command: []const u8) ![]u8 {
@@ -1364,13 +1425,28 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
     try js(arena, entries, clientName(k));
 
     const fail = struct {
-        fn f(a: std.mem.Allocator, e: *std.ArrayList(u8), path: []const u8, err: anyerror) !void {
+        fn f(a: std.mem.Allocator, e: *std.ArrayList(u8), msg: []const u8) !void {
             try e.appendSlice(a, ",\"status\":\"failed\",\"message\":");
-            const msg = try std.fmt.allocPrint(a, "could not write {s}: {s}", .{ path, @errorName(err) });
             try js(a, e, msg);
             try e.append(a, '}');
         }
     }.f;
+
+    // Preflight, part of every entry's contract: whether the client looks
+    // installed (its config dir exists) and whether the path setup would
+    // write can actually be written. A missing editor still gets its file
+    // pre-staged — the client picks the settings up on first install — but
+    // the entry says so instead of implying detection. An unwritable
+    // target is a real failure with the remediation spelled out.
+    const cfgdir = try clientConfigDir(arena, home, k);
+    const detected = dirExists(io, cfgdir);
+    try entries.appendSlice(arena, ",\"editor_detected\":");
+    try entries.appendSlice(arena, if (detected) "true" else "false");
+    if (!detected) {
+        try entries.appendSlice(arena, ",\"note\":");
+        const msg = try std.fmt.allocPrint(arena, "{s} does not look installed (no {s}) — the config is pre-staged and activates once {s} is installed; run 'tau setup --detect' to list detected clients", .{ clientName(k), cfgdir, clientName(k) });
+        try js(arena, entries, msg);
+    }
 
     if (k == .nvim or k == .emacs or k == .goose or k == .continue_ or k == .codex) {
         // Snippet-only clients — Neovim ACP plugins are configured in Lua,
@@ -1386,14 +1462,16 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
             else => try renderYamlBridgeSnippet(arena, k),
         };
         const snip = try snippetPath(arena, home, k);
+        if (try writeBlocker(io, arena, snip)) |msg| {
+            try fail(arena, entries, msg);
+            return .failed;
+        }
         _ = writeIfChanged(io, arena, snip, body, dry) catch |err| {
-            try fail(arena, entries, snip, err);
+            try fail(arena, entries, try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ snip, @errorName(err) }));
             return .failed;
         };
         try entries.appendSlice(arena, ",\"status\":\"manual\",\"snippet_path\":");
         try js(arena, entries, snip);
-        try entries.appendSlice(arena, ",\"editor_detected\":");
-        try entries.appendSlice(arena, if (dirExists(io, try clientConfigDir(arena, home, k))) "true" else "false");
         // --import can't splice YAML/TOML — a bridge client taking the
         // snippet path reports the same empty import list as any other
         // manual outcome.
@@ -1413,6 +1491,16 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         cur = b;
     } else |err| {
         unreadable = err != error.FileNotFound;
+        // The settings file can't be read. When the path itself is blocked —
+        // an ancestor isn't a directory or denies write access — that's a
+        // preflight failure, not a snippet case: a paste-ready fragment
+        // can't fix a path the client could never load anyway.
+        if (unreadable) {
+            if (try writeBlocker(io, arena, path)) |msg| {
+                try fail(arena, entries, msg);
+                return .failed;
+            }
+        }
     }
 
     if (imp and clientUsesBridge(k) and !unreadable) {
@@ -1426,8 +1514,12 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
 
     if (cur == null and !unreadable) {
         // No settings file — write a fresh minimal one.
+        if (try writeBlocker(io, arena, path)) |msg| {
+            try fail(arena, entries, msg);
+            return .failed;
+        }
         const wrote = writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), dry) catch |err| {
-            try fail(arena, entries, path, err);
+            try fail(arena, entries, try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) }));
             return .failed;
         };
         try entries.appendSlice(arena, ",\"status\":");
@@ -1465,8 +1557,12 @@ fn configureClient(io: std.Io, arena: std.mem.Allocator, entries: *std.ArrayList
         "existing settings file has no \"tau\" entry";
 
     const snip = try snippetPath(arena, home, k);
+    if (try writeBlocker(io, arena, snip)) |msg| {
+        try fail(arena, entries, msg);
+        return .failed;
+    }
     _ = writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), dry) catch |err| {
-        try fail(arena, entries, snip, err);
+        try fail(arena, entries, try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ snip, @errorName(err) }));
         return .failed;
     };
     try entries.appendSlice(arena, ",\"status\":\"manual\",\"snippet_path\":");
@@ -1770,6 +1866,11 @@ fn wireBridgeClientImport(io: std.Io, arena: std.mem.Allocator, entries: *std.Ar
         return .already_installed;
     }
 
+    if (try writeBlocker(io, arena, path)) |msg| {
+        try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
+        try js(arena, entries, msg);
+        return .failed;
+    }
     const wrote = writeIfChanged(io, arena, path, body, dry) catch |err| {
         try entries.appendSlice(arena, ",\"status\":\"failed\",\"message\":");
         const msg = try std.fmt.allocPrint(arena, "could not write {s}: {s}", .{ path, @errorName(err) });
@@ -2817,6 +2918,105 @@ test "configureClient nvim always writes a lua snippet and reports manual" {
     try testing.expect(std.mem.indexOf(u8, snip, "acp_providers") != null);
     try testing.expect(std.mem.indexOf(u8, snip, "codecompanion") != null);
     try testing.expect(std.mem.indexOf(u8, snip, "/abs/tau") != null);
+}
+
+test "configureClient preflight: undetected clients get flagged, not failed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // No ~/.config/zed yet: the entry still installs (the config is
+    // pre-staged for first install) but says the editor wasn't detected.
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    try testing.expectEqual(ClientOutcome.installed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"editor_detected\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"note\":") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "does not look installed") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "tau setup --detect") != null);
+
+    // The write created ~/.config/zed — the re-run reports a detected,
+    // already-wired client and carries no note.
+    var entries2: std.ArrayList(u8) = .empty;
+    const oc2 = try configureClient(io, a, &entries2, true, home, .zed, "/abs/tau", false, false);
+    try testing.expectEqual(ClientOutcome.already_installed, oc2);
+    try testing.expect(std.mem.indexOf(u8, entries2.items, "\"editor_detected\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, entries2.items, "\"note\":") == null);
+}
+
+test "configureClient preflight: blocked config paths fail actionable" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // ~/.config/zed exists as a FILE — the settings path can never be
+    // created. The entry fails and names the offending ancestor.
+    try std.Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(a, "{s}/.config", .{home}));
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home}), "not a dir", false);
+    var entries: std.ArrayList(u8) = .empty;
+    const oc = try configureClient(io, a, &entries, true, home, .zed, "/abs/tau", false, false);
+    try testing.expectEqual(ClientOutcome.failed, oc);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "\"status\":\"failed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, entries.items, "is not a directory") != null);
+}
+
+test "writeBlocker: writable missing paths pass; file and dir blockers name the fix" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = testing.io;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // Nothing exists yet — the write would create the tail, so no blocker.
+    const missing = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home});
+    try testing.expect((try writeBlocker(io, a, missing)) == null);
+
+    // An ancestor that is a file blocks with a named component.
+    try std.Io.Dir.cwd().createDirPath(io, try std.fmt.allocPrint(a, "{s}/.config", .{home}));
+    _ = try writeIfChanged(io, a, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home}), "x", false);
+    const blocked = (try writeBlocker(io, a, missing)).?;
+    try testing.expect(std.mem.indexOf(u8, blocked, "is not a directory") != null);
+    try testing.expect(std.mem.indexOf(u8, blocked, ".config/zed") != null);
+
+    // A directory sitting at the file path blocks too.
+    const dirpath = try std.fmt.allocPrint(a, "{s}/dir-as-file", .{home});
+    try std.Io.Dir.cwd().createDirPath(io, dirpath);
+    const blocked2 = (try writeBlocker(io, a, dirpath)).?;
+    try testing.expect(std.mem.indexOf(u8, blocked2, "directory") != null);
+
+    // An existing writable file passes.
+    const fpath = try std.fmt.allocPrint(a, "{s}/ok.json", .{home});
+    _ = try writeIfChanged(io, a, fpath, "{}", false);
+    try testing.expect((try writeBlocker(io, a, fpath)) == null);
+
+    // A directory that denies write access blocks — but only where the
+    // probe can actually deny (root and permission-less platforms see
+    // everything as writable, so guard on the probe itself).
+    if (comptime @import("builtin").os.tag != .windows) {
+        const ro_dir = try std.fmt.allocPrint(a, "{s}/readonly", .{home});
+        try std.Io.Dir.cwd().createDirPath(io, ro_dir);
+        try std.Io.Dir.cwd().setFilePermissions(io, ro_dir, .fromMode(0o555), .{});
+        defer std.Io.Dir.cwd().setFilePermissions(io, ro_dir, .fromMode(0o755), .{}) catch {};
+        if (std.Io.Dir.cwd().access(io, ro_dir, .{ .write = true })) |_| {
+            // Probe can't deny (e.g. running as root) — nothing to assert.
+        } else |_| {
+            const blocked3 = (try writeBlocker(io, a, try std.fmt.allocPrint(a, "{s}/settings.json", .{ro_dir}))).?;
+            try testing.expect(std.mem.indexOf(u8, blocked3, "not writable") != null);
+        }
+    }
 }
 
 test "inspectClientWiring: detection, missing/unparseable/no-entry, staleness signals" {

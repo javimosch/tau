@@ -34,7 +34,7 @@ is the YAML to merge) and writes the bridge side itself
 (`"bridge_path"` / `"bridge_status"`):
 
 ```json
-{"client":"continue","status":"manual","snippet_path":"/home/you/.config/tau/snippets/continue.yaml","editor_detected":false,"next":"install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.continue/config.yaml, restart Continue, and use agent mode to see tau's tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"continue","editor_detected":false,"note":"continue does not look installed (no /home/you/.continue) — the config is pre-staged and activates once continue is installed; run 'tau setup --detect' to list detected clients","status":"manual","snippet_path":"/home/you/.config/tau/snippets/continue.yaml","next":"install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.continue/config.yaml, restart Continue, and use agent mode to see tau's tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

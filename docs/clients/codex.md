@@ -33,7 +33,7 @@ is the TOML to merge) and writes the bridge side itself
 (`"bridge_path"` / `"bridge_status"`):
 
 ```json
-{"client":"codex","status":"manual","snippet_path":"/home/you/.config/tau/snippets/codex.toml","editor_detected":false,"next":"install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.codex/config.toml, then run 'codex mcp list' to confirm the mcacp server","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"codex","editor_detected":false,"note":"codex does not look installed (no /home/you/.codex) — the config is pre-staged and activates once codex is installed; run 'tau setup --detect' to list detected clients","status":"manual","snippet_path":"/home/you/.config/tau/snippets/codex.toml","next":"install mcacp (npm i -g mcacp or npx), merge the snippet into ~/.codex/config.toml, then run 'codex mcp list' to confirm the mcacp server","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

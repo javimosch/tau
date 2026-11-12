@@ -289,6 +289,11 @@ const setup_help =
     \\                         cline|goose|continue|roo-code|kilo-code|
     \\                         amazonq|codex|all
     \\                         (env TAU_SETUP_CLIENT)
+    \\                         Preflight: each entry reports whether the
+    \\                         client was detected (editor_detected +
+    \\                         note when absent — config is pre-staged
+    \\                         anyway), and fails with an actionable
+    \\                         message when its config path is unwritable.
     \\      --provider <name>  Seed the config scaffold for a provider
     \\      --model <id>       Passed through to the doctor step
     \\      --api-key <key>    Passed through to the doctor step

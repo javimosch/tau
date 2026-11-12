@@ -152,6 +152,9 @@ const help_text =
     \\                              amazonq|codex|all
     \\                              (default: detect only; env
     \\                              TAU_SETUP_CLIENT)
+    \\                              Preflight: entries flag clients that
+    \\                              aren't detected and fail actionably on
+    \\                              unwritable config paths
     \\      --offline/--deep        Passed through to the doctor step
     \\  -y, --yes                   Unattended: approve all write steps
     \\                              (env TAU_YES=1)

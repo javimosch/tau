@@ -32,7 +32,7 @@ Setup reports both halves of the wiring in its clients step — `"path"` /
 for mcacp.json:
 
 ```json
-{"client":"amazonq","path":"/home/you/.aws/amazonq/mcp.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), then run 'q chat' (or restart the IDE plugin) and check the mcacp server with /mcp","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"amazonq","editor_detected":true,"path":"/home/you/.aws/amazonq/mcp.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), then run 'q chat' (or restart the IDE plugin) and check the mcacp server with /mcp","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

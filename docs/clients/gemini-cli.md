@@ -31,7 +31,7 @@ Setup reports both halves of the wiring in its clients step — `"path"` /
 for mcacp.json:
 
 ```json
-{"client":"gemini","path":"/home/you/.gemini/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"gemini","editor_detected":true,"path":"/home/you/.gemini/settings.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Gemini CLI, and run /mcp to see tau's tools","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

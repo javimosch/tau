@@ -27,7 +27,7 @@ is the file to paste from and `"editor_detected"` tells you whether
 `~/.emacs.d` exists:
 
 ```json
-{"client":"emacs","status":"manual","snippet_path":"/home/you/.config/tau/snippets/emacs.el","editor_detected":true,"next":"paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau"}
+{"client":"emacs","editor_detected":true,"status":"manual","snippet_path":"/home/you/.config/tau/snippets/emacs.el","next":"paste the snippet into your init file, restart Emacs, run M-x agent-shell and pick tau"}
 ```
 
 ## What gets written

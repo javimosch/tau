@@ -31,7 +31,7 @@ Setup reports both halves of the wiring in its clients step — `"path"` /
 for mcacp.json:
 
 ```json
-{"client":"claude-desktop","path":"/home/you/.config/Claude/claude_desktop_config.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
+{"client":"claude-desktop","editor_detected":true,"path":"/home/you/.config/Claude/claude_desktop_config.json","status":"installed","command":"/abs/path/to/tau","next":"install mcacp (npm i -g mcacp or npx), restart Claude Desktop, and find tau's tools under the mcacp server","bridge_path":"/home/you/.config/mcacp/mcacp.json","bridge_status":"installed"}
 ```
 
 ## What gets written

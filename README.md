@@ -161,6 +161,8 @@ and finishes with the `tau doctor` health report:
 ```bash
 ./zig-out/bin/tau setup                    # detect everything, write nothing extra
 ./zig-out/bin/tau setup --client zed       # also configure Zed's agent_servers
+                                           # (flags editors it can't detect and
+                                           # fails actionably on unwritable paths)
 ./zig-out/bin/tau setup --dry-run          # preview every write, change nothing
 # preview merging your existing MCP servers into the wired MCP client:
 ./zig-out/bin/tau setup --client windsurf --import --dry-run --offline
