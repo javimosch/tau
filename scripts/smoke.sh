@@ -1010,6 +1010,17 @@ test_group_config_validate() {
     ok "validate report parses as JSON" 1 0
   fi
 
+  # Enum value typos earn did-you-mean hints; far-off values stay guess-free.
+  printf '{"mode":"jsn","stream":"ture"}' > "$tmpdir/enumtypo.json"
+  out=$("$BIN" config validate "$tmpdir/enumtypo.json"); rc=$?
+  ok "config validate enum typos -> exit 1" "$rc" 1
+  contains "mode typo suggests json" "$out" 'did you mean \"json\"?'
+  contains "bool typo suggests true" "$out" 'did you mean \"true\"?'
+  printf '{"mode":"yaml","stream":"yes"}' > "$tmpdir/enumfar.json"
+  out=$("$BIN" config validate "$tmpdir/enumfar.json"); rc=$?
+  ok "config validate far-off enums -> exit 1" "$rc" 1
+  lacks "far-off enum values get no guess" "$out" 'did you mean'
+
   # Invalid JSON syntax -> line/column in the message.
   printf '{"provider": "openai",\n' > "$tmpdir/broken.json"
   out=$("$BIN" config validate "$tmpdir/broken.json"); rc=$?
@@ -1119,6 +1130,19 @@ test_group_config_edit() {
   contains "dotted-path typo suggests keys" "$out" 'did you mean \"keys.openai\"?'
   out=$(HOME="$mock_home" "$BIN" config set provider opnai 2>&1)
   contains "set provider value typo suggests" "$out" 'did you mean \"openai\"?'
+  # Did-you-mean on enum values: mode/boolean typos suggest the nearest
+  # member; far-off values keep the plain message (valid set already named).
+  out=$(HOME="$mock_home" "$BIN" config set mode jsn 2>&1)
+  contains "set mode typo suggests json" "$out" 'did you mean \"json\"?'
+  out=$(HOME="$mock_home" "$BIN" config set mode yaml 2>&1)
+  lacks "set far-off mode gets no guess" "$out" 'did you mean'
+  contains "set far-off mode names the enum" "$out" 'must be \"text\" or \"json\"'
+  out=$(HOME="$mock_home" "$BIN" config set stream ture 2>&1)
+  contains "set bool typo suggests true" "$out" 'did you mean \"true\"?'
+  out=$(HOME="$mock_home" "$BIN" config set thinking flase 2>&1)
+  contains "set bool typo suggests false" "$out" 'did you mean \"false\"?'
+  out=$(HOME="$mock_home" "$BIN" config set stream yes 2>&1)
+  lacks "set far-off bool gets no guess" "$out" 'did you mean'
   printf '{"proivder":"openai","keys":{"opnai":"sk-x"}}' > "$cfg"
   out=$(HOME="$mock_home" "$BIN" config get provider 2>&1); rc=$?
   ok "get missing field exits 1" "$rc" 1

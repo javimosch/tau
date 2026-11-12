@@ -143,7 +143,7 @@ fn checkKnownField(
                 }
             } else if (comptime std.mem.eql(u8, name, "mode")) {
                 if (!std.mem.eql(u8, val.string, "text") and !std.mem.eql(u8, val.string, "json")) {
-                    try addIssue(arena, issues, name, "\"mode\" must be \"text\" or \"json\", got \"{s}\"", .{val.string});
+                    try addIssue(arena, issues, name, "\"mode\" must be \"text\" or \"json\", got \"{s}\"{s}", .{ val.string, try suggest.hint(arena, val.string, &.{ "text", "json" }) });
                 }
             } else if (comptime std.mem.eql(u8, name, "api_key")) {
                 if (val.string.len == 0) {
@@ -153,7 +153,10 @@ fn checkKnownField(
         },
         .boolean => {
             if (val != .bool) {
-                try addIssue(arena, issues, name, "\"{s}\" must be a boolean (true/false), got {s}", .{ name, kindName(val) });
+                // A JSON string within typo distance of true/false earns a
+                // did-you-mean; other kinds keep the plain kind-name message.
+                const hint = if (val == .string) try suggest.hint(arena, val.string, &.{ "true", "false" }) else "";
+                try addIssue(arena, issues, name, "\"{s}\" must be a boolean (true/false), got {s}{s}", .{ name, kindName(val), hint });
             }
         },
         .integer => {
@@ -529,6 +532,38 @@ test "validate: semantic checks catch bad provider, mode, ranges, keys" {
     try testing.expect(std.mem.indexOf(u8, rep.issues[6].message, "not a known provider") != null);
     try testing.expect(std.mem.indexOf(u8, rep.issues[7].message, "must be a string") != null);
     try testing.expect(std.mem.indexOf(u8, rep.issues[8].message, "empty string") != null);
+}
+
+test "validate: enum value typos earn did-you-mean hints, far values do not" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var tc = try TmpConfig.init(arena, "{ \"mode\": \"jsn\", \"stream\": \"ture\" }");
+    defer tc.deinit();
+    const rep = try validate(testing.io, arena, tc.path);
+    try testing.expect(!rep.ok());
+    try testing.expectEqual(@as(usize, 2), rep.issues.len);
+    try testing.expect(std.mem.indexOf(u8, rep.issues[0].message, "did you mean \"json\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, rep.issues[1].message, "did you mean \"true\"?") != null);
+
+    // Far-off strings keep the plain message — the valid set is already named.
+    var tc2 = try TmpConfig.init(arena, "{ \"mode\": \"yaml\", \"stream\": \"yes\" }");
+    defer tc2.deinit();
+    const rep2 = try validate(testing.io, arena, tc2.path);
+    try testing.expect(!rep2.ok());
+    try testing.expectEqual(@as(usize, 2), rep2.issues.len);
+    try testing.expect(std.mem.indexOf(u8, rep2.issues[0].message, "\"text\" or \"json\"") != null);
+    try testing.expect(std.mem.indexOf(u8, rep2.issues[0].message, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, rep2.issues[1].message, "must be a boolean") != null);
+    try testing.expect(std.mem.indexOf(u8, rep2.issues[1].message, "did you mean") == null);
+
+    // Non-string JSON values never produce an enum guess.
+    var tc3 = try TmpConfig.init(arena, "{ \"stream\": 5 }");
+    defer tc3.deinit();
+    const rep3 = try validate(testing.io, arena, tc3.path);
+    try testing.expect(!rep3.ok());
+    try testing.expect(std.mem.indexOf(u8, rep3.issues[0].message, "did you mean") == null);
 }
 
 test "validate: u32 fields reject values above maxInt(u32)" {

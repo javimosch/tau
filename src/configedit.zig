@@ -653,7 +653,7 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
                                 }
                             } else if (comptime std.mem.eql(u8, f.name, "mode")) {
                                 if (!std.mem.eql(u8, raw, "text") and !std.mem.eql(u8, raw, "json")) {
-                                    return badValue(arena, "\"mode\" must be \"text\" or \"json\", got \"{s}\"", .{raw});
+                                    return badValue(arena, "\"mode\" must be \"text\" or \"json\", got \"{s}\"{s}", .{ raw, try suggest.hint(arena, raw, &.{ "text", "json" }) });
                                 }
                             } else if (comptime std.mem.eql(u8, f.name, "api_key")) {
                                 if (raw.len == 0) {
@@ -665,7 +665,7 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
                         .boolean => {
                             if (std.mem.eql(u8, raw, "true")) return .{ .ok = "true" };
                             if (std.mem.eql(u8, raw, "false")) return .{ .ok = "false" };
-                            return badValue(arena, "\"{s}\" must be a boolean (true/false), got \"{s}\"", .{ f.name, raw });
+                            return badValue(arena, "\"{s}\" must be a boolean (true/false), got \"{s}\"{s}", .{ f.name, raw, try suggest.hint(arena, raw, &.{ "true", "false" }) });
                         },
                         .integer => {
                             const v = std.fmt.parseInt(i64, raw, 10) catch {
@@ -1963,6 +1963,33 @@ test "coerceValue: provider typos suggest the nearest provider" {
     const f3 = (try coerceValue(arena, provider_field, "zzzcorp")).fail;
     try testing.expect(std.mem.indexOf(u8, f3.message, "did you mean") == null);
     try testing.expect(std.mem.indexOf(u8, f3.message, "valid providers:") != null);
+}
+
+test "coerceValue: enum value typos suggest the nearest valid member" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    // mode is a fixed {text,json} enum — typos resolve to the closest member.
+    const mode_kp = parseKeyPath(arena, "mode", true).ok;
+    const m1 = (try coerceValue(arena, mode_kp, "jsn")).fail;
+    try testing.expect(std.mem.indexOf(u8, m1.message, "did you mean \"json\"?") != null);
+    const m2 = (try coerceValue(arena, mode_kp, "txt")).fail;
+    try testing.expect(std.mem.indexOf(u8, m2.message, "did you mean \"text\"?") != null);
+    // A far-off value gets no guess — the valid members are already named.
+    const m3 = (try coerceValue(arena, mode_kp, "yaml")).fail;
+    try testing.expect(std.mem.indexOf(u8, m3.message, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, m3.message, "\"text\" or \"json\"") != null);
+
+    // Boolean fields behave as a {true,false} enum on the raw string value.
+    const stream_kp = parseKeyPath(arena, "stream", true).ok;
+    const b1 = (try coerceValue(arena, stream_kp, "ture")).fail;
+    try testing.expect(std.mem.indexOf(u8, b1.message, "did you mean \"true\"?") != null);
+    const b2 = (try coerceValue(arena, stream_kp, "flase")).fail;
+    try testing.expect(std.mem.indexOf(u8, b2.message, "did you mean \"false\"?") != null);
+    const b3 = (try coerceValue(arena, stream_kp, "yes")).fail;
+    try testing.expect(std.mem.indexOf(u8, b3.message, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, b3.message, "must be a boolean") != null);
 }
 
 test "run: set/get/unset surface did-you-mean hints and line/column" {
