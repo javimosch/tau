@@ -502,8 +502,12 @@ tau config set provider openai ./ci.json  # explicit path (like validate)
 - **Did-you-mean**: a misspelled key earns a `did you mean "…"?` hint — `set`
   suggests the nearest schema key (or `keys.<provider>` for a `key.x` dotted
   path), while `get`/`unset` name the closest key actually present in the
-  file, catching typos written there. A malformed file reports the syntax
-  error's line and column, matching `config validate`.
+  file, catching typos written there. Misspelled *values* in enum fields earn
+  the same hint — `provider` and `keys.<provider>` suggest the nearest
+  provider name, `mode` suggests `text` or `json`, and boolean fields suggest
+  `true`/`false` (`config set stream ture` → `did you mean "true"?`). A
+  malformed file reports the syntax error's line and column, matching
+  `config validate`.
 - **Secrets**: `api_key` and `keys.*` values are masked (`***last4`) in all
   `set`/`get` output; `get --raw` prints the stored value verbatim.
 
