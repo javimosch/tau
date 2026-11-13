@@ -14,6 +14,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
+const cfgschema = @import("configschema.zig");
 const jsonmod = @import("json.zig");
 const suggest = @import("suggest.zig");
 
@@ -97,16 +98,33 @@ fn providerNames(arena: std.mem.Allocator) ![]const u8 {
     return b.toOwnedSlice(arena);
 }
 
-/// A `did you mean "<name>"?` fragment for a mistyped provider name, falling
-/// back to the full "valid providers: ..." list when nothing is close (same
-/// rule `config validate` uses for provider values).
-fn providerHint(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
+/// A ` — see \`tau explain <name>\`` suffix for a config key the explain
+/// catalog resolves — every FileConfig field, `keys.<provider>` member path,
+/// and deprecated spelling does. A suggestion that names something explain
+/// can't resolve (a typo'd member quoted from the file, a `keys.<name>` for
+/// an unregistered provider) gets no pointer rather than aiming the user at
+/// a dead end. Returns a comptime-known empty slice on OOM.
+fn explainSuffix(arena: std.mem.Allocator, name: []const u8) []const u8 {
+    if (cfgschema.findKey(name) == null) return "";
+    return std.fmt.allocPrint(arena, " — see `tau explain {s}`", .{name}) catch "";
+}
+
+/// A `did you mean "<name>"?` fragment for a mistyped provider name plus a
+/// ` — see \`tau explain keys.<name>\`` pointer when a suggestion exists,
+/// falling back to the full "valid providers: ..." list when nothing is
+/// close (same rule `config validate` uses for provider values).
+const ProviderHint = struct { text: []const u8, explain: []const u8 };
+
+fn providerHint(arena: std.mem.Allocator, name: []const u8) !ProviderHint {
     var names: std.ArrayList([]const u8) = .empty;
     for (cfgmod.providers) |p| try names.append(arena, p.name);
     if (suggest.suggest(arena, name, names.items)) |s| {
-        return try std.fmt.allocPrint(arena, "did you mean \"{s}\"?", .{s});
+        return .{
+            .text = try std.fmt.allocPrint(arena, "did you mean \"{s}\"?", .{s}),
+            .explain = try std.fmt.allocPrint(arena, " — see `tau explain keys.{s}`", .{s}),
+        };
     }
-    return try std.fmt.allocPrint(arena, "valid providers: {s}", .{try providerNames(arena)});
+    return .{ .text = try std.fmt.allocPrint(arena, "valid providers: {s}", .{try providerNames(arena)}), .explain = "" };
 }
 
 /// Parse a user-supplied key path. `keys.<name>` addresses a per-provider API
@@ -122,7 +140,7 @@ fn parseKeyPath(arena: std.mem.Allocator, key: []const u8, strict_field: bool) u
         // canonical key (the file's old member loads during the window).
         if (strict_field) {
             if (configfile.renamedKey(key)) |rk| {
-                const msg = std.fmt.allocPrint(arena, "\"{s}\" is a deprecated spelling — use \"{s}\"", .{ key, rk.new }) catch "deprecated config key";
+                const msg = std.fmt.allocPrint(arena, "\"{s}\" is a deprecated spelling — use \"{s}\"{s}", .{ key, rk.new, explainSuffix(arena, key) }) catch "deprecated config key";
                 return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
             }
         }
@@ -130,10 +148,10 @@ fn parseKeyPath(arena: std.mem.Allocator, key: []const u8, strict_field: bool) u
             // Did-you-mean on misspelled keys (same rule `config validate`
             // reports for file typos); the full list is the fallback.
             const msg = if (suggest.suggest(arena, key, field_names)) |s|
-                std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — did you mean \"{s}\"?", .{ key, s }) catch "unknown config key"
+                std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — did you mean \"{s}\"?{s}", .{ key, s, explainSuffix(arena, s) }) catch "unknown config key"
             else blk: {
                 const names = knownFieldNames(arena) catch "see docs/configuration.md";
-                break :blk std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — valid keys: {s} (or keys.<provider>)", .{ key, names }) catch "unknown config key";
+                break :blk std.fmt.allocPrint(arena, "\"{s}\" is not a tau config key — valid keys: {s} (or keys.<provider>) — run `tau explain` to list the catalog", .{ key, names }) catch "unknown config key";
             };
             return .{ .fail = .{ .code = 80, .type_name = "invalid_argument", .message = msg } };
         }
@@ -147,7 +165,8 @@ fn parseKeyPath(arena: std.mem.Allocator, key: []const u8, strict_field: bool) u
         const hint: []const u8 = blk: {
             if (child.len > 0 and std.mem.indexOfScalar(u8, child, '.') == null) {
                 if (suggest.suggest(arena, parent, &.{"keys"})) |_| {
-                    break :blk std.fmt.allocPrint(arena, " — did you mean \"keys.{s}\"?", .{child}) catch "";
+                    const cand = std.fmt.allocPrint(arena, "keys.{s}", .{child}) catch break :blk "";
+                    break :blk std.fmt.allocPrint(arena, " — did you mean \"{s}\"?{s}", .{ cand, explainSuffix(arena, cand) }) catch "";
                 }
             }
             break :blk "";
@@ -616,7 +635,8 @@ fn coerceKeysMap(arena: std.mem.Allocator, raw: []const u8) !Coerced {
     var it = val.object.iterator();
     while (it.next()) |e| {
         if (cfgmod.findProvider(e.key_ptr.*) == null) {
-            return badValue(arena, "\"keys.{s}\" is not a known provider — {s}", .{ e.key_ptr.*, try providerHint(arena, e.key_ptr.*) });
+            const ph = try providerHint(arena, e.key_ptr.*);
+            return badValue(arena, "\"keys.{s}\" is not a known provider — {s}{s}", .{ e.key_ptr.*, ph.text, ph.explain });
         }
         if (e.value_ptr.* != .string) {
             return badValue(arena, "\"keys.{s}\" must be a string", .{e.key_ptr.*});
@@ -634,7 +654,8 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
     switch (kp) {
         .keys_entry => |pname| {
             if (cfgmod.findProvider(pname) == null) {
-                return badValue(arena, "\"keys.{s}\" is not a known provider — {s}", .{ pname, try providerHint(arena, pname) });
+                const ph = try providerHint(arena, pname);
+                return badValue(arena, "\"keys.{s}\" is not a known provider — {s}{s}", .{ pname, ph.text, ph.explain });
             }
             if (raw.len == 0) {
                 return badValue(arena, "empty API key — use `tau config unset keys.{s}` to remove it", .{pname});
@@ -649,7 +670,8 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
                         .string => {
                             if (comptime std.mem.eql(u8, f.name, "provider")) {
                                 if (cfgmod.findProvider(raw) == null) {
-                                    return badValue(arena, "\"provider\" is not a known provider: \"{s}\" — {s}", .{ raw, try providerHint(arena, raw) });
+                                    const ph = try providerHint(arena, raw);
+                                    return badValue(arena, "\"provider\" is not a known provider: \"{s}\" — {s}", .{ raw, ph.text });
                                 }
                             } else if (comptime std.mem.eql(u8, f.name, "mode")) {
                                 if (!std.mem.eql(u8, raw, "text") and !std.mem.eql(u8, raw, "json")) {
@@ -730,7 +752,9 @@ const Doc = union(enum) {
 /// is the likely target). Schema field names / registered providers join in
 /// only when the queried name isn't already valid — a correctly-spelled but
 /// absent key must not suggest a sibling ("model" is absent, not a "mode"
-/// typo).
+/// typo). A ` — see \`tau explain <key>\`` pointer follows the suggestion
+/// only when it names a key the explain catalog resolves (a file-typo'd
+/// member like "proivder" can't).
 fn notSetHint(arena: std.mem.Allocator, parsed: ?ParsedDoc, kp: KeyPath) ![]const u8 {
     var cands: std.ArrayList([]const u8) = .empty;
     var query: []const u8 = undefined;
@@ -764,7 +788,8 @@ fn notSetHint(arena: std.mem.Allocator, parsed: ?ParsedDoc, kp: KeyPath) ![]cons
         if (!std.mem.eql(u8, c, query)) try filtered.append(arena, c);
     }
     if (suggest.suggest(arena, query, filtered.items)) |s| {
-        return try std.fmt.allocPrint(arena, " — did you mean \"{s}{s}\"?", .{ prefix, s });
+        const cand = try std.fmt.allocPrint(arena, "{s}{s}", .{ prefix, s });
+        return try std.fmt.allocPrint(arena, " — did you mean \"{s}\"?{s}", .{ cand, explainSuffix(arena, cand) });
     }
     return "";
 }
@@ -1927,20 +1952,25 @@ test "parseKeyPath: misspelled field suggests the nearest config key" {
     defer ar.deinit();
     const arena = ar.allocator();
 
-    // Transposition (d=2) is inside the suggestion boundary.
+    // Transposition (d=2) is inside the suggestion boundary; the suggested
+    // key names a resolvable `tau explain` entry.
     const near = parseKeyPath(arena, "proivder", true).fail;
     try testing.expectEqual(@as(u8, 80), near.code);
     try testing.expect(std.mem.indexOf(u8, near.message, "did you mean \"provider\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, near.message, " — see `tau explain provider`") != null);
     try testing.expect(std.mem.indexOf(u8, near.message, "valid keys:") == null);
 
-    // d=3 is outside the boundary — the full key list is the fallback.
+    // d=3 is outside the boundary — the full key list is the fallback, with
+    // a pointer at the bare `tau explain` catalog.
     const far = parseKeyPath(arena, "prvdr", true).fail;
     try testing.expect(std.mem.indexOf(u8, far.message, "did you mean") == null);
     try testing.expect(std.mem.indexOf(u8, far.message, "valid keys:") != null);
+    try testing.expect(std.mem.indexOf(u8, far.message, "run `tau explain` to list the catalog") != null);
 
     // A near-miss `keys` parent points at keys.<provider>.
     const dotted = parseKeyPath(arena, "key.openai", true).fail;
     try testing.expect(std.mem.indexOf(u8, dotted.message, "did you mean \"keys.openai\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, dotted.message, " — see `tau explain keys.openai`") != null);
 
     // get/unset accept unknown top-level keys (they may exist in the file).
     try testing.expect(parseKeyPath(arena, "proivder", false) == .ok);
@@ -1954,15 +1984,20 @@ test "coerceValue: provider typos suggest the nearest provider" {
     const keys_entry = parseKeyPath(arena, "keys.opnai", true).ok;
     const f1 = (try coerceValue(arena, keys_entry, "sk-x")).fail;
     try testing.expect(std.mem.indexOf(u8, f1.message, "did you mean \"openai\"?") != null);
+    // keys.<p> is a key path — the explain pointer names the full member path.
+    try testing.expect(std.mem.indexOf(u8, f1.message, " — see `tau explain keys.openai`") != null);
 
     const provider_field = parseKeyPath(arena, "provider", true).ok;
     const f2 = (try coerceValue(arena, provider_field, "opnai")).fail;
     try testing.expect(std.mem.indexOf(u8, f2.message, "did you mean \"openai\"?") != null);
+    // A bad *value* (not an unknown key) gets no explain pointer.
+    try testing.expect(std.mem.indexOf(u8, f2.message, "tau explain") == null);
 
     // Far-off names fall back to the full provider list.
     const f3 = (try coerceValue(arena, provider_field, "zzzcorp")).fail;
     try testing.expect(std.mem.indexOf(u8, f3.message, "did you mean") == null);
     try testing.expect(std.mem.indexOf(u8, f3.message, "valid providers:") != null);
+    try testing.expect(std.mem.indexOf(u8, f3.message, "tau explain") == null);
 }
 
 test "run: set/get/unset surface did-you-mean hints and line/column" {
@@ -1981,23 +2016,35 @@ test "run: set/get/unset surface did-you-mean hints and line/column" {
         \\}
     });
 
-    // set on a misspelled key: did-you-mean the real field.
+    // set on a misspelled key: did-you-mean the real field, with a pointer
+    // at the resolvable `tau explain` entry for it.
     const set_typo = try failMessage(try th.sub(arena, .set, "proivder", "x", false));
     try testing.expectEqual(@as(u8, 80), set_typo.code);
     try testing.expect(std.mem.indexOf(u8, set_typo.message, "did you mean \"provider\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, set_typo.message, " — see `tau explain provider`") != null);
 
     // get of a valid-but-absent key when the file holds the typo'd member:
-    // the suggestion names the file's actual key.
+    // the suggestion names the file's actual key — which explain can't
+    // resolve, so no pointer follows.
     const get_file_typo = try failMessage(try th.sub(arena, .get, "provider", null, false));
     try testing.expectEqual(@as(u8, 1), get_file_typo.code);
     try testing.expect(std.mem.indexOf(u8, get_file_typo.message, "did you mean \"proivder\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, get_file_typo.message, "see `tau explain") == null);
 
     // get of a typo'd key resolves the real member in the file.
     _ = try expectOk(try th.sub(arena, .get, "proivder", null, false));
 
-    // get keys.<typo> suggests the member actually present under keys.
+    // get keys.<typo> suggests the member actually present under keys (also
+    // unresolvable by explain — no pointer).
     const get_keys = try failMessage(try th.sub(arena, .get, "keys.openai", null, false));
     try testing.expect(std.mem.indexOf(u8, get_keys.message, "did you mean \"keys.opnai\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, get_keys.message, "see `tau explain") == null);
+
+    // get of a typo'd key absent from the file suggests the schema field and
+    // points at its explain entry.
+    const get_field_typo = try failMessage(try th.sub(arena, .get, "mod", null, false));
+    try testing.expect(std.mem.indexOf(u8, get_field_typo.message, "did you mean \"mode\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, get_field_typo.message, " — see `tau explain mode`") != null);
 
     // A correctly-spelled but absent key earns no hint — neither a sibling
     // field name nor a sibling provider is "what was meant".
@@ -2112,6 +2159,9 @@ test "parseKeyPath: config set rejects a deprecated spelling with the canonical 
     try testing.expect(r == .fail);
     try testing.expectEqual(@as(u8, 80), r.fail.code);
     try testing.expect(std.mem.indexOf(u8, r.fail.message, "compact_keep_recent_tokens") != null);
+    // The deprecated spelling itself resolves in the explain catalog (marked
+    // renamed), so the error points at it.
+    try testing.expect(std.mem.indexOf(u8, r.fail.message, " — see `tau explain compact_keep_recent`") != null);
 
     // get/unset (non-strict) still accept the path — manual migration needs it.
     const g = parseKeyPath(arena, "compact_keep_recent", false);

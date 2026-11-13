@@ -1111,20 +1111,39 @@ test_group_config_edit() {
 
   # Did-you-mean on key typos: CLI key -> schema field; file member -> the
   # file's actual (typo'd) key; keys.<p> -> nearest provider/file member.
+  # Suggestions that resolve in the explain catalog also carry a
+  # `see \`tau explain <key>\`` pointer — file-member typos can't resolve, so
+  # they earn none. ('see `tau explain' keeps the needle clear of the
+  # envelope footer's own "explain":"tau explain <code>".)
   out=$(HOME="$mock_home" "$BIN" config set proivder x 2>&1)
   contains "set key typo suggests field" "$out" 'did you mean \"provider\"?'
+  contains "set key typo points at explain" "$out" 'see `tau explain provider`'
+  out=$(HOME="$mock_home" "$BIN" config set prvdr x 2>&1)
+  contains "set far key typo lists valid keys" "$out" 'valid keys:'
+  contains "set far key typo points at catalog" "$out" 'run `tau explain` to list the catalog'
   out=$(HOME="$mock_home" "$BIN" config set keys.opnai sk-x 2>&1)
   contains "set keys typo suggests provider" "$out" 'did you mean \"openai\"?'
+  contains "set keys typo points at explain" "$out" 'see `tau explain keys.openai`'
   out=$(HOME="$mock_home" "$BIN" config set key.openai sk-x 2>&1)
   contains "dotted-path typo suggests keys" "$out" 'did you mean \"keys.openai\"?'
+  contains "dotted-path typo points at explain" "$out" 'see `tau explain keys.openai`'
   out=$(HOME="$mock_home" "$BIN" config set provider opnai 2>&1)
   contains "set provider value typo suggests" "$out" 'did you mean \"openai\"?'
+  lacks "provider value typo earns no explain pointer" "$out" 'see `tau explain'
+  out=$(HOME="$mock_home" "$BIN" config set compact_keep_recent 4000 2>&1)
+  contains "deprecated spelling names canonical" "$out" 'compact_keep_recent_tokens'
+  contains "deprecated spelling points at explain" "$out" 'see `tau explain compact_keep_recent`'
   printf '{"proivder":"openai","keys":{"opnai":"sk-x"}}' > "$cfg"
   out=$(HOME="$mock_home" "$BIN" config get provider 2>&1); rc=$?
   ok "get missing field exits 1" "$rc" 1
   contains "get names the file's typo'd key" "$out" 'did you mean \"proivder\"?'
+  lacks "file-member typo earns no explain pointer" "$out" 'see `tau explain'
   out=$(HOME="$mock_home" "$BIN" config get keys.openai 2>&1)
   contains "get keys names the file's typo'd member" "$out" 'did you mean \"keys.opnai\"?'
+  lacks "keys file-member typo earns no explain pointer" "$out" 'see `tau explain'
+  out=$(HOME="$mock_home" "$BIN" config get mod 2>&1)
+  contains "get field typo suggests field" "$out" 'did you mean \"mode\"?'
+  contains "get field typo points at explain" "$out" 'see `tau explain mode`'
   printf '{\n  "provider": "openai"\n}\n' > "$cfg"
 
   # Schema checks reject bad values before writing (file unchanged).
