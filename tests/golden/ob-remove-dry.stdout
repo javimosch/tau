@@ -1,0 +1,2 @@
+{"step":"remove_clients","status":"would_remove","clients":[{"client":"zed","path":"<HOME>/.config/zed/settings.json","status":"would_remove","file_deleted":true}],"dry_run":true}
+{"step":"setup","ok":true,"version":"0.4.0","remove":true,"dry_run":true,"done":true}

@@ -36,3 +36,17 @@ paste output here
 ```
 
 </details>
+
+## Diagnostic log (optional but very helpful)
+
+Re-run the failing command with `--debug`:
+
+```
+tau --debug <your command>
+```
+
+tau writes a **redacted** diagnostic log to `~/.config/tau/debug/<timestamp>.log`
+(the exact path is printed on stderr as `{"debug_log":"<path>"}` and included
+in the `{"err":...}` envelope's `debug_log` field). API keys and Bearer tokens
+are masked with `***REDACTED***` — please still review the file before
+attaching, then drag it into this issue.

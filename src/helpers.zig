@@ -1,14 +1,13 @@
 const std = @import("std");
 const term = @import("term.zig");
+const errs = @import("errors.zig");
 
 /// Emit a standard "fleet <cmd> requires <what>" error and return the exit code.
 /// Uses page_allocator (short-lived, called once per invocation).
 pub fn fleetRequires(cmd: []const u8, what: []const u8, code: u8) u8 {
     var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf,
-        "{{\"err\":{{\"code\":{d},\"message\":\"fleet {s} requires {s}\"}}}}\n",
-        .{ code, cmd, what }) catch "{\"err\":{\"code\":80}}\n";
-    term.out(msg);
+    const msg = std.fmt.bufPrint(&buf, "fleet {s} requires {s}", .{ cmd, what }) catch "missing required field";
+    errs.printOut(std.heap.page_allocator, errs.specFor(code), msg, .{});
     return code;
 }
 
@@ -35,14 +34,10 @@ pub fn fleetPrintJson(gpa: std.mem.Allocator, value: anytype) !void {
     term.out("\n");
 }
 
-/// Emit a "{\"err\":{\"code\":110,\"message\":\"<prefix>: <err>\"}}\n" and return 110.
+/// Emit a code-110 err envelope with message "<prefix>: <err>" to stdout
+/// (fleet's envelope channel) and return 110.
 pub fn fleetErr(arena: std.mem.Allocator, prefix: []const u8, err: anyerror) u8 {
-    const msg = std.fmt.allocPrint(arena,
-        "{{\"err\":{{\"code\":110,\"message\":\"{s}: {s}\"}}}}\n",
-        .{ prefix, @errorName(err) }) catch {
-        term.out("{\"err\":{\"code\":110,\"message\":\"fleet error (OOM)\"}}\n");
-        return 110;
-    };
-    term.out(msg);
+    const msg = std.fmt.allocPrint(arena, "{s}: {s}", .{ prefix, @errorName(err) }) catch "fleet error (OOM)";
+    errs.printOut(arena, errs.internal_error, msg, .{});
     return 110;
 }
