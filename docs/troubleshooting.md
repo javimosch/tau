@@ -405,7 +405,11 @@ subcommand call (a bare token, a flag next, or one of that subcommand's
 own args, e.g. `tau conifg show`). A real prompt whose first word merely
 sits near a subcommand name (`tau model the auth flow`) still parses as a
 prompt. A correctly-spelled flag that's invalid in that context — like
-`tau explain --mode` — earns no hint.
+`tau explain --mode` — earns no hint. A mistyped `--client` value resolves
+against the accepted client ids on every surface that takes one (`tau setup
+--client vscod` and `tau doctor --client vscod` → `did you mean "vscode"?`,
+and `TAU_SETUP_CLIENT` gets the same treatment); a value no near match
+exists for keeps the plain want-list.
 
 ---
 
