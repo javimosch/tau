@@ -237,6 +237,10 @@ pub const Config = struct {
     doctor_fix: bool = false,
     /// `tau doctor --yes` — apply --fix remediations without prompting.
     doctor_yes: bool = false,
+    /// `tau doctor --dry-run` — preview every planned --fix remediation as a
+    /// "would_apply" outcome without changing anything; implies --fix and is
+    /// mutually exclusive with --yes.
+    doctor_dry_run: bool = false,
     /// `tau doctor --json` — emit NDJSON events (one per check/fix plus a
     /// done:true verdict line) instead of the default single-object report.
     doctor_json: bool = false,

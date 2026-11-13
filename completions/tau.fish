@@ -195,6 +195,7 @@ complete -c tau -n $doctor -f -l selftest -d 'credential-free end-to-end session
 complete -c tau -n $doctor -f -l fix -d 'remediate fixable checks (prompts per fix)'
 complete -c tau -n $doctor -f -l yes -d 'apply --fix remediations without prompting'
 complete -c tau -n $doctor -f -s y -d 'apply --fix remediations without prompting'
+complete -c tau -n $doctor -f -l dry-run -d 'preview --fix remediations; apply nothing'
 complete -c tau -n $doctor -f -l json -d 'stream NDJSON check/fix events + done:true verdict'
 complete -c tau -n $doctor -f -l report -d 'markdown diagnostics bundle for bug reports'
 complete -c tau -n $doctor -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'

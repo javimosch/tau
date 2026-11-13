@@ -1408,6 +1408,29 @@ test_group_doctor() {
     ok "unconfirmed --fix wrote nothing" 1 0
   fi
 
+  # 11b. doctor --fix --dry-run: every planned fix previews as would_apply —
+  #      the report carries "dry_run":true and nothing is written.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  capture doc_fix_dry env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --dry-run
+  contains "--dry-run previews the scaffold fix" "$doc_fix_dry_out" '"id":"scaffold_config","check":"config_file","status":"would_apply"'
+  contains "--dry-run previews the completions fix" "$doc_fix_dry_out" '"id":"install_completions","check":"shell_completions","status":"would_apply"'
+  contains "--dry-run detail names the repair" "$doc_fix_dry_out" '"detail":"would create'
+  contains "--dry-run marks the report" "$doc_fix_dry_out" '"dry_run":true'
+  lacks "--dry-run applies nothing" "$doc_fix_dry_out" '"status":"applied"'
+  if [ ! -f "$mock_config/config.json" ] && [ ! -e "$mock_home/.local/share/bash-completion/completions/tau" ] && [ ! -d "$mock_home/.config" ]; then
+    ok "--dry-run wrote nothing" 0 0
+  else
+    ok "--dry-run wrote nothing" 1 0
+  fi
+
+  # 11c. --dry-run alone implies --fix; --dry-run + --yes is a parse error (80).
+  capture doc_dry_implies env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --dry-run
+  contains "--dry-run implies --fix" "$doc_dry_implies_out" '"fixes":['
+  "$BIN" doctor --fix --dry-run --yes >/dev/null 2>&1; ok "doctor --dry-run --yes -> exit 80" "$?" 80
+  "$BIN" doctor --dry-run -y >/dev/null 2>&1; ok "doctor --dry-run -y -> exit 80" "$?" 80
+
   # 12. doctor --fix --yes: scaffold + completions apply, permissions tighten,
   #     and the emitted report reflects the post-fix state. TAU_API_KEY makes
   #     api_key resolvable so the whole post-fix report is ok -> exit 0.
@@ -4350,6 +4373,17 @@ test_group_golden_doctor() {
   printf -- '-----BEGIN CERTIFICATE-----\n' > "$_GOLDEN_HOME/ca.pem"
   golden_check_n doc-tls-ca-ok       0 env SHELL=/bin/bash CURL_CA_BUNDLE="$_GOLDEN_HOME/ca.pem" "$BIN" doctor --offline --provider openai --api-key k
 
+  # --fix --dry-run preview: a fresh HOME plans scaffold_config +
+  # install_completions, both report would_apply, the report carries
+  # "dry_run":true, and the HOME is left untouched.
+  _golden_fresh_home
+  golden_check_n doc-fix-dry-run     0 env SHELL=/bin/bash "$BIN" doctor --offline --provider openai --api-key k --fix --dry-run
+  if [ -e "$_GOLDEN_HOME/.config" ] || [ -e "$_GOLDEN_HOME/.local" ]; then
+    ok "golden: --dry-run wrote nothing" 1 0
+  else
+    ok "golden: --dry-run wrote nothing" 0 0
+  fi
+
   # Deprecated config-key surface: the warn row + the stderr warn envelope,
   # then the --fix --yes run that rewrites the member in place (the migrated
   # file itself is pinned via golden_file).
@@ -5039,6 +5073,23 @@ test_group_doctor_schema() {
     ok "doctor-schema: --fix stream validates" 1 0
   fi
   contains "doctor-schema: fix events emitted" "$(cat "$SMOKE_TEMP/doctor-fix.ndjson")" '"fix":{"id":"'
+
+  # --fix --dry-run: fix events preview as would_apply and the verdict carries
+  # "dry_run":true — covers the newest enum member + verdict property.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-schema HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --json --offline --fix --dry-run \
+    > "$SMOKE_TEMP/doctor-dry.ndjson" 2>/dev/null
+  rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then ok "doctor-schema: --dry-run run exit code 0|1" 0 0; else ok "doctor-schema: --dry-run run exit code 0|1" 1 0; fi
+  if python3 "$check" "$SMOKE_TEMP/doctor-dry.ndjson" >/dev/null 2>&1; then
+    ok "doctor-schema: --dry-run stream validates" 0 0
+  else
+    ok "doctor-schema: --dry-run stream validates" 1 0
+  fi
+  contains "doctor-schema: --dry-run previews fixes" "$(cat "$SMOKE_TEMP/doctor-dry.ndjson")" '"status":"would_apply"'
+  contains "doctor-schema: --dry-run verdict marked" "$(tail -1 "$SMOKE_TEMP/doctor-dry.ndjson")" '"dry_run":true'
+  if [ ! -d "$mock_home/.config" ]; then ok "doctor-schema: --dry-run wrote nothing" 0 0; else ok "doctor-schema: --dry-run wrote nothing" 1 0; fi
 
   # Non-vacuity: a corrupt stream must fail validation.
   printf '{"done":true}\n' > "$SMOKE_TEMP/bad.ndjson"
