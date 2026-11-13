@@ -70,7 +70,7 @@ Some emitters override `type` with the underlying Zig error name (e.g.
 [docs/errors.md](errors.md) is a **generated** mirror of this catalog (with
 per-code causes and the silent-exit paths) rendered from the registry in
 `src/errors.zig` — CI fails if it drifts. The same registry is readable
-offline from the CLI: `tau explain <code|type|key>` prints one entry's cause,
+offline from the CLI: `tau explain <code|type|key|…>` prints one entry's cause,
 hint, and docs link (JSON by default — `--json` pins the schema-checked
 form, `--human` renders prose), and bare `tau explain` lists the whole
 catalog. A config key works the same way: `tau explain timeout_ms` prints
@@ -82,10 +82,15 @@ remediation that resolves it — the same rows as the generated check table
 below (bare `tls_ca` also works; `api_key` stays the config key — prefix it
 `doctor.api_key` for the check). `TAU_*` environment variables resolve by
 exact name too: `tau explain TAU_ENDPOINT` prints the variable's consumers
-and summary from the generated [env.md](env.md) tables. A mistyped code,
-`type`, key, check id, or env var exits 1 with a `not_found` envelope whose
-message suggests the nearest catalog entry — `did you mean "tau explain
-<code|type|key|doctor.<check>|TAU_*>"?` — when the query is within two
+and summary from the generated [env.md](env.md) tables. Editor clients
+resolve by `client.<name>` or a bare `--client` name/alias:
+`tau explain client.zed` prints the client's prerequisites, config paths,
+setup command, and restart verification from the generated
+[compatibility.md](compatibility.md) matrix (the underscore spellings —
+`client_zed` — keep resolving to the doctor check). A mistyped code,
+`type`, key, check id, env var, or client name exits 1 with a `not_found`
+envelope whose message suggests the nearest catalog entry —
+`did you mean "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>>"?` — when the query is within two
 case-insensitive edits of one.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the

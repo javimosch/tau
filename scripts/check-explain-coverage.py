@@ -3,11 +3,13 @@
 
 docs/errors.md is generated from the Spec catalog in src/errors.zig,
 docs/config.md from the FileConfig schema, the doctor-check table in
-docs/troubleshooting.md from src/doctorcatalog.zig, and docs/env.md from
-the Spec registry in src/envvars.zig — together they declare every name a
-user (or an agent parsing the envelope's `explain` footer) can look up
-offline. This checker fails when a catalog entry does not
-resolve to a real `tau explain` entry, where "resolves" means:
+docs/troubleshooting.md from src/doctorcatalog.zig, docs/env.md from
+the Spec registry in src/envvars.zig, and the client matrix in
+docs/compatibility.md from the ClientKind tables in src/setup.zig —
+together they declare every name a user (or an agent parsing the
+envelope's `explain` footer) can look up offline. This checker fails when
+a catalog entry does not resolve to a real `tau explain` entry, where
+"resolves" means:
 
   - `tau explain <code>` exits 0 and emits an entry carrying BOTH the
     code and its catalog `type` tag — an uncataloged code would pass
@@ -19,7 +21,10 @@ resolve to a real `tau explain` entry, where "resolves" means:
   - `tau explain keys.<member>` — for each member named in the `keys`
     row's "member names" clause — exits 0 with `"key":"keys.<member>"`;
   - `tau explain TAU_<VAR>` (each `TAU_*` row of the generated
-    docs/env.md tables) exits 0 with `"env":"TAU_<VAR>"`.
+    docs/env.md tables) exits 0 with `"env":"TAU_<VAR>"`;
+  - `tau explain client.<name>` and `tau explain <name>` (each row of the
+    docs/compatibility.md `## Supported editor clients` matrix) exit 0
+    with `"client":"<name>"`.
 
 The reverse direction is gated too: every code and key the live
 `tau explain` catalog lists must appear in the generated docs, so a new
@@ -29,6 +34,7 @@ Usage:
 
     python3 scripts/check-explain-coverage.py [--tau PATH]
         [--errors-doc PATH] [--config-doc PATH] [--env-doc PATH]
+        [--compat-doc PATH]
 
 Exit codes: 0 = full coverage, 1 = coverage gap (each printed to stderr),
 2 = usage/IO error. Stdlib only — paths resolve relative to the script,
@@ -73,6 +79,15 @@ BACKTICK = re.compile(r"`([^`]+)`")
 # first cells count — the typo-warning transcript and prose backticks are
 # not table rows, but the prefix filter makes the intent explicit anyway.
 ENV_ROW = re.compile(r"^\|\s*`(TAU_[^`\s]+)`\s*\|", re.MULTILINE)
+
+# The client matrix in docs/compatibility.md lives in the
+# `## Supported editor clients` section; every row's FIRST backticked
+# token is the canonical `--client` name (`| `windsurf` (mcacp) |` still
+# starts with the bare name). Scoping to the section keeps the
+# `~`-path and "In-editor finish" tables out of the name set.
+CLIENTS_SECTION = re.compile(
+    r"^## Supported editor clients\b.*?(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+CLIENT_ROW = re.compile(r"^\|\s*`([^`\s]+)`", re.MULTILINE)
 
 
 def error_entries(catalog: Path):
@@ -132,6 +147,22 @@ def env_entries(doc: Path):
     return names
 
 
+def client_entries(doc: Path):
+    """Client names from the generated docs/compatibility.md matrix."""
+    if not doc.is_file():
+        raise OSError(f"compatibility doc not found: {doc}")
+    text = doc.read_text(encoding="utf-8")
+    section = CLIENTS_SECTION.search(text)
+    if not section:
+        raise OSError(f"no '## Supported editor clients' section parsed "
+                      f"from {doc}")
+    names = CLIENT_ROW.findall(section.group(0))
+    if not names:
+        raise OSError(f"no `| `<name>` |` rows parsed from {doc} "
+                      "## Supported editor clients")
+    return names
+
+
 def explain(tau: str, *args):
     """(returncode, stdout) of `tau explain <args>` — pure catalog lookup."""
     proc = subprocess.run([tau, "explain", *args], capture_output=True, text=True)
@@ -147,6 +178,8 @@ def main(argv=None):
     ap.add_argument("--doctor-doc", type=Path,
                     default=ROOT / "docs" / "troubleshooting.md")
     ap.add_argument("--env-doc", type=Path, default=ROOT / "docs" / "env.md")
+    ap.add_argument("--compat-doc", type=Path,
+                    default=ROOT / "docs" / "compatibility.md")
     args = ap.parse_args(argv)
 
     if not Path(args.tau).is_file():
@@ -159,6 +192,7 @@ def main(argv=None):
         keys, members = config_entries(args.config_doc)
         checks = check_entries(args.doctor_doc)
         env_names = env_entries(args.env_doc)
+        clients = client_entries(args.compat_doc)
     except OSError as e:
         print(f"check-explain-coverage: {e}", file=sys.stderr)
         return 2
@@ -209,6 +243,19 @@ def main(argv=None):
                 f"env.md variable `{var}` does not resolve via "
                 f"`tau explain {var}` (exit {rc})"
             )
+    for name in sorted(set(clients)):
+        rc, out = explain(args.tau, f"client.{name}")
+        if rc != 0 or f'"client":"{name}"' not in out:
+            problems.append(
+                f"compatibility.md client `{name}` does not resolve via "
+                f"`tau explain client.{name}` (exit {rc})"
+            )
+        rc, out = explain(args.tau, name)
+        if rc != 0 or f'"client":"{name}"' not in out:
+            problems.append(
+                f"compatibility.md client `{name}` does not resolve via "
+                f"`tau explain {name}` (exit {rc})"
+            )
 
     # Reverse: every entry the live catalog lists is documented.
     rc, out = explain(args.tau)
@@ -248,6 +295,14 @@ def main(argv=None):
                     problems.append(
                         f"`tau explain` lists env var `{entry.get('env')}` but "
                         "it is absent from docs/env.md — regenerate the catalog"
+                    )
+            documented_clients = set(clients)
+            for entry in live.get("clients", []):
+                if entry.get("client") not in documented_clients:
+                    problems.append(
+                        f"`tau explain` lists client `{entry.get('client')}` "
+                        "but it is absent from the supported-clients matrix "
+                        "in docs/compatibility.md — regenerate the catalog"
                     )
 
     for p in problems:

@@ -4485,6 +4485,17 @@ test_group_golden_maintenance() {
   golden_check ex-env-unknown      1 "$BIN" explain TAU_ZZZ
   golden_check ex-env-dym          1 "$BIN" explain TAU_ENDPONT
 
+  # Client lookups — mirror rows of the generated docs/compatibility.md
+  # matrix (namespaced, bare, alias, bridge, snippet, --human).
+  golden_check ex-client           0 "$BIN" explain client.zed
+  golden_check ex-client-bare      0 "$BIN" explain zed
+  golden_check ex-client-alias     0 "$BIN" explain client.claude
+  golden_check ex-client-snippet   0 "$BIN" explain client.goose
+  golden_check ex-client-human     0 "$BIN" explain --human client.nvim
+  golden_check ex-client-check-id  0 "$BIN" explain client_zed
+  golden_check ex-client-unknown   1 "$BIN" explain client.bogus
+  golden_check ex-dym-client       1 "$BIN" explain client.zde
+
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
   mkdir -p "$stubs"
@@ -5770,7 +5781,7 @@ test_group_explain() {
   capture k7 "$BIN" explain agent.timeout
   ok "explain: unknown dotted path exits 1" "$k7_rc" 1
   contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
-  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, or env var'
+  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, or client'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
@@ -5865,6 +5876,70 @@ test_group_explain() {
   contains "explain: unknown env var emits not_found" "$e6_err" '"type":"not_found"'
   lacks "explain: unknown env var gets no suggestion" "$e6_err" 'did you mean'
 
+  # Client lookups — mirror rows of the generated docs/compatibility.md
+  # matrix: `client.<name>` is the namespaced spelling, bare names and
+  # --client aliases resolve too.
+  capture c1 "$BIN" explain client.zed
+  ok "explain: client entry exits 0" "$c1_rc" 0
+  contains "explain: client entry carries name" "$c1_out" '"client":"zed"'
+  contains "explain: client entry carries transport" "$c1_out" '"transport":"acp"'
+  contains "explain: client entry carries wiring" "$c1_out" '"wiring":"direct"'
+  contains "explain: client entry carries prereqs" "$c1_out" '"prereqs":"tau installed and configured'
+  contains "explain: client entry carries setup command" "$c1_out" '"setup":"tau setup --client zed --yes"'
+  contains "explain: client entry carries settings path" "$c1_out" '"settings_path":"~/.config/zed/settings.json"'
+  contains "explain: client entry carries verify step" "$c1_out" '"verify":"open the Agent Panel'
+  contains "explain: client entry names its doctor check" "$c1_out" '"doctor_check":"client_zed"'
+  contains "explain: client entry links its guide" "$c1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/clients/zed.md"'
+  lacks "explain: direct client has no bridge path" "$c1_out" 'bridge_path'
+
+  capture c2 "$BIN" explain zed
+  ok "explain: bare client name exits 0" "$c2_rc" 0
+  contains "explain: bare name resolves the client" "$c2_out" '"client":"zed"'
+
+  capture c3 "$BIN" explain client.claude
+  ok "explain: client alias exits 0" "$c3_rc" 0
+  contains "explain: alias resolves canonical name" "$c3_out" '"client":"claude-desktop"'
+  contains "explain: bridge client tagged mcacp" "$c3_out" '"transport":"mcacp"'
+  contains "explain: bridge client carries bridge_path" "$c3_out" '"bridge_path":"~/.config/mcacp/mcacp.json"'
+  contains "explain: bridge prereqs name npx + mcacp" "$c3_out" 'npx'
+
+  capture c4 "$BIN" explain client.goose
+  ok "explain: snippet client exits 0" "$c4_rc" 0
+  contains "explain: snippet client tagged" "$c4_out" '"wiring":"snippet"'
+  contains "explain: snippet settings path is the merge target" "$c4_out" '"settings_path":"~/.config/goose/config.yaml"'
+
+  capture c5 "$BIN" explain --human client.nvim
+  ok "explain: --human client exits 0" "$c5_rc" 0
+  contains "explain: --human prints client tag" "$c5_out" 'client  nvim (acp · snippet)'
+  contains "explain: --human prints prereqs" "$c5_out" 'prereqs:'
+  contains "explain: --human prints merge target" "$c5_out" 'init.lua'
+  contains "explain: --human prints verify" "$c5_out" 'verify:'
+  contains "explain: --human points at the doctor check" "$c5_out" 'tau explain doctor.client_nvim'
+
+  # The underscore check id keeps its earlier registry — `client_zed` is
+  # the doctor check, `client.zed` is the client entry.
+  capture c6 "$BIN" explain client_zed
+  ok "explain: underscored id exits 0" "$c6_rc" 0
+  contains "explain: underscored id is the check" "$c6_out" '"check":"client_zed"'
+
+  # The no-query catalog carries the fifth slice — one entry per client.
+  contains "explain: catalog lists clients" "$r3_out" '"clients":['
+  contains "explain: catalog includes a direct client" "$r3_out" '"client":"zed"'
+  contains "explain: catalog includes a bridge client" "$r3_out" '"client":"claude-desktop"'
+  contains "explain: catalog includes a snippet client" "$r3_out" '"client":"nvim"'
+
+  # Client-name typos get the same did-you-mean — namespaced and bare.
+  capture c7 _env_no_tau "$BIN" explain zedd
+  ok "explain: client typo exits 1" "$c7_rc" 1
+  contains "explain: client typo suggests zed" "$c7_err" 'did you mean \"tau explain zed\"?'
+  capture c8 _env_no_tau "$BIN" explain client.zde
+  ok "explain: prefixed client typo exits 1" "$c8_rc" 1
+  contains "explain: prefixed typo suggests client.zed" "$c8_err" 'did you mean \"tau explain client.zed\"?'
+  capture c9 _env_no_tau "$BIN" explain client.bogus
+  ok "explain: unknown client exits 1" "$c9_rc" 1
+  contains "explain: unknown client emits not_found" "$c9_err" '"type":"not_found"'
+  lacks "explain: unknown client gets no suggestion" "$c9_err" 'did you mean'
+
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
   ok "explain: bad flag exits 80" "$r8_rc" 80
@@ -5940,6 +6015,17 @@ test_group_explain() {
       ok "explain: env entry validates against schema" 0 0
     else
       ok "explain: env entry validates against schema" 1 0
+    fi
+    # Client entries (direct + bridge) validate against the same schema.
+    if printf '%s' "$c1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: client entry validates against schema" 0 0
+    else
+      ok "explain: client entry validates against schema" 1 0
+    fi
+    if printf '%s' "$c3_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: bridge client entry validates against schema" 0 0
+    else
+      ok "explain: bridge client entry validates against schema" 1 0
     fi
   else
     skip_test "explain: schema validation" "python3 not on PATH"
@@ -6036,6 +6122,22 @@ PYEOF
     ok "explain-coverage: checker detects an unresolvable env var" 0 1
   else
     ok "explain-coverage: checker detects an unresolvable env var" 0 0
+  fi
+
+  # And a compatibility.md client row with no matching ClientKind — spliced
+  # inside the ## Supported editor clients section the checker scopes to.
+  cp "$ROOT/docs/compatibility.md" "$stage/compatibility.md"
+  python3 - "$stage/compatibility.md" <<'PYEOF'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+t = t.replace("| `zed` |", "| `bogusclient` | `bogusclient` | `~/.bogus` | — | — | — | `~/.bogus` | — |\n| `zed` |", 1)
+open(p, "w").write(t)
+PYEOF
+  if python3 "$check" --tau "$BIN" --compat-doc "$stage/compatibility.md" >/dev/null 2>&1; then
+    ok "explain-coverage: checker detects an unresolvable client" 0 1
+  else
+    ok "explain-coverage: checker detects an unresolvable client" 0 0
   fi
 }
 

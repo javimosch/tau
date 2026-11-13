@@ -303,7 +303,8 @@ _tau() {
                     # config keys mirror the generated docs/config.md table;
                     # doctor.* ids mirror the CheckSpec catalog in
                     # src/doctorcatalog.zig; TAU_* names mirror the Spec
-                    # registry in src/envvars.zig.
+                    # registry in src/envvars.zig; client.* names mirror the
+                    # ClientKind tables in src/setup.zig.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -382,8 +383,19 @@ _tau() {
                         'TAU_BIN:env var' 'TAU_TOOLS:env var'
                         'TAU_THINKING:env var' 'TAU_DEBUG:env var'
                     )
+                    local -a clients=(
+                        'client.zed:editor client' 'client.nvim:editor client'
+                        'client.emacs:editor client' 'client.vscode:editor client'
+                        'client.cursor:editor client' 'client.jetbrains:editor client'
+                        'client.windsurf:editor client' 'client.gemini:editor client'
+                        'client.claude-desktop:editor client' 'client.opencode:editor client'
+                        'client.cline:editor client' 'client.goose:editor client'
+                        'client.continue:editor client' 'client.roo-code:editor client'
+                        'client.kilo-code:editor client' 'client.amazonq:editor client'
+                        'client.codex:editor client'
+                    )
                     _arguments \
-                        '1: :_describe "error code/type, config key, doctor check, or TAU_* env var" err_codes cfg_keys checks env_vars' \
+                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, or client" err_codes cfg_keys checks env_vars clients' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]'
                     ;;

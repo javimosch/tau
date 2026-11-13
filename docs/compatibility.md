@@ -25,6 +25,11 @@ dedicated per-client guide for each client with verified snippets:
 [Amazon Q Developer](clients/amazonq.md),
 [Codex CLI](clients/codex.md).
 
+Every row below also resolves offline via `tau explain client.<name>`
+(or the bare `--client` name/alias) — e.g. `tau explain client.zed`
+prints the same paths, prerequisites, and in-editor step as JSON
+(`--human` renders prose).
+
 ## Supported editor clients
 
 | Client | `tau setup --client` | Config dir (detection) | Settings file | Agent-section key | Extra required field | Snippet fallback | `tau doctor` check / `--fix` |

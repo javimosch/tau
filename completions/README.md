@@ -39,7 +39,7 @@ PowerShell.
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--check`, `--json`, `--mode` |
 | `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run`, `--json` |
-| `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + config keys (`timeout_ms`, `keys.<provider>`, …) + doctor checks (`doctor.tls_ca`, `doctor.client_zed`, …) + `TAU_*` env vars (`TAU_ENDPOINT`, …) + `--json`, `--human` |
+| `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + config keys (`timeout_ms`, `keys.<provider>`, …) + doctor checks (`doctor.tls_ca`, `doctor.client_zed`, …) + `TAU_*` env vars (`TAU_ENDPOINT`, …) + editor clients (`client.zed`, `client.claude-desktop`, …) + `--json`, `--human` |
 
 ---
 

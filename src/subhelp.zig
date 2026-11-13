@@ -150,10 +150,10 @@ const doctor_help =
 
 const explain_help =
     \\tau explain - offline error + config-key + doctor-check + env-var
-    \\catalog lookup (no API key needed)
+    \\+ client catalog lookup (no API key needed)
     \\
     \\Usage:
-    \\  tau explain [<code|type|key|doctor.<check>|TAU_*>] [--json|--human]
+    \\  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>] [--json|--human]
     \\
     \\Arguments:
     \\  <code|type|key>   Exit code (e.g. 106), error type (e.g. authfailed),
@@ -168,6 +168,11 @@ const explain_help =
     \\  TAU_<VAR>         A TAU_* environment variable (e.g. TAU_ENDPOINT,
     \\                    TAU_YES, TAU_VERSION) — prints who consumes it and
     \\                    what it does, from the generated docs/env.md catalog
+    \\  client.<name>     A `tau setup --client` editor client (e.g.
+    \\                    client.zed, client.claude-desktop) — prints setup
+    \\                    prerequisites, config paths, and the restart +
+    \\                    verify step. Bare names and --client aliases
+    \\                    resolve too (`zed`, `code`, `claude`)
     \\
     \\Options:
     \\      --json   Stable schema-checked JSON form (default;
@@ -182,6 +187,7 @@ const explain_help =
     \\  tau explain keys.openai
     \\  tau explain doctor.tls_ca
     \\  tau explain TAU_ENDPOINT
+    \\  tau explain client.zed
     \\  tau explain --human 105
     \\
 ;

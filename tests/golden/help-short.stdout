@@ -219,12 +219,14 @@ Models:
 
 Explain catalog (offline — no API key needed):
   tau explain                   List the error + config-key + doctor-check
-                                + env-var catalog as JSON
-  tau explain <code|type|key>   Print an error's cause + remediation hint,
+                                + env-var + client catalog as JSON
+  tau explain <name>            Print an error's cause + remediation hint,
                                 a config key's type/constraints, a doctor
                                 check's fails-when + remediation
-                                (`tau explain doctor.<check>`), or a TAU_*
-                                env var's consumers + summary
+                                (`tau explain doctor.<check>`), a TAU_* env
+                                var's consumers + summary, or a client's
+                                setup prereqs + config paths + verify step
+                                (`tau explain client.zed`)
       --json                    ...pin the schema-checked JSON form (default)
       --human                   ...as prose (e.g. `tau explain --human 106`)
 

@@ -34,7 +34,8 @@ $TauArgumentCompleter = {
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
     # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
-    # TAU_* names mirror the Spec registry in src/envvars.zig.
+    # TAU_* names mirror the Spec registry in src/envvars.zig; client.*
+    # names mirror the ClientKind tables in src/setup.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
         '$schema', 'provider', 'model', 'api_key', 'keys', 'mode', 'stream',
         'thinking', 'debug', 'temperature', 'max_tokens', 'timeout_ms',
@@ -66,6 +67,12 @@ $TauArgumentCompleter = {
         'TAU_VERIFY_SIGSTORE', 'TAU_VERSION', 'TAU_BASE_URL', 'TAU_OS',
         'TAU_ARCH', 'TAU_SKIP_CHECKSUM', 'TAU_BIN', 'TAU_TOOLS',
         'TAU_THINKING', 'TAU_DEBUG',
+        'client.zed', 'client.nvim', 'client.emacs', 'client.vscode',
+        'client.cursor', 'client.jetbrains', 'client.windsurf',
+        'client.gemini', 'client.claude-desktop', 'client.opencode',
+        'client.cline', 'client.goose', 'client.continue',
+        'client.roo-code', 'client.kilo-code', 'client.amazonq',
+        'client.codex',
         '--human', '--json')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'codex', 'all')

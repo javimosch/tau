@@ -529,9 +529,11 @@ pub fn parse(
         return .{ .action = .guide, .config = gcfg };
     }
 
-    // `tau explain [<code|type|key>] [--json|--human]` — offline catalog
-    // lookup (the error Spec registry behind docs/errors.md plus the
-    // config-key catalog behind docs/config.md). The output is JSON by
+    // `tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>]
+    // [--json|--human]` — offline catalog lookup (the error Spec registry
+    // behind docs/errors.md plus the config-key, doctor-check, env-var,
+    // and client catalogs behind docs/config.md, docs/troubleshooting.md,
+    // docs/env.md, and docs/compatibility.md). The output is JSON by
     // default; --json is the stable-contract spelling that
     // pins the schema-checked form (schema/tau-explain.schema.json), --human
     // renders prose — the two are mutually exclusive. Command, not a prompt:

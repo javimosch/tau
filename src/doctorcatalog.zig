@@ -141,7 +141,7 @@ pub const static_specs = [_]CheckSpec{
 
 /// The per-client guide filename under docs/clients/ — every file except
 /// Gemini CLI's is named after the `--client` name.
-fn guideFile(comptime k: setup.ClientKind) []const u8 {
+pub fn guideFile(comptime k: setup.ClientKind) []const u8 {
     const n = comptime setup.clientName(k);
     return if (comptime std.mem.eql(u8, n, "gemini")) "gemini-cli" else n;
 }
