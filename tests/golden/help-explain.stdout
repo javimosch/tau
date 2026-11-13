@@ -1,0 +1,40 @@
+tau explain - offline error + config-key + doctor-check + env-var
++ client catalog lookup (no API key needed)
+
+Usage:
+  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>] [--json|--human]
+
+Arguments:
+  <code|type|key>   Exit code (e.g. 106), error type (e.g. authfailed),
+                    or config key (e.g. timeout_ms, keys.openai);
+                    omit to list the whole catalog
+  doctor.<check>    A `tau doctor` check id (e.g. doctor.tls_ca,
+                    doctor.client_zed, doctor.probe_openai) — prints
+                    when it fails and how to remediate. Bare check ids
+                    also resolve unless they collide with a key
+                    (`api_key` is the config key; `doctor.api_key`
+                    is the check)
+  TAU_<VAR>         A TAU_* environment variable (e.g. TAU_ENDPOINT,
+                    TAU_YES, TAU_VERSION) — prints who consumes it and
+                    what it does, from the generated docs/env.md catalog
+  client.<name>     A `tau setup --client` editor client (e.g.
+                    client.zed, client.claude-desktop) — prints setup
+                    prerequisites, config paths, and the restart +
+                    verify step. Bare names and --client aliases
+                    resolve too (`zed`, `code`, `claude`)
+
+Options:
+      --json   Stable schema-checked JSON form (default;
+               schema/tau-explain.schema.json)
+      --human  Render as prose
+
+Examples:
+  tau explain
+  tau explain 106
+  tau explain authfailed
+  tau explain timeout_ms
+  tau explain keys.openai
+  tau explain doctor.tls_ca
+  tau explain TAU_ENDPOINT
+  tau explain client.zed
+  tau explain --human 105

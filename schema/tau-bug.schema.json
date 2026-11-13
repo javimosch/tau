@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-bug.schema.json",
+  "title": "tau bug --json output",
+  "description": "Schema for the single JSON object `tau bug [--json]` prints on stdout — the pre-filled GitHub issue carrying the redacted `tau doctor --report` diagnostics bundle. The command always exits 0 on a well-formed run (the diagnostics verdict lives inside the report, not the exit status). New keys may be added (additive); existing keys keep their names and types.",
+  "type": "object",
+  "required": ["title", "labels", "url", "body", "report", "report_source", "url_truncated", "out", "opened", "done"],
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string", "description": "Issue title (--title, default \"Bug report\")." },
+    "labels": { "type": "string", "description": "Comma-separated issue labels (--labels, default \"bug\"; empty when --labels \"\" was passed)." },
+    "url": { "type": "string", "minLength": 1, "description": "github.com/javimosch/tau/issues/new link with title, labels, and body pre-filled. When the encoded link would exceed the size cap it falls back to a short body (see url_truncated)." },
+    "body": { "type": "string", "description": "Complete issue text — the --body description plus the diagnostics bundle (or an omission note). Always carries the full text even when url had to drop it." },
+    "report": { "type": ["string", "null"], "description": "The redacted Markdown diagnostics bundle as its own field (null under --no-report) — directly addressable without ungluing body." },
+    "report_source": { "type": ["string", "null"], "enum": ["live", "attached", null], "description": "Where the diagnostics bundle came from: \"live\" for a fresh `tau doctor` sweep, \"attached\" for an --attach-report file, null under --no-report." },
+    "url_truncated": { "type": "boolean", "description": "true when the issue URL exceeded the pre-filled-URL size limit and carries the short fallback body instead of the full bundle." },
+    "out": { "type": ["string", "null"], "description": "Path the diagnostics bundle was written to (--out), or null." },
+    "opened": { "type": "boolean", "description": "true when --open launched the issue URL in a browser and the opener exited 0." },
+    "done": { "const": true, "description": "Terminal marker — always true on this single emitted object (the same convention NDJSON streams use for their last line)." }
+  },
+  "examples": [
+    { "title": "Bug report", "labels": "bug", "url": "https://github.com/javimosch/tau/issues/new?title=Bug%20report&body=...", "body": "_Describe the bug here._\n\n_No diagnostics attached (`tau bug --no-report`)._\n", "report": null, "url_truncated": false, "out": null, "opened": false, "done": true }
+  ]
+}

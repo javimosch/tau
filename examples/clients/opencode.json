@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "mcacp": {
+      "type": "local",
+      "command": ["npx", "-y", "mcacp"],
+      "enabled": true
+    }
+  }
+}

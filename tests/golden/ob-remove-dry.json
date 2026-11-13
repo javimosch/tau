@@ -1,0 +1,10 @@
+{
+  "agent_servers": {
+    "tau": {
+      "type": "custom",
+      "command": "<TAU>",
+      "args": ["acp", "serve"],
+      "env": {}
+    }
+  }
+}

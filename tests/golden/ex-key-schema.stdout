@@ -1,0 +1,1 @@
+{"key":"$schema","type":"string","constraints":"—","description":"Editor hint pointing at this schema. Written by `tau init`; accepted but ignored by the loader.","docs":"https://github.com/javimosch/tau/blob/master/docs/config.md"}

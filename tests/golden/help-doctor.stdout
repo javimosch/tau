@@ -1,0 +1,32 @@
+tau doctor - validate your setup (config, credentials, client wiring)
+
+Usage:
+  tau doctor [options]
+
+Options:
+      --provider <name>  Diagnose an override provider
+      --model <id>       Diagnose an override model
+      --api-key <key>    Diagnose an override API key
+      --offline          Skip network checks
+      --deep             Also run an authenticated probe (~1 token)
+      --probe            Live-verify connectivity + credentials for
+                         every provider (~1 token per keyed provider)
+      --selftest         Credential-free end-to-end check against a
+                         loopback stub provider (no keys, no network)
+      --fix              Propose remediations for fixable checks;
+                         prompts per fix on a TTY
+  -y, --yes              Apply --fix remediations without prompting
+      --json             Stream NDJSON check/fix events + verdict
+                         (schema/tau-doctor.schema.json)
+      --report           Print a redacted Markdown diagnostics bundle
+                         for bug reports (mutex with --json)
+      --shell <name>     Completions shell: bash|zsh|fish|pwsh|all
+                         (default: detect from $SHELL)
+
+Examples:
+  tau doctor
+  tau doctor --offline
+  tau doctor --selftest
+  tau doctor --fix --yes
+  tau doctor --probe
+  tau doctor --report

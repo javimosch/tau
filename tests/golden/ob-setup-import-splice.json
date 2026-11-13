@@ -1,0 +1,8 @@
+{
+  // user comment must survive
+  "mcpServers": {
+    "mine": { "command": "mine" },
+    "mcacp": {"command":"npx","args":["-y","mcacp"]},
+    "fs": {"command":"npx","args":["-y","fs"]}
+  }
+}

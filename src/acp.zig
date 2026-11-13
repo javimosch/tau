@@ -27,6 +27,7 @@ const version = @import("version.zig").version;
 
 const builtin = @import("builtin");
 const term = @import("term.zig");
+const errs = @import("errors.zig");
 
 /// Best-effort chdir to the client-provided workspace `cwd`. Editors already
 /// spawn the agent with the workspace as its cwd, so this is a refinement.
@@ -118,7 +119,7 @@ pub fn run(
         .status => status(io, arena, env),
         .serve => unreachable,
     };
-    writeErr("{\"err\":{\"code\":111,\"message\":\"acp daemon (start/stop/status) is unsupported on this platform; use `tau acp serve` over stdio\"}}\n");
+    errs.printErr(arena, errs.unimplemented, "acp daemon (start/stop/status) is unsupported on this platform; use `tau acp serve` over stdio", .{});
     return 111;
 }
 
@@ -126,7 +127,7 @@ pub fn run(
 
 fn start(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, socket_opt: ?[]const u8) !u8 {
     const dir = configDir(arena, env) orelse {
-        writeErr("{\"err\":{\"code\":82,\"message\":\"HOME not set\"}}\n");
+        errs.printErr(arena, errs.missing_required_field, "HOME not set", .{});
         return 82;
     };
     std.Io.Dir.cwd().createDirPath(io, dir) catch {};
