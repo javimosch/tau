@@ -1519,6 +1519,13 @@ test_group_doctor() {
   contains "skip explains the client is absent" "$doc_scope_kilo_out" 'does not appear to be installed'
   "$BIN" doctor --client vim >/dev/null 2>&1; ok "doctor --client vim -> exit 80" "$?" 80
   "$BIN" doctor --client >/dev/null 2>&1; ok "doctor --client missing value -> exit 80" "$?" 80
+  # A mistyped client id earns a did-you-mean hint inside the same 80
+  # envelope; a far-off value keeps the plain want-list.
+  capture doc_client_dym "$BIN" doctor --client vscod
+  ok "doctor --client vscod -> exit 80" "$doc_client_dym_rc" 80
+  contains "doctor --client typo suggests vscode" "$doc_client_dym_err" 'did you mean \"vscode\"?'
+  capture doc_client_far "$BIN" doctor --client zztopp
+  lacks "doctor --client far-off value gets no guess" "$doc_client_far_err" 'did you mean'
   capture doc_scope_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-scope HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes --client cursor
   contains "scoped --fix applies only the named client's fix" "$doc_scope_fix_out" '"id":"wire_client_cursor","check":"client_cursor","status":"applied"'
@@ -2612,6 +2619,10 @@ test_group_setup() {
   ok "TAU_SETUP_SHELL=tcsh -> exit 80" "$?" 80
   TAU_SETUP_CLIENT=vim "$BIN" setup --offline >/dev/null 2>&1
   ok "TAU_SETUP_CLIENT=vim -> exit 80" "$?" 80
+  # A mistyped client id earns a did-you-mean hint — flag and env alike.
+  capture env_client_dym env TAU_SETUP_CLIENT=zdx "$BIN" setup --offline
+  ok "TAU_SETUP_CLIENT=zdx -> exit 80" "$env_client_dym_rc" 80
+  contains "TAU_SETUP_CLIENT typo suggests zed" "$env_client_dym_err" 'did you mean \"zed\"?'
 
   # Bad arguments.
   "$BIN" setup --bogus >/dev/null 2>&1; ok "setup --bogus -> exit 80" "$?" 80
@@ -2619,6 +2630,11 @@ test_group_setup() {
   "$BIN" setup --shell >/dev/null 2>&1; ok "setup --shell (missing value) -> exit 80" "$?" 80
   "$BIN" setup --client vim >/dev/null 2>&1; ok "setup --client vim -> exit 80" "$?" 80
   "$BIN" setup --client >/dev/null 2>&1; ok "setup --client (missing value) -> exit 80" "$?" 80
+  capture setup_client_dym "$BIN" setup --client zedd
+  ok "setup --client zedd -> exit 80" "$setup_client_dym_rc" 80
+  contains "setup --client typo suggests zed" "$setup_client_dym_err" 'did you mean \"zed\"?'
+  capture setup_client_far "$BIN" setup --client zztopp
+  lacks "setup --client far-off value gets no guess" "$setup_client_far_err" 'did you mean'
 
   # ── --dry-run: preview every write step, change nothing ─────────────────
 

@@ -39,17 +39,31 @@ fn validSetupShell(s: []const u8) bool {
         eq(s, "powershell") or eq(s, "all");
 }
 
-/// `tau setup --client` / `TAU_SETUP_CLIENT` accepted values.
+/// `tau setup --client` / `tau doctor --client` / `TAU_SETUP_CLIENT`
+/// accepted values — canonical client names, the parseClientName aliases
+/// ("code", "gemini-cli", "claude", "roo", "kilo", "amazon-q", "codex-cli"),
+/// and the "all" wildcard. The validation set and the did-you-mean pool.
+const client_arg_values = [_][]const u8{
+    "zed",            "nvim",     "emacs",          "vscode",   "code",
+    "cursor",         "jetbrains", "windsurf",      "gemini",   "gemini-cli",
+    "claude-desktop", "claude",   "opencode",       "cline",    "goose",
+    "continue",       "roo-code", "roo",            "kilo-code", "kilo",
+    "amazonq",        "amazon-q", "codex",          "codex-cli", "all",
+};
+
+/// `tau setup --client` / `tau doctor --client` / `TAU_SETUP_CLIENT`
+/// accepted values.
 fn validSetupClient(s: []const u8) bool {
-    return eq(s, "zed") or eq(s, "nvim") or eq(s, "emacs") or eq(s, "vscode") or
-        eq(s, "cursor") or eq(s, "jetbrains") or eq(s, "code") or
-        eq(s, "windsurf") or eq(s, "gemini") or eq(s, "gemini-cli") or
-        eq(s, "claude-desktop") or eq(s, "claude") or eq(s, "opencode") or
-        eq(s, "cline") or eq(s, "goose") or eq(s, "continue") or
-        eq(s, "roo-code") or eq(s, "roo") or eq(s, "kilo-code") or
-        eq(s, "kilo") or eq(s, "amazonq") or eq(s, "amazon-q") or
-        eq(s, "codex") or eq(s, "codex-cli") or
-        eq(s, "all");
+    for (&client_arg_values) |v| {
+        if (eq(s, v)) return true;
+    }
+    return false;
+}
+
+/// ` — did you mean "X"?` suffix for a rejected --client value, or "" when
+/// no accepted spelling is within typo distance.
+fn clientHint(arena: std.mem.Allocator, v: []const u8) ![]const u8 {
+    return suggest.hint(arena, v, &client_arg_values);
 }
 
 /// Interpret an env var as a boolean: "1", "true", "yes", "on"
@@ -432,7 +446,7 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 const c = argv[j];
                 if (!validSetupClient(c))
-                    return errResult(arena, "invalid --client: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", .{c});
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all){s}", .{ c, try clientHint(arena, c) });
                 dcfg.doctor_client = c;
             } else return errResult(arena, "unknown doctor argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
         }
@@ -659,7 +673,7 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 const c = argv[j];
                 if (!validSetupClient(c))
-                    return errResult(arena, "invalid --client: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", .{c});
+                    return errResult(arena, "invalid --client: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all){s}", .{ c, try clientHint(arena, c) });
                 scfg.setup_client = c;
             } else if (eq(a, "--provider")) {
                 j += 1;
@@ -710,7 +724,7 @@ pub fn parse(
             if (env.get("TAU_SETUP_CLIENT")) |c| {
                 if (c.len > 0) {
                     if (!validSetupClient(c))
-                        return errResult(arena, "invalid TAU_SETUP_CLIENT: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", .{c});
+                        return errResult(arena, "invalid TAU_SETUP_CLIENT: {s} (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all){s}", .{ c, try clientHint(arena, c) });
                     scfg.setup_client = c;
                 }
             }
@@ -2478,10 +2492,40 @@ test "parse: doctor --client scopes client wiring rows; 'all' is the default swe
     // Invalid names and a missing value are arg errors (exit 80 path).
     const bad = try parseArgv(a, &.{ "tau", "doctor", "--client", "vim" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
-    try std.testing.expectEqualStrings("invalid --client: vim (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", bad.err_msg.?);
+    try std.testing.expectEqualStrings("invalid --client: vim (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all) — did you mean \"nvim\"?", bad.err_msg.?);
     const missing_val = try parseArgv(a, &.{ "tau", "doctor", "--client" }, .{});
     try std.testing.expectEqual(Action.err, missing_val.action);
     try std.testing.expectEqualStrings("missing value for --client", missing_val.err_msg.?);
+}
+
+test "parse: --client typos earn a did-you-mean hint, far-off names don't" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // One-edit typos suggest the nearest accepted spelling on every surface
+    // that takes a client id: setup --client, doctor --client, and the
+    // TAU_SETUP_CLIENT env equivalent.
+    const su = try parseArgv(a, &.{ "tau", "setup", "--client", "zedd" }, .{});
+    try std.testing.expectEqual(Action.err, su.action);
+    try std.testing.expect(std.mem.endsWith(u8, su.err_msg.?, " — did you mean \"zed\"?"));
+    const dc = try parseArgv(a, &.{ "tau", "doctor", "--client", "vscod" }, .{});
+    try std.testing.expectEqual(Action.err, dc.action);
+    try std.testing.expect(std.mem.endsWith(u8, dc.err_msg.?, " — did you mean \"vscode\"?"));
+    const ev = try parseArgvEnv(a, &.{ "tau", "setup" }, &.{
+        .{ "TAU_SETUP_CLIENT", "claud-desktop" },
+    }, .{});
+    try std.testing.expectEqual(Action.err, ev.action);
+    try std.testing.expect(std.mem.endsWith(u8, ev.err_msg.?, " — did you mean \"claude-desktop\"?"));
+
+    // Alias spellings are suggestion candidates too.
+    const al = try parseArgv(a, &.{ "tau", "setup", "--client", "codex-cl" }, .{});
+    try std.testing.expect(std.mem.endsWith(u8, al.err_msg.?, " — did you mean \"codex-cli\"?"));
+
+    // A far-off value keeps the plain want-list with no guess.
+    const far = try parseArgv(a, &.{ "tau", "setup", "--client", "zztopp" }, .{});
+    try std.testing.expectEqual(Action.err, far.action);
+    try std.testing.expect(std.mem.indexOf(u8, far.err_msg.?, "did you mean") == null);
 }
 
 test "parse: doctor carries an unknown provider as a failed check, not exit 80" {
@@ -2961,7 +3005,7 @@ test "parse: setup invalid TAU_SETUP_* env values fail like a bad flag" {
         .{ "TAU_SETUP_CLIENT", "vim" },
     }, .{});
     try std.testing.expectEqual(Action.err, c.action);
-    try std.testing.expectEqualStrings("invalid TAU_SETUP_CLIENT: vim (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all)", c.err_msg.?);
+    try std.testing.expectEqualStrings("invalid TAU_SETUP_CLIENT: vim (want zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all) — did you mean \"nvim\"?", c.err_msg.?);
 
     // An explicit flag shadows a bad env value — flag > env.
     const okp = try parseArgvEnv(a, &.{ "tau", "setup", "--shell", "bash" }, &.{
