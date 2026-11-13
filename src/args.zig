@@ -366,11 +366,13 @@ pub fn parse(
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
-    // [--probe] [--selftest] [--fix] [--yes] [--shell sh] [--json] [--report]`
-    // — setup diagnostics; a command, not a prompt. An unknown provider is
-    // carried into the report as a failed check instead of exiting 80. --fix
-    // proposes remediations, --yes applies them without prompting
-    // (non-interactive use). --probe live-verifies connectivity and
+    // [--probe] [--selftest] [--fix] [--yes|--dry-run] [--shell sh] [--json]
+    // [--report]` — setup diagnostics; a command, not a prompt. An unknown
+    // provider is carried into the report as a failed check instead of
+    // exiting 80. --fix proposes remediations, --yes applies them without
+    // prompting (non-interactive use), --dry-run previews each remediation as
+    // "would_apply" and changes nothing (mutually exclusive with --yes).
+    // --probe live-verifies connectivity and
     // credentials for every provider in the registry (per-provider pass/fail
     // rows). --selftest runs a credential-free end-to-end session against a
     // loopback stub provider (self-spawned child; no real keys or network).
@@ -411,6 +413,10 @@ pub fn parse(
                 // --yes implies --fix (nothing else to approve).
                 dcfg.doctor_fix = true;
                 dcfg.doctor_yes = true;
+            } else if (eq(a, "--dry-run")) {
+                // --dry-run implies --fix — it previews the fix plan.
+                dcfg.doctor_fix = true;
+                dcfg.doctor_dry_run = true;
             } else if (eq(a, "--json")) {
                 dcfg.doctor_json = true;
             } else if (eq(a, "--report")) {
@@ -427,6 +433,8 @@ pub fn parse(
         }
         if (dcfg.doctor_report and dcfg.doctor_json)
             return errResult(arena, "--report and --json are mutually exclusive", .{});
+        if (dcfg.doctor_dry_run and dcfg.doctor_yes)
+            return errResult(arena, "--dry-run and --yes are mutually exclusive", .{});
         if (try resolveProviderAndModel(&dcfg, base, provider_opt, model_opt, null, env, arena)) |bad| {
             dcfg.doctor_bad_provider = bad;
         }
@@ -2395,6 +2403,34 @@ test "parse: doctor --report sets the flag; --report + --json is invalid" {
 
     const both_rev = try parseArgv(a, &.{ "tau", "doctor", "--json", "--report" }, .{});
     try std.testing.expectEqual(Action.err, both_rev.action);
+}
+
+test "parse: doctor --dry-run implies --fix and is mutually exclusive with --yes" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // --dry-run alone implies --fix (same convention as --yes).
+    const p = try parseArgv(a, &.{ "tau", "doctor", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.doctor, p.action);
+    try std.testing.expect(p.config.doctor_fix);
+    try std.testing.expect(p.config.doctor_dry_run);
+    try std.testing.expect(!p.config.doctor_yes);
+
+    // Composes with --fix explicitly spelled out.
+    const q = try parseArgv(a, &.{ "tau", "doctor", "--fix", "--dry-run", "--offline" }, .{});
+    try std.testing.expect(q.config.doctor_fix);
+    try std.testing.expect(q.config.doctor_dry_run);
+    try std.testing.expect(q.config.doctor_offline);
+
+    // --dry-run + --yes is contradictory (preview vs apply): exit-80 error.
+    const both = try parseArgv(a, &.{ "tau", "doctor", "--fix", "--dry-run", "--yes" }, .{});
+    try std.testing.expectEqual(Action.err, both.action);
+    try std.testing.expectEqualStrings("--dry-run and --yes are mutually exclusive", both.err_msg.?);
+    const both_rev = try parseArgv(a, &.{ "tau", "doctor", "--yes", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.err, both_rev.action);
+    const both_short = try parseArgv(a, &.{ "tau", "doctor", "-y", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.err, both_short.action);
 }
 
 test "parse: doctor --probe sets the flag and composes with other doctor flags" {

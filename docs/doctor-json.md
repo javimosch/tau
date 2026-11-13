@@ -36,7 +36,7 @@ One diagnostic check result, emitted as the check finishes. Order is fixed by th
 
 ### fix_event
 
-One remediation outcome, emitted only under `--fix` as each planned fix is approved, declined, skipped, or applied. Fix events appear between the first-pass check events and the verdict.
+One remediation outcome, emitted only under `--fix` as each planned fix is approved, declined, skipped, applied, or previewed (--dry-run). Fix events appear between the first-pass check events and the verdict.
 
 | Field | Type | Values | Description |
 |-------|------|--------|-------------|
@@ -54,6 +54,7 @@ Terminal verdict — always the last NDJSON line, always "done":true. Carries th
 | `build` | [`build`](#build) | — | See [build](#build). |
 | `summary` | [`summary`](#summary) | — | See [summary](#summary). |
 | `fixes` (optional) | [`fix`](#fix)[] | — | Present only when --fix ran — every remediation outcome in decision order. |
+| `dry_run` (optional) | `boolean` | — | Present and true only when --dry-run ran a --fix pass — every fix was previewed as "would_apply" and none was applied. |
 | `done` | const `true` | always `true` | End-of-stream marker — true on the verdict line only. |
 
 ## Objects
@@ -77,7 +78,7 @@ A remediation outcome — the same object shape the report and verdict carry in 
 |-------|------|--------|-------------|
 | `id` | `string` | non-empty | Stable machine name of the remediation, e.g. "scaffold_config", "chmod_config", "install_completions". |
 | `check` | `string` | non-empty | Name of the check whose outcome triggered this fix. |
-| `status` | `string` | one of `applied` \| `declined` \| `skipped` \| `failed` | What happened to the remediation. declined: the user answered no at the confirmation prompt; skipped: no approval channel (non-interactive run without --yes); failed: the fix was attempted and errored. |
+| `status` | `string` | one of `applied` \| `declined` \| `skipped` \| `failed` \| `would_apply` | What happened to the remediation. declined: the user answered no at the confirmation prompt; skipped: no approval channel (non-interactive run without --yes); failed: the fix was attempted and errored; would_apply: --dry-run preview — the repair was described but deliberately not run. |
 | `detail` | `string` | — | Human-readable detail — what was done or why nothing was. |
 
 ### summary

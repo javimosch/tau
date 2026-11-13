@@ -18,7 +18,8 @@ Each section below lists the exact precedence order used by the code.
 > a missing config (or move an unparseable one to `config.json.bak` and
 > re-scaffold), tighten permissions to `0700`/`0600`, install completions —
 > prompting per fix on a TTY; `--yes` applies without prompting for
-> non-interactive use.
+> non-interactive use, and `--dry-run` previews each planned repair as
+> `would_apply` without changing anything.
 
 ---
 

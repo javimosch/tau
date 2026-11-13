@@ -17,8 +17,11 @@
 // paste-ready snippet when the file can't be touched), and restrict client
 // settings files to 0600 (they can embed API keys in env blocks). Fixes
 // apply per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
-// non-interactive runs report them as skipped. The emitted report reflects
-// the post-fix state when anything was applied.
+// non-interactive runs report them as skipped. --dry-run previews the plan
+// instead: every fix reports "would_apply" with the repair it would run, the
+// report/verdict carries "dry_run":true, and nothing is ever written or
+// prompted (mutually exclusive with --yes). The emitted report reflects the
+// post-fix state when anything was applied.
 //
 // Two advisory checks watch secret hygiene: `plaintext_secrets` warns when
 // credentials sit on disk as plaintext (config `api_key`/`keys.*` values or
@@ -147,7 +150,7 @@ fn formatCheckJson(arena: std.mem.Allocator, c: Check) ![]u8 {
     return buf.toOwnedSlice(arena);
 }
 
-fn formatReportJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome) ![]u8 {
+fn formatReportJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, dry_run: bool) ![]u8 {
     const s = summarize(checks);
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, if (s.fail == 0) "{\"ok\":true" else "{\"ok\":false");
@@ -169,6 +172,7 @@ fn formatReportJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]c
         }
         try buf.append(arena, ']');
     }
+    if (dry_run) try buf.appendSlice(arena, ",\"dry_run\":true");
     try buf.appendSlice(arena, ",\"summary\":{");
     try buf.appendSlice(arena, try std.fmt.allocPrint(arena, "\"ok\":{d},\"warn\":{d},\"fail\":{d},\"skip\":{d}", .{ s.ok, s.warn, s.fail, s.skip }));
     try buf.appendSlice(arena, "}}\n");
@@ -202,7 +206,7 @@ fn formatCheckEvent(arena: std.mem.Allocator, c: Check) ![]u8 {
 }
 
 /// One NDJSON fix event for --json --fix, emitted as each remediation is
-/// decided or applied.
+/// decided, applied, or previewed (--dry-run).
 fn formatFixEvent(arena: std.mem.Allocator, f: FixOutcome) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "{\"fix\":");
@@ -214,7 +218,7 @@ fn formatFixEvent(arena: std.mem.Allocator, f: FixOutcome) ![]u8 {
 /// Terminal NDJSON verdict for --json mode — always the last line, always
 /// done:true. Carries ok + version + summary (and the fixes array when --fix
 /// ran) so a consumer reading only the last line still gets the full verdict.
-fn formatVerdictJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome) ![]u8 {
+fn formatVerdictJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]const FixOutcome, dry_run: bool) ![]u8 {
     const s = summarize(checks);
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, if (s.fail == 0) "{\"ok\":true" else "{\"ok\":false");
@@ -233,6 +237,7 @@ fn formatVerdictJson(arena: std.mem.Allocator, checks: []const Check, fixes: ?[]
         }
         try buf.append(arena, ']');
     }
+    if (dry_run) try buf.appendSlice(arena, ",\"dry_run\":true");
     try buf.appendSlice(arena, ",\"done\":true}");
     return buf.toOwnedSlice(arena);
 }
@@ -305,6 +310,8 @@ pub fn formatReportMarkdown(io: std.Io, arena: std.mem.Allocator, checks: []cons
             try appendMdCell(arena, &buf, f.detail);
             try buf.appendSlice(arena, " |\n");
         }
+        if (cfg.doctor_dry_run)
+            try buf.appendSlice(arena, "\n_Dry run — the repairs above were previewed, none were applied._\n");
     }
 
     try buf.appendSlice(arena, "\n## Effective configuration\n\n| field | value |\n| --- | --- |\n");
@@ -1734,7 +1741,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
 /// embed the same report under a "doctor" step instead of printing it bare.
 pub fn collectReport(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !Report {
     const checks = try collectChecks(io, gpa, arena, cfg, env);
-    const report_json = try formatReportJson(arena, checks, null);
+    const report_json = try formatReportJson(arena, checks, null, false);
     return .{
         .ok = summarize(checks).fail == 0,
         // formatReportJson emits a trailing '\n' — drop it so callers can
@@ -1754,8 +1761,9 @@ const PlannedFix = struct {
     description: []const u8,
 };
 
-/// One entry in the report's "fixes" array.
-pub const FixStatus = enum { applied, declined, skipped, failed };
+/// One entry in the report's "fixes" array. `would_apply` is the --dry-run
+/// preview: the repair was planned, described, and deliberately not run.
+pub const FixStatus = enum { applied, declined, skipped, failed, would_apply };
 
 pub const FixOutcome = struct {
     id: []const u8,
@@ -1953,14 +1961,16 @@ fn anyApplied(outcomes: []const FixOutcome) bool {
 /// redacted Markdown bundle instead (mutually exclusive with --json, enforced
 /// at parse time). With cfg.doctor_fix, plan remediations first; each fix
 /// applies only when confirmed (--yes, or a y/yes answer on a TTY prompt).
-/// The report carries a "fixes" array and reflects the post-fix state when
-/// anything was applied — in --json mode a re-diagnosed check re-emits with
-/// its post-fix status.
+/// --dry-run short-circuits the confirmation entirely — every planned fix
+/// reports "would_apply" with the repair it would run, the report/verdict
+/// carries "dry_run":true, and no fix is applied. The report carries a
+/// "fixes" array and reflects the post-fix state when anything was applied —
+/// in --json mode a re-diagnosed check re-emits with its post-fix status.
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
     if (!cfg.doctor_fix) {
         if (cfg.doctor_json) {
             const checks = try collectChecks(io, gpa, arena, cfg, env);
-            term.out(try formatVerdictJson(arena, checks, null));
+            term.out(try formatVerdictJson(arena, checks, null, false));
             term.out("\n");
             return if (summarize(checks).fail == 0) 0 else 1;
         }
@@ -1979,13 +1989,20 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     const planned = try planFixes(arena, checks);
     var outcomes: std.ArrayList(FixOutcome) = .empty;
     if (planned.len > 0) {
-        const interactive = !cfg.doctor_yes and (std.Io.File.stdin().isTty(io) catch false);
+        const interactive = !cfg.doctor_yes and !cfg.doctor_dry_run and (std.Io.File.stdin().isTty(io) catch false);
         const styled = interactive and term.colorEnabled(io, env, std.Io.File.stderr());
         var rbuf: [512]u8 = undefined;
         var fr = std.Io.File.stdin().reader(io, &rbuf);
         for (planned) |pf| {
             const approved = cfg.doctor_yes or (interactive and confirmFix(arena, &fr.interface, pf, styled));
-            const o = if (approved)
+            const o = if (cfg.doctor_dry_run)
+                FixOutcome{
+                    .id = @tagName(pf.kind),
+                    .check = pf.check,
+                    .status = .would_apply,
+                    .detail = std.fmt.allocPrint(arena, "would {s}", .{pf.description}) catch pf.description,
+                }
+            else if (approved)
                 applyFix(io, arena, cfg, env, pf)
             else
                 FixOutcome{
@@ -2006,12 +2023,12 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     // report (and exit code) then reflects the post-remediation state.
     const final_checks = if (anyApplied(outcomes.items)) try collectChecks(io, gpa, arena, cfg, env) else checks;
     if (cfg.doctor_json) {
-        term.out(try formatVerdictJson(arena, final_checks, outcomes.items));
+        term.out(try formatVerdictJson(arena, final_checks, outcomes.items, cfg.doctor_dry_run));
         term.out("\n");
     } else if (cfg.doctor_report) {
         term.out(try formatReportMarkdown(io, arena, final_checks, outcomes.items, cfg, env));
     } else {
-        const report_json = try formatReportJson(arena, final_checks, outcomes.items);
+        const report_json = try formatReportJson(arena, final_checks, outcomes.items, cfg.doctor_dry_run);
         term.out(report_json);
     }
     return if (summarize(final_checks).fail == 0) 0 else 1;
@@ -2057,7 +2074,7 @@ test "formatReportJson: ok=false with summary counts when a check fails" {
         .{ .name = "api_key", .status = .fail, .message = "no key", .hint = "set X env var" },
         .{ .name = "auth_probe", .status = .skip, .message = "skipped" },
     };
-    const got = try formatReportJson(a, &checks, null);
+    const got = try formatReportJson(a, &checks, null, false);
     try testing.expect(std.mem.startsWith(u8, got, "{\"ok\":false,\"version\":"));
     try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{\"ok\":1,\"warn\":0,\"fail\":1,\"skip\":1}") != null);
     // Single-object report carries the same build metadata as the --json verdict.
@@ -2480,7 +2497,7 @@ test "formatReportJson: warns do not flip the ok flag" {
         .{ .name = "api_key", .status = .ok, .message = "resolved" },
         .{ .name = "auth_probe", .status = .skip, .message = "skipped" },
     };
-    const got = try formatReportJson(a, &checks, null);
+    const got = try formatReportJson(a, &checks, null, false);
     try testing.expect(std.mem.startsWith(u8, got, "{\"ok\":true,"));
     try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{\"ok\":1,\"warn\":1,\"fail\":0,\"skip\":1}") != null);
 }
@@ -2525,7 +2542,7 @@ test "formatVerdictJson: terminal line carries ok/summary/done:true (+fixes)" {
         .{ .name = "config_file", .status = .ok, .message = "parsed" },
         .{ .name = "api_key", .status = .fail, .message = "no key" },
     };
-    const v = try formatVerdictJson(a, &checks, null);
+    const v = try formatVerdictJson(a, &checks, null, false);
     try testing.expect(std.mem.startsWith(u8, v, "{\"ok\":false,\"version\":"));
     try testing.expect(std.mem.indexOf(u8, v, "\"summary\":{\"ok\":1,\"warn\":0,\"fail\":1,\"skip\":0}") != null);
     // Build metadata rides on the terminal verdict for support triage.
@@ -2537,7 +2554,7 @@ test "formatVerdictJson: terminal line carries ok/summary/done:true (+fixes)" {
     const fixes = [_]FixOutcome{
         .{ .id = "chmod_config", .check = "config_permissions", .status = .skipped, .detail = "not confirmed" },
     };
-    const vf = try formatVerdictJson(a, &checks, &fixes);
+    const vf = try formatVerdictJson(a, &checks, &fixes, false);
     try testing.expect(std.mem.indexOf(u8, vf, "\"fixes\":[{\"id\":\"chmod_config\"") != null);
     try testing.expect(std.mem.endsWith(u8, vf, ",\"done\":true}"));
 }
@@ -2665,10 +2682,58 @@ test "formatReportJson: emits the fixes array when provided" {
         .{ .id = "scaffold_config", .check = "config_file", .status = .applied, .detail = "wrote /x/config.json" },
         .{ .id = "install_completions", .check = "shell_completions", .status = .skipped, .detail = "pass --yes" },
     };
-    const got = try formatReportJson(a, &checks, &fixes);
+    const got = try formatReportJson(a, &checks, &fixes, false);
     try testing.expect(std.mem.indexOf(u8, got, "\"fixes\":[{\"id\":\"scaffold_config\",\"check\":\"config_file\",\"status\":\"applied\",\"detail\":\"wrote /x/config.json\"}") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"status\":\"skipped\"") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"summary\":{") != null);
+}
+
+test "formatReportJson/formatVerdictJson: dry_run marks a --dry-run pass" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .ok, .message = "no config file — using defaults" },
+    };
+    const fixes = [_]FixOutcome{
+        .{ .id = "scaffold_config", .check = "config_file", .status = .would_apply, .detail = "would create ~/.config/tau and write a commented starter config" },
+    };
+
+    const rep = try formatReportJson(a, &checks, &fixes, true);
+    try testing.expect(std.mem.indexOf(u8, rep, "\"status\":\"would_apply\"") != null);
+    try testing.expect(std.mem.indexOf(u8, rep, "\"detail\":\"would create") != null);
+    try testing.expect(std.mem.indexOf(u8, rep, "\"dry_run\":true") != null);
+
+    // The member is absent unless the pass ran under --dry-run.
+    const rep_off = try formatReportJson(a, &checks, &fixes, false);
+    try testing.expect(std.mem.indexOf(u8, rep_off, "\"dry_run\"") == null);
+
+    const verdict = try formatVerdictJson(a, &checks, &fixes, true);
+    try testing.expect(std.mem.indexOf(u8, verdict, "\"status\":\"would_apply\"") != null);
+    try testing.expect(std.mem.indexOf(u8, verdict, "\"dry_run\":true,\"done\":true}") != null);
+}
+
+test "formatReportMarkdown: a --dry-run fixes table carries the preview note" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .ok, .message = "no config file — using defaults" },
+    };
+    const fixes = [_]FixOutcome{
+        .{ .id = "scaffold_config", .check = "config_file", .status = .would_apply, .detail = "would create ~/.config/tau and write a commented starter config" },
+    };
+    var env = std.process.Environ.Map.init(a);
+    const md = try formatReportMarkdown(testing.io, a, &checks, &fixes, .{ .doctor_dry_run = true }, &env);
+
+    try testing.expect(std.mem.indexOf(u8, md, "| `scaffold_config` | `config_file` | would_apply | would create ~/.config/tau") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "_Dry run — the repairs above were previewed, none were applied._") != null);
+
+    // The note only appears when the run was actually a dry run.
+    const md_real = try formatReportMarkdown(testing.io, a, &checks, &fixes, .{}, &env);
+    try testing.expect(std.mem.indexOf(u8, md_real, "Dry run") == null);
 }
 
 test "confirmFix: only y/yes approves; blank, other text, and EOF decline" {
@@ -3453,7 +3518,7 @@ test "doctor schema: event envelopes pin the done marker and payload keys" {
 
     const verdict = schemaDef(v, "verdict_event");
     try expectRequired(verdict, &.{ "ok", "version", "build", "summary", "done" });
-    try expectProps(verdict, &.{ "ok", "version", "build", "summary", "fixes", "done" });
+    try expectProps(verdict, &.{ "ok", "version", "build", "summary", "fixes", "dry_run", "done" });
     try expectDoneConst(verdict, true);
 }
 

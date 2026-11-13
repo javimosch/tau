@@ -30,7 +30,7 @@
     },
     "fix_event": {
       "type": "object",
-      "description": "One remediation outcome, emitted only under `--fix` as each planned fix is approved, declined, skipped, or applied. Fix events appear between the first-pass check events and the verdict.",
+      "description": "One remediation outcome, emitted only under `--fix` as each planned fix is approved, declined, skipped, applied, or previewed (--dry-run). Fix events appear between the first-pass check events and the verdict.",
       "required": ["fix", "done"],
       "additionalProperties": false,
       "properties": {
@@ -67,6 +67,10 @@
           "type": "array",
           "description": "Present only when --fix ran — every remediation outcome in decision order.",
           "items": { "$ref": "#/$defs/fix" }
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Present and true only when --dry-run ran a --fix pass — every fix was previewed as \"would_apply\" and none was applied."
         },
         "done": {
           "const": true,
@@ -127,8 +131,8 @@
         },
         "status": {
           "type": "string",
-          "enum": ["applied", "declined", "skipped", "failed"],
-          "description": "What happened to the remediation. declined: the user answered no at the confirmation prompt; skipped: no approval channel (non-interactive run without --yes); failed: the fix was attempted and errored."
+          "enum": ["applied", "declined", "skipped", "failed", "would_apply"],
+          "description": "What happened to the remediation. declined: the user answered no at the confirmation prompt; skipped: no approval channel (non-interactive run without --yes); failed: the fix was attempted and errored; would_apply: --dry-run preview — the repair was described but deliberately not run."
         },
         "detail": {
           "type": "string",
