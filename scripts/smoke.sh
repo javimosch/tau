@@ -1435,6 +1435,30 @@ test_group_doctor() {
     ok "scaffolded config lands with 0700/0600" 1 0
   fi
 
+  # 12b. completions_stale: an installed script whose mtime predates the
+  #     running binary warns fixably (the "upgraded tau, never re-ran setup"
+  #     footprint); --fix refreshes it, and `tau completions install` clears
+  #     the flag too — the mtime renews even when content already matches.
+  #     Missing scripts stay skipped here; shell_completions owns them.
+  touch -t 200001010000 "$mock_home/.local/share/bash-completion/completions/tau"
+  capture doc_stale env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline
+  ok "stale-completions run exits 0 (warn only)" "$doc_stale_rc" 0
+  contains "completions_stale warns on backdated script" "$doc_stale_out" '"name":"completions_stale","status":"warn"'
+  contains "stale row names the shell" "$doc_stale_out" 'older than the running binary: bash'
+  contains "stale hint points at remediation" "$doc_stale_out" 'tau completions install'
+  contains "content-matched script keeps shell_completions ok" "$doc_stale_out" '"name":"shell_completions","status":"ok"'
+  capture doc_stale_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes
+  ok "stale fix run exits 0" "$doc_stale_fix_rc" 0
+  contains "stale fix applied via install_completions" "$doc_stale_fix_out" '"id":"install_completions","check":"completions_stale","status":"applied"'
+  contains "post-fix completions_stale ok" "$doc_stale_fix_out" '"name":"completions_stale","status":"ok"'
+  touch -t 200001010000 "$mock_home/.local/share/bash-completion/completions/tau"
+  HOME="$mock_home" SHELL=/bin/bash "$BIN" completions install >/dev/null 2>&1
+  capture doc_stale_cli env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline
+  contains "completions install clears the stale flag" "$doc_stale_cli_out" '"name":"completions_stale","status":"ok"'
+
   # 13. --fix --yes on an invalid config: moved to .bak, fresh scaffold written.
   printf 'this is not valid json' > "$mock_config/config.json"
   chmod 644 "$mock_config/config.json"

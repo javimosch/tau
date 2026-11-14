@@ -78,6 +78,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "run `tau doctor --fix` or `tau setup --yes` to (re)install them",
     },
     .{
+        .name = "completions_stale",
+        .fails_when = "an installed completion script's mtime predates the running binary's — tau was upgraded without re-running setup, so new flags/subcommands may be missing (skipped when no script is installed; missing scripts belong to shell_completions)",
+        .remediation = "run `tau doctor --fix` or `tau completions install` to refresh the scripts",
+    },
+    .{
         .name = "provider_resolution",
         .fails_when = "the configured or --provider provider isn't registered",
         .remediation = "pick a registered provider — `tau models` lists them; `tau config set provider <name>` persists it",

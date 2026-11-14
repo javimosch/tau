@@ -738,6 +738,60 @@ fn checkCompletions(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std
     };
 }
 
+/// Check: installed completion scripts whose mtime predates the running
+/// binary's — the classic "upgraded tau, never re-ran setup" footprint, where
+/// new flags/subcommands never reach the shell's completion cache. Unlike
+/// shell_completions (which diffs content) this is a pure timestamp
+/// comparison, so it also fires on scripts whose contents happen to match.
+/// Missing or unreadable scripts are skipped here — shell_completions owns
+/// them. Skips when HOME/shell detection/exe resolution fails or when no
+/// script is installed at all.
+fn checkCompletionsStale(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) Check {
+    const home = env.get("HOME") orelse
+        return .{ .name = "completions_stale", .status = .skip, .message = "skipped (HOME is not set)" };
+    const shells = setup.resolveShells(arena, cfg, env) catch
+        return .{ .name = "completions_stale", .status = .warn, .message = "could not resolve shells" };
+    if (shells.len == 0) return .{
+        .name = "completions_stale",
+        .status = .skip,
+        .message = "skipped (could not detect shell from $SHELL)",
+        .hint = "pass --shell bash|zsh|fish|pwsh|all",
+    };
+    const exe = std.process.executablePathAlloc(io, arena) catch
+        return .{ .name = "completions_stale", .status = .skip, .message = "skipped (could not resolve the running binary)" };
+    const exe_stat = std.Io.Dir.cwd().statFile(io, exe, .{}) catch
+        return .{ .name = "completions_stale", .status = .skip, .message = "skipped (could not stat the running binary)" };
+
+    var current: std.ArrayList(u8) = .empty;
+    var stale: std.ArrayList(u8) = .empty;
+    for (shells) |k| {
+        const name = setup.shellName(k);
+        const path = setup.installPath(arena, home, k) catch continue;
+        const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch continue;
+        if (st.kind == .directory) continue;
+        const list = if (st.mtime.nanoseconds < exe_stat.mtime.nanoseconds) &stale else &current;
+        if (list.items.len > 0) list.appendSlice(arena, ",") catch {};
+        list.appendSlice(arena, name) catch {};
+    }
+    if (current.items.len == 0 and stale.items.len == 0) return .{
+        .name = "completions_stale",
+        .status = .skip,
+        .message = "skipped (no completion scripts installed)",
+    };
+    if (stale.items.len == 0) return .{
+        .name = "completions_stale",
+        .status = .ok,
+        .message = std.fmt.allocPrint(arena, "completions for {s} are at least as new as the running binary", .{current.items}) catch "completions are current",
+    };
+    return .{
+        .name = "completions_stale",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "completion scripts older than the running binary: {s} — an upgrade may have added flags/subcommands", .{stale.items}) catch "completion scripts are older than the running binary",
+        .hint = "run 'tau doctor --fix' or 'tau completions install' to refresh them",
+        .fix = .install_completions,
+    };
+}
+
 /// Check-name prefix for the per-client rows: `client_zed`, `client_nvim`,
 /// `client_vscode`, `client_jetbrains`. Hyphens in client names become
 /// underscores so check names stay identifier-shaped
@@ -1688,6 +1742,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     const rk = cfgmod.resolveApiKeyInfo(cfg, env);
     try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
+    try addCheck(arena, &checks, checkCompletionsStale(io, arena, cfg, env), cfg);
     for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
     try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
@@ -2754,6 +2809,47 @@ test "checkCompletions + install_completions fix round-trips under a mock HOME" 
     try testing.expect(std.mem.indexOf(u8, out.detail, "bash") != null);
     const c_ok = checkCompletions(testing.io, a, cfg, &home.env);
     try testing.expectEqual(CheckStatus.ok, c_ok.status);
+}
+
+test "checkCompletionsStale: backdated script warns fixable, refresh clears it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg = Config{ .setup_shell = "bash" };
+    const path = try setup.installPath(a, home.home, .bash);
+
+    // No shell detected / nothing installed -> skip (not warn): missing
+    // scripts are shell_completions' row, not this one.
+    const c_noshell = checkCompletionsStale(testing.io, a, .{}, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_noshell.status);
+    const c_missing = checkCompletionsStale(testing.io, a, cfg, &home.env);
+    try testing.expectEqual(CheckStatus.skip, c_missing.status);
+    try testing.expect(std.mem.indexOf(u8, c_missing.message, "no completion scripts installed") != null);
+
+    // Freshly installed script (mtime ~ now, newer than the test binary) -> ok.
+    _ = try setup.installCompletion(testing.io, a, home.home, .bash, false);
+    const c_ok = checkCompletionsStale(testing.io, a, cfg, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+    try testing.expect(std.mem.indexOf(u8, c_ok.message, "bash") != null);
+
+    // Backdate the script far behind the binary -> warn, install_completions fix.
+    try std.Io.Dir.cwd().setTimestamps(testing.io, path, .{
+        .modify_timestamp = .{ .new = .{ .nanoseconds = std.time.ns_per_s } },
+    });
+    const c_stale = checkCompletionsStale(testing.io, a, cfg, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c_stale.status);
+    try testing.expect(std.mem.indexOf(u8, c_stale.message, "bash") != null);
+    try testing.expectEqual(FixKind.install_completions, c_stale.fix.?);
+
+    // The fix refreshes content-matched scripts too (mtime touch), so the
+    // post-fix diagnosis is ok rather than warn-forever.
+    const out = applyFix(testing.io, a, cfg, &home.env, .{ .kind = .install_completions, .check = "completions_stale", .description = "d" });
+    try testing.expectEqual(FixStatus.applied, out.status);
+    const c_fixed = checkCompletionsStale(testing.io, a, cfg, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_fixed.status);
 }
 
 test "checkConfigPermissions: loose file warns fixable, chmod fix tightens" {

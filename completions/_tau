@@ -330,6 +330,7 @@ _tau() {
                         'doctor.config_permissions:doctor check'
                         'doctor.plaintext_secrets:doctor check'
                         'doctor.shell_completions:doctor check'
+                        'doctor.completions_stale:doctor check'
                         'doctor.provider_resolution:doctor check'
                         'doctor.api_key:doctor check'
                         'doctor.curl:doctor check'

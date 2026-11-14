@@ -179,6 +179,7 @@ network. Every row's meaning and remediation is also readable offline via
 | `config_permissions` | the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys) | run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself |
 | `plaintext_secrets` | credentials sit on disk as plaintext — api_key/keys.* values in the config file, or `env` blocks inside client settings files (warn only; reports key names and counts, never values) | move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable |
 | `shell_completions` | completion scripts are missing or stale for the detected shells | run `tau doctor --fix` or `tau setup --yes` to (re)install them |
+| `completions_stale` | an installed completion script's mtime predates the running binary's — tau was upgraded without re-running setup, so new flags/subcommands may be missing (skipped when no script is installed; missing scripts belong to shell_completions) | run `tau doctor --fix` or `tau completions install` to refresh the scripts |
 | `provider_resolution` | the configured or --provider provider isn't registered | pick a registered provider — `tau models` lists them; `tau config set provider <name>` persists it |
 | `api_key` | no API key resolves at any level of the precedence chain | pass --api-key, set the provider env var or TAU_API_KEY, or add api_key/keys.<provider> to config.json — `tau init` scaffolds a starter |
 | `curl` | curl is missing or `curl --version` fails — every LLM request goes through curl | install curl via your package manager and re-run `tau doctor` |
@@ -255,7 +256,7 @@ several rows can share one fix) and applied each only after confirmation:
 | `scaffold_config` | `config_file` — no config exists | Writes the `tau init` starter config, creating `~/.config/tau` (0700/0600 on POSIX) |
 | `restore_config` | `config_file` — invalid JSON | Moves the broken file to `config.json.bak`, then scaffolds a fresh one |
 | `chmod_config` | `config_permissions` (or an unreadable `config_file`) | `chmod 0700` on `~/.config/tau`, `0600` on `config.json` |
-| `install_completions` | `shell_completions` | Installs/refreshes completion scripts (+ rc hooks where needed) |
+| `install_completions` | `shell_completions`, `completions_stale` | Installs/refreshes completion scripts (+ rc hooks where needed) — also renews the script mtime `completions_stale` watches |
 | `chmod_client_files` | `client_permissions` | `chmod 0600` on every detected client settings file (and `mcacp.json`) — their `env` blocks can hold API keys |
 
 Each fix reports
