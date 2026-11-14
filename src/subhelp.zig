@@ -154,6 +154,7 @@ const explain_help =
     \\
     \\Usage:
     \\  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>] [--json|--human]
+    \\  tau explain --list [--json|--human]
     \\
     \\Arguments:
     \\  <code|type|key>   Exit code (e.g. 106), error type (e.g. authfailed),
@@ -178,9 +179,14 @@ const explain_help =
     \\      --json   Stable schema-checked JSON form (default;
     \\               schema/tau-explain.schema.json)
     \\      --human  Render as prose
+    \\      --list   Print the topic index — every resolvable name
+    \\               (error codes + types, config keys, doctor checks,
+    \\               TAU_* env vars, client ids) instead of full entries;
+    \\               takes no query
     \\
     \\Examples:
     \\  tau explain
+    \\  tau explain --list
     \\  tau explain 106
     \\  tau explain authfailed
     \\  tau explain timeout_ms

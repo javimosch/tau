@@ -58,6 +58,7 @@ API key needed:
 
 ```sh
 tau explain              # every catalog entry (JSON)
+tau explain --list       # topic index: every resolvable name, no entry bodies
 tau explain 106          # one entry by exit code
 tau explain AuthFailed   # one entry by `type` tag
 tau explain --json 106   # pin the schema-checked JSON form
@@ -83,7 +84,11 @@ clients resolve from the generated
 [docs/compatibility.md](compatibility.md) matrix (`tau explain
 client.zed`, a bare client name, or a `--client` alias like `code` or
 `claude`); the bare catalog lists them under `doctor_checks`, `env_vars`,
-and `clients`.
+and `clients`. `tau explain --list` prints just the topic index —
+`{"topics":{"errors":[{code,type}, ...],"config_keys":[...],
+"doctor_checks":["doctor.<id>", ...],"env_vars":["TAU_*", ...],
+"clients":["client.<name>", ...]}}` — so every name a query accepts is
+enumerable without the entry bodies.
 
 ## Silent exit paths
 

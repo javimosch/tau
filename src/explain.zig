@@ -29,6 +29,7 @@ const errors = @import("errors.zig");
 const cfgschema = @import("configschema.zig");
 const doctorcat = @import("doctorcatalog.zig");
 const envvars = @import("envvars.zig");
+const json = @import("json.zig");
 const clientcat = @import("clientcatalog.zig");
 const setup = @import("setup.zig");
 const suggest = @import("suggest.zig");
@@ -242,6 +243,88 @@ pub fn formatCatalogHuman(a: std.mem.Allocator) ![]u8 {
     return b.toOwnedSlice(a);
 }
 
+/// Append `"<escaped s>"` to buf.
+fn jstr(a: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    try buf.append(a, '"');
+    try json.escapeInto(a, buf, s);
+    try buf.append(a, '"');
+}
+
+/// The topic index for `tau explain --list` (trailing newline included):
+/// {"topics":{"errors":[{"code":N,"type":"T"}, ...],
+///  "config_keys":["<key>", ...],"doctor_checks":["doctor.<id>", ...],
+///  "env_vars":["TAU_*", ...],"clients":["client.<name>", ...]}}
+/// Where the bare `tau explain` dump carries every full entry, the index
+/// carries only what each topic is addressed by — code + type tag for
+/// errors, the namespaced spelling for doctor checks and clients — so it
+/// doubles as the machine-readable list of valid queries. Every listed
+/// name resolves via resolve(). Caller owns the returned slice.
+pub fn formatIndexJson(a: std.mem.Allocator) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(a, "{\"topics\":{\"errors\":[");
+    for (errors.specs, 0..) |s, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "{{\"code\":{d},\"type\":\"{s}\"}}", .{ s.code, s.type_name }));
+    }
+    try b.appendSlice(a, "],\"config_keys\":[");
+    for (cfgschema.key_catalog, 0..) |ks, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, &b, ks.name);
+    }
+    for (cfgschema.deprecated_key_specs, 0..) |ks, i| {
+        if (i > 0 or cfgschema.key_catalog.len > 0) try b.appendSlice(a, ",");
+        try jstr(a, &b, ks.name);
+    }
+    try b.appendSlice(a, "],\"doctor_checks\":[");
+    for (doctorcat.check_catalog, 0..) |cs, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, &b, try std.fmt.allocPrint(a, "doctor.{s}", .{cs.name}));
+    }
+    try b.appendSlice(a, "],\"env_vars\":[");
+    for (envvars.names, 0..) |name, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, &b, name);
+    }
+    try b.appendSlice(a, "],\"clients\":[");
+    for (setup.all_clients, 0..) |k, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, &b, try std.fmt.allocPrint(a, "client.{s}", .{setup.clientName(k)}));
+    }
+    try b.appendSlice(a, "]}}\n");
+    return b.toOwnedSlice(a);
+}
+
+/// The topic index as prose — one section per catalog, one resolvable name
+/// per line (errors carry both addressable forms: code and type tag).
+/// Caller owns the returned slice.
+pub fn formatIndexHuman(a: std.mem.Allocator) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(a, "explain topics (each resolves via `tau explain <name>`):\n\nerror codes:\n");
+    for (errors.specs) |s| {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {d:>3}  {s}\n", .{ s.code, s.type_name }));
+    }
+    try b.appendSlice(a, "\nconfig keys:\n");
+    for (cfgschema.key_catalog) |ks| {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{ks.name}));
+    }
+    for (cfgschema.deprecated_key_specs) |ks| {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{ks.name}));
+    }
+    try b.appendSlice(a, "\ndoctor checks:\n");
+    for (doctorcat.check_catalog) |cs| {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "  doctor.{s}\n", .{cs.name}));
+    }
+    try b.appendSlice(a, "\nenv vars:\n");
+    for (envvars.names) |name| {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{name}));
+    }
+    try b.appendSlice(a, "\nclients:\n");
+    for (setup.all_clients) |k| {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "  client.{s}\n", .{setup.clientName(k)}));
+    }
+    return b.toOwnedSlice(a);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -444,4 +527,58 @@ test "formatCatalogHuman renders all five sections" {
     try testing.expect(std.mem.indexOf(u8, cat, "client  zed (acp · direct)") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "client  claude-desktop (mcacp · direct)") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "client  goose (mcacp · snippet)") != null);
+}
+
+test "formatIndexJson emits the topics object and every listed topic resolves" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const idx = try formatIndexJson(a);
+    try testing.expect(std.mem.startsWith(u8, idx, "{\"topics\":{\"errors\":["));
+    try testing.expect(std.mem.endsWith(u8, idx, "]}}\n"));
+    // The index JSON must parse cleanly and carry all five slices.
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, idx, .{});
+    const topics = v.object.get("topics").?.object;
+    try testing.expect(topics.get("errors").?.array.items.len == errors.specs.len);
+    try testing.expect(topics.get("config_keys").?.array.items.len == cfgschema.key_catalog.len + cfgschema.deprecated_key_specs.len);
+    try testing.expect(topics.get("doctor_checks").?.array.items.len == doctorcat.check_catalog.len);
+    try testing.expect(topics.get("env_vars").?.array.items.len == envvars.names.len);
+    try testing.expect(topics.get("clients").?.array.items.len == setup.all_clients.len);
+    // Every indexed name resolves — the index is a list of valid queries.
+    for (topics.get("errors").?.array.items) |e| {
+        const code = e.object.get("code").?.integer;
+        const q = try std.fmt.allocPrint(a, "{d}", .{code});
+        const entry = resolve(q).?;
+        try testing.expect(entry == .err);
+        try testing.expectEqual(@as(u8, @intCast(code)), entry.err.code);
+    }
+    for (topics.get("config_keys").?.array.items) |e| {
+        try testing.expect(resolve(e.string).? == .key);
+    }
+    for (topics.get("doctor_checks").?.array.items) |e| {
+        try testing.expect(resolve(e.string).? == .check);
+    }
+    for (topics.get("env_vars").?.array.items) |e| {
+        try testing.expect(resolve(e.string).? == .env);
+    }
+    for (topics.get("clients").?.array.items) |e| {
+        try testing.expect(resolve(e.string).? == .client);
+    }
+}
+
+test "formatIndexHuman renders all five sections with resolvable names" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const idx = try formatIndexHuman(a);
+    try testing.expect(std.mem.indexOf(u8, idx, "error codes:") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "  106  AuthFailed") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "config keys:") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "  timeout_ms\n") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "doctor checks:") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "  doctor.tls_ca\n") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "env vars:") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "  TAU_ENDPOINT\n") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "clients:") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "  client.zed\n") != null);
 }

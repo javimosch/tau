@@ -323,6 +323,7 @@ tau explain client.zed            # Editor client: prereqs + paths + setup + ver
 tau explain code                  # Same, a bare --client name/alias (code → vscode, claude → claude-desktop)
 tau explain --json 106            # Pin the schema-checked JSON form (default)
 tau explain --human 80            # Prose instead of JSON
+tau explain --list                # Topic index: every resolvable name, no entry bodies
 ```
 
 #### 21. Config Schema (`tau config schema`)

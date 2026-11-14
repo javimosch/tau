@@ -74,8 +74,9 @@ environment variables, CLI-flag equivalents, and precedence rules — see
   out-of-range values against this schema (defaults to the real config).
 - `tau explain <key>` — prints one row of this table as JSON (key, type,
   constraints, description); `tau explain keys.<provider>` resolves a
-  dotted member path, and bare `tau explain` lists every key under
-  `config_keys`.
+  dotted member path, bare `tau explain` lists every key under
+  `config_keys`, and `tau explain --list` indexes them by name under
+  `topics.config_keys`.
 - `tau config schema` — prints the JSON Schema this table is generated
   from. The canonical copy editors fetch is checked in at
   [schema/tau-config.schema.json](../schema/tau-config.schema.json);
