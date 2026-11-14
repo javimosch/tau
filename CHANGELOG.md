@@ -19,6 +19,16 @@ are backward compatible.
 
 ### Added
 
+- **Shell completions now cover `tau explain` arguments and `--client`
+  values in all four shells** — `tau explain <TAB>` offers every
+  resolvable catalog entry (stable exit codes, config keys, `doctor.<id>`
+  check names, `TAU_*` env vars, and `client.<name>` editor clients), and
+  `--client <TAB>` completes the `ClientKind` ids plus `all`. Zsh, fish,
+  and PowerShell already scoped `--client` values to `tau setup`; bash
+  gains the same value completion via the shared flag-argument handler,
+  and a smoke assertion pins the client word lists in all four files so
+  a new client cannot ship uncompletable.
+
 - **`tau explain client.<name>` — the offline catalog now covers supported
   editor clients** — every row of the generated
   [docs/compatibility.md](docs/compatibility.md) matrix resolves as a

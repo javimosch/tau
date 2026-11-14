@@ -50,6 +50,11 @@ _tau_complete() {
         --shell)
             COMPREPLY=($(compgen -W "bash zsh fish pwsh all" -- "$cur"))
             return ;;
+        --client)
+            # Client names mirror the ClientKind tables in src/setup.zig —
+            # `all` expands to every supported client.
+            COMPREPLY=($(compgen -W "zed nvim emacs vscode cursor jetbrains windsurf gemini claude-desktop opencode cline goose continue roo-code kilo-code amazonq codex all" -- "$cur"))
+            return ;;
         --tools|-t|--exclude-tools|-xt)
             COMPREPLY=($(compgen -W "bash ls read write edit grep find calculator" -- "$cur"))
             return ;;

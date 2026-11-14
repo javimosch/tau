@@ -6656,6 +6656,22 @@ test_group_completions() {
     else
       ok "$f missing words:$missing" 1 0
     fi
+
+    # Client ids: every ClientKind name must appear as a --client value
+    # candidate AND as a `client.<name>` explain argument — mirrors the
+    # ClientKind tables in src/setup.zig.
+    missing=""
+    for word in zed nvim emacs vscode cursor jetbrains windsurf gemini \
+                claude-desktop opencode cline goose continue roo-code \
+                kilo-code amazonq codex \
+                client.zed client.codex; do
+      grep -Fqw -- "$word" "$ROOT/$f" || missing="$missing $word"
+    done
+    if [ -z "$missing" ]; then
+      ok "$f covers client ids and explain client.* args" 0 0
+    else
+      ok "$f missing client words:$missing" 1 0
+    fi
   done
 
   # ── tau completions install ─────────────────────────────────────────────

@@ -24,6 +24,7 @@ PowerShell.
 | `--provider` | `xiaomi openai deepseek opencode-go` |
 | `--mode` | `text json` |
 | `--role` | `author critic coordinator none` |
+| `--client` | `zed nvim emacs vscode cursor jetbrains windsurf gemini claude-desktop opencode cline goose continue roo-code kilo-code amazonq codex all` |
 | `--tools` / `--exclude-tools` | `bash ls read write edit grep find calculator` |
 | `--load-agents-md` / `--schema` | File paths |
 | `@…` prefix | File paths with `@` prepended |
