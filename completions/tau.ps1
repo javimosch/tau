@@ -73,7 +73,7 @@ $TauArgumentCompleter = {
         'client.cline', 'client.goose', 'client.continue',
         'client.roo-code', 'client.kilo-code', 'client.amazonq',
         'client.codex',
-        '--human', '--json')
+        '--human', '--json', '--list')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'codex', 'all')
     $globalFlags = @(

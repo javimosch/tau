@@ -4496,6 +4496,12 @@ test_group_golden_maintenance() {
   golden_check ex-client-unknown   1 "$BIN" explain client.bogus
   golden_check ex-dym-client       1 "$BIN" explain client.zde
 
+  # --list — the topic index: every resolvable name, no entry bodies.
+  golden_check ex-list             0 "$BIN" explain --list
+  golden_check ex-list-json        0 "$BIN" explain --json --list
+  golden_check ex-list-human       0 "$BIN" explain --human --list
+  golden_check ex-list-query      80 "$BIN" explain --list 106
+
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
   mkdir -p "$stubs"
@@ -5720,7 +5726,7 @@ test_group_explain() {
   capture r6 "$BIN" explain bogus
   ok "explain: unknown name exits 1" "$r6_rc" 1
   contains "explain: unknown name emits not_found" "$r6_err" '"type":"not_found"'
-  contains "explain: message points at the catalog" "$r6_err" 'run `tau explain` to list the catalog'
+  contains "explain: message points at the topic index" "$r6_err" 'run `tau explain --list` for the topic index'
 
   # Exit 0 is success — never an error.
   capture r7 "$BIN" explain 0
@@ -5963,6 +5969,38 @@ test_group_explain() {
   ok "explain: --human --json exits 80" "$r12_rc" 80
   contains "explain: reverse-order mutex" "$r12_err" '--json and --human are mutually exclusive'
 
+  # --list is the topic index — every resolvable name, no entry bodies.
+  capture li1 "$BIN" explain --list
+  ok "explain: --list exits 0" "$li1_rc" 0
+  contains "explain: --list emits the topics object" "$li1_out" '"topics":{'
+  contains "explain: --list lists error topics" "$li1_out" '"errors":['
+  contains "explain: --list error topic carries code+type" "$li1_out" '{"code":106,"type":"AuthFailed"}'
+  contains "explain: --list lists config keys" "$li1_out" '"config_keys":['
+  contains "explain: --list includes a flat key" "$li1_out" '"timeout_ms"'
+  contains "explain: --list includes a member path" "$li1_out" '"keys.openai"'
+  contains "explain: --list lists doctor checks" "$li1_out" '"doctor_checks":['
+  contains "explain: --list check ids are namespaced" "$li1_out" '"doctor.tls_ca"'
+  contains "explain: --list lists env vars" "$li1_out" '"env_vars":['
+  contains "explain: --list includes an env var" "$li1_out" '"TAU_ENDPOINT"'
+  contains "explain: --list lists clients" "$li1_out" '"clients":['
+  contains "explain: --list client ids are namespaced" "$li1_out" '"client.zed"'
+  lacks "explain: --list carries no entry bodies" "$li1_out" '"remediation"'
+
+  capture li2 "$BIN" explain --human --list
+  ok "explain: --human --list exits 0" "$li2_rc" 0
+  contains "explain: --human --list prints error section" "$li2_out" 'error codes:'
+  contains "explain: --human --list prints check section" "$li2_out" 'doctor checks:'
+  contains "explain: --human --list prints client section" "$li2_out" 'clients:'
+  contains "explain: --human --list names a client" "$li2_out" 'client.zed'
+
+  # --list is mutex with a query in either order.
+  capture li3 "$BIN" explain --list 106
+  ok "explain: --list + query exits 80" "$li3_rc" 80
+  contains "explain: --list mutex names the flag" "$li3_err" '--list takes no query argument'
+  capture li4 "$BIN" explain 106 --list
+  ok "explain: query + --list exits 80" "$li4_rc" 80
+  contains "explain: reverse mutex names the flag" "$li4_err" '--list takes no query argument'
+
   # Both --json surfaces validate against the checked-in schema.
   local ex_schema="$ROOT/schema/tau-explain.schema.json"
   if [ -f "$ex_schema" ]; then
@@ -6026,6 +6064,34 @@ test_group_explain() {
       ok "explain: bridge client entry validates against schema" 0 0
     else
       ok "explain: bridge client entry validates against schema" 1 0
+    fi
+    # The --list topic index validates against the same schema.
+    if printf '%s' "$li1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: --list index validates against schema" 0 0
+    else
+      ok "explain: --list index validates against schema" 1 0
+    fi
+    # Every indexed topic resolves — the index is a list of valid queries.
+    local li_json
+    li_json="$(mktemp)"; register_temp_file "$li_json"
+    printf '%s' "$li1_out" > "$li_json"
+    if python3 - "$BIN" "$li_json" <<'PYEOF' >/dev/null 2>&1
+import json, subprocess, sys
+bin_path, idx_path = sys.argv[1], sys.argv[2]
+topics = json.load(open(idx_path))["topics"]
+queries = [str(e["code"]) for e in topics["errors"]]
+queries += [e["type"] for e in topics["errors"]]
+for group in ("config_keys", "doctor_checks", "env_vars", "clients"):
+    queries += topics[group]
+bad = [q for q in queries
+       if subprocess.run([bin_path, "explain", q],
+                         capture_output=True).returncode != 0]
+sys.exit(1 if bad else 0)
+PYEOF
+    then
+      ok "explain: every indexed topic resolves" 0 0
+    else
+      ok "explain: every indexed topic resolves" 1 0
     fi
   else
     skip_test "explain: schema validation" "python3 not on PATH"

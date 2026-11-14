@@ -200,6 +200,9 @@ pub const Config = struct {
     explain_arg: ?[]const u8 = null,
     /// `tau explain --human` → prose rendering instead of JSON.
     explain_human: bool = false,
+    /// `tau explain --list` → the topic index (names only) instead of a
+    /// single entry or the full-entry catalog dump.
+    explain_list: bool = false,
 
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.

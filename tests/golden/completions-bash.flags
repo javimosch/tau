@@ -28,6 +28,7 @@
 --items
 --json
 --labels
+--list
 --load-agents-md
 --max-iterations
 --max-tokens

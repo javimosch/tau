@@ -229,6 +229,8 @@ Explain catalog (offline — no API key needed):
                                 (`tau explain client.zed`)
       --json                    ...pin the schema-checked JSON form (default)
       --human                   ...as prose (e.g. `tau explain --human 106`)
+  tau explain --list            Topic index — every resolvable name
+                                (codes/types, keys, checks, TAU_*, clients)
 
 Guide (embedded operator manual — read once, drive with no external docs):
   tau guide                     Print the full guide as JSON (agent-readable)

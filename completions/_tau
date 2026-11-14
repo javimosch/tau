@@ -397,7 +397,8 @@ _tau() {
                     _arguments \
                         '1: :_describe "error code/type, config key, doctor check, TAU_* env var, or client" err_codes cfg_keys checks env_vars clients' \
                         '--json[emit the stable schema-checked JSON form]' \
-                        '--human[render the entry as prose instead of JSON]'
+                        '--human[render the entry as prose instead of JSON]' \
+                        '--list[print the resolvable-topic index]'
                     ;;
             esac
             ;;

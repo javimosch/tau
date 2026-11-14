@@ -87,9 +87,13 @@ resolve by `client.<name>` or a bare `--client` name/alias:
 `tau explain client.zed` prints the client's prerequisites, config paths,
 setup command, and restart verification from the generated
 [compatibility.md](compatibility.md) matrix (the underscore spellings —
-`client_zed` — keep resolving to the doctor check). A mistyped code,
-`type`, key, check id, env var, or client name exits 1 with a `not_found`
-envelope whose message suggests the nearest catalog entry —
+`client_zed` — keep resolving to the doctor check). `tau explain --list`
+prints the topic index — every resolvable name grouped as
+`{"topics":{"errors":[{code,type}, …],"config_keys":[…],
+"doctor_checks":["doctor.<id>", …],"env_vars":["TAU_*", …],
+"clients":["client.<name>", …]}}` — without the entry bodies. A mistyped
+code, `type`, key, check id, env var, or client name exits 1 with a
+`not_found` envelope whose message suggests the nearest catalog entry —
 `did you mean "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>>"?` — when the query is within two
 case-insensitive edits of one.
 

@@ -2,14 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-explain.schema.json",
   "title": "tau explain --json output",
-  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key|doctor.<check>|TAU_*|client.<name>> query the output is a single entry object — an error entry for a code/type query, a config-key entry for a key query (including dotted keys.<provider> member paths), a doctor-check entry for a `doctor.<check>` or bare check-id query, an env-var entry for an exact TAU_* variable name, or a client entry for a `client.<name>` or bare client name/alias query; with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...],\"doctor_checks\":[check_entry, ...],\"env_vars\":[env_entry, ...],\"clients\":[client_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. Doctor-check entries mirror one row of the generated check table in docs/troubleshooting.md: check is the `tau doctor` report row id, fails_when the condition that warns/fails, remediation the fix, docs the troubleshooting-section link. Env-var entries mirror one row of the generated docs/env.md table: env is the TAU_* variable name, section its doc grouping (tau | installer | external), consumers what reads it, summary what it does, docs the env reference link. Client entries mirror one row of the generated docs/compatibility.md matrix: client is the canonical `tau setup --client` name, transport how the editor reaches tau (acp | mcacp), wiring how setup installs the entry (direct | snippet), prereqs the setup prerequisites, setup the one-command wiring invocation, config_dir the detection directory, settings_path the config file that carries the entry (the settings file for direct clients, the snippet merge target for snippet clients), snippet_path the paste-ready fallback, bridge_path the shared mcacp config (mcacp transports only), verify the restart + in-editor step, doctor_check the `tau doctor` row id, docs the per-client guide link. New keys may be added (additive); existing keys keep their names and types.",
+  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key|doctor.<check>|TAU_*|client.<name>> query the output is a single entry object — an error entry for a code/type query, a config-key entry for a key query (including dotted keys.<provider> member paths), a doctor-check entry for a `doctor.<check>` or bare check-id query, an env-var entry for an exact TAU_* variable name, or a client entry for a `client.<name>` or bare client name/alias query; with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...],\"doctor_checks\":[check_entry, ...],\"env_vars\":[env_entry, ...],\"clients\":[client_entry, ...]} holding every entry; under --list it is a topic-index object {\"topics\":{\"errors\":[{\"code\":N,\"type\":\"T\"}, ...],\"config_keys\":[\"<key>\", ...],\"doctor_checks\":[\"doctor.<id>\", ...],\"env_vars\":[\"TAU_*\", ...],\"clients\":[\"client.<name>\", ...]}} naming every resolvable query (error entries carry both addressable forms, code and type tag). Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. Doctor-check entries mirror one row of the generated check table in docs/troubleshooting.md: check is the `tau doctor` report row id, fails_when the condition that warns/fails, remediation the fix, docs the troubleshooting-section link. Env-var entries mirror one row of the generated docs/env.md table: env is the TAU_* variable name, section its doc grouping (tau | installer | external), consumers what reads it, summary what it does, docs the env reference link. Client entries mirror one row of the generated docs/compatibility.md matrix: client is the canonical `tau setup --client` name, transport how the editor reaches tau (acp | mcacp), wiring how setup installs the entry (direct | snippet), prereqs the setup prerequisites, setup the one-command wiring invocation, config_dir the detection directory, settings_path the config file that carries the entry (the settings file for direct clients, the snippet merge target for snippet clients), snippet_path the paste-ready fallback, bridge_path the shared mcacp config (mcacp transports only), verify the restart + in-editor step, doctor_check the `tau doctor` row id, docs the per-client guide link. New keys may be added (additive); existing keys keep their names and types.",
   "oneOf": [
     { "$ref": "#/$defs/entry" },
     { "$ref": "#/$defs/config_entry" },
     { "$ref": "#/$defs/check_entry" },
     { "$ref": "#/$defs/env_entry" },
     { "$ref": "#/$defs/client_entry" },
-    { "$ref": "#/$defs/catalog" }
+    { "$ref": "#/$defs/catalog" },
+    { "$ref": "#/$defs/index" }
   ],
   "$defs": {
     "entry": {
@@ -110,6 +111,53 @@
           "description": "Every supported `tau setup --client` editor client — each row of the generated docs/compatibility.md matrix."
         }
       }
+    },
+    "index": {
+      "type": "object",
+      "required": ["topics"],
+      "additionalProperties": false,
+      "properties": {
+        "topics": {
+          "type": "object",
+          "required": ["errors", "config_keys", "doctor_checks", "env_vars", "clients"],
+          "additionalProperties": false,
+          "properties": {
+            "errors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["code", "type"],
+                "additionalProperties": false,
+                "properties": {
+                  "code": { "type": "integer", "minimum": 1, "maximum": 255, "description": "Exit code — `tau explain <code>` resolves the entry." },
+                  "type": { "type": "string", "minLength": 1, "description": "Wire tag — `tau explain <type>` resolves the same entry (case-insensitive)." }
+                }
+              },
+              "description": "Every catalog error topic, ordered by exit code; each carries both addressable forms."
+            },
+            "config_keys": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Every resolvable config-key name — flat keys, keys.<provider> member paths, and deprecated spellings."
+            },
+            "doctor_checks": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Every resolvable doctor check in the canonical `doctor.<id>` spelling (bare ids resolve too unless they collide with a config key)."
+            },
+            "env_vars": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Every resolvable TAU_* environment variable name."
+            },
+            "clients": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Every supported editor client in the canonical `client.<name>` spelling (bare names and --client aliases resolve too)."
+            }
+          }
+        }
+      }
     }
   },
   "examples": [
@@ -132,6 +180,13 @@
     ],
     "clients": [
       { "client": "zed", "transport": "acp", "wiring": "direct", "prereqs": "tau installed and configured — `tau doctor` reports an ok provider and API key", "setup": "tau setup --client zed --yes", "config_dir": "~/.config/zed", "settings_path": "~/.config/zed/settings.json", "snippet_path": "~/.config/tau/snippets/zed.jsonc", "verify": "open the Agent Panel, click +, and pick tau", "doctor_check": "client_zed", "docs": "https://github.com/javimosch/tau/blob/master/docs/clients/zed.md" }
-    ] }
+    ] },
+    { "topics": {
+      "errors": [ { "code": 106, "type": "AuthFailed" } ],
+      "config_keys": [ "timeout_ms" ],
+      "doctor_checks": [ "doctor.tls_ca" ],
+      "env_vars": [ "TAU_ENDPOINT" ],
+      "clients": [ "client.zed" ]
+    } }
   ]
 }

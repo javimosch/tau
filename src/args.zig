@@ -530,14 +530,16 @@ pub fn parse(
     }
 
     // `tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>]
-    // [--json|--human]` — offline catalog lookup (the error Spec registry
-    // behind docs/errors.md plus the config-key, doctor-check, env-var,
-    // and client catalogs behind docs/config.md, docs/troubleshooting.md,
-    // docs/env.md, and docs/compatibility.md). The output is JSON by
-    // default; --json is the stable-contract spelling that
+    // [--json|--human|--list]` — offline catalog lookup (the error Spec
+    // registry behind docs/errors.md plus the config-key, doctor-check,
+    // env-var, and client catalogs behind docs/config.md,
+    // docs/troubleshooting.md, docs/env.md, and docs/compatibility.md). The
+    // output is JSON by default; --json is the stable-contract spelling that
     // pins the schema-checked form (schema/tau-explain.schema.json), --human
-    // renders prose — the two are mutually exclusive. Command, not a prompt:
-    // `explain` is always consumed as the subcommand word.
+    // renders prose — the two are mutually exclusive. --list prints the
+    // topic index (every resolvable name) instead of full entries and takes
+    // no query. Command, not a prompt: `explain` is always consumed as the
+    // subcommand word.
     if (argv.len > 0 and eq(argv[0], "explain")) {
         if (wantsHelp(argv[1..])) return subHelp("explain", base);
         var ecfg: Config = base;
@@ -551,6 +553,8 @@ pub fn parse(
                 if (ecfg.explain_human) return errResult(arena, "--json and --human are mutually exclusive", .{});
                 ecfg.cli_json = true;
                 ecfg.mode = .json;
+            } else if (eq(a, "--list")) {
+                ecfg.explain_list = true;
             } else if (a.len > 0 and a[0] != '-') {
                 if (ecfg.explain_arg != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 ecfg.explain_arg = a;
@@ -558,6 +562,8 @@ pub fn parse(
                 return errResult(arena, "unknown explain argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
             }
         }
+        if (ecfg.explain_list and ecfg.explain_arg != null)
+            return errResult(arena, "--list takes no query argument", .{});
         return .{ .action = .explain, .config = ecfg };
     }
 
@@ -1777,6 +1783,30 @@ test "parse: explain subcommand" {
     const extra = try parseArgv(a, &.{ "tau", "explain", "80", "106" }, .{});
     try std.testing.expectEqual(Action.err, extra.action);
     try std.testing.expectEqualStrings("unexpected extra argument: 106", extra.err_msg.?);
+
+    // --list is the topic index — no query, combinable with --json/--human.
+    const list = try parseArgv(a, &.{ "tau", "explain", "--list" }, .{});
+    try std.testing.expectEqual(Action.explain, list.action);
+    try std.testing.expect(list.config.explain_list);
+    try std.testing.expect(list.config.explain_arg == null);
+
+    const list_human = try parseArgv(a, &.{ "tau", "explain", "--list", "--human" }, .{});
+    try std.testing.expectEqual(Action.explain, list_human.action);
+    try std.testing.expect(list_human.config.explain_list);
+    try std.testing.expect(list_human.config.explain_human);
+
+    const list_json = try parseArgv(a, &.{ "tau", "explain", "--json", "--list" }, .{});
+    try std.testing.expectEqual(Action.explain, list_json.action);
+    try std.testing.expect(list_json.config.explain_list);
+    try std.testing.expect(!list_json.config.explain_human);
+
+    const list_query = try parseArgv(a, &.{ "tau", "explain", "--list", "106" }, .{});
+    try std.testing.expectEqual(Action.err, list_query.action);
+    try std.testing.expectEqualStrings("--list takes no query argument", list_query.err_msg.?);
+
+    const query_list = try parseArgv(a, &.{ "tau", "explain", "106", "--list" }, .{});
+    try std.testing.expectEqual(Action.err, query_list.action);
+    try std.testing.expectEqualStrings("--list takes no query argument", query_list.err_msg.?);
 }
 
 test "parse: skills subcommand validation" {
