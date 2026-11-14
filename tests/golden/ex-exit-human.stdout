@@ -1,0 +1,4 @@
+exit 1  generic_failure
+  meaning:   a named resource was not found, a check-style command reported failures (`tau doctor`, `tau setup`, `tau config validate`), or a `tau explain` query matched nothing
+  scripting: detail is never on the status alone — read the {"err"} envelope on stderr (type not_found) or the stdout report's "ok":false
+  docs:      https://github.com/javimosch/tau/blob/master/docs/exit-codes.md

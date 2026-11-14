@@ -997,7 +997,8 @@ pub fn main(init: std.process.Init) !void {
         },
         .explain => {
             // Offline catalog lookup — stable errors (src/errors.zig,
-            // docs/errors.md), config keys (src/configschema.zig,
+            // docs/errors.md), process exit codes (src/exitcodes.zig —
+            // docs/exit-codes.md), config keys (src/configschema.zig,
             // docs/config.md), doctor checks (src/doctorcatalog.zig —
             // the docs/troubleshooting.md check table), TAU_* env vars
             // (src/envvars.zig — docs/env.md), and supported clients
@@ -1006,7 +1007,7 @@ pub fn main(init: std.process.Init) !void {
             const xpl = @import("explain.zig");
             if (parsed.config.explain_arg) |q| {
                 const entry = xpl.resolve(q) orelse {
-                    const msg = std.fmt.allocPrint(arena, "unknown error code, type, config key, doctor check, env var, or client: {s}{s} — run `tau explain` to list the catalog", .{ q, xpl.suggestQuery(arena, q) orelse "" }) catch "unknown error code, type, config key, doctor check, env var, or client";
+                    const msg = std.fmt.allocPrint(arena, "unknown error code, type, config key, doctor check, env var, client, or exit code: {s}{s} — run `tau explain` to list the catalog", .{ q, xpl.suggestQuery(arena, q) orelse "" }) catch "unknown error code, type, config key, doctor check, env var, client, or exit code";
                     printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
                     std.process.exit(@intFromEnum(ExitCode.generic_failure));
                 };
@@ -1574,6 +1575,25 @@ test "ExitCode numeric values are pinned to the documented contract" {
     try std.testing.expectEqual(@as(u8, 106), @intFromEnum(ExitCode.auth_failed));
     try std.testing.expectEqual(@as(u8, 110), @intFromEnum(ExitCode.internal_error));
     try std.testing.expectEqual(@as(u8, 111), @intFromEnum(ExitCode.unimplemented));
+}
+
+test "every ExitCode member resolves via `tau explain exit.<name>`" {
+    // The exit-code catalog (src/exitcodes.zig — the docs/exit-codes.md
+    // scripting contract) must cover every process status with the same
+    // name the enum and --help-json use, so `tau explain exit.<name>`
+    // never points at a dead registry entry.
+    const exitcodes = @import("exitcodes.zig");
+    try std.testing.expectEqual(@typeInfo(ExitCode).@"enum".fields.len, exitcodes.specs.len);
+    inline for (@typeInfo(ExitCode).@"enum".fields) |f| {
+        var buf: [80]u8 = undefined;
+        const q = std.fmt.bufPrint(&buf, "exit.{s}", .{f.name}) catch unreachable;
+        const spec = exitcodes.findSpec(q) orelse {
+            std.debug.print("exitcodes catalog missing exit.{s}\n", .{f.name});
+            return error.TestUnexpectedResult;
+        };
+        try std.testing.expectEqual(@as(u8, f.value), spec.code);
+        try std.testing.expectEqualStrings(f.name, spec.name);
+    }
 }
 
 test "--help-json advertises every ExitCode at its pinned value" {

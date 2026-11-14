@@ -26,6 +26,10 @@ pub const config_doc_url = "https://github.com/javimosch/tau/blob/master/docs/co
 /// `TAU_*` variables links here so a typo'd name is one hop from the fix.
 pub const env_doc_url = "https://github.com/javimosch/tau/blob/master/docs/env.md";
 
+/// Generated exit-code contract URL. `tau explain exit.<code>` entries link
+/// here so a process-status lookup lands on the full scripting-contract table.
+pub const exit_codes_doc_url = "https://github.com/javimosch/tau/blob/master/docs/exit-codes.md";
+
 /// GitHub "latest release" API endpoint queried by the update check
 /// (`tau version --check`, `tau doctor` update_available). TAU_UPDATE_URL
 /// overrides it.

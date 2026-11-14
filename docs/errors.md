@@ -60,6 +60,7 @@ API key needed:
 tau explain              # every catalog entry (JSON)
 tau explain 106          # one entry by exit code
 tau explain AuthFailed   # one entry by `type` tag
+tau explain exit.106     # the process-status scripting contract
 tau explain --json 106   # pin the schema-checked JSON form
 tau explain --human 80   # prose instead of JSON
 ```
@@ -78,12 +79,15 @@ description, and bare `tau explain` lists them under `config_keys`.
 `tau doctor` check ids resolve from the generated check table in
 [docs/troubleshooting.md](troubleshooting.md) (`doctor.<check>` or a
 bare id), `TAU_*` environment variables resolve from the
-[docs/env.md](env.md) tables (`tau explain TAU_ENDPOINT`), and editor
+[docs/env.md](env.md) tables (`tau explain TAU_ENDPOINT`), editor
 clients resolve from the generated
 [docs/compatibility.md](compatibility.md) matrix (`tau explain
 client.zed`, a bare client name, or a `--client` alias like `code` or
-`claude`); the bare catalog lists them under `doctor_checks`, `env_vars`,
-and `clients`.
+`claude`), and process exit statuses resolve from the generated
+[docs/exit-codes.md](exit-codes.md) scripting contract (`tau explain
+exit.<code>` or `exit.<name>` — the `exit.` prefix picks the contract
+view since bare codes stay error entries); the bare catalog lists
+them under `doctor_checks`, `env_vars`, `clients`, and `exit_codes`.
 
 ## Silent exit paths
 

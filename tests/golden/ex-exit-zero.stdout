@@ -1,0 +1,1 @@
+{"exit":0,"name":"success","meaning":"the command completed — stdout carries the result","scripting":"no {\"err\"} envelope is emitted — parse stdout per the command's documented shape (docs/stability.md)","docs":"https://github.com/javimosch/tau/blob/master/docs/exit-codes.md"}

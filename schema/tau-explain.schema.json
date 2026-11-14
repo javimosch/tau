@@ -2,9 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-explain.schema.json",
   "title": "tau explain --json output",
-  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key|doctor.<check>|TAU_*|client.<name>> query the output is a single entry object — an error entry for a code/type query, a config-key entry for a key query (including dotted keys.<provider> member paths), a doctor-check entry for a `doctor.<check>` or bare check-id query, an env-var entry for an exact TAU_* variable name, or a client entry for a `client.<name>` or bare client name/alias query; with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...],\"doctor_checks\":[check_entry, ...],\"env_vars\":[env_entry, ...],\"clients\":[client_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. Doctor-check entries mirror one row of the generated check table in docs/troubleshooting.md: check is the `tau doctor` report row id, fails_when the condition that warns/fails, remediation the fix, docs the troubleshooting-section link. Env-var entries mirror one row of the generated docs/env.md table: env is the TAU_* variable name, section its doc grouping (tau | installer | external), consumers what reads it, summary what it does, docs the env reference link. Client entries mirror one row of the generated docs/compatibility.md matrix: client is the canonical `tau setup --client` name, transport how the editor reaches tau (acp | mcacp), wiring how setup installs the entry (direct | snippet), prereqs the setup prerequisites, setup the one-command wiring invocation, config_dir the detection directory, settings_path the config file that carries the entry (the settings file for direct clients, the snippet merge target for snippet clients), snippet_path the paste-ready fallback, bridge_path the shared mcacp config (mcacp transports only), verify the restart + in-editor step, doctor_check the `tau doctor` row id, docs the per-client guide link. New keys may be added (additive); existing keys keep their names and types.",
+  "description": "Schema for the JSON `tau explain [--json]` prints on stdout. With a <code|type|key|doctor.<check>|TAU_*|client.<name>|exit.<code>> query the output is a single entry object — an error entry for a code/type query, an exit-code entry for an `exit.<code>` or `exit.<name>` query, a config-key entry for a key query (including dotted keys.<provider> member paths), a doctor-check entry for a `doctor.<check>` or bare check-id query, an env-var entry for an exact TAU_* variable name, or a client entry for a `client.<name>` or bare client name/alias query; with no query it is a catalog object {\"errors\":[entry, ...],\"config_keys\":[key_entry, ...],\"doctor_checks\":[check_entry, ...],\"env_vars\":[env_entry, ...],\"clients\":[client_entry, ...],\"exit_codes\":[exit_entry, ...]} holding every entry. Error entries describe one stable exit code: code doubles as the process exit status, type is the wire tag used in err envelopes, cause/hint are informational remediation text (may be reworded), docs is the guide link. Exit-code entries mirror one row of the generated docs/exit-codes.md scripting contract: exit is the process status, name its semantic identifier (the ExitCode/`--help-json` spelling — deliberately distinct from the wire type tags), meaning when the status is returned, scripting where a script reads the detail, docs the exit-codes reference link. Config-key entries mirror one row of the generated docs/config.md table: key is the config-file key, type its JSON type, constraints the constraint cell text, description the key's description, docs the config reference link. Doctor-check entries mirror one row of the generated check table in docs/troubleshooting.md: check is the `tau doctor` report row id, fails_when the condition that warns/fails, remediation the fix, docs the troubleshooting-section link. Env-var entries mirror one row of the generated docs/env.md table: env is the TAU_* variable name, section its doc grouping (tau | installer | external), consumers what reads it, summary what it does, docs the env reference link. Client entries mirror one row of the generated docs/compatibility.md matrix: client is the canonical `tau setup --client` name, transport how the editor reaches tau (acp | mcacp), wiring how setup installs the entry (direct | snippet), prereqs the setup prerequisites, setup the one-command wiring invocation, config_dir the detection directory, settings_path the config file that carries the entry (the settings file for direct clients, the snippet merge target for snippet clients), snippet_path the paste-ready fallback, bridge_path the shared mcacp config (mcacp transports only), verify the restart + in-editor step, doctor_check the `tau doctor` row id, docs the per-client guide link. New keys may be added (additive); existing keys keep their names and types.",
   "oneOf": [
     { "$ref": "#/$defs/entry" },
+    { "$ref": "#/$defs/exit_entry" },
     { "$ref": "#/$defs/config_entry" },
     { "$ref": "#/$defs/check_entry" },
     { "$ref": "#/$defs/env_entry" },
@@ -23,6 +24,18 @@
         "cause": { "type": "string", "minLength": 1, "description": "One line naming when this error is raised; informational, may be reworded." },
         "hint": { "type": "string", "minLength": 1, "description": "Remediation hint; informational, may be reworded." },
         "docs": { "type": "string", "minLength": 1, "description": "Guide link for this error class." }
+      }
+    },
+    "exit_entry": {
+      "type": "object",
+      "required": ["exit", "name", "meaning", "scripting", "docs"],
+      "additionalProperties": false,
+      "properties": {
+        "exit": { "type": "integer", "minimum": 0, "maximum": 255, "description": "Process exit status this entry documents, including 0 (success — never an error, which is why the exit. prefix is required)." },
+        "name": { "type": "string", "minLength": 1, "description": "Semantic identifier — the ExitCode enum/`--help-json` spelling (e.g. \"connection_timeout\"); deliberately differs from the error catalog's wire type tags (\"Timeout\")." },
+        "meaning": { "type": "string", "minLength": 1, "description": "One line naming when tau exits with this status; informational, may be reworded." },
+        "scripting": { "type": "string", "minLength": 1, "description": "Where a script reads the detail (stderr envelope vs. stdout report) and retry guidance; informational, may be reworded." },
+        "docs": { "type": "string", "minLength": 1, "description": "Link to the generated exit-code scripting contract (docs/exit-codes.md)." }
       }
     },
     "config_entry": {
@@ -81,7 +94,7 @@
     },
     "catalog": {
       "type": "object",
-      "required": ["errors", "config_keys", "doctor_checks", "env_vars", "clients"],
+      "required": ["errors", "config_keys", "doctor_checks", "env_vars", "clients", "exit_codes"],
       "additionalProperties": false,
       "properties": {
         "errors": {
@@ -108,12 +121,18 @@
           "type": "array",
           "items": { "$ref": "#/$defs/client_entry" },
           "description": "Every supported `tau setup --client` editor client — each row of the generated docs/compatibility.md matrix."
+        },
+        "exit_codes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/exit_entry" },
+          "description": "Every process exit status tau can return — each row of the generated docs/exit-codes.md scripting contract, ordered by code."
         }
       }
     }
   },
   "examples": [
     { "code": 106, "type": "AuthFailed", "recoverable": false, "cause": "the provider rejected the API key, or no key was found anywhere in the resolution chain", "hint": "provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY", "docs": "https://github.com/javimosch/tau/blob/master/docs/providers.md" },
+    { "exit": 0, "name": "success", "meaning": "the command completed — stdout carries the result", "scripting": "no {\"err\"} envelope is emitted — parse stdout per the command's documented shape (docs/stability.md)", "docs": "https://github.com/javimosch/tau/blob/master/docs/exit-codes.md" },
     { "key": "timeout_ms", "type": "integer", "constraints": "`>= 0`", "description": "HTTP request timeout in milliseconds.", "docs": "https://github.com/javimosch/tau/blob/master/docs/config.md" },
     { "check": "tls_ca", "fails_when": "CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline)", "remediation": "set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#setup--config-problems--tau-doctor" },
     { "env": "TAU_ENDPOINT", "section": "tau", "consumers": "tau", "summary": "Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers.", "docs": "https://github.com/javimosch/tau/blob/master/docs/env.md" },
@@ -132,6 +151,9 @@
     ],
     "clients": [
       { "client": "zed", "transport": "acp", "wiring": "direct", "prereqs": "tau installed and configured — `tau doctor` reports an ok provider and API key", "setup": "tau setup --client zed --yes", "config_dir": "~/.config/zed", "settings_path": "~/.config/zed/settings.json", "snippet_path": "~/.config/tau/snippets/zed.jsonc", "verify": "open the Agent Panel, click +, and pick tau", "doctor_check": "client_zed", "docs": "https://github.com/javimosch/tau/blob/master/docs/clients/zed.md" }
+    ],
+    "exit_codes": [
+      { "exit": 0, "name": "success", "meaning": "the command completed — stdout carries the result", "scripting": "no {\"err\"} envelope is emitted — parse stdout per the command's documented shape (docs/stability.md)", "docs": "https://github.com/javimosch/tau/blob/master/docs/exit-codes.md" }
     ] }
   ]
 }

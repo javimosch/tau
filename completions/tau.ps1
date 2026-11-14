@@ -32,11 +32,17 @@ $TauArgumentCompleter = {
     $completionsArgs = @('install', '--shell', '--dry-run', '--json')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
-    # Codes mirror src/errors.zig; config keys mirror docs/config.md;
+    # Codes mirror src/errors.zig; exit.* codes+names mirror the Spec
+    # registry in src/exitcodes.zig; config keys mirror docs/config.md;
     # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
     # TAU_* names mirror the Spec registry in src/envvars.zig; client.*
     # names mirror the ClientKind tables in src/setup.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
+        'exit.0', 'exit.1', 'exit.80', 'exit.82', 'exit.105', 'exit.106',
+        'exit.110', 'exit.111', 'exit.success', 'exit.generic_failure',
+        'exit.invalid_argument', 'exit.missing_required_field',
+        'exit.connection_timeout', 'exit.auth_failed', 'exit.internal_error',
+        'exit.unimplemented',
         '$schema', 'provider', 'model', 'api_key', 'keys', 'mode', 'stream',
         'thinking', 'debug', 'temperature', 'max_tokens', 'timeout_ms',
         'context_window', 'auto_compact', 'compact_threshold',

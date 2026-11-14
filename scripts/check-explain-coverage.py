@@ -2,6 +2,7 @@
 """Gate: every generated-catalog entry resolves via `tau explain`.
 
 docs/errors.md is generated from the Spec catalog in src/errors.zig,
+docs/exit-codes.md from the Spec registry in src/exitcodes.zig,
 docs/config.md from the FileConfig schema, the doctor-check table in
 docs/troubleshooting.md from src/doctorcatalog.zig, docs/env.md from
 the Spec registry in src/envvars.zig, and the client matrix in
@@ -16,6 +17,8 @@ a catalog entry does not resolve to a real `tau explain` entry, where
     vacuously through the generic internal_error fallback, so the tag
     must match too;
   - `tau explain <type-tag>` exits 0 and resolves to the paired code;
+  - `tau explain exit.<code>` and `tau explain exit.<name>` (each row of
+    the generated docs/exit-codes.md catalog) exit 0 with `"exit":<code>`;
   - `tau explain <key>` (each row of the docs/config.md `## Keys` table)
     exits 0 and emits an entry carrying `"key":"<key>"`;
   - `tau explain keys.<member>` — for each member named in the `keys`
@@ -33,8 +36,8 @@ Spec or config field cannot ship undocumented.
 Usage:
 
     python3 scripts/check-explain-coverage.py [--tau PATH]
-        [--errors-doc PATH] [--config-doc PATH] [--env-doc PATH]
-        [--compat-doc PATH]
+        [--errors-doc PATH] [--exit-codes-doc PATH] [--config-doc PATH]
+        [--env-doc PATH] [--compat-doc PATH]
 
 Exit codes: 0 = full coverage, 1 = coverage gap (each printed to stderr),
 2 = usage/IO error. Stdlib only — paths resolve relative to the script,
@@ -97,6 +100,16 @@ def error_entries(catalog: Path):
     pairs = set(ERROR_PAIR.findall(catalog.read_text(encoding="utf-8")))
     if not pairs:
         raise OSError(f"no `| `<code>` | `<type>` |` rows parsed from {catalog}")
+    return pairs
+
+
+def exit_code_entries(catalog: Path):
+    """{(code, name)} pairs from the docs/exit-codes.md catalog table."""
+    if not catalog.is_file():
+        raise OSError(f"exit-codes catalog not found: {catalog}")
+    pairs = set(ERROR_PAIR.findall(catalog.read_text(encoding="utf-8")))
+    if not pairs:
+        raise OSError(f"no `| `<code>` | `<name>` |` rows parsed from {catalog}")
     return pairs
 
 
@@ -174,6 +187,8 @@ def main(argv=None):
     ap.add_argument("--tau", default=str(ROOT / "zig-out" / "bin" / "tau"),
                     help="path to the tau binary")
     ap.add_argument("--errors-doc", type=Path, default=ROOT / "docs" / "errors.md")
+    ap.add_argument("--exit-codes-doc", type=Path,
+                    default=ROOT / "docs" / "exit-codes.md")
     ap.add_argument("--config-doc", type=Path, default=ROOT / "docs" / "config.md")
     ap.add_argument("--doctor-doc", type=Path,
                     default=ROOT / "docs" / "troubleshooting.md")
@@ -189,6 +204,7 @@ def main(argv=None):
 
     try:
         errors = error_entries(args.errors_doc)
+        exit_codes = exit_code_entries(args.exit_codes_doc)
         keys, members = config_entries(args.config_doc)
         checks = check_entries(args.doctor_doc)
         env_names = env_entries(args.env_doc)
@@ -213,6 +229,20 @@ def main(argv=None):
             problems.append(
                 f"errors.md type `{tag}` does not resolve to code {code} via "
                 f"`tau explain {tag}` (exit {rc})"
+            )
+    for code, name in sorted(exit_codes, key=lambda p: int(p[0])):
+        rc, out = explain(args.tau, f"exit.{code}")
+        if rc != 0 or f'"exit":{code}' not in out or f'"name":"{name}"' not in out:
+            problems.append(
+                f"exit-codes.md code {code} (`{name}`) does not resolve to a "
+                f"real `tau explain exit.{code}` entry (exit {rc}) — an "
+                "out-of-table code exits 1 instead of passing vacuously"
+            )
+        rc, out = explain(args.tau, f"exit.{name}")
+        if rc != 0 or f'"exit":{code}' not in out:
+            problems.append(
+                f"exit-codes.md name `{name}` does not resolve to code {code} "
+                f"via `tau explain exit.{name}` (exit {rc})"
             )
     for key in sorted(keys):
         rc, out = explain(args.tau, key)
@@ -303,6 +333,14 @@ def main(argv=None):
                         f"`tau explain` lists client `{entry.get('client')}` "
                         "but it is absent from the supported-clients matrix "
                         "in docs/compatibility.md — regenerate the catalog"
+                    )
+            documented_exits = {code for code, _ in exit_codes}
+            for entry in live.get("exit_codes", []):
+                if str(entry.get("exit")) not in documented_exits:
+                    problems.append(
+                        f"`tau explain` lists exit {entry.get('exit')} but it "
+                        "is absent from docs/exit-codes.md — regenerate the "
+                        "catalog"
                     )
 
     for p in problems:

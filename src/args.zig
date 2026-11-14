@@ -529,10 +529,11 @@ pub fn parse(
         return .{ .action = .guide, .config = gcfg };
     }
 
-    // `tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>]
+    // `tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|exit.<code>>]
     // [--json|--human]` — offline catalog lookup (the error Spec registry
-    // behind docs/errors.md plus the config-key, doctor-check, env-var,
-    // and client catalogs behind docs/config.md, docs/troubleshooting.md,
+    // behind docs/errors.md plus the exit-code, config-key, doctor-check,
+    // env-var, and client catalogs behind docs/exit-codes.md,
+    // docs/config.md, docs/troubleshooting.md,
     // docs/env.md, and docs/compatibility.md). The output is JSON by
     // default; --json is the stable-contract spelling that
     // pins the schema-checked form (schema/tau-explain.schema.json), --human

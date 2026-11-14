@@ -1,8 +1,11 @@
 //! `tau explain` — the offline catalog lookup surface (no provider or API
-//! key needed). A query resolves against FIVE registries:
+//! key needed). A query resolves against SIX registries:
 //!
 //!   * the stable error catalog (src/errors.zig — mirrored by docs/errors.md)
 //!     addressed by decimal exit code or case-insensitive `type` tag,
+//!   * the process exit-code catalog (src/exitcodes.zig — mirrored by the
+//!     generated docs/exit-codes.md scripting contract) addressed by
+//!     `exit.<code>` or `exit.<name>`,
 //!   * the config-key catalog (src/configschema.zig — derived from the same
 //!     FileConfig/fieldMeta that generates the schema and docs/config.md)
 //!     addressed by exact key name or a `keys.<provider>` member path,
@@ -15,17 +18,19 @@
 //!     src/setup.zig rendered by docs/compatibility.md) addressed by
 //!     `client.<name>` or a bare `--client` name/alias.
 //!
-//! Error entries render as {code,type,recoverable,cause,hint,docs}; key
-//! entries as {key,type,constraints,description,docs}; check entries as
+//! Error entries render as {code,type,recoverable,cause,hint,docs}; exit
+//! entries as {exit,name,meaning,scripting,docs}; key entries as
+//! {key,type,constraints,description,docs}; check entries as
 //! {check,fails_when,remediation,docs}; env entries as
 //! {env,section,consumers,summary,docs}; client entries as
 //! {client,transport,wiring,prereqs,setup,config_dir,settings_path,
-//! snippet_path,bridge_path?,verify,doctor_check,docs}. All five shapes are
+//! snippet_path,bridge_path?,verify,doctor_check,docs}. All six shapes are
 //! pinned by schema/tau-explain.schema.json and by the tests/golden/ex-*
 //! snapshots.
 
 const std = @import("std");
 const errors = @import("errors.zig");
+const exitcodes = @import("exitcodes.zig");
 const cfgschema = @import("configschema.zig");
 const doctorcat = @import("doctorcatalog.zig");
 const envvars = @import("envvars.zig");
@@ -33,11 +38,12 @@ const clientcat = @import("clientcatalog.zig");
 const setup = @import("setup.zig");
 const suggest = @import("suggest.zig");
 
-/// A resolved `tau explain` query — a stable error entry, a config-key
-/// entry, a doctor-check entry, a TAU_* env-var entry, or a supported
-/// editor-client entry.
+/// A resolved `tau explain` query — a stable error entry, a process
+/// exit-code entry, a config-key entry, a doctor-check entry, a TAU_*
+/// env-var entry, or a supported editor-client entry.
 pub const Entry = union(enum) {
     err: errors.Spec,
+    exit: exitcodes.Spec,
     key: cfgschema.KeySpec,
     check: doctorcat.CheckSpec,
     env: envvars.Spec,
@@ -46,17 +52,21 @@ pub const Entry = union(enum) {
 
 /// Resolve a query: error catalog first (decimal exit code, or `type` tag
 /// matched case-insensitively — so `tau explain timeout` keeps meaning the
-/// Timeout error, not a config key), then the config-key catalog, then the
+/// Timeout error, not a config key), then the exit-code catalog (only the
+/// `exit.<code>`/`exit.<name>` spellings reach it — bare codes already
+/// resolved as errors above), then the config-key catalog, then the
 /// doctor-check catalog, then the TAU_* env-var catalog, then the client
-/// catalog. The `doctor.<id>` and `client.<name>` prefixes skip the shared
-/// namespace: `api_key` resolves the config key while `doctor.api_key`
-/// resolves the check of the same name; `client.zed` resolves the editor
-/// client while bare `client_zed` keeps resolving the doctor check. Env-var
-/// names are exact (uppercase) — `TAU_*` spellings cannot collide with the
-/// other catalogs, so they need no prefix. Returns null when nothing
-/// matches.
+/// catalog. The `doctor.<id>`, `client.<name>`, and `exit.<code>` prefixes
+/// skip the shared namespace: `api_key` resolves the config key while
+/// `doctor.api_key` resolves the check of the same name; `client.zed`
+/// resolves the editor client while bare `client_zed` keeps resolving the
+/// doctor check; `80` resolves the invalid_argument error while `exit.80`
+/// resolves the process-status scripting contract. Env-var names are exact
+/// (uppercase) — `TAU_*` spellings cannot collide with the other catalogs,
+/// so they need no prefix. Returns null when nothing matches.
 pub fn resolve(query: []const u8) ?Entry {
     if (errors.findSpec(query)) |s| return .{ .err = s };
+    if (exitcodes.findSpec(query)) |s| return .{ .exit = s };
     if (cfgschema.findKey(query)) |ks| return .{ .key = ks };
     if (doctorcat.findCheck(query)) |cs| return .{ .check = cs };
     if (envvars.findSpec(std.mem.trim(u8, query, " \t"))) |s| return .{ .env = s };
@@ -65,17 +75,23 @@ pub fn resolve(query: []const u8) ?Entry {
 }
 
 /// Every query `tau explain` resolves — each catalog `type_name` and decimal
-/// code, each config-key name and `keys.<provider>` member path, each
-/// doctor-check id in both `doctor.<id>` and bare spellings, each TAU_*
-/// env-var name, and each client name in both `client.<name>` and bare
-/// spellings — so a suggestion always resolves on retry.
+/// code, each `exit.<code>` and `exit.<name>` spelling, each config-key name
+/// and `keys.<provider>` member path, each doctor-check id in both
+/// `doctor.<id>` and bare spellings, each TAU_* env-var name, and each client
+/// name in both `client.<name>` and bare spellings — so a suggestion always
+/// resolves on retry.
 const candidates = blk: {
-    var c: [errors.specs.len * 2 + cfgschema.key_catalog.len + cfgschema.deprecated_key_specs.len + doctorcat.check_catalog.len * 2 + envvars.names.len + setup.all_clients.len * 2][]const u8 = undefined;
+    var c: [errors.specs.len * 2 + exitcodes.specs.len * 2 + cfgschema.key_catalog.len + cfgschema.deprecated_key_specs.len + doctorcat.check_catalog.len * 2 + envvars.names.len + setup.all_clients.len * 2][]const u8 = undefined;
     for (errors.specs, 0..) |s, i| {
         c[i * 2] = s.type_name;
         c[i * 2 + 1] = std.fmt.comptimePrint("{d}", .{s.code});
     }
     var n = errors.specs.len * 2;
+    for (exitcodes.specs) |s| {
+        c[n] = std.fmt.comptimePrint("exit.{d}", .{s.code});
+        c[n + 1] = "exit." ++ s.name;
+        n += 2;
+    }
     for (cfgschema.key_catalog) |ks| {
         c[n] = ks.name;
         n += 1;
@@ -150,7 +166,8 @@ pub fn suggestQuery(a: std.mem.Allocator, query: []const u8) ?[]const u8 {
 
 /// Serialize one resolved entry for `tau explain` (no trailing newline — the
 /// caller owns framing). Error entries keep the pinned
-/// {code,type,recoverable,cause,hint,docs} shape; key entries are
+/// {code,type,recoverable,cause,hint,docs} shape; exit entries are
+/// {exit,name,meaning,scripting,docs}; key entries are
 /// {key,type,constraints,description,docs}; check entries are
 /// {check,fails_when,remediation,docs}; env entries are
 /// {env,section,consumers,summary,docs}; client entries are the
@@ -158,6 +175,7 @@ pub fn suggestQuery(a: std.mem.Allocator, query: []const u8) ?[]const u8 {
 pub fn formatEntryJson(a: std.mem.Allocator, entry: Entry) ![]u8 {
     return switch (entry) {
         .err => |s| errors.formatEntryJson(a, s),
+        .exit => |s| exitcodes.formatExitJson(a, s),
         .key => |ks| cfgschema.formatKeyJson(a, ks),
         .check => |cs| doctorcat.formatCheckJson(a, cs),
         .env => |s| envvars.formatEnvJson(a, s),
@@ -171,6 +189,7 @@ pub fn formatEntryJson(a: std.mem.Allocator, entry: Entry) ![]u8 {
 pub fn formatEntryHuman(a: std.mem.Allocator, entry: Entry) ![]u8 {
     return switch (entry) {
         .err => |s| errors.formatEntryHuman(a, s),
+        .exit => |s| exitcodes.formatExitHuman(a, s),
         .key => |ks| cfgschema.formatKeyHuman(a, ks),
         .check => |cs| doctorcat.formatCheckHuman(a, cs),
         .env => |s| envvars.formatEnvHuman(a, s),
@@ -181,7 +200,7 @@ pub fn formatEntryHuman(a: std.mem.Allocator, entry: Entry) ![]u8 {
 /// The whole catalog as one JSON object (trailing newline included):
 /// {"errors":[<error entry>, ...],"config_keys":[<key entry>, ...],
 ///  "doctor_checks":[<check entry>, ...],"env_vars":[<env entry>, ...],
-///  "clients":[<client entry>, ...]}
+///  "clients":[<client entry>, ...],"exit_codes":[<exit entry>, ...]}
 /// Caller owns the returned slice.
 pub fn formatCatalogJson(a: std.mem.Allocator) ![]u8 {
     var b: std.ArrayList(u8) = .empty;
@@ -210,13 +229,19 @@ pub fn formatCatalogJson(a: std.mem.Allocator) ![]u8 {
         if (i > 0) try b.appendSlice(a, ",");
         try b.appendSlice(a, try clientcat.formatClientJson(a, try clientcat.specFor(a, k)));
     }
+    try b.appendSlice(a, "],\"exit_codes\":[");
+    for (exitcodes.specs, 0..) |s, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try b.appendSlice(a, try exitcodes.formatExitJson(a, s));
+    }
     try b.appendSlice(a, "]}\n");
     return b.toOwnedSlice(a);
 }
 
 /// The whole catalog as prose — error entries, then config-key entries, then
-/// doctor-check entries, then env-var entries, then client entries, each
-/// separated by a blank line. Caller owns the returned slice.
+/// doctor-check entries, then env-var entries, then client entries, then
+/// exit-code entries, each separated by a blank line. Caller owns the
+/// returned slice.
 pub fn formatCatalogHuman(a: std.mem.Allocator) ![]u8 {
     var b: std.ArrayList(u8) = .empty;
     for (errors.specs, 0..) |s, i| {
@@ -238,6 +263,10 @@ pub fn formatCatalogHuman(a: std.mem.Allocator) ![]u8 {
     for (setup.all_clients) |k| {
         try b.appendSlice(a, "\n");
         try b.appendSlice(a, try clientcat.formatClientHuman(a, try clientcat.specFor(a, k)));
+    }
+    for (exitcodes.specs) |s| {
+        try b.appendSlice(a, "\n");
+        try b.appendSlice(a, try exitcodes.formatExitHuman(a, s));
     }
     return b.toOwnedSlice(a);
 }
@@ -282,6 +311,29 @@ test "resolve: error catalog wins over keys and nothing bogus resolves" {
     try testing.expect(resolve("0") == null);
     try testing.expect(resolve("Provider") == null);
     try testing.expect(resolve("TAU_NOPE") == null);
+    try testing.expect(resolve("exit.bogus") == null);
+}
+
+test "resolve: exit.<code> and exit.<name> resolve to exit entries" {
+    const zero = resolve("exit.0").?;
+    try testing.expect(zero == .exit);
+    try testing.expectEqual(@as(u8, 0), zero.exit.code);
+    try testing.expectEqualStrings("success", zero.exit.name);
+    const code = resolve("exit.80").?;
+    try testing.expect(code == .exit);
+    try testing.expectEqual(@as(u8, 80), code.exit.code);
+    const name = resolve("exit.connection_timeout").?;
+    try testing.expect(name == .exit);
+    try testing.expectEqual(@as(u8, 105), name.exit.code);
+    // Bare codes keep resolving error entries — the `exit.` prefix is what
+    // selects the scripting-contract view.
+    const bare = resolve("80").?;
+    try testing.expect(bare == .err);
+    try testing.expectEqual(@as(u8, 80), bare.err.code);
+    // The `exit.` namespace fails closed — no uncataloged-code fallback.
+    try testing.expect(resolve("exit.42") == null);
+    try testing.expect(resolve("exit.") == null);
+    try testing.expect(resolve("success") == null);
 }
 
 test "resolve: TAU_* env vars resolve to env entries" {
@@ -350,6 +402,8 @@ test "suggestQuery covers error codes, types, config keys, env vars, and clients
     const a = ar.allocator();
     try testing.expectEqualStrings(" — did you mean \"tau explain AuthFailed\"?", suggestQuery(a, "authfaild").?);
     try testing.expectEqualStrings(" — did you mean \"tau explain 106\"?", suggestQuery(a, "1066").?);
+    try testing.expectEqualStrings(" — did you mean \"tau explain exit.106\"?", suggestQuery(a, "exit.1066").?);
+    try testing.expectEqualStrings(" — did you mean \"tau explain exit.success\"?", suggestQuery(a, "exit.succes").?);
     try testing.expectEqualStrings(" — did you mean \"tau explain timeout_ms\"?", suggestQuery(a, "timout_ms").?);
     try testing.expectEqualStrings(" — did you mean \"tau explain keys.openai\"?", suggestQuery(a, "keys.openia").?);
     try testing.expectEqualStrings(" — did you mean \"tau explain provider\"?", suggestQuery(a, "Provider").?);
@@ -387,9 +441,12 @@ test "formatEntryJson dispatches per entry kind" {
     try testing.expect(std.mem.indexOf(u8, env, "\"env\":\"TAU_ENDPOINT\"") != null);
     const client = try formatEntryJson(a, .{ .client = .zed });
     try testing.expect(std.mem.indexOf(u8, client, "\"client\":\"zed\"") != null);
+    const exit_entry = try formatEntryJson(a, .{ .exit = exitcodes.findSpec("exit.0").? });
+    try testing.expect(std.mem.indexOf(u8, exit_entry, "\"exit\":0") != null);
+    try testing.expect(std.mem.indexOf(u8, exit_entry, "\"name\":\"success\"") != null);
 }
 
-test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + clients arrays" {
+test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + clients + exit_codes arrays" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -400,6 +457,7 @@ test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + 
     try testing.expect(std.mem.indexOf(u8, cat, "\"doctor_checks\":[") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "\"env_vars\":[") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "\"clients\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, cat, "\"exit_codes\":[") != null);
     // Every catalog member appears exactly once — flat keys and members.
     for (cfgschema.key_catalog) |ks| {
         var buf: [80]u8 = undefined;
@@ -421,15 +479,21 @@ test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + 
         const needle = std.fmt.bufPrint(&buf, "\"client\":\"{s}\"", .{setup.clientName(k)}) catch unreachable;
         try testing.expect(std.mem.indexOf(u8, cat, needle) != null);
     }
+    for (exitcodes.specs) |s| {
+        var buf: [80]u8 = undefined;
+        const needle = std.fmt.bufPrint(&buf, "\"exit\":{d}", .{s.code}) catch unreachable;
+        try testing.expect(std.mem.indexOf(u8, cat, needle) != null);
+    }
     // The catalog JSON must parse cleanly.
     const v = try std.json.parseFromSliceLeaky(std.json.Value, a, cat, .{});
     try testing.expect(v.object.get("config_keys").?.array.items.len == cfgschema.key_catalog.len);
     try testing.expect(v.object.get("doctor_checks").?.array.items.len == doctorcat.check_catalog.len);
     try testing.expect(v.object.get("env_vars").?.array.items.len == envvars.specs.len);
     try testing.expect(v.object.get("clients").?.array.items.len == setup.all_clients.len);
+    try testing.expect(v.object.get("exit_codes").?.array.items.len == exitcodes.specs.len);
 }
 
-test "formatCatalogHuman renders all five sections" {
+test "formatCatalogHuman renders all six sections" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -444,4 +508,6 @@ test "formatCatalogHuman renders all five sections" {
     try testing.expect(std.mem.indexOf(u8, cat, "client  zed (acp · direct)") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "client  claude-desktop (mcacp · direct)") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "client  goose (mcacp · snippet)") != null);
+    try testing.expect(std.mem.indexOf(u8, cat, "exit 0  success") != null);
+    try testing.expect(std.mem.indexOf(u8, cat, "exit 106  auth_failed") != null);
 }

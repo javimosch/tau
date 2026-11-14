@@ -300,11 +300,12 @@ _tau() {
 
                 explain)
                     # Exit codes mirror the stable catalog in src/errors.zig;
-                    # config keys mirror the generated docs/config.md table;
-                    # doctor.* ids mirror the CheckSpec catalog in
-                    # src/doctorcatalog.zig; TAU_* names mirror the Spec
-                    # registry in src/envvars.zig; client.* names mirror the
-                    # ClientKind tables in src/setup.zig.
+                    # exit.* codes+names mirror the Spec registry in
+                    # src/exitcodes.zig; config keys mirror the generated
+                    # docs/config.md table; doctor.* ids mirror the CheckSpec
+                    # catalog in src/doctorcatalog.zig; TAU_* names mirror the
+                    # Spec registry in src/envvars.zig; client.* names mirror
+                    # the ClientKind tables in src/setup.zig.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -313,6 +314,16 @@ _tau() {
                         '106:AuthFailed'
                         '110:internal_error'
                         '111:unimplemented'
+                    )
+                    local -a exit_codes=(
+                        'exit.0:success' 'exit.1:generic_failure'
+                        'exit.80:invalid_argument' 'exit.82:missing_required_field'
+                        'exit.105:connection_timeout' 'exit.106:auth_failed'
+                        'exit.110:internal_error' 'exit.111:unimplemented'
+                        'exit.success:exit code' 'exit.generic_failure:exit code'
+                        'exit.invalid_argument:exit code' 'exit.missing_required_field:exit code'
+                        'exit.connection_timeout:exit code' 'exit.auth_failed:exit code'
+                        'exit.internal_error:exit code' 'exit.unimplemented:exit code'
                     )
                     local -a cfg_keys=(
                         '$schema:config key' 'provider:config key' 'model:config key'
@@ -395,7 +406,7 @@ _tau() {
                         'client.codex:editor client'
                     )
                     _arguments \
-                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, or client" err_codes cfg_keys checks env_vars clients' \
+                        '1: :_describe "error code/type, exit code, config key, doctor check, TAU_* env var, or client" err_codes exit_codes cfg_keys checks env_vars clients' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]'
                     ;;

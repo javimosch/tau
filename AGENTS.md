@@ -92,6 +92,11 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `110` | Internal error (HTTP failure, JSON parse error, etc.) |
 | `111` | Unimplemented |
 
+The scripting contract (what each status means, where a script reads the
+detail) is generated into `docs/exit-codes.md` — readable offline via
+`tau explain exit.<code>` (or `exit.<name>`); `tau explain <code>` stays
+the error-envelope entry.
+
 ### Tools Reference
 
 All tools send JSON-schema'd parameters to the model. Allowlist with `--tools <csv>`, denylist with `--exclude-tools <csv>`, disable all with `--no-tools`.

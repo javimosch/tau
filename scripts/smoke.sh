@@ -108,6 +108,7 @@ ALL_TEST_GROUPS=(
   "versioned-schemas:test_group_versioned_schemas"
   "explain:test_group_explain"
   "explain-coverage:test_group_explain_coverage"
+  "exit-codes-doc:test_group_exit_codes_doc"
   "env-doc:test_group_env_doc"
   "env-warn:test_group_env_warn"
   "golden-maintenance:test_group_golden_maintenance"
@@ -4496,6 +4497,16 @@ test_group_golden_maintenance() {
   golden_check ex-client-unknown   1 "$BIN" explain client.bogus
   golden_check ex-dym-client       1 "$BIN" explain client.zde
 
+  # Exit-code lookups — mirror rows of the generated docs/exit-codes.md
+  # scripting contract (`exit.<code>`/`exit.<name>` spellings only; bare
+  # decimals stay error entries).
+  golden_check ex-exit-code        0 "$BIN" explain exit.80
+  golden_check ex-exit-zero        0 "$BIN" explain exit.0
+  golden_check ex-exit-name        0 "$BIN" explain exit.auth_failed
+  golden_check ex-exit-human       0 "$BIN" explain --human exit.1
+  golden_check ex-exit-unknown     1 "$BIN" explain exit.42
+  golden_check ex-dym-exit         1 "$BIN" explain exit.succes
+
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
   mkdir -p "$stubs"
@@ -4828,6 +4839,54 @@ test_group_env_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/env.md.bak" "$doc"
   else
     skip_test "env-doc: --check detects a stale doc" "docs/env.md missing"
+  fi
+}
+
+# Group: generated docs/exit-codes.md drift check
+# docs/exit-codes.md is generated from the process exit-status Spec registry
+# in src/exitcodes.zig — the same registry `tau explain exit.<code>` renders —
+# by scripts/gen-exit-codes-doc.py; --check regenerates in memory and fails
+# on drift.
+test_group_exit_codes_doc() {
+  note "generated docs/exit-codes.md drift check"
+
+  local doc="$ROOT/docs/exit-codes.md"
+  local gen="$ROOT/scripts/gen-exit-codes-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "exit-codes-doc: docs/exit-codes.md exists" 0 0
+    contains "exit-codes-doc: doc declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "exit-codes-doc: docs/exit-codes.md exists" 1 0
+    contains "exit-codes-doc: doc declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "exit-codes-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "exit-codes-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "exit-codes-doc: --check passes (no drift)" 0 0
+  else
+    ok "exit-codes-doc: --check passes (no drift)" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/exit-codes.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "exit-codes-doc: --check detects a stale doc" 0 1
+    else
+      ok "exit-codes-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/exit-codes.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/exit-codes.md.bak" "$doc"
+  else
+    skip_test "exit-codes-doc: --check detects a stale doc" "docs/exit-codes.md missing"
   fi
 }
 
@@ -5781,7 +5840,7 @@ test_group_explain() {
   capture k7 "$BIN" explain agent.timeout
   ok "explain: unknown dotted path exits 1" "$k7_rc" 1
   contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
-  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, or client'
+  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, client, or exit code'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
@@ -5940,6 +5999,44 @@ test_group_explain() {
   contains "explain: unknown client emits not_found" "$c9_err" '"type":"not_found"'
   lacks "explain: unknown client gets no suggestion" "$c9_err" 'did you mean'
 
+  # Exit-code lookups — mirror rows of the generated docs/exit-codes.md
+  # scripting contract: `exit.<code>` and `exit.<name>` spellings. The
+  # prefix is what selects this registry — bare `80` stays the error
+  # entry (r1 above already proves it).
+  capture x1 "$BIN" explain exit.0
+  ok "explain: exit code exits 0" "$x1_rc" 0
+  contains "explain: exit entry carries code" "$x1_out" '"exit":0'
+  contains "explain: exit entry carries name" "$x1_out" '"name":"success"'
+  contains "explain: exit entry carries meaning" "$x1_out" '"meaning":"the command completed'
+  contains "explain: exit entry carries scripting" "$x1_out" '"scripting":"no {\"err\"} envelope'
+  contains "explain: exit entry links exit-codes.md" "$x1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/exit-codes.md"'
+
+  capture x2 "$BIN" explain exit.auth_failed
+  ok "explain: exit name exits 0" "$x2_rc" 0
+  contains "explain: name spelling resolves the code" "$x2_out" '"exit":106'
+
+  capture x3 "$BIN" explain --human exit.80
+  ok "explain: --human exit exits 0" "$x3_rc" 0
+  contains "explain: --human prints exit+name" "$x3_out" 'exit 80  invalid_argument'
+  contains "explain: --human prints meaning" "$x3_out" 'meaning:   an unknown flag'
+  contains "explain: --human prints scripting" "$x3_out" 'scripting: read the'
+
+  # The `exit.` namespace fails closed — no uncataloged-code fallback
+  # like the bare-decimal error lookup has.
+  capture x4 "$BIN" explain exit.42
+  ok "explain: out-of-table exit code exits 1" "$x4_rc" 1
+  contains "explain: out-of-table exit emits not_found" "$x4_err" '"type":"not_found"'
+
+  # The no-query catalog carries the sixth slice.
+  contains "explain: catalog lists exit codes" "$r3_out" '"exit_codes":['
+  contains "explain: catalog includes exit 0" "$r3_out" '"exit":0'
+  contains "explain: catalog includes a named exit" "$r3_out" '"name":"connection_timeout"'
+
+  # Exit-entry typos get the same did-you-mean as the other registries.
+  capture x5 "$BIN" explain exit.succes
+  ok "explain: exit name typo exits 1" "$x5_rc" 1
+  contains "explain: exit typo suggests exit.success" "$x5_err" 'did you mean \"tau explain exit.success\"?'
+
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
   ok "explain: bad flag exits 80" "$r8_rc" 80
@@ -6049,6 +6146,7 @@ test_group_explain_coverage() {
   if ! command -v python3 >/dev/null 2>&1; then
     skip_test "explain-coverage: every catalog entry resolves via tau explain" "python3 not on PATH"
     skip_test "explain-coverage: checker detects an unresolvable error row" "python3 not on PATH"
+    skip_test "explain-coverage: checker detects an unresolvable exit-code row" "python3 not on PATH"
     skip_test "explain-coverage: checker detects an unresolvable config key" "python3 not on PATH"
     skip_test "explain-coverage: checker detects an unresolvable env var" "python3 not on PATH"
     return 0
@@ -6072,6 +6170,17 @@ test_group_explain_coverage() {
     ok "explain-coverage: checker detects an unresolvable error row" 0 1
   else
     ok "explain-coverage: checker detects an unresolvable error row" 0 0
+  fi
+
+  # Same for an exit-codes.md row with no matching exitcodes.Spec — the
+  # `exit.` namespace fails closed (exit.42 exits 1), so a staged row can
+  # never pass vacuously either direction.
+  cp "$ROOT/docs/exit-codes.md" "$stage/exit-codes.md"
+  printf '| `42` | `ghost` | staged | staged |\n' >> "$stage/exit-codes.md"
+  if python3 "$check" --tau "$BIN" --exit-codes-doc "$stage/exit-codes.md" >/dev/null 2>&1; then
+    ok "explain-coverage: checker detects an unresolvable exit-code row" 0 1
+  else
+    ok "explain-coverage: checker detects an unresolvable exit-code row" 0 0
   fi
 
   # Same for a config.md key row with no matching config field — the

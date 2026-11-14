@@ -61,6 +61,9 @@ stdout):
   (`internal_error` type, its own `code`); a small number of paths exit
   silently with no envelope. The full catalog and the silent-exit table:
   [docs/errors.md](errors.md) — readable offline via `tau explain <code>`.
+  The process-status scripting contract (what each status means for a
+  script branching on `$?`): [docs/exit-codes.md](exit-codes.md) —
+  readable offline via `tau explain exit.<code>`.
 
 The stable codes today:
 
@@ -91,7 +94,7 @@ added; existing fields keep their names, types, and meaning):
 | `tau config schema` | JSON Schema (draft 2020-12) | [schema/tau-config.schema.json](../schema/tau-config.schema.json) + [docs/config.md](config.md) |
 | `tau config show [--json]` | resolved effective config, secrets masked | [schema/tau-config-show.schema.json](../schema/tau-config-show.schema.json) + [docs/configuration.md](configuration.md) |
 | `tau config validate [--json]` | `{"path","ok","errors":[{key,message}]}` on stdout; exit 0/1/80 | [schema/tau-config-validate.schema.json](../schema/tau-config-validate.schema.json) |
-| `tau explain [--json]` | `{code,type,recoverable,cause,hint,docs}` error entry, `{key,type,constraints,description,docs}` config-key entry (`<key>` or `keys.<provider>`), `{check,fails_when,remediation,docs}` doctor-check entry (`doctor.<check>` or bare check id), `{env,section,consumers,summary,docs}` env-var entry (`TAU_<VAR>`), `{client,transport,wiring,prereqs,setup,config_dir,settings_path,snippet_path,bridge_path?,verify,doctor_check,docs}` client entry (`client.<name>` or a bare `--client` name/alias), or `{"errors":[…],"config_keys":[…],"doctor_checks":[…],"env_vars":[…],"clients":[…]}` catalog | [schema/tau-explain.schema.json](../schema/tau-explain.schema.json) + [docs/errors.md](errors.md) + [docs/config.md](config.md) + [docs/troubleshooting.md](troubleshooting.md) + [docs/env.md](env.md) + [docs/compatibility.md](compatibility.md) |
+| `tau explain [--json]` | `{code,type,recoverable,cause,hint,docs}` error entry, `{exit,name,meaning,scripting,docs}` exit-code entry (`exit.<code>` or `exit.<name>`), `{key,type,constraints,description,docs}` config-key entry (`<key>` or `keys.<provider>`), `{check,fails_when,remediation,docs}` doctor-check entry (`doctor.<check>` or bare check id), `{env,section,consumers,summary,docs}` env-var entry (`TAU_<VAR>`), `{client,transport,wiring,prereqs,setup,config_dir,settings_path,snippet_path,bridge_path?,verify,doctor_check,docs}` client entry (`client.<name>` or a bare `--client` name/alias), or `{"errors":[…],"config_keys":[…],"doctor_checks":[…],"env_vars":[…],"clients":[…],"exit_codes":[…]}` catalog | [schema/tau-explain.schema.json](../schema/tau-explain.schema.json) + [docs/errors.md](errors.md) + [docs/exit-codes.md](exit-codes.md) + [docs/config.md](config.md) + [docs/troubleshooting.md](troubleshooting.md) + [docs/env.md](env.md) + [docs/compatibility.md](compatibility.md) |
 | `--help-json` | `{"version","name","description","flags","goal_commands","output_modes","defaults","exit_codes"}` | this file |
 | `tau models` | `{"providers":[{name,default_model,...}]}` | this file |
 | `tau skills list` / `search` | `{"skills":[{name,description}]}` | this file |
@@ -260,7 +263,8 @@ Special rules:
   `scripts/check-error-golden-coverage.py` gates that every catalog exit
   code is exercised by at least one of them.
 - `scripts/check-explain-coverage.py` gates that every catalog row in
-  [docs/errors.md](errors.md), [docs/config.md](config.md), the
+  [docs/errors.md](errors.md), [docs/exit-codes.md](exit-codes.md),
+  [docs/config.md](config.md), the
   generated check table in [docs/troubleshooting.md](troubleshooting.md),
   [docs/env.md](env.md), and the client matrix in
   [docs/compatibility.md](compatibility.md) resolves to a real
