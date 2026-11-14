@@ -1491,6 +1491,18 @@ test_group_doctor() {
   fi
   rm -rf "$mock_home/.config/zed"; rm -f "$mock_config/config.json"
 
+  # 14c. Empty TAU_* env vars: a warn-only row names each set-but-empty var
+  #     (sorted); real values and non-TAU_* empties don't trigger it.
+  capture doc_envempty _env_no_tau env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_ENDPOINT= TAU_DEBUG_LOG= HOME="$mock_home" "$BIN" doctor --offline --api-key k
+  contains "empty TAU_* row warns" "$doc_envempty_out" '"name":"tau_env_empty","status":"warn"'
+  contains "empty row names both vars sorted" "$doc_envempty_out" '\"TAU_DEBUG_LOG\", \"TAU_ENDPOINT\"'
+  contains "empty-var warn keeps exit ok" "$doc_envempty_out" '"ok":true'
+  contains "empty-var hint points at unset" "$doc_envempty_out" 'unset'
+  capture doc_envok _env_no_tau env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_YES=1 NOT_TAU_EMPTY= HOME="$mock_home" "$BIN" doctor --offline --api-key k
+  contains "no empty TAU_* vars is ok" "$doc_envok_out" '"name":"tau_env_empty","status":"ok"'
+
   # 15. Live probe paths against a local stub HTTP server: endpoint_reachable
   #     treats ANY HTTP response as reachable, and --deep maps the auth probe's
   #     HTTP status to ok/fail/warn. Requires python3 + curl.

@@ -1195,6 +1195,45 @@ fn checkTlsCa(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Ma
     return .{ .name = name, .status = .ok, .message = "system CA store" };
 }
 
+/// Check: `TAU_*` environment variables exported with an empty value. Every
+/// tau reader treats an empty value as unset (envFirst/len-guards everywhere),
+/// so the export never actually overrides the config file — but it *looks*
+/// like a configured layer in `env` output, survives every precedence audit,
+/// and usually means a stray `export VAR=` in a dotfile or a launcher that
+/// clears instead of unsets. Warn only; recognized and unrecognized names are
+/// flagged alike, sorted so the report stays deterministic.
+fn checkTauEnvEmpty(arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    const name = "tau_env_empty";
+    var empties: std.ArrayList([]const u8) = .empty;
+    for (env.keys()) |k| {
+        if (!std.mem.startsWith(u8, k, "TAU_")) continue;
+        const v = env.get(k) orelse continue;
+        if (v.len == 0) empties.append(arena, k) catch
+            return .{ .name = name, .status = .warn, .message = "out of memory" };
+    }
+    if (empties.items.len == 0)
+        return .{ .name = name, .status = .ok, .message = "no empty TAU_* env vars" };
+    std.mem.sort([]const u8, empties.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+    var list: std.ArrayList(u8) = .empty;
+    for (empties.items) |k| {
+        if (list.items.len > 0) list.appendSlice(arena, ", ") catch
+            return .{ .name = name, .status = .warn, .message = "out of memory" };
+        list.appendSlice(arena, std.fmt.allocPrint(arena, "\"{s}\"", .{k}) catch
+            return .{ .name = name, .status = .warn, .message = "out of memory" }) catch
+            return .{ .name = name, .status = .warn, .message = "out of memory" };
+    }
+    return .{
+        .name = name,
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "TAU_* env var{s} set to an empty value: {s}", .{ if (empties.items.len == 1) "" else "s", list.items }) catch "empty TAU_* env vars",
+        .hint = "unset them or assign real values — tau treats an empty TAU_* value as unset, so the export reads like an override but can't shadow the config file",
+    };
+}
+
 /// Check 5: endpoint reachable — any HTTP response counts (even 401/405);
 /// DNS/connect failure or timeout fails.
 fn checkEndpoint(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, curl_ok: bool) Check {
@@ -1698,6 +1737,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     // only report as "unreachable" behind corporate networks.
     try addCheck(arena, &checks, checkProxyEnv(arena, cfg, env), cfg);
     try addCheck(arena, &checks, checkTlsCa(io, arena, env), cfg);
+    try addCheck(arena, &checks, checkTauEnvEmpty(arena, env), cfg);
     try addCheck(arena, &checks, checkEndpoint(io, gpa, arena, cfg, curl_ok), cfg);
     try addCheck(arena, &checks, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok), cfg);
     if (cfg.doctor_probe) {
@@ -2311,6 +2351,51 @@ test "checkTlsCa: missing CA fails, valid bundle ok, proxy-without-CA warns" {
     const sys = checkTlsCa(testing.io, a, &home.env);
     try testing.expectEqual(CheckStatus.ok, sys.status);
     try testing.expectEqualStrings("system CA store", sys.message);
+}
+
+test "checkTauEnvEmpty: clean env ok, empty TAU_* warns with sorted names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    const clean = checkTauEnvEmpty(a, &env);
+    try testing.expectEqual(CheckStatus.ok, clean.status);
+    try testing.expectEqualStrings("no empty TAU_* env vars", clean.message);
+
+    // Non-empty values and non-TAU_* empties are ignored.
+    try env.put("TAU_YES", "1");
+    try env.put("HOME", "");
+    try env.put("EMPTY", "");
+    const still = checkTauEnvEmpty(a, &env);
+    try testing.expectEqual(CheckStatus.ok, still.status);
+
+    // One empty var — singular phrasing and the name in the message.
+    try env.put("TAU_ENDPOINT", "");
+    const one = checkTauEnvEmpty(a, &env);
+    try testing.expectEqual(CheckStatus.warn, one.status);
+    try testing.expect(std.mem.indexOf(u8, one.message, "\"TAU_ENDPOINT\"") != null);
+    try testing.expect(std.mem.indexOf(u8, one.message, "var set") != null);
+    try testing.expect(std.mem.indexOf(u8, one.hint.?, "unset") != null);
+
+    // Several empties sort deterministically; unrecognized names count too.
+    try env.put("TAU_DEBUG_LOG", "");
+    try env.put("TAU_UNKNOWN_VAR", "");
+    const many = checkTauEnvEmpty(a, &env);
+    try testing.expectEqual(CheckStatus.warn, many.status);
+    try testing.expect(std.mem.indexOf(u8, many.message, "vars set") != null);
+    const dl = std.mem.indexOf(u8, many.message, "\"TAU_DEBUG_LOG\"").?;
+    const ep = std.mem.indexOf(u8, many.message, "\"TAU_ENDPOINT\"").?;
+    const un = std.mem.indexOf(u8, many.message, "\"TAU_UNKNOWN_VAR\"").?;
+    try testing.expect(dl < ep and ep < un);
+
+    // A real value clears the warn — empty is the only trigger.
+    _ = env.swapRemove("TAU_ENDPOINT");
+    _ = env.swapRemove("TAU_DEBUG_LOG");
+    _ = env.swapRemove("TAU_UNKNOWN_VAR");
+    try env.put("TAU_API_KEY", "k");
+    const fixed = checkTauEnvEmpty(a, &env);
+    try testing.expectEqual(CheckStatus.ok, fixed.status);
 }
 
 /// A throwaway HOME under .zig-cache/tmp so checkConfigFile exercises its real

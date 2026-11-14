@@ -335,6 +335,7 @@ _tau() {
                         'doctor.curl:doctor check'
                         'doctor.proxy_env:doctor check'
                         'doctor.tls_ca:doctor check'
+                        'doctor.tau_env_empty:doctor check'
                         'doctor.endpoint_reachable:doctor check'
                         'doctor.auth_probe:doctor check'
                         'doctor.client_wiring:doctor check'
