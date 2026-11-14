@@ -1825,6 +1825,7 @@ PYEOF
     HOME="$wire_home" "$BIN" doctor --offline
   contains "no editors -> client_wiring skip row" "$doc_wire_none_out" '"name":"client_wiring","status":"skip"'
   contains "placeholder names the setup flag" "$doc_wire_none_out" 'tau setup --client'
+  contains "no editors -> clients_unwired skips too" "$doc_wire_none_out" '"name":"clients_unwired","status":"skip"'
 
   mkdir -p "$wire_home/.config/zed" "$wire_home/.config/nvim" "$wire_home/.emacs.d" "$wire_home/.config/opencode"
   capture doc_wire_missing env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
@@ -1836,6 +1837,11 @@ PYEOF
   contains "emacs skip points at the elisp snippet" "$doc_wire_missing_out" 'snippets/emacs.el'
   contains "opencode detected but unwired -> warn" "$doc_wire_missing_out" '"name":"client_opencode","status":"warn"'
   contains "opencode warn names the settings file" "$doc_wire_missing_out" 'opencode.json'
+  # The aggregate row lists installed-but-unwired clients only — manual-only
+  # editors (nvim/emacs) are excluded since their wiring can't be verified.
+  contains "clients_unwired aggregate warns" "$doc_wire_missing_out" '"name":"clients_unwired","status":"warn"'
+  contains "clients_unwired names zed + opencode" "$doc_wire_missing_out" 'installed but not wired to tau: zed, opencode'
+  contains "clients_unwired hint names setup --client" "$doc_wire_missing_out" 'tau setup --client zed'
   if printf '%s' "$doc_wire_missing_out" | grep -qF '"name":"client_vscode"'; then
     ok "undetected editors emit no row" 1 0
   else
@@ -1846,6 +1852,7 @@ PYEOF
     HOME="$wire_home" "$BIN" doctor --offline --fix --yes
   contains "wire fix applied for zed" "$doc_wire_fix_out" '"id":"wire_client_zed","check":"client_zed","status":"applied"'
   contains "zed re-diagnosed ok" "$doc_wire_fix_out" '"name":"client_zed","status":"ok"'
+  contains "clients_unwired clears once zed+opencode are wired" "$doc_wire_fix_out" '"name":"clients_unwired","status":"ok"'
   if [ -f "$wire_home/.config/zed/settings.json" ] && grep -q '"agent_servers"' "$wire_home/.config/zed/settings.json"; then
     ok "zed settings file written with agent_servers" 0 0
   else
@@ -1860,6 +1867,7 @@ PYEOF
   contains "stale vscode wiring warns" "$doc_wire_stale_out" '"name":"client_vscode","status":"warn"'
   contains "stale message names the dead path" "$doc_wire_stale_out" 'wired command does not exist: /nonexistent/tau'
   contains "stale fix writes a snippet" "$doc_wire_stale_out" '"id":"wire_client_vscode","check":"client_vscode","status":"applied"'
+  contains "stale vscode still listed as unwired" "$doc_wire_stale_out" 'installed but not wired to tau: vscode'
   if [ -f "$wire_home/.config/tau/snippets/vscode.jsonc" ] && grep -q '"acp.agents"' "$wire_home/.config/tau/snippets/vscode.jsonc"; then
     ok "corrected snippet written" 0 0
   else

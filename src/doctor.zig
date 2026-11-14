@@ -876,6 +876,46 @@ fn clientWiringChecks(io: std.Io, arena: std.mem.Allocator, env: *std.process.En
     return list.toOwnedSlice(arena);
 }
 
+/// Check: the installed-but-unwired inventory — one aggregate row naming
+/// every detected editor client whose settings carry no live `tau acp
+/// serve` wiring (missing file, unreadable/unparseable file, no tau entry,
+/// or a stale entry). The per-client `client_<name>` rows carry the detail;
+/// this row is the at-a-glance list with the `tau setup --client <name>`
+/// remediation. Snippet-only clients (nvim's Lua, Emacs's elisp, Goose and
+/// Continue's YAML, Codex's TOML) are excluded — doctor can't verify their
+/// wiring, so listing them would warn forever with no way to clear.
+fn checkUnwiredClients(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) !Check {
+    const home = env.get("HOME") orelse
+        return .{ .name = "clients_unwired", .status = .skip, .message = "skipped (HOME is not set)" };
+    var detected: usize = 0;
+    var unwired: std.ArrayList(u8) = .empty;
+    var first: ?[]const u8 = null;
+    for (setup.all_clients) |k| {
+        const w = setup.inspectClientWiring(io, arena, home, k) catch continue;
+        if (w.state == .not_detected) continue;
+        detected += 1;
+        switch (w.state) {
+            .missing_file, .unreadable, .unparseable, .no_entry, .stale => {
+                const n = setup.clientName(k);
+                if (unwired.items.len > 0) try unwired.appendSlice(arena, ", ");
+                try unwired.appendSlice(arena, n);
+                first = first orelse n;
+            },
+            .not_detected, .manual_only, .ok => {},
+        }
+    }
+    if (detected == 0)
+        return .{ .name = "clients_unwired", .status = .skip, .message = "skipped (no supported editor config dirs detected)" };
+    if (first == null)
+        return .{ .name = "clients_unwired", .status = .ok, .message = "no detected client is missing tau wiring" };
+    return .{
+        .name = "clients_unwired",
+        .status = .warn,
+        .message = std.fmt.allocPrint(arena, "installed but not wired to tau: {s}", .{unwired.items}) catch "installed clients are not wired to tau",
+        .hint = std.fmt.allocPrint(arena, "run 'tau setup --client <name>' for each — e.g. 'tau setup --client {s}' — or 'tau doctor --fix' to repair them", .{first.?}) catch "run 'tau setup --client <name>'",
+    };
+}
+
 /// Check 3: effective provider/model/endpoint/context_window after overrides.
 fn checkProvider(arena: std.mem.Allocator, cfg: Config) Check {
     if (cfg.doctor_bad_provider) |bad| {
@@ -1689,6 +1729,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
     try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
     for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
+    try addCheck(arena, &checks, try checkUnwiredClients(io, arena, env), cfg);
     try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
     const curl_check = checkCurl(io, gpa, arena);
     const curl_ok = curl_check.status == .ok;
@@ -3049,6 +3090,57 @@ test "clientWiringChecks: a sane entry is ok, including a bare command name" {
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqual(CheckStatus.ok, rows[0].status);
     try testing.expect(std.mem.indexOf(u8, rows[0].message, "tau wired") != null);
+}
+
+test "checkUnwiredClients: skip without HOME/editors, lists detected-but-unwired clients" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // No HOME -> skip.
+    var env_no_home = std.process.Environ.Map.init(a);
+    const no_home = try checkUnwiredClients(testing.io, a, &env_no_home);
+    try testing.expectEqualStrings("clients_unwired", no_home.name);
+    try testing.expectEqual(CheckStatus.skip, no_home.status);
+    try testing.expect(std.mem.indexOf(u8, no_home.message, "HOME is not set") != null);
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // No editor config dirs -> skip (the client_wiring row says the same).
+    const none = try checkUnwiredClients(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.skip, none.status);
+    try testing.expect(std.mem.indexOf(u8, none.message, "no supported editor config dirs") != null);
+
+    // zed (JSON client) + nvim (manual-only): only zed counts as unwired —
+    // snippet-only clients can't be verified, so they never join the list.
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home.home}));
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/nvim", .{home.home}));
+    const one = try checkUnwiredClients(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, one.status);
+    try testing.expectEqualStrings("installed but not wired to tau: zed", one.message);
+    try testing.expect(std.mem.indexOf(u8, one.hint.?, "tau setup --client zed") != null);
+
+    // A second unwired client joins the list in all_clients order.
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/opencode", .{home.home}));
+    const two = try checkUnwiredClients(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, two.status);
+    try testing.expectEqualStrings("installed but not wired to tau: zed, opencode", two.message);
+
+    // Wire zed with a sane entry -> zed drops off, opencode stays.
+    try std.Io.Dir.cwd().writeFile(testing.io, .{
+        .sub_path = try std.fmt.allocPrint(a, "{s}/.config/zed/settings.json", .{home.home}),
+        .data = "{\"agent_servers\": {\"tau\": {\"type\": \"custom\", \"command\": \"tau\", \"args\": [\"acp\", \"serve\"]}}}",
+    });
+    const half = try checkUnwiredClients(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, half.status);
+    try testing.expectEqualStrings("installed but not wired to tau: opencode", half.message);
+
+    // Nothing unwired left (zed wired, nvim manual-only) -> ok.
+    try std.Io.Dir.cwd().deleteTree(testing.io, try std.fmt.allocPrint(a, "{s}/.config/opencode", .{home.home}));
+    const done = try checkUnwiredClients(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, done.status);
+    try testing.expect(std.mem.indexOf(u8, done.message, "no detected client is missing tau wiring") != null);
 }
 
 // ---------------------------------------------------------------------------
