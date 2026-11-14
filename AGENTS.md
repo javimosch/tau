@@ -38,7 +38,7 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `-xt, --exclude-tools <csv>` | string | — | Denylist tool names |
 | `-nt, --no-tools` | flag | — | Disable all tools |
 | `--thinking` | flag | off | Show thinking/reasoning chunks |
-| `--debug` | flag | off | Log perf stats + tool I/O to stderr |
+| `--debug` | flag | off | Perf stats + tool I/O to stderr; also writes a redacted diagnostic log to `~/.config/tau/debug/` (override: `TAU_DEBUG_LOG`) |
 | `--dry-run` | flag | off | Plan tool calls, execute none |
 | `--temperature <f>` | float | 0.7 | Sampling temperature |
 | `--max-tokens <n>` | int | — | Cap output tokens |
@@ -56,7 +56,7 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `--max-iterations <n>` | int | 100 | Tool-loop runaway backstop |
 | `--goal-max-iterations <n>` | int | 50 | Per-run cap in goal mode |
 | `--help-json` | — | — | Machine-readable help as JSON |
-| `-h, --help` | — | — | Show help text |
+| `-h, --help` | — | — | Show help text (per-subcommand: `tau <sub> --help`) |
 | `-v, --version` | — | — | Show version |
 
 ### Output Formats
@@ -91,6 +91,11 @@ tau [flags] "@file.txt" "prompt"        # Inject file content + prompt
 | `106` | Auth failed (bad/missing API key) |
 | `110` | Internal error (HTTP failure, JSON parse error, etc.) |
 | `111` | Unimplemented |
+
+The scripting contract (what each status means, where a script reads the
+detail) is generated into `docs/exit-codes.md` — readable offline via
+`tau explain exit.<code>` (or `exit.<name>`); `tau explain <code>` stays
+the error-envelope entry.
 
 ### Tools Reference
 
@@ -191,7 +196,8 @@ tau --append-system-prompt "A" --append-system-prompt "B" "x"  # Repeatable
 #### 9. Dry-Run & Debugging
 ```bash
 tau --dry-run --tools bash "touch /tmp/x"   # Plan only, no execution
-tau --debug "test"                          # Stderr: perf stats + tool I/O
+tau --debug "test"                          # Stderr: perf stats + tool I/O;
+                                            # plus redacted ~/.config/tau/debug/<ts>.log
 tau --thinking "complex reasoning task"     # Show model's thinking chunks
 tau --max-iterations 1 --tools bash "x"     # Cap tool loops
 ```
@@ -239,6 +245,103 @@ tau --auto-agents-md \
   --mode text "follow project rules"     # Auto-load cwd/AGENTS.md
 ```
 
+#### 15. Diagnostics
+```bash
+tau doctor                             # JSON setup report; exit 0 ok/warn, 1 on any fail
+tau doctor --offline                   # Skip network checks (reported as "skip")
+tau doctor --deep                      # Also run an authenticated probe (max_tokens=1)
+tau doctor --probe                     # Live-verify connectivity + credentials for every provider
+tau doctor --selftest                  # Credential-free e2e check: self-spawn against a loopback stub
+tau doctor --provider openai           # Diagnose an override instead of the configured default
+tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
+tau doctor --report                  # Redacted Markdown bundle for bug reports
+tau doctor --json                    # NDJSON: {"check":{...},"done":false} per check, {"fix":{...}} under --fix, terminal {"ok":...,"done":true}
+# → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
+# --json stream contract: schema/tau-doctor.schema.json + docs/doctor-json.md
+#   tau doctor --json --offline | python3 scripts/check-doctor-schema.py -
+
+tau bug                              # Pre-filled GitHub issue URL + the redacted bundle
+tau bug --title "x" --body "desc"    # Fill the issue title + description
+tau bug --open                       # Launch the URL ($BROWSER, else open/xdg-open)
+tau bug --out report.md              # Also write the bundle to a file
+tau bug --no-report                  # Omit diagnostics (mutex with --out)
+# → {"title","labels","url","body","report","url_truncated","out","opened","done":true}
+# Exit 0 always; over-long bundles fall back to a short URL body
+# (url_truncated:true) — full text stays in body/report.
+```
+
+#### 16. Effective Config (`tau config show`)
+```bash
+tau config show                          # Resolved config (file+env+flags), keys redacted
+tau config show --provider openai        # Preview flag overrides without running
+tau config show --json                   # Pin the stable JSON form for scripts
+# → {"config_file":{...},"provider":"openai","api_key":{"set":true,"value":"***wxyz","source":"env OPENAI_API_KEY"},...}
+# api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
+# Stable shape: schema/tau-config-show.schema.json (CI-validated output).
+```
+
+#### 17. Config Validation (`tau config validate`)
+```bash
+tau config validate                      # Validate ~/.config/tau/config.json
+tau config validate ci/prod.json         # Validate an explicit file
+tau config validate --json               # Pin the stable JSON report for scripts
+tau config validate --mode text          # Human-readable error lines
+# → {"path":"…","ok":false,"errors":[{"key":"provider","message":"…"}]}  (stdout)
+# Exit 0 = valid, 1 = problems found, 80 = CLI misuse. Fully offline; key
+# values are never echoed. For CI/pre-commit gates.
+# Stable shape: schema/tau-config-validate.schema.json.
+```
+
+#### 18. Config Editing (`tau config set|get|unset`)
+```bash
+tau config set provider openai           # Schema-checked write (creates file, 0600)
+tau config set keys.openai sk-...        # Per-provider key via keys.<provider>
+tau config get provider                  # Read a FILE value (JSON mode default)
+tau config get api_key --mode text       # → "***last4" (secrets redacted; --raw prints raw)
+tau config unset keys.openai             # Remove a key
+tau config set mode text ./ci.json       # Optional trailing path
+# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename).
+# Exit 0 ok; 1 = key/file not found or invalid file; 80 = bad key/value/args.
+```
+
+#### 19. Interactive Config Editing (`tau config edit`)
+```bash
+tau config edit                        # Open ~/.config/tau/config.json in $EDITOR
+TAU_EDITOR="code --wait" tau config edit  # Editor: TAU_EDITOR > VISUAL > EDITOR > vi/notepad
+tau config edit ./ci.json              # Explicit path
+# Missing file → seeded with the commented `tau init` scaffold first.
+# On editor exit the file is validated (same checks/report as `config
+# validate`, incl. did-you-mean on misspelled keys); bad saves exit 1 but
+# stay on disk. Editor non-zero exit → editor_failed envelope, exit 1.
+```
+
+#### 20. Offline Explain Catalog
+```bash
+tau explain                       # List the error + config-key + doctor-check + env-var + client catalog (JSON)
+tau explain 106                   # Error entry by exit code: cause + hint + docs
+tau explain AuthFailed            # Same, by wire `type` tag
+tau explain timeout_ms            # Config key: type + constraints + description
+tau explain keys.openai           # Same, a dotted keys.<provider> member path
+tau explain doctor.tls_ca         # Doctor check: fails-when + remediation
+tau explain TAU_ENDPOINT          # Env var: consumers + summary (from docs/env.md)
+tau explain client.zed            # Editor client: prereqs + paths + setup + verify (from docs/compatibility.md)
+tau explain code                  # Same, a bare --client name/alias (code → vscode, claude → claude-desktop)
+tau explain --json 106            # Pin the schema-checked JSON form (default)
+tau explain --human 80            # Prose instead of JSON
+```
+
+#### 21. Config Schema (`tau config schema`)
+```bash
+tau config schema                          # JSON Schema (draft 2020-12) on stdout
+tau config schema > tau-config.schema.json # Export for editor wiring
+# Generated from FileConfig (can't drift); canonical copy checked in at
+# schema/tau-config.schema.json — regenerate after key changes with the
+# redirect above. `tau init` writes a "$schema" key pointing at the
+# published URL so editors autocomplete out of the box; `config schema`
+# also prints a `note:` hint on stderr. The SchemaStore catalog entry
+# submitted upstream lives at schema/schemastore-catalog-entry.json.
+```
+
 ```bash
 # Debug a misbehaving tau agent:
 TAU_THINKING=1 TAU_DEBUG=1 a2a-spawn --cli tau --id debug-agent --kit-file kit.txt
@@ -252,6 +355,134 @@ TAU_BIN="$HOME/ai/tau-custom/zig-out/bin/tau" a2a-spawn --cli tau --id custom --
 
 Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations 40 --timeout-ms 300000`.
 
+#### 20. Config Scaffolding
+```bash
+tau init                                 # Write commented starter ~/.config/tau/config.json
+tau init --stdout                        # Preview the scaffold without writing
+tau init --force                         # Overwrite an existing config
+tau init --provider openai               # Scaffold for a specific provider
+# Detects set provider env keys (marks them "*"), picks a matching provider,
+# and never copies secret values into the file. config.json is JSONC:
+# `//` and `/* */` comments are stripped on load.
+```
+
+#### 21. One-Shot Onboarding
+```bash
+tau setup                      # init + install completions ($SHELL-detected) + doctor summary
+tau setup --shell fish         # Override detection: bash|zsh|fish|pwsh|all
+tau setup --client zed         # Write editor ACP config: zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all
+tau setup --offline            # Skip network checks in the doctor step
+tau setup -y --non-interactive # Unattended contract (verdict records non_interactive/yes)
+tau setup --dry-run            # Preview all writes (would_* statuses); change nothing
+tau setup --detect             # Read-only client inventory: config dirs, detection, wiring state
+tau setup --detect --client zed # ...scoped to one client (writes nothing)
+# Env equivalents (flag > env > detect): TAU_YES, TAU_NONINTERACTIVE,
+# TAU_SETUP_SHELL, TAU_SETUP_CLIENT. CI is not auto-detected.
+# Emits one NDJSON object per step plus a final verdict:
+#   {"step":"init","status":"created|exists|failed",...}
+#   {"step":"completions","status":"installed|skipped|failed","shells":[...]}
+#   {"step":"clients","status":"installed|manual|skipped|failed","clients":[...]}
+#   {"step":"doctor","report":{...same shape as `tau doctor`...}}
+#   {"step":"setup","ok":bool,"version":..}
+# --dry-run previews writes as would_create|would_install|would_append and
+# marks the write steps + verdict with "dry_run":true; read-only outcomes
+# (exists/already_installed/present/manual) keep their names.
+# Idempotent: existing config is kept, rc edits carry a "# tau completions"
+# marker so re-runs don't duplicate. Exit 0 when every step is ok/skipped,
+# 1 on any failure (including a doctor report with failed checks).
+# Completion scripts are embedded in the binary at build time (build.zig
+# generates a `completions` module from completions/), so `tau setup`
+# works without a source checkout.
+# --client writes a minimal settings file (e.g. ~/.config/zed/settings.json
+# agent_servers.tau) with the absolute path of the running tau binary; an
+# existing settings file is never rewritten — a paste-ready snippet lands in
+# ~/.config/tau/snippets/ instead ("manual"). nvim is always "manual" (Lua
+# config for avante.nvim/CodeCompanion). Without --client the step is
+# "skipped" and only reports detected editor config dirs.
+```
+
+#### 24. Shell Completions Install
+```bash
+tau completions install            # Install generated completions for $SHELL (+rc hook)
+tau completions install --shell zsh # Pick a shell: bash|zsh|fish|pwsh|all
+tau completions install --dry-run  # Preview (would_install/would_append); writes nothing
+# The `tau setup` completions step as a standalone command — one stable
+# JSON result object (schema/tau-completions.schema.json):
+#   {"ok":bool,"status":"installed|would_install|skipped|failed",
+#    "shells":[{shell,status,path,rc,rc_status}], "version":"0.4.0","done":true}
+# Exit 0 on success/skip, 1 on install failure. --json is the contract spelling.
+```
+
+#### 18. Version & Build Metadata
+```bash
+tau version                    # Same as -v/--version: "tau 0.4.0"
+tau version --json             # Stable object for scripts: {"name":"tau","version":"0.4.0"}
+# Stable shape: schema/tau-version.schema.json (CI-validated output).
+tau version --verbose          # Build metadata as JSON
+# → {"name":"tau","version":"0.4.0","commit":"abc123","target":"x86_64-linux-gnu",
+#    "build_date":"2026-10-14T07:32:16Z","zig":"0.16.0"}
+tau version --verbose --mode text   # Same fields as key: value lines
+# Commit is the short hash of HEAD ("unknown" for tarball builds, "-dirty" on
+# uncommitted changes); build_date honors SOURCE_DATE_EPOCH so release builds
+# stay byte-reproducible. The same "build" object rides on `tau doctor`
+# (report and --json verdict) and as a `# build:` line in --debug log headers.
+tau version --check                # Non-blocking update check vs latest release
+# → {"name":"tau","version":"0.4.0","checked":true,"latest":"0.4.0","update_available":false}
+# Always exits 0 — checked:false + reason when the lookup can't run (offline,
+# no curl). Opt out everywhere (incl. the doctor update_available warning) via
+# TAU_NO_UPDATE_CHECK=1; TAU_UPDATE_URL overrides the lookup URL.
+```
+
+#### 19. Self-Update (`tau upgrade`)
+```bash
+tau upgrade                      # Check latest release, [y/N] prompt on a TTY, install
+tau upgrade --yes                # Non-interactive (env TAU_YES=1)
+tau upgrade --dir /opt/bin       # Override destination (default: the running
+                                 # binary's directory; env TAU_INSTALL_DIR)
+tau upgrade --dry-run            # Print the resolved plan + release notes; install nothing
+tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundle
+                                 # before the swap (env TAU_VERIFY_SIGSTORE=1;
+                                 # requires cosign on PATH, fails closed)
+# → {"name":"tau","version":"0.4.0","checked":true,"latest":"0.5.0","tag":"v0.5.0",
+#    "update_available":true,"status":"upgraded","detail":"installed tau 0.5.0 -> /opt/bin/tau",
+#    "release_url":"...","install_dir":"/opt/bin","changelog":[{"version":"0.5.0","notes":"..."}]}
+# status: up_to_date|upgraded|declined|skipped|failed|dry_run — exit 0 for
+# up_to_date/upgraded/declined/dry_run, 1 for skipped/failed. Downloads and
+# execs the release tag's own install.sh, so upgrades get the same fail-closed
+# SHA256 verification as fresh installs (TAU_BASE_URL/TAU_SKIP_CHECKSUM/
+# TAU_VERIFY_SIGSTORE flow through). TAU_INSTALL_URL overrides the installer
+# script URL (file:// stubs in tests). When an update exists the tag's
+# CHANGELOG.md is fetched too (TAU_CHANGELOG_URL overrides): sections in
+# (installed, latest] render as a pre-upgrade summary on stderr and as the
+# report's "changelog" field — best-effort, a fetch miss drops only the
+# summary. POSIX-only; Windows exits 111 and points at install.ps1.
+```
+
+#### 22. Color Policy
+```bash
+# Only one surface is styled: the interactive [y/N] prompts of
+# `tau upgrade` and `tau doctor --fix` (bold on a TTY stderr). Machine
+# channels — stdout JSON/NDJSON, --mode text, stderr error envelopes —
+# are never styled.
+# First match wins (src/term.zig colorPolicy):
+#   CLICOLOR_FORCE (non-empty, !="0") → styled, even non-TTY
+#   NO_COLOR (non-empty)              → plain
+#   CLICOLOR=0                        → plain
+#   TERM=dumb                         → plain
+#   otherwise                         → stream.isTty()
+# Locked by the golden-color smoke group (pty matrix + byte snapshots).
+```
+
+#### 23. Stability Contract
+```bash
+# docs/stability.md is the public stability + deprecation contract —
+# which exit codes, --json schemas, config keys, env vars, and wire
+# formats are stable vs informational vs internal, and how deprecations
+# are announced/phased out. It is hand-written policy (not generated);
+# scripts/check-stability-doc.py keeps it aligned with src/errors.zig,
+# schema/, and linked docs. Drift check: the stability-doc smoke group.
+```
+
 ### Storage Paths
 
 | Path | Purpose |
@@ -262,6 +493,7 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `~/.config/tau/acp.sock` | ACP Unix socket (daemon mode) |
 | `~/.config/tau/acp.pid` | ACP daemon PID file |
 | `~/.config/tau/acp.log` | ACP daemon log |
+| `~/.config/tau/debug/<ts>.log` | Redacted diagnostic log written by `--debug` (override: `TAU_DEBUG_LOG`) |
 
 ### How to Extend Tau
 
@@ -270,13 +502,22 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | File | What It Does | When to Edit |
 |------|-------------|-------------|
 | `src/main.zig` | CLI dispatch, `help_text`, `flag_specs` | Adding CLI flags, subcommands |
-| `src/args.zig` | Argv parser, `Action` enum | Adding new subcommands |
+| `src/subhelp.zig` | Per-subcommand help pages (`tau <sub> --help`) — usage + runnable `Examples:` | Editing subcommand help output |
+| `src/args.zig` | Argv parser, `Action` enum, did-you-mean hints (flag pool comptime-scanned from `eq(…, "-…")` literals + per-subcommand word pools; mistyped top-level subcommands error only when the rest of argv is call-shaped) | Adding new subcommands |
 | `src/agent.zig` | Single-turn agentic tool loop | Modifying agent behavior |
 | `src/goal.zig` | Goal directive parsing + sentinels | Changing goal mode logic |
 | `src/loop.zig` | Author↔Critic primitive | A/C loop changes |
 | `src/fleet.zig` | Fleet orchestration | Fleet command changes |
 | `src/config.zig` | `Config` struct + `Role` enum + key resolution | Adding config fields |
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
+| `src/configedit.zig` | `tau config set|get|unset`/`config edit` JSONC splice editor | Config editing changes |
+| `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
+| `schema/tau-doctor.schema.json` | `tau doctor --json` NDJSON event schema (+ `scripts/check-doctor-schema.py` validator, `scripts/gen-doctor-doc.py` → docs/doctor-json.md) | Changing doctor event shapes |
+| `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
+| `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
+| `docs/clients/*.md` | Per-MCP-client setup guides — `setup-verify` fenced snippets mirror `src/setup.zig` renderers (unit test) and `scripts/check-client-guides.py` diffs them against `tau setup --client` (client-guides smoke group) | Client wiring/snippet changes |
+| `src/bug.zig` | `tau bug` pre-filled GitHub issue (URL + report bundle) | `tau bug` flags/output, issue-URL shape |
+| `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
 | `src/context.zig` | Auto-compaction logic | Compaction algorithm |
 | `src/llm/provider.zig` | LLM providers, HTTP, streaming | Adding providers |
@@ -284,7 +525,17 @@ Hard flags set by a2a-spawn when launching tau: `-p --no-stream --max-iterations
 | `src/tools/*.zig` | Built-in tools (bash,read,write,edit,ls,grep,find) | Adding/modifying tools |
 | `src/tools/registry.zig` | Tool registry + allowlist/denylist | Registering new tools |
 | `src/json.zig` | Hand-rolled JSON escape/unescape | JSON handling fixes |
-| `src/term.zig` | Portable stdout/stderr | Terminal output changes |
+| `src/errors.zig` | Stable error-code catalog + shared `{"err"}` envelope emitter | Error codes/hints, envelope fields |
+| `src/envvars.zig` | Recognized `TAU_*` env-var registry + startup typo warning (`{"warn"}` + did-you-mean); `scripts/gen-env-doc.py` → `docs/env.md` (env-doc smoke group + CI drift-check) | Adding/renaming a `TAU_*` env var — register it here or every run warns |
+| `src/version.zig` | Version const + build metadata (`build.*`, `buildJson`, `buildLine`) | Version bump, build metadata |
+| `src/update.zig` | `tau version --check` + doctor `update_available` release lookup (curl, TAU_UPDATE_URL/TAU_NO_UPDATE_CHECK) | Update-check behavior |
+| `src/upgrade.zig` | `tau upgrade` self-update — check → confirm → staged `install.sh` exec | Upgrade flow, install-dir resolution |
+| `src/debuglog.zig` | `--debug` redacted diagnostic log + secret masking | Debug log path/redaction changes |
+| `src/term.zig` | Portable stdout/stderr + color policy (`colorEnabled`/`colorPolicy`/`sgrWrap` — NO_COLOR/CLICOLOR/CLICOLOR_FORCE/TERM=dumb/TTY) | Terminal output changes, styling new surfaces |
+| `install.sh` | curl-able installer for prebuilt releases | Installer/flag/env changes |
+| `action.yml` | `setup-tau` composite GitHub Action (wraps `install.sh`) | Action inputs/outputs |
+| `.github/workflows/release.yml` | Tag-triggered release build + smoke + publish + Homebrew tap update | Release process changes |
+| `scripts/generate-homebrew-formula.sh` | Renders `Formula/tau.rb` from a version + `SHA256SUMS.txt` | Formula field/asset changes |
 
 #### Validation Commands
 
@@ -300,6 +551,24 @@ zig build test               # Full unit test suite
 ./scripts/benchmark-resources.sh       # Standalone resource benchmarks
 ./zig-out/bin/tau --help               # Verify help text
 ./zig-out/bin/tau --help-json          # Verify JSON schema
+```
+
+The `ci` GitHub Actions workflow runs `zig build test` + `scripts/smoke.sh` +
+`scripts/smoke-features.sh --offline` on native runners for every released
+platform (ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-latest,
+windows-latest) on PRs, pushes to master, and v* tags — so platform
+regressions are caught before a release is cut. Its `first-run` job adds a
+clean-environment e2e per platform: the built binary is staged as a local
+release tree, installed through `install.sh` (POSIX) / `install.ps1`
+(Windows) via `TAU_BASE_URL=file://…`, then `scripts/e2e-first-run.{sh,ps1}`
+drives `tau setup --yes` + `tau setup --client zed|claude-desktop` +
+`tau doctor --selftest` in a scratch HOME with all credentials scrubbed —
+the direct-ACP (zed) and MCP-bridge (claude-desktop → mcacp.json) wiring
+paths are asserted end to end on every platform, Windows included. The same
+driver runs standalone:
+
+```bash
+./scripts/e2e-first-run.sh ./zig-out/bin/tau   # local first-run e2e (offline)
 ```
 
 #### Zig 0.16 Gotchas
@@ -446,6 +715,15 @@ Set appropriate context windows for compaction threshold:
 - [ ] Context window is appropriate for model
 
 ## Troubleshooting
+
+`tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>>` prints the
+offline catalog entry (cause + remediation hint) for any stable error — see
+docs/errors.md for the generated catalog — a config key's
+type/constraints/description from docs/config.md (`keys.<provider>` member
+paths included), a doctor check's fails-when + remediation via `doctor.<check>`,
+a `TAU_*` env var's consumers + summary from docs/env.md, or an editor
+client's prerequisites + config paths + verify step from
+docs/compatibility.md (`client.<name>` or a bare `--client` name/alias).
 
 ### Auth Failed (exit code 106)
 - Check API key is correct

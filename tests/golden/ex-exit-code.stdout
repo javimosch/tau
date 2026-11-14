@@ -1,0 +1,1 @@
+{"exit":80,"name":"invalid_argument","meaning":"an unknown flag, bad flag value, invalid subcommand, or malformed argument was passed","scripting":"read the {\"err\"} envelope's message on stderr, fix argv, and retry — `tau explain 80` prints the error entry offline","docs":"https://github.com/javimosch/tau/blob/master/docs/exit-codes.md"}

@@ -1,0 +1,4 @@
+install.sh: platform=<OS>-<ARCH> release=v99.9.9 dest=<HOME>/ug-dest
+install.sh: url=file://<HOME>/ug-srv-miss/download/v99.9.9/tau-<OS>-<ARCH>.tar.gz
+curl: (<RC>) <MSG>
+install.sh: download failed — check that release v99.9.9 ships tau-<OS>-<ARCH>.tar.gz (file://<HOME>/ug-srv-miss/download/v99.9.9/tau-<OS>-<ARCH>.tar.gz)

@@ -101,7 +101,9 @@ done
 echo "== offline: fleet subcommand parsing =="
 "$BIN" fleet >/dev/null 2>&1;                   ok "fleet (no sub) -> invalid_argument" "$?" 80
 "$BIN" fleet bogus >/dev/null 2>&1;             ok "fleet bogus -> invalid_argument" "$?" 80
-"$BIN" fleet run >/dev/null 2>&1;               ok "fleet run without --goal -> missing_required_field" "$?" 82
+# --api-key fake: key resolution runs before the --goal check, so a keyless
+# environment would exit 106 before reaching the validation under test.
+"$BIN" fleet run --api-key fake >/dev/null 2>&1;   ok "fleet run without --goal -> missing_required_field" "$?" 82
 "$BIN" fleet status >/dev/null 2>&1;            ok "fleet status no id -> invalid_argument" "$?" 80
 "$BIN" fleet cancel >/dev/null 2>&1;            ok "fleet cancel no id -> invalid_argument" "$?" 80
 "$BIN" fleet logs >/dev/null 2>&1;              ok "fleet logs no id -> invalid_argument" "$?" 80

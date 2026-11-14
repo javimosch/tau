@@ -1,0 +1,1 @@
+{"ok":true,"status":"would_install","shells":[{"shell":"zsh","rc":"<HOME>/.zshrc","rc_status":"would_append","status":"would_install","path":"<HOME>/.zsh/completions/_tau"}],"dry_run":true,"version":"0.4.0","done":true}
