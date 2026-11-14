@@ -103,6 +103,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path",
     },
     .{
+        .name = "tau_env_empty",
+        .fails_when = "one or more TAU_* environment variables are exported with an empty value — tau treats an empty value as unset, so the export reads like an override but never actually shadows the config file or defaults (warn only; flags recognized and unrecognized names alike)",
+        .remediation = "`unset` the listed variables or give them real values — an empty export is usually a stray `export VAR=` in a dotfile or a launcher clearing instead of unsetting; the recognized TAU_* set is documented in docs/env.md",
+    },
+    .{
         .name = "endpoint_reachable",
         .fails_when = "the provider endpoint doesn't answer within the probe timeout (skipped under --offline or without curl)",
         .remediation = "check the network, DNS, and the proxy_env/tls_ca rows — TAU_ENDPOINT overrides the endpoint",
