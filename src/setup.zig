@@ -297,6 +297,11 @@ pub const CompletionInstall = struct {
 pub fn installCompletion(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ShellKind, dry: bool) !CompletionInstall {
     const path = try installPath(arena, home, k);
     const wrote = try writeIfChanged(io, arena, path, shellContent(k), dry);
+    // A verify-and-keep run still renews the script's mtime: doctor's
+    // completions_stale check reads it as the "refreshed with this binary"
+    // marker, so the remediation must clear it even when content matched.
+    if (!dry and wrote == .unchanged)
+        std.Io.Dir.cwd().setTimestamps(io, path, .{ .modify_timestamp = .now }) catch {};
     var out: CompletionInstall = .{ .path = path, .wrote = wrote };
     if (try rcPath(arena, home, k)) |rp| {
         out.rc_path = rp;

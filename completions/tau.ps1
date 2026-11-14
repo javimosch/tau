@@ -43,6 +43,7 @@ $TauArgumentCompleter = {
         'keys.xiaomi', 'keys.openai', 'keys.deepseek', 'keys.opencode-go',
         'doctor.config_deprecated_keys', 'doctor.config_file', 'doctor.config_permissions',
         'doctor.plaintext_secrets', 'doctor.shell_completions',
+        'doctor.completions_stale',
         'doctor.provider_resolution', 'doctor.api_key', 'doctor.curl',
         'doctor.proxy_env', 'doctor.tls_ca', 'doctor.endpoint_reachable',
         'doctor.auth_probe', 'doctor.client_wiring', 'doctor.client_permissions',
