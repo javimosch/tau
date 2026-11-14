@@ -118,6 +118,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "install the editor you want wired, then run `tau setup --client <name>`",
     },
     .{
+        .name = "clients_unwired",
+        .fails_when = "one or more detected editor clients have no live `tau acp serve` wiring — the aggregate row names them all (snippet-only clients like nvim/emacs/goose/continue/codex are excluded since their Lua/elisp/YAML/TOML wiring can't be verified)",
+        .remediation = "run `tau setup --client <name>` for each listed client, or `tau doctor --fix` to repair the auto-fixable ones — the per-client `client_<name>` rows carry the detail",
+    },
+    .{
         .name = "client_permissions",
         .fails_when = "a detected client settings file (or the mcacp bridge config) grants group/other access — `env` blocks inside it can hold API keys (POSIX only)",
         .remediation = "run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself",
