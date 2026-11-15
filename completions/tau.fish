@@ -264,5 +264,6 @@ complete -c tau -n $explain -f -a '1 80 82 105 106 110 111 $schema provider mode
 complete -c tau -n $explain -f -l json -d 'emit the stable schema-checked JSON form'
 complete -c tau -n $explain -f -l human -d 'render the entry as prose instead of JSON'
 complete -c tau -n $explain -f -l list -d 'print the resolvable-topic index'
+complete -c tau -n $explain -f -l search -x -d 'full-text search over the explain catalog'
 
 # `tau models` takes no further arguments.

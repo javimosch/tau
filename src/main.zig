@@ -318,6 +318,8 @@ const help_text =
     \\  tau explain --list            Topic index — every resolvable name
     \\                                (codes/types, keys, checks, TAU_*,
     \\                                clients, topics)
+    \\  tau explain --search <text>   Full-text search over the whole
+    \\                                catalog — the filtered topic index
     \\
     \\Guide (embedded operator manual — read once, drive with no external docs):
     \\  tau guide                     Print the full guide as JSON (agent-readable)
@@ -554,7 +556,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau config schema", .b = "emit the JSON Schema (draft 2020-12) for the config file — also published at schema/tau-config.schema.json for editor autocomplete/validation." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
-    .{ .a = "tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, a doctor check's fails-when + remediation, a TAU_* env var's consumers + summary, a client's setup prereqs + paths + verify step, or a curated topic like `privacy` (JSON; --json pins the schema, --human for prose, --list for the topic index)." },
+    .{ .a = "tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, a doctor check's fails-when + remediation, a TAU_* env var's consumers + summary, a client's setup prereqs + paths + verify step, or a curated topic like `privacy` (JSON; --json pins the schema, --human for prose, --list for the topic index, --search <text> to filter it)." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
 };
@@ -579,7 +581,7 @@ const guide_gotchas = [_][]const u8{
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
-    "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>> (offline error + config-key + doctor-check + env-var + client + topic catalog — cause + remediation, key constraints, check fails-when, env consumers + summary, client prereqs + paths + verify, topic summary + see-also)",
+    "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>> (offline error + config-key + doctor-check + env-var + client + topic catalog — cause + remediation, key constraints, check fails-when, env consumers + summary, client prereqs + paths + verify, topic summary + see-also; --list indexes every name, --search <text> filters it)",
     "tau --help (human help)",
     "tau <subcommand> --help (per-subcommand usage + runnable examples)",
     "README.md (ships with the source)",
@@ -1018,6 +1020,20 @@ pub fn main(init: std.process.Init) !void {
                     xpl.formatIndexJson(arena);
                 writeOut(idx catch {
                     printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "failed to serialize topic index", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                });
+                return;
+            }
+            if (parsed.config.explain_search) |sq| {
+                // --search <text>: the same topic index --list emits,
+                // filtered to the entries whose searchable text matches
+                // every whitespace-separated term (case-insensitive).
+                const res = if (parsed.config.explain_human)
+                    xpl.formatSearchHuman(arena, sq)
+                else
+                    xpl.formatSearchJson(arena, sq);
+                writeOut(res catch {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "failed to serialize search results", false);
                     std.process.exit(@intFromEnum(ExitCode.internal_error));
                 });
                 return;

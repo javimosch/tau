@@ -233,6 +233,8 @@ Explain catalog (offline — no API key needed):
   tau explain --list            Topic index — every resolvable name
                                 (codes/types, keys, checks, TAU_*,
                                 clients, topics)
+  tau explain --search <text>   Full-text search over the whole
+                                catalog — the filtered topic index
 
 Guide (embedded operator manual — read once, drive with no external docs):
   tau guide                     Print the full guide as JSON (agent-readable)

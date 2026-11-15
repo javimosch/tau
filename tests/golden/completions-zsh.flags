@@ -52,6 +52,7 @@
 --role
 --scan-agents
 --schema
+--search
 --selftest
 --sequential
 --session

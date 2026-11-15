@@ -325,6 +325,7 @@ tau explain privacy               # Curated topic: local state, egress, and secr
 tau explain --json 106            # Pin the schema-checked JSON form (default)
 tau explain --human 80            # Prose instead of JSON
 tau explain --list                # Topic index: every resolvable name, no entry bodies
+tau explain --search "api key"    # Index filtered to entries matching every term (case-insensitive)
 ```
 
 #### 21. Config Schema (`tau config schema`)

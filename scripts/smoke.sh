@@ -4509,6 +4509,17 @@ test_group_golden_maintenance() {
   golden_check ex-list-human       0 "$BIN" explain --human --list
   golden_check ex-list-query      80 "$BIN" explain --list 106
 
+  # --search — the index filtered full-text: single + multi-term hits,
+  # --human prose, the no-match shape, and the arg-validation envelopes.
+  golden_check ex-search           0 "$BIN" explain --search timeout
+  golden_check ex-search-multi     0 "$BIN" explain --search "api key"
+  golden_check ex-search-human     0 "$BIN" explain --human --search proxy_env
+  golden_check ex-search-none      0 "$BIN" explain --search zzzyyqq
+  golden_check ex-search-missing  80 "$BIN" explain --search
+  golden_check ex-search-blank    80 "$BIN" explain --search " "
+  golden_check ex-search-query    80 "$BIN" explain --search x 106
+  golden_check ex-search-list     80 "$BIN" explain --search x --list
+
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
   mkdir -p "$stubs"
@@ -6051,6 +6062,77 @@ test_group_explain() {
   ok "explain: query + --list exits 80" "$li4_rc" 80
   contains "explain: reverse mutex names the flag" "$li4_err" '--list takes no query argument'
 
+  # --search <text> prints the same topic index filtered to entries whose
+  # name or body text matches every whitespace-separated term,
+  # case-insensitively — the filtered index still lists only resolvable
+  # names, never entry bodies.
+  capture s1 _env_no_tau "$BIN" explain --search timeout
+  ok "explain: --search exits 0" "$s1_rc" 0
+  contains "explain: --search echoes the query" "$s1_out" '"query":"timeout"'
+  contains "explain: --search emits the topics object" "$s1_out" '"topics":{'
+  contains "explain: --search hits the error type" "$s1_out" '{"code":105,"type":"Timeout"}'
+  contains "explain: --search hits the config key" "$s1_out" '"timeout_ms"'
+  contains "explain: --search hits the timeout check" "$s1_out" '"doctor.endpoint_reachable"'
+  lacks "explain: --search prunes non-matches" "$s1_out" '"client.zed"'
+  lacks "explain: --search carries no entry bodies" "$s1_out" '"remediation"'
+
+  # Multi-term queries AND across name + body text: "api key" hits the
+  # config key, the doctor check, and the env var that all carry both
+  # words.
+  capture s2 _env_no_tau "$BIN" explain --search "api key"
+  ok "explain: --search multi-term exits 0" "$s2_rc" 0
+  contains "explain: --search multi-term hits the key" "$s2_out" '"api_key"'
+  contains "explain: --search multi-term hits the check" "$s2_out" '"doctor.api_key"'
+  contains "explain: --search multi-term hits the env var" "$s2_out" '"TAU_API_KEY"'
+
+  # --client aliases match by resolution, not substring — `amazon-q` and
+  # `codex-cli` aren't substrings of the canonical client names.
+  capture s3 _env_no_tau "$BIN" explain --search amazon-q
+  ok "explain: --search alias exits 0" "$s3_rc" 0
+  contains "explain: --search resolves the client alias" "$s3_out" '"client.amazonq"'
+  capture s3b _env_no_tau "$BIN" explain --search codex-cli
+  contains "explain: --search resolves codex-cli" "$s3b_out" '"client.codex"'
+
+  # Body-text hits beyond names — "redact" lives in the privacy topic's
+  # summary/details, not its name.
+  capture s4 _env_no_tau "$BIN" explain --search redact
+  contains "explain: --search body-text hits the topic" "$s4_out" '"topic.privacy"'
+
+  # Nothing matches: empty arrays, exit 0 — a valid result, not an error.
+  capture s5 _env_no_tau "$BIN" explain --search zzzyyqq
+  ok "explain: --search no-match exits 0" "$s5_rc" 0
+  contains "explain: --search no-match keeps the shape" "$s5_out" '"topics":{'
+  contains "explain: --search no-match empties errors" "$s5_out" '"errors":[]'
+  contains "explain: --search no-match empties clients" "$s5_out" '"clients":[]'
+
+  # --human renders the filtered index as prose — matching sections only,
+  # and a pointer at --list when nothing matched.
+  capture s6 _env_no_tau "$BIN" explain --human --search proxy_env
+  ok "explain: --human --search exits 0" "$s6_rc" 0
+  contains "explain: --human --search prints the header" "$s6_out" 'explain topics matching "proxy_env"'
+  contains "explain: --human --search lists the check" "$s6_out" 'doctor.proxy_env'
+  lacks "explain: --human --search omits empty sections" "$s6_out" 'clients:'
+  capture s7 _env_no_tau "$BIN" explain --human --search zzzyyqq
+  contains "explain: --human --search no-match note" "$s7_out" 'no explain topics match "zzzyyqq"'
+
+  # Argument validation: --search needs a non-empty value, takes no
+  # positional query, and is mutex with --list — all exit 80.
+  capture s8 _env_no_tau "$BIN" explain --search
+  ok "explain: --search without a value exits 80" "$s8_rc" 80
+  contains "explain: missing value names the flag" "$s8_err" 'missing value for --search'
+  capture s9 _env_no_tau "$BIN" explain --search "  "
+  ok "explain: --search blank value exits 80" "$s9_rc" 80
+  contains "explain: blank value names the rule" "$s9_err" '--search requires a non-empty query'
+  capture s10 _env_no_tau "$BIN" explain --search x 106
+  ok "explain: --search + query exits 80" "$s10_rc" 80
+  contains "explain: --search mutex names the flag" "$s10_err" '--search takes no query argument'
+  capture s11 _env_no_tau "$BIN" explain --list --search x
+  ok "explain: --list + --search exits 80" "$s11_rc" 80
+  contains "explain: list/search mutex" "$s11_err" '--list and --search are mutually exclusive'
+  capture s12 _env_no_tau "$BIN" explain --serach x
+  ok "explain: --search typo exits 80" "$s12_rc" 80
+  contains "explain: --search typo suggests the flag" "$s12_err" 'did you mean \"--search\"?'
+
   # Both --json surfaces validate against the checked-in schema.
   local ex_schema="$ROOT/schema/tau-explain.schema.json"
   if [ -f "$ex_schema" ]; then
@@ -6126,6 +6208,35 @@ test_group_explain() {
       ok "explain: --list index validates against schema" 0 0
     else
       ok "explain: --list index validates against schema" 1 0
+    fi
+    # The --search filtered index validates against the same schema.
+    if printf '%s' "$s1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: --search result validates against schema" 0 0
+    else
+      ok "explain: --search result validates against schema" 1 0
+    fi
+    # Every name a --search result lists resolves — the filtered index is
+    # still a list of valid queries.
+    local s1_json
+    s1_json="$(mktemp)"; register_temp_file "$s1_json"
+    printf '%s' "$s1_out" > "$s1_json"
+    if python3 - "$BIN" "$s1_json" <<'PYEOF' >/dev/null 2>&1
+import json, subprocess, sys
+bin_path, idx_path = sys.argv[1], sys.argv[2]
+topics = json.load(open(idx_path))["topics"]
+queries = [str(e["code"]) for e in topics["errors"]]
+queries += [e["type"] for e in topics["errors"]]
+for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics"):
+    queries += topics[group]
+bad = [q for q in queries
+       if subprocess.run([bin_path, "explain", q],
+                         capture_output=True).returncode != 0]
+sys.exit(1 if bad else 0)
+PYEOF
+    then
+      ok "explain: every --search-listed topic resolves" 0 0
+    else
+      ok "explain: every --search-listed topic resolves" 1 0
     fi
     # Every indexed topic resolves — the index is a list of valid queries.
     local li_json
