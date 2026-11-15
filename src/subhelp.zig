@@ -61,6 +61,9 @@ const bug_help =
     \\                         Bundle an existing `tau doctor --report` file
     \\                         (secret-redacted) instead of running the live
     \\                         sweep — mutually exclusive with --no-report
+    \\      --dry-run          Preview the exact issue envelope — bundle
+    \\                         contents plus a "redactions" mask count —
+    \\                         without writing --out or opening a browser
     \\      --offline/--deep   Passed through to the diagnostic sweep
     \\      --provider <name>  Diagnose an override provider
     \\      --model <id>       Diagnose an override model
@@ -75,6 +78,7 @@ const bug_help =
     \\  tau bug --title "crash on startup" --open
     \\  tau bug --no-report --labels bug,crash
     \\  tau bug --out report.md
+    \\  tau bug --dry-run
     \\
 ;
 

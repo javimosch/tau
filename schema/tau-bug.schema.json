@@ -14,8 +14,10 @@
     "report": { "type": ["string", "null"], "description": "The redacted Markdown diagnostics bundle as its own field (null under --no-report) — directly addressable without ungluing body." },
     "report_source": { "type": ["string", "null"], "enum": ["live", "attached", null], "description": "Where the diagnostics bundle came from: \"live\" for a fresh `tau doctor` sweep, \"attached\" for an --attach-report file, null under --no-report." },
     "url_truncated": { "type": "boolean", "description": "true when the issue URL exceeded the pre-filled-URL size limit and carries the short fallback body instead of the full bundle." },
-    "out": { "type": ["string", "null"], "description": "Path the diagnostics bundle was written to (--out), or null." },
-    "opened": { "type": "boolean", "description": "true when --open launched the issue URL in a browser and the opener exited 0." },
+    "out": { "type": ["string", "null"], "description": "Path the diagnostics bundle was written to (--out), or null. Under --dry-run it is the would-be path — nothing is written." },
+    "opened": { "type": "boolean", "description": "true when --open launched the issue URL in a browser and the opener exited 0. Always false under --dry-run." },
+    "dry_run": { "type": "boolean", "description": "Present only under --dry-run and always true: the object is a preview of what would be filed — no --out file was written and no browser was opened." },
+    "redactions": { "type": "integer", "minimum": 0, "description": "Present only under --dry-run: count of ***REDACTED*** masks in the composed issue body, so the preview can assert sanitization ran before filing." },
     "done": { "const": true, "description": "Terminal marker — always true on this single emitted object (the same convention NDJSON streams use for their last line)." }
   },
   "examples": [

@@ -341,6 +341,12 @@ pub const Config = struct {
     /// the live diagnostic sweep (read at parse time; secret-redacted before
     /// embedding).
     bug_attach_report: ?[]const u8 = null,
+    /// `tau bug --dry-run` — emit the exact same issue envelope (bundle,
+    /// URL, redactions) as a preview without any side effects: no --out
+    /// file is written and --open does not launch a browser. The output
+    /// gains "dry_run":true plus a "redactions" mask count so the caller
+    /// can assert sanitization ran before filing for real.
+    bug_dry_run: bool = false,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` and

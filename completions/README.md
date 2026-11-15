@@ -35,7 +35,7 @@ PowerShell.
 | `tau doctor` | `--offline`, `--deep`, `--probe`, `--selftest`, `--fix`, `--yes`/`-y`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive`, `--dry-run`, `--remove`, `--uninstall`, `--import`, `--detect`, `--json` |
 | `tau completions` | `install` + `--shell`, `--dry-run`, `--json` |
-| `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--attach-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
+| `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--attach-report`, `--dry-run`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--check`, `--json`, `--mode` |
 | `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run`, `--json` |

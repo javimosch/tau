@@ -28,7 +28,7 @@ $TauArgumentCompleter = {
     $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '-y', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive', '--dry-run', '--remove', '--uninstall', '--import', '--detect', '--json')
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report', '--attach-report',
-                     '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
+                     '--dry-run', '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
     $completionsArgs = @('install', '--shell', '--dry-run', '--json')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')

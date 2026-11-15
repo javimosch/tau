@@ -260,7 +260,10 @@ tau bug --title "x" --body "desc"    # Fill the issue title + description
 tau bug --open                       # Launch the URL ($BROWSER, else open/xdg-open)
 tau bug --out report.md              # Also write the bundle to a file
 tau bug --no-report                  # Omit diagnostics (mutex with --out)
+tau bug --dry-run                    # Preview the envelope + redactions; change nothing
 # → {"title","labels","url","body","report","url_truncated","out","opened","done":true}
+# --dry-run adds "dry_run":true + "redactions":<n> (mask count in the body)
+# and skips every side effect — no --out write, no browser launch.
 # Exit 0 always; over-long bundles fall back to a short URL body
 # (url_truncated:true) — full text stays in body/report.
 ```

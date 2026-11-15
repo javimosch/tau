@@ -434,17 +434,20 @@ pub fn parse(
     }
 
     // `tau bug [--title T] [--body TEXT] [--labels CSV] [--open] [--out PATH]
-    // [--no-report] [--attach-report PATH] [--offline] [--deep] [--provider P]
-    // [--model M] [--api-key K] [--shell sh] [--json]` — build a pre-filled
-    // GitHub issue carrying the redacted `tau doctor --report` bundle; a
-    // command, not a prompt. The diagnostic sweep honors the same overrides
-    // as `tau doctor`, so an unknown provider rides into the report as a
-    // failed check (exit-80 only for malformed arguments). --out and
+    // [--no-report] [--attach-report PATH] [--dry-run] [--offline] [--deep]
+    // [--provider P] [--model M] [--api-key K] [--shell sh] [--json]` — build
+    // a pre-filled GitHub issue carrying the redacted `tau doctor --report`
+    // bundle; a command, not a prompt. The diagnostic sweep honors the same
+    // overrides as `tau doctor`, so an unknown provider rides into the report
+    // as a failed check (exit-80 only for malformed arguments). --out and
     // --no-report conflict: there is no bundle to write. --attach-report
     // reads an existing report file at parse time, secret-redacts it, and
     // bundles it in place of the live sweep — it conflicts with --no-report
-    // for the same reason. The stdout object is already JSON; --json is the
-    // stable-contract spelling that pins it (schema/tau-bug.schema.json).
+    // for the same reason. --dry-run composes with everything: it emits the
+    // same envelope plus "dry_run":true and a "redactions" mask count while
+    // skipping the side effects (no --out write, no browser launch). The
+    // stdout object is already JSON; --json is the stable-contract spelling
+    // that pins it (schema/tau-bug.schema.json).
     if (argv.len > 0 and eq(argv[0], "bug")) {
         if (wantsHelp(argv[1..])) return subHelp("bug", base);
         var bcfg: Config = base;
@@ -473,6 +476,8 @@ pub fn parse(
                 bcfg.bug_out = argv[j];
             } else if (eq(a, "--no-report")) {
                 bcfg.bug_no_report = true;
+            } else if (eq(a, "--dry-run")) {
+                bcfg.bug_dry_run = true;
             } else if (eq(a, "--attach-report")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -2566,6 +2571,7 @@ test "parse: bug selects the bug action with defaults" {
     try std.testing.expect(p.config.bug_out == null);
     try std.testing.expect(!p.config.bug_no_report);
     try std.testing.expect(p.config.bug_attach_report == null);
+    try std.testing.expect(!p.config.bug_dry_run);
     try std.testing.expect(!p.config.doctor_offline);
     try std.testing.expect(!p.config.doctor_deep);
 }
@@ -2593,6 +2599,23 @@ test "parse: bug accepts title/body/labels/open/out/no-report + doctor overrides
     try std.testing.expect(p.config.doctor_deep);
     try std.testing.expectEqualStrings("openai", p.config.provider);
     try std.testing.expectEqualStrings("sk-x", p.config.api_key.?);
+}
+
+test "parse: bug --dry-run composes with the side-effect flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expect(p.config.bug_dry_run);
+
+    // No mutex: --open/--out under --dry-run are previewed, not performed.
+    const full = try parseArgv(a, &.{ "tau", "bug", "--dry-run", "--open", "--out", "/tmp/r.md" }, .{});
+    try std.testing.expectEqual(Action.bug, full.action);
+    try std.testing.expect(full.config.bug_dry_run);
+    try std.testing.expect(full.config.bug_open);
+    try std.testing.expectEqualStrings("/tmp/r.md", full.config.bug_out.?);
 }
 
 test "parse: bug --out + --no-report is mutually exclusive; bad args exit 80" {
