@@ -203,6 +203,9 @@ pub const Config = struct {
     /// `tau explain --list` → the topic index (names only) instead of a
     /// single entry or the full-entry catalog dump.
     explain_list: bool = false,
+    /// `tau explain --search <text>` → full-text filter over the whole
+    /// catalog; emits the filtered index, not entry bodies.
+    explain_search: ?[]const u8 = null,
 
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.

@@ -24,8 +24,12 @@
 //! {env,section,consumers,summary,docs}; client entries as
 //! {client,transport,wiring,prereqs,setup,config_dir,settings_path,
 //! snippet_path,bridge_path?,verify,doctor_check,docs}; topic entries as
-//! {topic,summary,details,see_also,docs}. All six shapes are pinned by
-//! schema/tau-explain.schema.json and by the tests/golden/ex-* snapshots.
+//! {topic,summary,details,see_also,docs}. `--list` renders the topic index
+//! (every resolvable name, no entry bodies) and `--search <text>` renders
+//! that same index filtered to the entries whose searchable text matches
+//! every whitespace-separated term, case-insensitively. All shapes are
+//! pinned by schema/tau-explain.schema.json and by the tests/golden/ex-*
+//! snapshots.
 
 const std = @import("std");
 const errors = @import("errors.zig");
@@ -275,6 +279,70 @@ fn jstr(a: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
     try buf.append(a, '"');
 }
 
+/// The filtered-or-full topic lists behind `--list` and `--search` — one
+/// slice per registry, in catalog row order. `config_keys` covers both the
+/// live keys and the deprecated spellings (the index lists both).
+pub const TopicLists = struct {
+    errors: []const errors.Spec,
+    config_keys: []const cfgschema.KeySpec,
+    doctor_checks: []const doctorcat.CheckSpec,
+    env_vars: []const envvars.Spec,
+    clients: []const setup.ClientKind,
+    topics: []const topiccat.Spec,
+};
+
+/// Every key the index lists — live catalog rows first, deprecated
+/// spellings after (the order --list has always emitted).
+const all_keys = cfgschema.key_catalog ++ cfgschema.deprecated_key_specs;
+
+/// The unfiltered index — every topic resolve() accepts.
+fn indexLists() TopicLists {
+    return .{
+        .errors = &errors.specs,
+        .config_keys = &all_keys,
+        .doctor_checks = &doctorcat.check_catalog,
+        .env_vars = &envvars.specs,
+        .clients = &setup.all_clients,
+        .topics = &topiccat.specs,
+    };
+}
+
+/// Append the `{"errors":[...],"config_keys":[...],...}` object body (the
+/// index/search `topics` member value — no outer braces' siblings) to buf.
+fn appendTopicsJson(a: std.mem.Allocator, b: *std.ArrayList(u8), m: TopicLists) !void {
+    try b.appendSlice(a, "{\"errors\":[");
+    for (m.errors, 0..) |s, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "{{\"code\":{d},\"type\":\"{s}\"}}", .{ s.code, s.type_name }));
+    }
+    try b.appendSlice(a, "],\"config_keys\":[");
+    for (m.config_keys, 0..) |ks, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, b, ks.name);
+    }
+    try b.appendSlice(a, "],\"doctor_checks\":[");
+    for (m.doctor_checks, 0..) |cs, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, b, try std.fmt.allocPrint(a, "doctor.{s}", .{cs.name}));
+    }
+    try b.appendSlice(a, "],\"env_vars\":[");
+    for (m.env_vars, 0..) |s, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, b, s.name);
+    }
+    try b.appendSlice(a, "],\"clients\":[");
+    for (m.clients, 0..) |k, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, b, try std.fmt.allocPrint(a, "client.{s}", .{setup.clientName(k)}));
+    }
+    try b.appendSlice(a, "],\"topics\":[");
+    for (m.topics, 0..) |s, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, b, try std.fmt.allocPrint(a, "topic.{s}", .{s.name}));
+    }
+    try b.appendSlice(a, "]}");
+}
+
 /// The topic index for `tau explain --list` (trailing newline included):
 /// {"topics":{"errors":[{"code":N,"type":"T"}, ...],
 ///  "config_keys":["<key>", ...],"doctor_checks":["doctor.<id>", ...],
@@ -287,42 +355,63 @@ fn jstr(a: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
 /// name resolves via resolve(). Caller owns the returned slice.
 pub fn formatIndexJson(a: std.mem.Allocator) ![]u8 {
     var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(a, "{\"topics\":{\"errors\":[");
-    for (errors.specs, 0..) |s, i| {
-        if (i > 0) try b.appendSlice(a, ",");
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "{{\"code\":{d},\"type\":\"{s}\"}}", .{ s.code, s.type_name }));
-    }
-    try b.appendSlice(a, "],\"config_keys\":[");
-    for (cfgschema.key_catalog, 0..) |ks, i| {
-        if (i > 0) try b.appendSlice(a, ",");
-        try jstr(a, &b, ks.name);
-    }
-    for (cfgschema.deprecated_key_specs, 0..) |ks, i| {
-        if (i > 0 or cfgschema.key_catalog.len > 0) try b.appendSlice(a, ",");
-        try jstr(a, &b, ks.name);
-    }
-    try b.appendSlice(a, "],\"doctor_checks\":[");
-    for (doctorcat.check_catalog, 0..) |cs, i| {
-        if (i > 0) try b.appendSlice(a, ",");
-        try jstr(a, &b, try std.fmt.allocPrint(a, "doctor.{s}", .{cs.name}));
-    }
-    try b.appendSlice(a, "],\"env_vars\":[");
-    for (envvars.names, 0..) |name, i| {
-        if (i > 0) try b.appendSlice(a, ",");
-        try jstr(a, &b, name);
-    }
-    try b.appendSlice(a, "],\"clients\":[");
-    for (setup.all_clients, 0..) |k, i| {
-        if (i > 0) try b.appendSlice(a, ",");
-        try jstr(a, &b, try std.fmt.allocPrint(a, "client.{s}", .{setup.clientName(k)}));
-    }
-    try b.appendSlice(a, "],\"topics\":[");
-    for (topiccat.names, 0..) |name, i| {
-        if (i > 0) try b.appendSlice(a, ",");
-        try jstr(a, &b, try std.fmt.allocPrint(a, "topic.{s}", .{name}));
-    }
-    try b.appendSlice(a, "]}}\n");
+    try b.appendSlice(a, "{\"topics\":");
+    try appendTopicsJson(a, &b, indexLists());
+    try b.appendSlice(a, "}\n");
     return b.toOwnedSlice(a);
+}
+
+/// Append the prose sections for m — one section per non-empty registry,
+/// blank-line separated, one resolvable name per line (errors carry both
+/// addressable forms: code and type tag).
+fn appendTopicsHuman(a: std.mem.Allocator, b: *std.ArrayList(u8), m: TopicLists) !void {
+    var wrote = false;
+    if (m.errors.len > 0) {
+        try b.appendSlice(a, "error codes:\n");
+        for (m.errors) |s| {
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "  {d:>3}  {s}\n", .{ s.code, s.type_name }));
+        }
+        wrote = true;
+    }
+    if (m.config_keys.len > 0) {
+        if (wrote) try b.appendSlice(a, "\n");
+        try b.appendSlice(a, "config keys:\n");
+        for (m.config_keys) |ks| {
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{ks.name}));
+        }
+        wrote = true;
+    }
+    if (m.doctor_checks.len > 0) {
+        if (wrote) try b.appendSlice(a, "\n");
+        try b.appendSlice(a, "doctor checks:\n");
+        for (m.doctor_checks) |cs| {
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "  doctor.{s}\n", .{cs.name}));
+        }
+        wrote = true;
+    }
+    if (m.env_vars.len > 0) {
+        if (wrote) try b.appendSlice(a, "\n");
+        try b.appendSlice(a, "env vars:\n");
+        for (m.env_vars) |s| {
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{s.name}));
+        }
+        wrote = true;
+    }
+    if (m.clients.len > 0) {
+        if (wrote) try b.appendSlice(a, "\n");
+        try b.appendSlice(a, "clients:\n");
+        for (m.clients) |k| {
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "  client.{s}\n", .{setup.clientName(k)}));
+        }
+        wrote = true;
+    }
+    if (m.topics.len > 0) {
+        if (wrote) try b.appendSlice(a, "\n");
+        try b.appendSlice(a, "topics:\n");
+        for (m.topics) |s| {
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "  topic.{s}\n", .{s.name}));
+        }
+    }
 }
 
 /// The topic index as prose — one section per catalog, one resolvable name
@@ -330,33 +419,124 @@ pub fn formatIndexJson(a: std.mem.Allocator) ![]u8 {
 /// Caller owns the returned slice.
 pub fn formatIndexHuman(a: std.mem.Allocator) ![]u8 {
     var b: std.ArrayList(u8) = .empty;
-    try b.appendSlice(a, "explain topics (each resolves via `tau explain <name>`):\n\nerror codes:\n");
-    for (errors.specs) |s| {
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {d:>3}  {s}\n", .{ s.code, s.type_name }));
+    try b.appendSlice(a, "explain topics (each resolves via `tau explain <name>`):\n\n");
+    try appendTopicsHuman(a, &b, indexLists());
+    return b.toOwnedSlice(a);
+}
+
+/// Split a --search text on ASCII whitespace into lowercased terms — an
+/// entry matches when every term is a case-insensitive substring of its
+/// search text (AND semantics; `api key` asks for entries mentioning
+/// both). Caller owns the returned slice; empty when the query is all
+/// whitespace (args.zig rejects that path before it reaches here).
+fn searchTerms(a: std.mem.Allocator, query: []const u8) ![]const []const u8 {
+    var terms: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.tokenizeAny(u8, query, " \t");
+    while (it.next()) |t| {
+        try terms.append(a, try std.ascii.allocLowerString(a, t));
     }
-    try b.appendSlice(a, "\nconfig keys:\n");
-    for (cfgschema.key_catalog) |ks| {
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{ks.name}));
+    return terms.toOwnedSlice(a);
+}
+
+/// The lowercased concatenation of an entry's searchable text fields.
+fn searchHaystack(a: std.mem.Allocator, parts: []const []const u8) ![]const u8 {
+    return std.ascii.allocLowerString(a, try std.mem.join(a, " ", parts));
+}
+
+/// True when every term appears somewhere in the lowercased haystack.
+fn allTermsHit(hay: []const u8, terms: []const []const u8) bool {
+    for (terms) |t| {
+        if (std.mem.indexOf(u8, hay, t) == null) return false;
     }
-    for (cfgschema.deprecated_key_specs) |ks| {
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{ks.name}));
+    return true;
+}
+
+/// The `tau explain --search <text>` result — the same per-registry lists
+/// --list renders, filtered to the entries whose searchable text matches
+/// every whitespace-separated term (case-insensitive). Searched text: an
+/// error's code + type + cause + hint, a config key's name + type +
+/// constraints + description, a check's id + fails_when + remediation, an
+/// env var's name + consumers + summary, a client's name + transport +
+/// wiring + prereqs + verify + doctor check (plus `--client` alias
+/// resolution — `roo` and `amazon-q` reach their clients by name), and a
+/// topic's name + summary + details + see_also. Caller owns the slices.
+pub fn searchCatalog(a: std.mem.Allocator, query: []const u8) !TopicLists {
+    const terms = try searchTerms(a, query);
+    var errs: std.ArrayList(errors.Spec) = .empty;
+    var keys: std.ArrayList(cfgschema.KeySpec) = .empty;
+    var checks: std.ArrayList(doctorcat.CheckSpec) = .empty;
+    var envs: std.ArrayList(envvars.Spec) = .empty;
+    var clients: std.ArrayList(setup.ClientKind) = .empty;
+    var topics: std.ArrayList(topiccat.Spec) = .empty;
+    if (terms.len > 0) {
+        for (errors.specs) |s| {
+            const hay = try searchHaystack(a, &.{ try std.fmt.allocPrint(a, "{d}", .{s.code}), s.type_name, s.cause, s.hint });
+            if (allTermsHit(hay, terms)) try errs.append(a, s);
+        }
+        for (all_keys) |ks| {
+            const hay = try searchHaystack(a, &.{ ks.name, ks.type_name, ks.constraints, ks.desc });
+            if (allTermsHit(hay, terms)) try keys.append(a, ks);
+        }
+        for (doctorcat.check_catalog) |cs| {
+            const hay = try searchHaystack(a, &.{ cs.name, try std.fmt.allocPrint(a, "doctor.{s}", .{cs.name}), cs.fails_when, cs.remediation });
+            if (allTermsHit(hay, terms)) try checks.append(a, cs);
+        }
+        for (envvars.specs) |s| {
+            const hay = try searchHaystack(a, &.{ s.name, s.consumers, s.summary });
+            if (allTermsHit(hay, terms)) try envs.append(a, s);
+        }
+        for (setup.all_clients) |k| {
+            const s = try clientcat.specFor(a, k);
+            const hay = try searchHaystack(a, &.{ s.client, try std.fmt.allocPrint(a, "client.{s}", .{s.client}), @tagName(s.transport), @tagName(s.wiring), s.prereqs, s.verify, s.doctor_check });
+            const hit = for (terms) |t| {
+                // Aliases match by resolution, not substring — `amazon-q`
+                // and `codex-cli` aren't substrings of the canonical names.
+                if (std.mem.indexOf(u8, hay, t) == null and setup.parseClientName(t) != k) break false;
+            } else true;
+            if (hit) try clients.append(a, k);
+        }
+        for (topiccat.specs) |s| {
+            const hay = try searchHaystack(a, &.{ s.name, try std.fmt.allocPrint(a, "topic.{s}", .{s.name}), s.summary, s.details, try std.mem.join(a, " ", s.see_also) });
+            if (allTermsHit(hay, terms)) try topics.append(a, s);
+        }
     }
-    try b.appendSlice(a, "\ndoctor checks:\n");
-    for (doctorcat.check_catalog) |cs| {
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "  doctor.{s}\n", .{cs.name}));
+    return .{
+        .errors = try errs.toOwnedSlice(a),
+        .config_keys = try keys.toOwnedSlice(a),
+        .doctor_checks = try checks.toOwnedSlice(a),
+        .env_vars = try envs.toOwnedSlice(a),
+        .clients = try clients.toOwnedSlice(a),
+        .topics = try topics.toOwnedSlice(a),
+    };
+}
+
+/// The `tau explain --search <text>` result as JSON (trailing newline
+/// included): {"query":"<text>","topics":{<the --list index shape,
+/// filtered>}}. Every listed name resolves via resolve(). Caller owns the
+/// returned slice.
+pub fn formatSearchJson(a: std.mem.Allocator, query: []const u8) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(a, "{\"query\":");
+    try jstr(a, &b, query);
+    try b.appendSlice(a, ",\"topics\":");
+    try appendTopicsJson(a, &b, try searchCatalog(a, query));
+    try b.appendSlice(a, "}\n");
+    return b.toOwnedSlice(a);
+}
+
+/// The `tau explain --search <text>` result as prose — the index's
+/// sectioned name list, filtered, empty sections omitted. No matches at
+/// all renders a single note pointing at the full index. Caller owns the
+/// returned slice.
+pub fn formatSearchHuman(a: std.mem.Allocator, query: []const u8) ![]u8 {
+    const m = try searchCatalog(a, query);
+    var b: std.ArrayList(u8) = .empty;
+    if (m.errors.len + m.config_keys.len + m.doctor_checks.len + m.env_vars.len + m.clients.len + m.topics.len == 0) {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "no explain topics match \"{s}\" — run `tau explain --list` for the full topic index\n", .{query}));
+        return b.toOwnedSlice(a);
     }
-    try b.appendSlice(a, "\nenv vars:\n");
-    for (envvars.names) |name| {
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "  {s}\n", .{name}));
-    }
-    try b.appendSlice(a, "\nclients:\n");
-    for (setup.all_clients) |k| {
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "  client.{s}\n", .{setup.clientName(k)}));
-    }
-    try b.appendSlice(a, "\ntopics:\n");
-    for (topiccat.names) |name| {
-        try b.appendSlice(a, try std.fmt.allocPrint(a, "  topic.{s}\n", .{name}));
-    }
+    try b.appendSlice(a, try std.fmt.allocPrint(a, "explain topics matching \"{s}\" (each resolves via `tau explain <name>`):\n\n", .{query}));
+    try appendTopicsHuman(a, &b, m);
     return b.toOwnedSlice(a);
 }
 
@@ -628,6 +808,149 @@ test "formatIndexJson emits the topics object and every listed topic resolves" {
     for (topics.get("topics").?.array.items) |e| {
         try testing.expect(resolve(e.string).? == .topic);
     }
+}
+
+fn hasKey(m: TopicLists, name: []const u8) bool {
+    for (m.config_keys) |ks| {
+        if (std.mem.eql(u8, ks.name, name)) return true;
+    }
+    return false;
+}
+
+fn hasCheck(m: TopicLists, name: []const u8) bool {
+    for (m.doctor_checks) |cs| {
+        if (std.mem.eql(u8, cs.name, name)) return true;
+    }
+    return false;
+}
+
+fn hasEnv(m: TopicLists, name: []const u8) bool {
+    for (m.env_vars) |s| {
+        if (std.mem.eql(u8, s.name, name)) return true;
+    }
+    return false;
+}
+
+fn hasErr(m: TopicLists, code: u8) bool {
+    for (m.errors) |s| {
+        if (s.code == code) return true;
+    }
+    return false;
+}
+
+fn hasClient(m: TopicLists, k: setup.ClientKind) bool {
+    for (m.clients) |c| {
+        if (c == k) return true;
+    }
+    return false;
+}
+
+test "searchCatalog: a term matches name and body text across registries" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    // "timeout" hits the error (type tag), the config key (name), and any
+    // check/env/client whose text mentions it.
+    const t = try searchCatalog(a, "timeout");
+    try testing.expect(hasErr(t, 105));
+    try testing.expect(hasKey(t, "timeout_ms"));
+    // Case-insensitive: an uppercase env-var spelling still matches.
+    const e = try searchCatalog(a, "TAU_ENDPOINT");
+    try testing.expect(hasEnv(e, "TAU_ENDPOINT"));
+    const e2 = try searchCatalog(a, "tau_endpoint");
+    try testing.expect(hasEnv(e2, "TAU_ENDPOINT"));
+    // Body text (not just names): "bundle" reaches the env var whose
+    // summary mentions CURL_CA_BUNDLE-adjacent wording and the checks
+    // whose fails_when/remediation say bundle.
+    const b = try searchCatalog(a, "proxy");
+    try testing.expect(hasCheck(b, "proxy_env"));
+    // Unknown text matches nothing at all.
+    const n = try searchCatalog(a, "zzzyyqq");
+    try testing.expectEqual(@as(usize, 0), n.errors.len);
+    try testing.expectEqual(@as(usize, 0), n.config_keys.len);
+    try testing.expectEqual(@as(usize, 0), n.doctor_checks.len);
+    try testing.expectEqual(@as(usize, 0), n.env_vars.len);
+    try testing.expectEqual(@as(usize, 0), n.clients.len);
+    try testing.expectEqual(@as(usize, 0), n.topics.len);
+}
+
+test "searchCatalog: multi-term queries AND across the search text" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    // "api key" needs both terms — the key, the check, and the env var all
+    // carry both words in their searchable text.
+    const m = try searchCatalog(a, "api key");
+    try testing.expect(hasKey(m, "api_key"));
+    try testing.expect(hasCheck(m, "api_key"));
+    try testing.expect(hasEnv(m, "TAU_API_KEY"));
+    // A second term that nothing shares prunes the result — "key" alone
+    // hits far more entries than "key frobnicate".
+    const none = try searchCatalog(a, "key frobnicate-zzz");
+    try testing.expectEqual(@as(usize, 0), none.config_keys.len);
+}
+
+test "searchCatalog: prefixed spellings and client aliases reach their entries" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const d = try searchCatalog(a, "doctor.tls");
+    try testing.expect(hasCheck(d, "tls_ca"));
+    // --client aliases match by resolution, not substring.
+    const am = try searchCatalog(a, "amazon-q");
+    try testing.expect(hasClient(am, .amazonq));
+    const cc = try searchCatalog(a, "codex-cli");
+    try testing.expect(hasClient(cc, .codex));
+    // A dotted client spelling hits the canonical name in the haystack.
+    const cz = try searchCatalog(a, "client.zed");
+    try testing.expect(hasClient(cz, .zed));
+    // Topics search their summary/details — "redact" lives in privacy's.
+    const p = try searchCatalog(a, "redact");
+    try testing.expectEqual(@as(usize, 1), p.topics.len);
+    try testing.expectEqualStrings("privacy", p.topics[0].name);
+}
+
+test "formatSearchJson emits query + filtered topics and every listed name resolves" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const out = try formatSearchJson(a, "timeout");
+    try testing.expect(std.mem.startsWith(u8, out, "{\"query\":\"timeout\",\"topics\":{\"errors\":["));
+    try testing.expect(std.mem.endsWith(u8, out, "]}}\n"));
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, a, out, .{});
+    try testing.expectEqualStrings("timeout", v.object.get("query").?.string);
+    const topics = v.object.get("topics").?.object;
+    // Every listed name resolves — the filtered index is still a list of
+    // valid queries.
+    for (topics.get("errors").?.array.items) |e| {
+        const q = try std.fmt.allocPrint(a, "{d}", .{e.object.get("code").?.integer});
+        try testing.expect(resolve(q).? == .err);
+    }
+    for (topics.get("config_keys").?.array.items) |e| try testing.expect(resolve(e.string).? == .key);
+    for (topics.get("doctor_checks").?.array.items) |e| try testing.expect(resolve(e.string).? == .check);
+    for (topics.get("env_vars").?.array.items) |e| try testing.expect(resolve(e.string).? == .env);
+    for (topics.get("clients").?.array.items) |e| try testing.expect(resolve(e.string).? == .client);
+    for (topics.get("topics").?.array.items) |e| try testing.expect(resolve(e.string).? == .topic);
+    // JSON escaping inside the query member.
+    const esc = try formatSearchJson(a, "say \"hi\"");
+    try testing.expect(std.mem.startsWith(u8, esc, "{\"query\":\"say \\\"hi\\\"\",\"topics\":"));
+    // No matches: six empty arrays, still a valid result object.
+    const none = try formatSearchJson(a, "zzzyyqq");
+    try testing.expect(std.mem.indexOf(u8, none, "\"errors\":[]") != null);
+    try testing.expect(std.mem.indexOf(u8, none, "\"clients\":[]") != null);
+}
+
+test "formatSearchHuman renders matching sections, omits empty ones" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const out = try formatSearchHuman(a, "proxy_env");
+    try testing.expect(std.mem.indexOf(u8, out, "explain topics matching \"proxy_env\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "doctor checks:\n  doctor.proxy_env\n") != null);
+    // A check-only match has no error-code/client sections.
+    try testing.expect(std.mem.indexOf(u8, out, "clients:") == null);
+    const none = try formatSearchHuman(a, "zzzyyqq");
+    try testing.expectEqualStrings("no explain topics match \"zzzyyqq\" — run `tau explain --list` for the full topic index\n", none);
 }
 
 test "formatIndexHuman renders all six sections with resolvable names" {

@@ -95,7 +95,10 @@ prints the topic index — every resolvable name grouped as
 the entry bodies. Curated topics round out the catalog:
 `tau explain privacy` (also `topic.privacy`) prints what tau stores
 locally, what leaves the machine, and how the diagnostics surfaces redact
-secrets — with `tau bug`/`tau doctor --report` cross-links. A mistyped
+secrets — with `tau bug`/`tau doctor --report` cross-links.
+`tau explain --search <text>` prints the same index filtered to the
+entries whose name or body text matches every whitespace-separated term,
+case-insensitively (`tau explain --search "api key"`). A mistyped
 code, `type`, key, check id, env var, client name, or topic exits 1 with a
 `not_found` envelope whose message suggests the nearest catalog entry —
 `did you mean "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>>"?` — when the query is within two

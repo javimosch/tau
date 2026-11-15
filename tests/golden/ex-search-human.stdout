@@ -1,0 +1,9 @@
+explain topics matching "proxy_env" (each resolves via `tau explain <name>`):
+
+doctor checks:
+  doctor.proxy_env
+  doctor.endpoint_reachable
+  doctor.probe_xiaomi
+  doctor.probe_openai
+  doctor.probe_deepseek
+  doctor.probe_opencode-go

@@ -402,7 +402,8 @@ _tau() {
                         '1: :_describe "error code/type, config key, doctor check, TAU_* env var, client, or topic" err_codes cfg_keys checks env_vars clients topics' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]' \
-                        '--list[print the resolvable-topic index]'
+                        '--list[print the resolvable-topic index]' \
+                        '--search=[full-text search over the explain catalog]:text:'
                     ;;
             esac
             ;;

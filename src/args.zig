@@ -530,15 +530,17 @@ pub fn parse(
     }
 
     // `tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>]
-    // [--json|--human|--list]` — offline catalog lookup (the error Spec
-    // registry behind docs/errors.md plus the config-key, doctor-check,
-    // env-var, and client catalogs behind docs/config.md,
+    // [--json|--human|--list|--search <text>]` — offline catalog lookup (the
+    // error Spec registry behind docs/errors.md plus the config-key,
+    // doctor-check, env-var, and client catalogs behind docs/config.md,
     // docs/troubleshooting.md, docs/env.md, and docs/compatibility.md). The
     // output is JSON by default; --json is the stable-contract spelling that
     // pins the schema-checked form (schema/tau-explain.schema.json), --human
     // renders prose — the two are mutually exclusive. --list prints the
     // topic index (every resolvable name) instead of full entries and takes
-    // no query. Command, not a prompt: `explain` is always consumed as the
+    // no query. --search <text> prints the same index filtered to entries
+    // matching every whitespace-separated term and takes no positional
+    // query. Command, not a prompt: `explain` is always consumed as the
     // subcommand word.
     if (argv.len > 0 and eq(argv[0], "explain")) {
         if (wantsHelp(argv[1..])) return subHelp("explain", base);
@@ -555,6 +557,10 @@ pub fn parse(
                 ecfg.mode = .json;
             } else if (eq(a, "--list")) {
                 ecfg.explain_list = true;
+            } else if (eq(a, "--search")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                ecfg.explain_search = argv[j];
             } else if (a.len > 0 and a[0] != '-') {
                 if (ecfg.explain_arg != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 ecfg.explain_arg = a;
@@ -564,6 +570,14 @@ pub fn parse(
         }
         if (ecfg.explain_list and ecfg.explain_arg != null)
             return errResult(arena, "--list takes no query argument", .{});
+        if (ecfg.explain_list and ecfg.explain_search != null)
+            return errResult(arena, "--list and --search are mutually exclusive", .{});
+        if (ecfg.explain_search != null and ecfg.explain_arg != null)
+            return errResult(arena, "--search takes no query argument", .{});
+        if (ecfg.explain_search) |sq| {
+            if (std.mem.trim(u8, sq, " \t").len == 0)
+                return errResult(arena, "--search requires a non-empty query", .{});
+        }
         return .{ .action = .explain, .config = ecfg };
     }
 
@@ -1807,6 +1821,47 @@ test "parse: explain subcommand" {
     const query_list = try parseArgv(a, &.{ "tau", "explain", "106", "--list" }, .{});
     try std.testing.expectEqual(Action.err, query_list.action);
     try std.testing.expectEqualStrings("--list takes no query argument", query_list.err_msg.?);
+
+    // --search <text> consumes its own argument — no positional query,
+    // combinable with --json/--human, mutex with --list either order.
+    const search = try parseArgv(a, &.{ "tau", "explain", "--search", "timeout" }, .{});
+    try std.testing.expectEqual(Action.explain, search.action);
+    try std.testing.expectEqualStrings("timeout", search.config.explain_search.?);
+    try std.testing.expect(search.config.explain_arg == null);
+    try std.testing.expect(!search.config.explain_list);
+
+    const search_multi = try parseArgv(a, &.{ "tau", "explain", "--search", "api key", "--json" }, .{});
+    try std.testing.expectEqual(Action.explain, search_multi.action);
+    try std.testing.expectEqualStrings("api key", search_multi.config.explain_search.?);
+    try std.testing.expect(search_multi.config.cli_json);
+
+    const search_human = try parseArgv(a, &.{ "tau", "explain", "--human", "--search", "proxy" }, .{});
+    try std.testing.expectEqualStrings("proxy", search_human.config.explain_search.?);
+    try std.testing.expect(search_human.config.explain_human);
+
+    const search_missing = try parseArgv(a, &.{ "tau", "explain", "--search" }, .{});
+    try std.testing.expectEqual(Action.err, search_missing.action);
+    try std.testing.expectEqualStrings("missing value for --search", search_missing.err_msg.?);
+
+    const search_blank = try parseArgv(a, &.{ "tau", "explain", "--search", "  " }, .{});
+    try std.testing.expectEqual(Action.err, search_blank.action);
+    try std.testing.expectEqualStrings("--search requires a non-empty query", search_blank.err_msg.?);
+
+    const search_query = try parseArgv(a, &.{ "tau", "explain", "--search", "x", "106" }, .{});
+    try std.testing.expectEqual(Action.err, search_query.action);
+    try std.testing.expectEqualStrings("--search takes no query argument", search_query.err_msg.?);
+
+    const query_search = try parseArgv(a, &.{ "tau", "explain", "106", "--search", "x" }, .{});
+    try std.testing.expectEqual(Action.err, query_search.action);
+    try std.testing.expectEqualStrings("--search takes no query argument", query_search.err_msg.?);
+
+    const search_list = try parseArgv(a, &.{ "tau", "explain", "--search", "x", "--list" }, .{});
+    try std.testing.expectEqual(Action.err, search_list.action);
+    try std.testing.expectEqualStrings("--list and --search are mutually exclusive", search_list.err_msg.?);
+
+    const list_search = try parseArgv(a, &.{ "tau", "explain", "--list", "--search", "x" }, .{});
+    try std.testing.expectEqual(Action.err, list_search.action);
+    try std.testing.expectEqualStrings("--list and --search are mutually exclusive", list_search.err_msg.?);
 }
 
 test "parse: skills subcommand validation" {
