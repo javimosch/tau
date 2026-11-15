@@ -179,7 +179,9 @@ stdout; exit 0 when nothing failed, 1 otherwise. `--json` streams one
 NDJSON `{"check":{...}}` event per check plus a terminal `done:true` verdict
 for CI/support tooling; `--offline` skips every check that would touch the
 network. Every row's meaning and remediation is also readable offline via
-`tau explain doctor.<check>` (e.g. `tau explain doctor.tls_ca`). Rows:
+`tau explain doctor.<check>` (e.g. `tau explain doctor.tls_ca`), and
+cataloged one section per check — symptom, cause, fix — in
+[docs/doctor.md](doctor.md). Rows:
 
 <!-- BEGIN GENERATED DOCTOR CHECKS — do not edit between the markers.
      Source of truth: the CheckSpec catalog in src/doctorcatalog.zig —

@@ -513,6 +513,7 @@ tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundl
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
 | `src/configedit.zig` | `tau config set|get|unset`/`config edit` JSONC splice editor | Config editing changes |
 | `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
+| `src/doctorcatalog.zig` | CheckSpec registry behind `tau explain doctor.<id>`; `scripts/gen-doctor-checks-doc.py` → the troubleshooting.md check table + `docs/doctor.md` (doctor-checks smoke group drift-checks both) | Adding/renaming a check id or rewording its fails-when/fix |
 | `schema/tau-doctor.schema.json` | `tau doctor --json` NDJSON event schema (+ `scripts/check-doctor-schema.py` validator, `scripts/gen-doctor-doc.py` → docs/doctor-json.md) | Changing doctor event shapes |
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
 | `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
@@ -721,7 +722,8 @@ Set appropriate context windows for compaction threshold:
 offline catalog entry (cause + remediation hint) for any stable error — see
 docs/errors.md for the generated catalog — a config key's
 type/constraints/description from docs/config.md (`keys.<provider>` member
-paths included), a doctor check's fails-when + remediation via `doctor.<check>`,
+paths included), a doctor check's fails-when + remediation via `doctor.<check>`
+(full per-check catalog: docs/doctor.md),
 a `TAU_*` env var's consumers + summary from docs/env.md, or an editor
 client's prerequisites + config paths + verify step from
 docs/compatibility.md (`client.<name>` or a bare `--client` name/alias).

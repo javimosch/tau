@@ -320,6 +320,22 @@ test "explain: check catalog rows mirror the docs/troubleshooting.md table verba
     }
 }
 
+test "explain: check catalog sections mirror docs/doctor.md verbatim" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/doctor.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    for (check_catalog) |cs| {
+        // The generated per-check section — the same shape
+        // scripts/gen-doctor-checks-doc.py renders into docs/doctor.md.
+        const section = try std.fmt.allocPrint(gpa, "### `{s}`\n\n- **Symptom:** the `{s}` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.\n- **Cause:** {s}\n- **Fix:** {s}\n- **Explain:** `tau explain doctor.{s}`", .{ cs.name, cs.name, cs.fails_when, cs.remediation, cs.name });
+        defer gpa.free(section);
+        if (std.mem.indexOf(u8, doc, section) == null) {
+            std.debug.print("docs/doctor.md missing check section '{s}'\n", .{cs.name});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
 test "explain: every check-catalog entry resolves via findCheck" {
     for (check_catalog) |cs| {
         var buf: [80]u8 = undefined;

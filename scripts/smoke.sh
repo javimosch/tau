@@ -6425,15 +6425,17 @@ PYEOF
   fi
 }
 
-# Group: generated `tau doctor` check table in docs/troubleshooting.md —
-# the GENERATED DOCTOR CHECKS region is spliced by
-# scripts/gen-doctor-checks-doc.py from the CheckSpec catalog in
-# src/doctorcatalog.zig (the same registry `tau explain doctor.<check>`
-# reads); --check fails on drift. Fully offline.
+# Group: generated `tau doctor` check docs — the GENERATED DOCTOR CHECKS
+# table in docs/troubleshooting.md and the per-check catalog
+# docs/doctor.md are rendered by scripts/gen-doctor-checks-doc.py from the
+# CheckSpec catalog in src/doctorcatalog.zig (the same registry
+# `tau explain doctor.<check>` reads); --check fails on drift. Fully
+# offline.
 test_group_doctor_checks() {
   note "generated doctor check table drift check"
 
   local doc="$ROOT/docs/troubleshooting.md"
+  local cat="$ROOT/docs/doctor.md"
   local gen="$ROOT/scripts/gen-doctor-checks-doc.py"
 
   if grep -q "GENERATED DOCTOR CHECKS" "$doc" 2>/dev/null; then
@@ -6442,10 +6444,20 @@ test_group_doctor_checks() {
     ok "doctor-checks: troubleshooting.md carries the generated region" 1 0
   fi
 
+  if [ -f "$cat" ]; then
+    ok "doctor-checks: docs/doctor.md exists" 0 0
+    contains "doctor-checks: catalog declares itself generated" "$(cat "$cat")" "GENERATED FILE"
+  else
+    ok "doctor-checks: docs/doctor.md exists" 1 0
+    contains "doctor-checks: catalog declares itself generated" "" "GENERATED FILE"
+  fi
+
   if ! command -v python3 >/dev/null 2>&1; then
     skip_test "doctor-checks: --check passes (no drift)" "python3 not on PATH"
     skip_test "doctor-checks: --check detects a stale doc" "python3 not on PATH"
     skip_test "doctor-checks: rows match the live catalog" "python3 not on PATH"
+    skip_test "doctor-checks: catalog sections match the live catalog" "python3 not on PATH"
+    skip_test "doctor-checks: --check detects a stale catalog" "python3 not on PATH"
     return 0
   fi
 
@@ -6472,6 +6484,26 @@ PYEOF
     ok "doctor-checks: rows match the live catalog" 1 0
   fi
 
+  # Same for docs/doctor.md — one ### `id` section per live catalog entry,
+  # in catalog order, each closing on its `tau explain doctor.<id>` link.
+  if [ -f "$cat" ]; then
+    if python3 - "$cat" "$SMOKE_TEMP/explain-catalog.json" <<'PYEOF'
+import json, re, sys
+doc = open(sys.argv[1]).read()
+doc_ids = re.findall(r"^### `([^`]+)`$", doc, re.M)
+live = [e["check"] for e in json.load(open(sys.argv[2]))["doctor_checks"]]
+links = re.findall(r"^- \*\*Explain:\*\* `tau explain doctor\.([^`]+)`$", doc, re.M)
+sys.exit(0 if doc_ids == live and links == live else 1)
+PYEOF
+    then
+      ok "doctor-checks: catalog sections match the live catalog" 0 0
+    else
+      ok "doctor-checks: catalog sections match the live catalog" 1 0
+    fi
+  else
+    skip_test "doctor-checks: catalog sections match the live catalog" "docs/doctor.md missing"
+  fi
+
   # Prove the drift check isn't vacuous: splice a bogus row inside the
   # marked region, expect failure, restore.
   cp "$doc" "$SMOKE_TEMP/troubleshooting.md.bak"
@@ -6488,8 +6520,26 @@ PYEOF
     ok "doctor-checks: --check detects a stale doc" 0 0
   fi
   cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
+
+  # Same vacuity proof for the catalog page: append junk, expect --check
+  # to flag it, restore.
+  if [ -f "$cat" ]; then
+    cp "$cat" "$SMOKE_TEMP/doctor.md.bak"
+    printf '\n<!-- stale -->\n' >> "$cat"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "doctor-checks: --check detects a stale catalog" 0 1
+    else
+      ok "doctor-checks: --check detects a stale catalog" 0 0
+    fi
+    cp "$SMOKE_TEMP/doctor.md.bak" "$cat"
+  else
+    skip_test "doctor-checks: --check detects a stale catalog" "docs/doctor.md missing"
+  fi
   # Leave the tree clean even if a later check fails.
-  python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
+  python3 "$gen" --check >/dev/null 2>&1 || {
+    cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
+    [ ! -f "$SMOKE_TEMP/doctor.md.bak" ] || cp "$SMOKE_TEMP/doctor.md.bak" "$cat"
+  }
 }
 
 # Group: --bench regression guard
