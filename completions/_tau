@@ -304,7 +304,8 @@ _tau() {
                     # doctor.* ids mirror the CheckSpec catalog in
                     # src/doctorcatalog.zig; TAU_* names mirror the Spec
                     # registry in src/envvars.zig; client.* names mirror the
-                    # ClientKind tables in src/setup.zig.
+                    # ClientKind tables in src/setup.zig; topic.* names mirror
+                    # the Spec registry in src/topiccatalog.zig.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -394,8 +395,11 @@ _tau() {
                         'client.kilo-code:editor client' 'client.amazonq:editor client'
                         'client.codex:editor client'
                     )
+                    local -a topics=(
+                        'topic.privacy:curated topic'
+                    )
                     _arguments \
-                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, or client" err_codes cfg_keys checks env_vars clients' \
+                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, client, or topic" err_codes cfg_keys checks env_vars clients topics' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]' \
                         '--list[print the resolvable-topic index]'

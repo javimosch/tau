@@ -4496,6 +4496,13 @@ test_group_golden_maintenance() {
   golden_check ex-client-unknown   1 "$BIN" explain client.bogus
   golden_check ex-dym-client       1 "$BIN" explain client.zde
 
+  # ── curated topics (src/topiccatalog.zig) — bare and `topic.<name>` ──
+  golden_check ex-topic            0 "$BIN" explain privacy
+  golden_check ex-topic-prefixed   0 "$BIN" explain topic.privacy
+  golden_check ex-topic-human      0 "$BIN" explain --human privacy
+  golden_check ex-topic-unknown    1 "$BIN" explain topic.bogus
+  golden_check ex-dym-topic        1 "$BIN" explain privavy
+
   # --list — the topic index: every resolvable name, no entry bodies.
   golden_check ex-list             0 "$BIN" explain --list
   golden_check ex-list-json        0 "$BIN" explain --json --list
@@ -5787,7 +5794,7 @@ test_group_explain() {
   capture k7 "$BIN" explain agent.timeout
   ok "explain: unknown dotted path exits 1" "$k7_rc" 1
   contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
-  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, or client'
+  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, client, or topic'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
@@ -5946,6 +5953,45 @@ test_group_explain() {
   contains "explain: unknown client emits not_found" "$c9_err" '"type":"not_found"'
   lacks "explain: unknown client gets no suggestion" "$c9_err" 'did you mean'
 
+  # Curated topics — the hand-written src/topiccatalog.zig registry.
+  # `tau explain privacy` covers diagnostics collection, secret
+  # redaction, and the `tau bug` diagnostics/crash-report bundle;
+  # `topic.<name>` is the namespaced spelling, bare resolves too.
+  capture t1 "$BIN" explain privacy
+  ok "explain: topic entry exits 0" "$t1_rc" 0
+  contains "explain: topic entry carries name" "$t1_out" '"topic":"privacy"'
+  contains "explain: topic entry carries summary" "$t1_out" '"summary":"what tau stores locally'
+  contains "explain: topic entry details diagnostics" "$t1_out" 'tau doctor --report'
+  contains "explain: topic entry details redaction" "$t1_out" '***REDACTED***'
+  contains "explain: topic entry details debug log" "$t1_out" 'debug/<timestamp>.log'
+  contains "explain: topic cross-links tau bug" "$t1_out" '"see_also":["tau bug"'
+  contains "explain: topic anchors troubleshooting" "$t1_out" 'troubleshooting.md#diagnostic-toolkit'
+
+  capture t2 "$BIN" explain topic.privacy
+  ok "explain: prefixed topic exits 0" "$t2_rc" 0
+  contains "explain: prefixed topic resolves" "$t2_out" '"topic":"privacy"'
+
+  capture t3 "$BIN" explain --human privacy
+  ok "explain: --human topic exits 0" "$t3_rc" 0
+  contains "explain: --human prints topic tag" "$t3_out" 'topic  privacy'
+  contains "explain: --human prints details" "$t3_out" 'details:'
+  contains "explain: --human cross-links tau bug" "$t3_out" 'see also: tau bug'
+
+  # The no-query catalog carries the sixth slice.
+  contains "explain: catalog lists topics" "$r3_out" '"topics":['
+  contains "explain: catalog includes privacy" "$r3_out" '"topic":"privacy"'
+
+  # Topic typos get the same did-you-mean — namespaced and bare.
+  capture t4 "$BIN" explain privavy
+  ok "explain: topic typo exits 1" "$t4_rc" 1
+  contains "explain: topic typo suggests privacy" "$t4_err" 'did you mean \"tau explain privacy\"?'
+  capture t5 "$BIN" explain topic.privavy
+  ok "explain: prefixed topic typo exits 1" "$t5_rc" 1
+  contains "explain: prefixed typo suggests topic.privacy" "$t5_err" 'did you mean \"tau explain topic.privacy\"?'
+  capture t6 "$BIN" explain topic.bogus
+  ok "explain: unknown topic exits 1" "$t6_rc" 1
+  contains "explain: unknown topic emits not_found" "$t6_err" '"type":"not_found"'
+
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
   ok "explain: bad flag exits 80" "$r8_rc" 80
@@ -5984,6 +6030,8 @@ test_group_explain() {
   contains "explain: --list includes an env var" "$li1_out" '"TAU_ENDPOINT"'
   contains "explain: --list lists clients" "$li1_out" '"clients":['
   contains "explain: --list client ids are namespaced" "$li1_out" '"client.zed"'
+  contains "explain: --list lists topics" "$li1_out" '"topics":['
+  contains "explain: --list topic names are namespaced" "$li1_out" '"topic.privacy"'
   lacks "explain: --list carries no entry bodies" "$li1_out" '"remediation"'
 
   capture li2 "$BIN" explain --human --list
@@ -5992,6 +6040,8 @@ test_group_explain() {
   contains "explain: --human --list prints check section" "$li2_out" 'doctor checks:'
   contains "explain: --human --list prints client section" "$li2_out" 'clients:'
   contains "explain: --human --list names a client" "$li2_out" 'client.zed'
+  contains "explain: --human --list prints topics section" "$li2_out" 'topics:'
+  contains "explain: --human --list names a topic" "$li2_out" 'topic.privacy'
 
   # --list is mutex with a query in either order.
   capture li3 "$BIN" explain --list 106
@@ -6065,6 +6115,12 @@ test_group_explain() {
     else
       ok "explain: bridge client entry validates against schema" 1 0
     fi
+    # A topic entry validates against the same schema.
+    if printf '%s' "$t1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: topic entry validates against schema" 0 0
+    else
+      ok "explain: topic entry validates against schema" 1 0
+    fi
     # The --list topic index validates against the same schema.
     if printf '%s' "$li1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
       ok "explain: --list index validates against schema" 0 0
@@ -6081,7 +6137,7 @@ bin_path, idx_path = sys.argv[1], sys.argv[2]
 topics = json.load(open(idx_path))["topics"]
 queries = [str(e["code"]) for e in topics["errors"]]
 queries += [e["type"] for e in topics["errors"]]
-for group in ("config_keys", "doctor_checks", "env_vars", "clients"):
+for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics"):
     queries += topics[group]
 bad = [q for q in queries
        if subprocess.run([bin_path, "explain", q],

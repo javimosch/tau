@@ -91,10 +91,14 @@ setup command, and restart verification from the generated
 prints the topic index — every resolvable name grouped as
 `{"topics":{"errors":[{code,type}, …],"config_keys":[…],
 "doctor_checks":["doctor.<id>", …],"env_vars":["TAU_*", …],
-"clients":["client.<name>", …]}}` — without the entry bodies. A mistyped
-code, `type`, key, check id, env var, or client name exits 1 with a
+"clients":["client.<name>", …],"topics":["topic.<name>", …]}}` — without
+the entry bodies. Curated topics round out the catalog:
+`tau explain privacy` (also `topic.privacy`) prints what tau stores
+locally, what leaves the machine, and how the diagnostics surfaces redact
+secrets — with `tau bug`/`tau doctor --report` cross-links. A mistyped
+code, `type`, key, check id, env var, client name, or topic exits 1 with a
 `not_found` envelope whose message suggests the nearest catalog entry —
-`did you mean "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>>"?` — when the query is within two
+`did you mean "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>>"?` — when the query is within two
 case-insensitive edits of one.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
@@ -522,6 +526,7 @@ any of them.
 | `tau setup --client <mcp-client> --import [--dry-run]` | Merge your existing MCP server entries from the other supported clients' settings files (windsurf/gemini/claude-desktop/opencode/cline) into the wired MCP client — the mcacp entry and your servers are spliced in (comments and current entries survive, nothing overwritten). Client entries report `imported`/`import_skipped`; `TAU_SETUP_IMPORT=1` is the env equivalent; mutually exclusive with `--remove` |
 | `tau config validate [path]` | Offline config-file validation (`{"ok","errors":[…]}` on stdout, exit 1 on failure) — CI/pre-commit gate |
 | `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
+| `tau explain privacy` | What tau stores locally, what leaves the machine, and how the debug log, report bundle, and `tau bug` issue redact secrets |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau <sub> --help` | Per-subcommand usage + runnable examples (`tau fleet --help`, `tau doctor --help`, …) |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |

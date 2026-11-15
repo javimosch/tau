@@ -122,3 +122,6 @@ clients:
   client.kilo-code
   client.amazonq
   client.codex
+
+topics:
+  topic.privacy
