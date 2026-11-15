@@ -528,7 +528,7 @@ any of them.
 | `tau setup --detect [--client <name>]` | Read-only client inventory: every supported client's config dir, detection status, and wiring state (`not_detected`/`manual_only`/`missing_file`/`unreadable`/`unparseable`/`no_entry`/`stale`/`ok`) with settings paths — writes nothing; `--client` scopes the sweep |
 | `tau setup --client <mcp-client> --import [--dry-run]` | Merge your existing MCP server entries from the other supported clients' settings files (windsurf/gemini/claude-desktop/opencode/cline) into the wired MCP client — the mcacp entry and your servers are spliced in (comments and current entries survive, nothing overwritten). Client entries report `imported`/`import_skipped`; `TAU_SETUP_IMPORT=1` is the env equivalent; mutually exclusive with `--remove` |
 | `tau config validate [path]` | Offline config-file validation (`{"ok","errors":[…]}` on stdout, exit 1 on failure) — CI/pre-commit gate |
-| `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
+| `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics, `--dry-run` previews the exact envelope — bundle + a `redactions` mask count — with no side effects) |
 | `tau explain privacy` | What tau stores locally, what leaves the machine, and how the debug log, report bundle, and `tau bug` issue redact secrets |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau <sub> --help` | Per-subcommand usage + runnable examples (`tau fleet --help`, `tau doctor --help`, …) |
@@ -550,4 +550,7 @@ and `--body` fill in the title and description, `--out <path>` also writes
 the bundle to a file for manual attaching). To file an issue around a report
 you captured earlier — e.g. at crash time — `tau bug --attach-report
 <path>` bundles that file instead of re-running the diagnostic sweep; the
-file is secret-redacted before it reaches the issue body or URL.
+file is secret-redacted before it reaches the issue body or URL. Run
+`tau bug --dry-run` first to preview the exact envelope — the same bundle
+plus a `redactions` count of the `***REDACTED***` masks applied — without
+writing any file or opening a browser, then drop the flag to file for real.

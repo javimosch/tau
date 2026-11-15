@@ -2117,7 +2117,46 @@ test_group_bug() {
   capture bug_attach_missing "$BIN" bug --attach-report "$mock_home/nope.md"
   ok "unreadable attach -> exit 80" "$bug_attach_missing_rc" 80
   contains "unreadable attach names the file" "$bug_attach_missing_err" 'cannot read report file'
+
+  # 11. --dry-run: the same envelope the real run would emit plus
+  #     "dry_run":true and a "redactions" mask count — but no side effects:
+  #     --out writes nothing and --open launches nothing.
+  printf '# captured report\nkey=sk-dry-secret-42\nagain sk-dry-secret-42\n' > "$mock_home/captured.md"
+  printf '#!/bin/sh\nprintf "%%s" "$1" > "%s/dry-opened"\n' "$stub_dir" > "$stub_dir/dry-browser"
+  chmod +x "$stub_dir/dry-browser"
+  capture bug_dry env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    BROWSER="$stub_dir/dry-browser" OPENAI_API_KEY=sk-dry-secret-42 HOME="$mock_home" \
+    "$BIN" bug --attach-report "$mock_home/captured.md" --dry-run --out "$mock_home/dry-bundle.md" --open
+  ok "bug --dry-run exits 0" "$bug_dry_rc" 0
+  contains "dry_run marker present" "$bug_dry_out" '"dry_run":true'
+  contains "redactions counted" "$bug_dry_out" '"redactions":2'
+  contains "out path still reported" "$bug_dry_out" '"out":"'
+  contains "not opened under --dry-run" "$bug_dry_out" '"opened":false'
+  contains "attached secret is masked" "$bug_dry_out" '***REDACTED***'
+  if printf '%s' "$bug_dry_out" | grep -qF 'sk-dry-secret-42'; then
+    ok "dry-run secret never in output" 1 0
+  else
+    ok "dry-run secret never in output" 0 0
+  fi
+  if [ -f "$mock_home/dry-bundle.md" ]; then
+    ok "--dry-run wrote no --out file" 1 0
+  else
+    ok "--dry-run wrote no --out file" 0 0
+  fi
+  if [ -f "$stub_dir/dry-opened" ]; then
+    ok "--dry-run launched no browser" 1 0
+  else
+    ok "--dry-run launched no browser" 0 0
+  fi
   rm -f "$mock_home/captured.md"
+
+  # --no-report --dry-run: report stays null, zero masks.
+  capture bug_dry_norep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline --no-report --dry-run
+  ok "no-report --dry-run exits 0" "$bug_dry_norep_rc" 0
+  contains "report stays null" "$bug_dry_norep_out" '"report":null'
+  contains "zero redactions" "$bug_dry_norep_out" '"redactions":0'
+  contains "dry_run marker on no-report" "$bug_dry_norep_out" '"dry_run":true'
 }
 
 # Group: `tau config schema` — emits the config file's JSON Schema (draft
@@ -4556,6 +4595,7 @@ EOF
   golden_check   bug-json-no-report     0 "$BIN" bug --json --offline --no-report
   golden_check   bug-no-report-custom   0 "$BIN" bug --offline --no-report \
     --title "crash on --deep" --labels "bug,triage" --body "it broke"
+  golden_check   bug-dry-run            0 "$BIN" bug --offline --no-report --dry-run
 
   # ── tau upgrade — offline stubs; install dest pinned under <HOME> ──
   golden_check   ug-bad-flag        80 "$BIN" upgrade --bogus
@@ -5309,6 +5349,17 @@ test_group_cli_schemas() {
     ok "cli-schemas: bug --json validates" 0 0
   else
     ok "cli-schemas: bug --json validates" 1 0
+  fi
+
+  # --dry-run adds the two preview members; the same schema still validates.
+  out=$("${scrub[@]}" "$BIN" bug --json --offline --no-report --dry-run); rc=$?
+  ok "cli-schemas: bug --json --dry-run exit 0" "$rc" 0
+  contains "cli-schemas: bug --dry-run marker" "$out" '"dry_run":true'
+  contains "cli-schemas: bug --dry-run redactions" "$out" '"redactions":0'
+  if printf '%s' "$out" | python3 "$check" --schema "$bug_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: bug --json --dry-run validates" 0 0
+  else
+    ok "cli-schemas: bug --json --dry-run validates" 1 0
   fi
 
   # ── tau setup --json ───────────────────────────────────────────────────

@@ -162,6 +162,9 @@ Diagnostics:
       --no-report             Omit the diagnostics bundle
       --attach-report <path>  Bundle an existing report file
                               (secret-redacted) instead of the live sweep
+      --dry-run               Preview the exact issue envelope — bundle
+                              contents + a "redactions" mask count — with
+                              no side effects (no --out write, no browser)
       --offline/--deep        Passed through to the diagnostic sweep
       --json                  Pin the stable schema-checked JSON form
                               (schema/tau-bug.schema.json)
