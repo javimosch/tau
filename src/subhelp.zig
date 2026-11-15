@@ -150,10 +150,10 @@ const doctor_help =
 
 const explain_help =
     \\tau explain - offline error + config-key + doctor-check + env-var
-    \\+ client catalog lookup (no API key needed)
+    \\+ client + topic catalog lookup (no API key needed)
     \\
     \\Usage:
-    \\  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>] [--json|--human]
+    \\  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>>] [--json|--human]
     \\  tau explain --list [--json|--human]
     \\
     \\Arguments:
@@ -174,6 +174,10 @@ const explain_help =
     \\                    prerequisites, config paths, and the restart +
     \\                    verify step. Bare names and --client aliases
     \\                    resolve too (`zed`, `code`, `claude`)
+    \\  topic.<name>      A curated topic — `privacy` covers what tau
+    \\                    stores locally, what leaves the machine, and how
+    \\                    diagnostics redact secrets. Bare names resolve too
+    \\                    (`tau explain privacy`)
     \\
     \\Options:
     \\      --json   Stable schema-checked JSON form (default;
@@ -181,8 +185,8 @@ const explain_help =
     \\      --human  Render as prose
     \\      --list   Print the topic index — every resolvable name
     \\               (error codes + types, config keys, doctor checks,
-    \\               TAU_* env vars, client ids) instead of full entries;
-    \\               takes no query
+    \\               TAU_* env vars, client ids, topics) instead of full
+    \\               entries; takes no query
     \\
     \\Examples:
     \\  tau explain
@@ -194,6 +198,7 @@ const explain_help =
     \\  tau explain doctor.tls_ca
     \\  tau explain TAU_ENDPOINT
     \\  tau explain client.zed
+    \\  tau explain privacy
     \\  tau explain --human 105
     \\
 ;
