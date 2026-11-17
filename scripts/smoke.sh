@@ -73,6 +73,7 @@ ALL_TEST_GROUPS=(
   "init:test_group_init"
   "setup:test_group_setup"
   "setup-failure:test_group_setup_failure"
+  "setup-idempotent:test_group_setup_idempotent"
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
   "doc-snippets:test_group_doc_snippets"
@@ -3030,6 +3031,188 @@ test_group_setup_failure() {
   [ -f "$h/.codeium/windsurf/mcp_config.json" ]; ok "fresh windsurf file written" "$?" 0
   grep -q '"mcpServers"' "$h/.codeium/windsurf/mcp_config.json"; ok "fresh windsurf file carries the servers section" "$?" 0
   grep -q '"mcacp"' "$h/.codeium/windsurf/mcp_config.json"; ok "fresh windsurf file carries the mcacp entry" "$?" 0
+}
+
+# Group: repeat `tau setup --client` runs — the idempotency contract. A
+# second (and third) run over an already-wired HOME is a verified no-op:
+# every managed file stays byte-identical, no block is appended twice (rc
+# hooks, agent entries, the shared mcacp bridge, imported MCP servers),
+# and the report flips from the write statuses to the no-change ones —
+# exists/already_installed/present on the step surface, manual where a
+# human still owns the merge.
+test_group_setup_idempotent() {
+  local h h2 h3 snap rr_drift
+
+  note "repeat setup --client runs are byte-idempotent"
+
+  # ── setup --shell all --client all, repeated on a fresh HOME ────
+  # Run 1 writes the whole footprint (config.json, 4 completion scripts,
+  # 2 rc blocks, 12 client settings files, the mcacp bridge, 5 snippets).
+  # Run 2 must report the no-change statuses and leave every byte; run 3
+  # must produce the same clients report again — steady state, not decay.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  capture rr_1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all --client all --yes
+  ok "first setup --client all exits 0" "$rr_1_rc" 0
+  contains "first run wires the clients step" "$rr_1_out" '"step":"clients","status":"installed"'
+
+  snap="$(mktemp -d)"; register_temp_dir "$snap"
+  (cd "$h" && find . -type f | sort > "$snap/files.txt")
+  (cd "$h" && while read -r f; do mkdir -p "$snap/tree/$(dirname "$f")"; cp "$f" "$snap/tree/$f"; done < "$snap/files.txt")
+
+  capture rr_2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all --client all --yes
+  ok "second setup --client all exits 0" "$rr_2_rc" 0
+
+  # The no-change report: init exists, rc hooks present, client entries
+  # already_installed or manual, bridge sides already_installed — no
+  # fresh write and no dry-run-style preview anywhere in the transcript.
+  contains "re-run init reports exists" "$rr_2_out" '"step":"init","status":"exists"'
+  contains "re-run rc hooks report present" "$rr_2_out" '"rc_status":"present"'
+  contains "re-run reports already_installed" "$rr_2_out" '"status":"already_installed"'
+  contains "re-run bridge reports already_installed" "$rr_2_out" '"bridge_status":"already_installed"'
+  contains "re-run keeps manual outcomes manual" "$rr_2_out" '"client":"nvim","status":"manual"'
+  lacks "no client entry reports a fresh write" "$rr_2_out" '"status":"installed","command"'
+  lacks "no client entry previews a write" "$rr_2_out" '"status":"would_install"'
+
+  # Census the clients array when python3 is available: all 17 entries,
+  # 12 already_installed + 5 manual, all 11 bridge sides already_installed.
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$rr_2_out" > "$snap/run2.ndjson"
+    if python3 - "$snap/run2.ndjson" <<'PYEOF'
+import json, sys
+step = None
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        continue
+    if obj.get("step") == "clients":
+        step = obj
+assert step is not None, "no clients step line"
+clients = step["clients"]
+assert len(clients) == 17, f"expected 17 client entries, got {len(clients)}"
+statuses = {}
+for c in clients:
+    assert c["status"] in ("already_installed", "manual"), c
+    statuses[c["status"]] = statuses.get(c["status"], 0) + 1
+    if "bridge_status" in c:
+        assert c["bridge_status"] == "already_installed", c
+assert statuses == {"already_installed": 12, "manual": 5}, statuses
+assert sum(1 for c in clients if "bridge_status" in c) == 11
+PYEOF
+    then
+      ok "all 17 re-run client entries report no-change statuses" 0 0
+    else
+      ok "all 17 re-run client entries report no-change statuses" 1 0
+    fi
+  else
+    skip_test "client re-run status census" "python3 not on PATH"
+  fi
+
+  # The file contract: nothing created, nothing removed, every byte kept.
+  (cd "$h" && find . -type f | sort > "$snap/files2.txt")
+  cmp -s "$snap/files.txt" "$snap/files2.txt"
+  ok "re-run created and removed no files" "$?" 0
+  rr_drift="$(cd "$snap/tree" && while read -r f; do cmp -s "$f" "$h/$f" || echo "$f"; done < "$snap/files.txt")"
+  if [ -z "$rr_drift" ]; then
+    ok "every managed file byte-identical after re-run" 0 0
+  else
+    ok "every managed file byte-identical after re-run (drift:$rr_drift)" 1 0
+  fi
+
+  # No block was appended twice: rc markers, agent entries, bridge entry.
+  [ "$(grep -c '# tau completions' "$h/.zshrc")" = "1" ]
+  ok ".zshrc tau marker not duplicated" "$?" 0
+  [ "$(grep -c '# tau completions' "$h/.config/powershell/Microsoft.PowerShell_profile.ps1")" = "1" ]
+  ok "pwsh profile tau marker not duplicated" "$?" 0
+  [ "$(grep -c '"tau":' "$h/.config/mcacp/mcacp.json")" = "1" ]
+  ok "mcacp agent_servers.tau entry not duplicated" "$?" 0
+  [ "$(grep -c '"tau":' "$h/.config/zed/settings.json")" = "1" ]
+  ok "zed agent_servers.tau entry not duplicated" "$?" 0
+  [ "$(grep -c '"mcacp":' "$h/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "windsurf mcpServers.mcacp entry not duplicated" "$?" 0
+  [ "$(grep -c '"mcacp":' "$h/.config/opencode/opencode.json")" = "1" ]
+  ok "opencode mcp.mcacp entry not duplicated" "$?" 0
+
+  # Third run: steady state — identical file tree again AND the clients
+  # step report itself is byte-stable between no-op runs.
+  capture rr_3 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all --client all --yes
+  ok "third setup --client all exits 0" "$rr_3_rc" 0
+  (cd "$h" && find . -type f | sort > "$snap/files3.txt")
+  cmp -s "$snap/files.txt" "$snap/files3.txt"
+  ok "third run created and removed no files" "$?" 0
+  rr_drift="$(cd "$snap/tree" && while read -r f; do cmp -s "$f" "$h/$f" || echo "$f"; done < "$snap/files.txt")"
+  if [ -z "$rr_drift" ]; then
+    ok "every managed file still byte-identical after third run" 0 0
+  else
+    ok "every managed file still byte-identical after third run (drift:$rr_drift)" 1 0
+  fi
+  printf '%s\n' "$rr_2_out" | grep '"step":"clients"' > "$snap/clients2.json"
+  printf '%s\n' "$rr_3_out" | grep '"step":"clients"' > "$snap/clients3.json"
+  cmp -s "$snap/clients2.json" "$snap/clients3.json"
+  ok "clients report is byte-stable between no-op runs" "$?" 0
+
+  # ── --import re-run: the in-place splice is idempotent too ────
+  # windsurf carries a user server, gemini donates a foreign one. Run 1
+  # splices mcacp + other into the file; run 2 must find everything
+  # present and write nothing.
+  h2="$(mktemp -d)"; register_temp_dir "$h2"
+  mkdir -p "$h2/.codeium/windsurf" "$h2/.gemini"
+  printf '{"mcpServers":{"mine":{"command":"m","args":["x"]}}}\n' > "$h2/.codeium/windsurf/mcp_config.json"
+  printf '{"mcpServers":{"other":{"command":"o","args":["y"]}}}\n' > "$h2/.gemini/settings.json"
+  capture ri_1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "first --import run exits 0" "$ri_1_rc" 0
+  contains "--import wires windsurf" "$ri_1_out" '"status":"installed"'
+  contains "--import collects the foreign server" "$ri_1_out" '"name":"other","from":"gemini"'
+  cp "$h2/.codeium/windsurf/mcp_config.json" "$h2/after1-mcp_config.json"
+  cp "$h2/.config/mcacp/mcacp.json" "$h2/after1-mcacp.json"
+
+  capture ri_2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "second --import run exits 0" "$ri_2_rc" 0
+  contains "--import re-run reports already_installed" "$ri_2_out" '"status":"already_installed"'
+  contains "--import re-run imports nothing new" "$ri_2_out" '"imported":[]'
+  contains "--import re-run skips the present server" "$ri_2_out" '"reason":"already present in the target file"'
+  contains "--import re-run bridge already wired" "$ri_2_out" '"bridge_status":"already_installed"'
+  cmp -s "$h2/after1-mcp_config.json" "$h2/.codeium/windsurf/mcp_config.json"
+  ok "windsurf file byte-identical after --import re-run" "$?" 0
+  cmp -s "$h2/after1-mcacp.json" "$h2/.config/mcacp/mcacp.json"
+  ok "mcacp bridge byte-identical after --import re-run" "$?" 0
+  [ "$(grep -c '"mcacp":' "$h2/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "mcacp entry not duplicated by --import re-run" "$?" 0
+  [ "$(grep -c '"other":' "$h2/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "imported server not duplicated by --import re-run" "$?" 0
+  [ "$(grep -c '"mine":' "$h2/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "pre-existing server kept exactly once" "$?" 0
+
+  # ── Manual-path re-run: the snippet fallback is idempotent ────
+  # An existing foreign settings file stays manual on every run; neither
+  # the user's file nor the paste-ready snippet drifts by a byte.
+  h3="$(mktemp -d)"; register_temp_dir "$h3"
+  mkdir -p "$h3/.config/Cursor/User"
+  printf '{\n  // keep me\n  "vim_mode": true\n}\n' > "$h3/.config/Cursor/User/settings.json"
+  capture rm_1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h3" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client cursor --yes
+  ok "first run on foreign file exits 0 (manual)" "$rm_1_rc" 0
+  contains "cursor reports manual" "$rm_1_out" '"status":"manual"'
+  [ -f "$h3/.config/tau/snippets/cursor.jsonc" ]; ok "cursor snippet written" "$?" 0
+  cp "$h3/.config/Cursor/User/settings.json" "$h3/after1-settings.json"
+  cp "$h3/.config/tau/snippets/cursor.jsonc" "$h3/after1-snippet.jsonc"
+
+  capture rm_2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h3" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client cursor --yes
+  ok "re-run on foreign file exits 0 (manual)" "$rm_2_rc" 0
+  contains "re-run still reports manual" "$rm_2_out" '"status":"manual"'
+  cmp -s "$h3/after1-settings.json" "$h3/.config/Cursor/User/settings.json"
+  ok "foreign settings file byte-identical after re-run" "$?" 0
+  cmp -s "$h3/after1-snippet.jsonc" "$h3/.config/tau/snippets/cursor.jsonc"
+  ok "paste-ready snippet byte-identical after re-run" "$?" 0
 }
 
 # Group: runnable client-config examples under examples/clients/ —
