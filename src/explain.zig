@@ -1,5 +1,5 @@
 //! `tau explain` — the offline catalog lookup surface (no provider or API
-//! key needed). A query resolves against SIX registries:
+//! key needed). A query resolves against SEVEN registries:
 //!
 //!   * the stable error catalog (src/errors.zig — mirrored by docs/errors.md)
 //!     addressed by decimal exit code or case-insensitive `type` tag,
@@ -13,10 +13,14 @@
 //!     docs/env.md table) addressed by the variable's exact name,
 //!   * the client catalog (src/clientcatalog.zig — the ClientKind tables in
 //!     src/setup.zig rendered by docs/compatibility.md) addressed by
-//!     `client.<name>` or a bare `--client` name/alias, and
+//!     `client.<name>` or a bare `--client` name/alias,
 //!   * the curated-topic catalog (src/topiccatalog.zig — hand-written
 //!     subjects like `privacy` that no generated registry backs) addressed
-//!     by `topic.<name>` or a bare topic name.
+//!     by `topic.<name>` or a bare topic name, and
+//!   * the subcommand catalog (src/subcommandcatalog.zig — one entry per
+//!     registered subcommand: usage, runnable examples, and links to the
+//!     related error `type` tags, config keys, and `doctor.<check>` ids)
+//!     addressed by `subcommand.<name>` or a bare subcommand name.
 //!
 //! Error entries render as {code,type,recoverable,cause,hint,docs}; key
 //! entries as {key,type,constraints,description,docs}; check entries as
@@ -24,7 +28,9 @@
 //! {env,section,consumers,summary,docs}; client entries as
 //! {client,transport,wiring,prereqs,setup,config_dir,settings_path,
 //! snippet_path,bridge_path?,verify,doctor_check,docs}; topic entries as
-//! {topic,summary,details,see_also,docs}. `--list` renders the topic index
+//! {topic,summary,details,see_also,docs}; subcommand entries as
+//! {subcommand,summary,usage,examples,errors,config_keys,doctor_checks,
+//! docs}. `--list` renders the topic index
 //! (every resolvable name, no entry bodies) and `--search <text>` renders
 //! that same index filtered to the entries whose searchable text matches
 //! every whitespace-separated term, case-insensitively. All shapes are
@@ -39,12 +45,13 @@ const envvars = @import("envvars.zig");
 const json = @import("json.zig");
 const clientcat = @import("clientcatalog.zig");
 const topiccat = @import("topiccatalog.zig");
+const subcat = @import("subcommandcatalog.zig");
 const setup = @import("setup.zig");
 const suggest = @import("suggest.zig");
 
 /// A resolved `tau explain` query — a stable error entry, a config-key
 /// entry, a doctor-check entry, a TAU_* env-var entry, a supported
-/// editor-client entry, or a curated-topic entry.
+/// editor-client entry, a curated-topic entry, or a subcommand entry.
 pub const Entry = union(enum) {
     err: errors.Spec,
     key: cfgschema.KeySpec,
@@ -52,6 +59,7 @@ pub const Entry = union(enum) {
     env: envvars.Spec,
     client: setup.ClientKind,
     topic: topiccat.Spec,
+    subcommand: subcat.Spec,
 };
 
 /// Resolve a query: error catalog first (decimal exit code, or `type` tag
@@ -63,8 +71,11 @@ pub const Entry = union(enum) {
 /// resolves the check of the same name; `client.zed` resolves the editor
 /// client while bare `client_zed` keeps resolving the doctor check. Env-var
 /// names are exact (uppercase) — `TAU_*` spellings cannot collide with the
-/// other catalogs, so they need no prefix. Returns null when nothing
-/// matches.
+/// other catalogs, so they need no prefix. Subcommand names resolve last —
+/// the earlier registries win on any shared name (`doctor` stays the
+/// subcommand because no check id or key claims it; a hypothetical future
+/// `setup` config key would need the `subcommand.setup` spelling).
+/// Returns null when nothing matches.
 pub fn resolve(query: []const u8) ?Entry {
     if (errors.findSpec(query)) |s| return .{ .err = s };
     if (cfgschema.findKey(query)) |ks| return .{ .key = ks };
@@ -72,6 +83,7 @@ pub fn resolve(query: []const u8) ?Entry {
     if (envvars.findSpec(std.mem.trim(u8, query, " \t"))) |s| return .{ .env = s };
     if (clientcat.findClient(query)) |k| return .{ .client = k };
     if (topiccat.findSpec(query)) |s| return .{ .topic = s };
+    if (subcat.findSpec(query)) |s| return .{ .subcommand = s };
     return null;
 }
 
@@ -79,10 +91,11 @@ pub fn resolve(query: []const u8) ?Entry {
 /// code, each config-key name and `keys.<provider>` member path, each
 /// doctor-check id in both `doctor.<id>` and bare spellings, each TAU_*
 /// env-var name, each client name in both `client.<name>` and bare
-/// spellings, and each topic in both `topic.<name>` and bare spellings —
+/// spellings, each topic in both `topic.<name>` and bare spellings, and
+/// each subcommand in both `subcommand.<name>` and bare spellings —
 /// so a suggestion always resolves on retry.
 const candidates = blk: {
-    var c: [errors.specs.len * 2 + cfgschema.key_catalog.len + cfgschema.deprecated_key_specs.len + doctorcat.check_catalog.len * 2 + envvars.names.len + setup.all_clients.len * 2 + topiccat.names.len * 2][]const u8 = undefined;
+    var c: [errors.specs.len * 2 + cfgschema.key_catalog.len + cfgschema.deprecated_key_specs.len + doctorcat.check_catalog.len * 2 + envvars.names.len + setup.all_clients.len * 2 + topiccat.names.len * 2 + subcat.names.len * 2][]const u8 = undefined;
     for (errors.specs, 0..) |s, i| {
         c[i * 2] = s.type_name;
         c[i * 2 + 1] = std.fmt.comptimePrint("{d}", .{s.code});
@@ -114,6 +127,11 @@ const candidates = blk: {
     for (topiccat.names) |name| {
         c[n] = name;
         c[n + 1] = "topic." ++ name;
+        n += 2;
+    }
+    for (subcat.names) |name| {
+        c[n] = name;
+        c[n + 1] = "subcommand." ++ name;
         n += 2;
     }
     break :blk c;
@@ -172,7 +190,8 @@ pub fn suggestQuery(a: std.mem.Allocator, query: []const u8) ?[]const u8 {
 /// {check,fails_when,remediation,docs}; env entries are
 /// {env,section,consumers,summary,docs}; client entries are the
 /// src/clientcatalog.zig Spec shape; topic entries are the
-/// src/topiccatalog.zig Spec shape. Caller owns the returned slice.
+/// src/topiccatalog.zig Spec shape; subcommand entries are the
+/// src/subcommandcatalog.zig Spec shape. Caller owns the returned slice.
 pub fn formatEntryJson(a: std.mem.Allocator, entry: Entry) ![]u8 {
     return switch (entry) {
         .err => |s| errors.formatEntryJson(a, s),
@@ -181,6 +200,7 @@ pub fn formatEntryJson(a: std.mem.Allocator, entry: Entry) ![]u8 {
         .env => |s| envvars.formatEnvJson(a, s),
         .client => |k| clientcat.formatClientJson(a, try clientcat.specFor(a, k)),
         .topic => |s| topiccat.formatTopicJson(a, s),
+        .subcommand => |s| subcat.formatSubcommandJson(a, s),
     };
 }
 
@@ -195,13 +215,15 @@ pub fn formatEntryHuman(a: std.mem.Allocator, entry: Entry) ![]u8 {
         .env => |s| envvars.formatEnvHuman(a, s),
         .client => |k| clientcat.formatClientHuman(a, try clientcat.specFor(a, k)),
         .topic => |s| topiccat.formatTopicHuman(a, s),
+        .subcommand => |s| subcat.formatSubcommandHuman(a, s),
     };
 }
 
 /// The whole catalog as one JSON object (trailing newline included):
 /// {"errors":[<error entry>, ...],"config_keys":[<key entry>, ...],
 ///  "doctor_checks":[<check entry>, ...],"env_vars":[<env entry>, ...],
-///  "clients":[<client entry>, ...],"topics":[<topic entry>, ...]}
+///  "clients":[<client entry>, ...],"topics":[<topic entry>, ...],
+///  "subcommands":[<subcommand entry>, ...]}
 /// Caller owns the returned slice.
 pub fn formatCatalogJson(a: std.mem.Allocator) ![]u8 {
     var b: std.ArrayList(u8) = .empty;
@@ -235,13 +257,18 @@ pub fn formatCatalogJson(a: std.mem.Allocator) ![]u8 {
         if (i > 0) try b.appendSlice(a, ",");
         try b.appendSlice(a, try topiccat.formatTopicJson(a, s));
     }
+    try b.appendSlice(a, "],\"subcommands\":[");
+    for (subcat.specs, 0..) |s, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try b.appendSlice(a, try subcat.formatSubcommandJson(a, s));
+    }
     try b.appendSlice(a, "]}\n");
     return b.toOwnedSlice(a);
 }
 
 /// The whole catalog as prose — error entries, then config-key entries, then
 /// doctor-check entries, then env-var entries, then client entries, then
-/// topic entries, each
+/// topic entries, then subcommand entries, each
 /// separated by a blank line. Caller owns the returned slice.
 pub fn formatCatalogHuman(a: std.mem.Allocator) ![]u8 {
     var b: std.ArrayList(u8) = .empty;
@@ -269,6 +296,10 @@ pub fn formatCatalogHuman(a: std.mem.Allocator) ![]u8 {
         try b.appendSlice(a, "\n");
         try b.appendSlice(a, try topiccat.formatTopicHuman(a, s));
     }
+    for (subcat.specs) |s| {
+        try b.appendSlice(a, "\n");
+        try b.appendSlice(a, try subcat.formatSubcommandHuman(a, s));
+    }
     return b.toOwnedSlice(a);
 }
 
@@ -289,6 +320,7 @@ pub const TopicLists = struct {
     env_vars: []const envvars.Spec,
     clients: []const setup.ClientKind,
     topics: []const topiccat.Spec,
+    subcommands: []const subcat.Spec,
 };
 
 /// Every key the index lists — live catalog rows first, deprecated
@@ -304,6 +336,7 @@ fn indexLists() TopicLists {
         .env_vars = &envvars.specs,
         .clients = &setup.all_clients,
         .topics = &topiccat.specs,
+        .subcommands = &subcat.specs,
     };
 }
 
@@ -340,6 +373,11 @@ fn appendTopicsJson(a: std.mem.Allocator, b: *std.ArrayList(u8), m: TopicLists) 
         if (i > 0) try b.appendSlice(a, ",");
         try jstr(a, b, try std.fmt.allocPrint(a, "topic.{s}", .{s.name}));
     }
+    try b.appendSlice(a, "],\"subcommands\":[");
+    for (m.subcommands, 0..) |s, i| {
+        if (i > 0) try b.appendSlice(a, ",");
+        try jstr(a, b, try std.fmt.allocPrint(a, "subcommand.{s}", .{s.name}));
+    }
     try b.appendSlice(a, "]}");
 }
 
@@ -347,7 +385,7 @@ fn appendTopicsJson(a: std.mem.Allocator, b: *std.ArrayList(u8), m: TopicLists) 
 /// {"topics":{"errors":[{"code":N,"type":"T"}, ...],
 ///  "config_keys":["<key>", ...],"doctor_checks":["doctor.<id>", ...],
 ///  "env_vars":["TAU_*", ...],"clients":["client.<name>", ...],
-///  "topics":["topic.<name>", ...]}}
+///  "topics":["topic.<name>", ...],"subcommands":["subcommand.<name>", ...]}}
 /// Where the bare `tau explain` dump carries every full entry, the index
 /// carries only what each topic is addressed by — code + type tag for
 /// errors, the namespaced spelling for doctor checks and clients — so it
@@ -411,6 +449,14 @@ fn appendTopicsHuman(a: std.mem.Allocator, b: *std.ArrayList(u8), m: TopicLists)
         for (m.topics) |s| {
             try b.appendSlice(a, try std.fmt.allocPrint(a, "  topic.{s}\n", .{s.name}));
         }
+        wrote = true;
+    }
+    if (m.subcommands.len > 0) {
+        if (wrote) try b.appendSlice(a, "\n");
+        try b.appendSlice(a, "subcommands:\n");
+        for (m.subcommands) |s| {
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "  subcommand.{s}\n", .{s.name}));
+        }
     }
 }
 
@@ -458,8 +504,9 @@ fn allTermsHit(hay: []const u8, terms: []const []const u8) bool {
 /// constraints + description, a check's id + fails_when + remediation, an
 /// env var's name + consumers + summary, a client's name + transport +
 /// wiring + prereqs + verify + doctor check (plus `--client` alias
-/// resolution — `roo` and `amazon-q` reach their clients by name), and a
-/// topic's name + summary + details + see_also. Caller owns the slices.
+/// resolution — `roo` and `amazon-q` reach their clients by name), a
+/// topic's name + summary + details + see_also, and a subcommand's name +
+/// summary + usage + examples + related links. Caller owns the slices.
 pub fn searchCatalog(a: std.mem.Allocator, query: []const u8) !TopicLists {
     const terms = try searchTerms(a, query);
     var errs: std.ArrayList(errors.Spec) = .empty;
@@ -468,6 +515,7 @@ pub fn searchCatalog(a: std.mem.Allocator, query: []const u8) !TopicLists {
     var envs: std.ArrayList(envvars.Spec) = .empty;
     var clients: std.ArrayList(setup.ClientKind) = .empty;
     var topics: std.ArrayList(topiccat.Spec) = .empty;
+    var subs: std.ArrayList(subcat.Spec) = .empty;
     if (terms.len > 0) {
         for (errors.specs) |s| {
             const hay = try searchHaystack(a, &.{ try std.fmt.allocPrint(a, "{d}", .{s.code}), s.type_name, s.cause, s.hint });
@@ -499,6 +547,10 @@ pub fn searchCatalog(a: std.mem.Allocator, query: []const u8) !TopicLists {
             const hay = try searchHaystack(a, &.{ s.name, try std.fmt.allocPrint(a, "topic.{s}", .{s.name}), s.summary, s.details, try std.mem.join(a, " ", s.see_also) });
             if (allTermsHit(hay, terms)) try topics.append(a, s);
         }
+        for (subcat.specs) |s| {
+            const hay = try searchHaystack(a, &.{ s.name, try std.fmt.allocPrint(a, "subcommand.{s}", .{s.name}), s.summary, s.usage, try std.mem.join(a, " ", s.examples), try std.mem.join(a, " ", s.errors), try std.mem.join(a, " ", s.config_keys), try std.mem.join(a, " ", s.doctor_checks) });
+            if (allTermsHit(hay, terms)) try subs.append(a, s);
+        }
     }
     return .{
         .errors = try errs.toOwnedSlice(a),
@@ -507,6 +559,7 @@ pub fn searchCatalog(a: std.mem.Allocator, query: []const u8) !TopicLists {
         .env_vars = try envs.toOwnedSlice(a),
         .clients = try clients.toOwnedSlice(a),
         .topics = try topics.toOwnedSlice(a),
+        .subcommands = try subs.toOwnedSlice(a),
     };
 }
 
@@ -531,7 +584,7 @@ pub fn formatSearchJson(a: std.mem.Allocator, query: []const u8) ![]u8 {
 pub fn formatSearchHuman(a: std.mem.Allocator, query: []const u8) ![]u8 {
     const m = try searchCatalog(a, query);
     var b: std.ArrayList(u8) = .empty;
-    if (m.errors.len + m.config_keys.len + m.doctor_checks.len + m.env_vars.len + m.clients.len + m.topics.len == 0) {
+    if (m.errors.len + m.config_keys.len + m.doctor_checks.len + m.env_vars.len + m.clients.len + m.topics.len + m.subcommands.len == 0) {
         try b.appendSlice(a, try std.fmt.allocPrint(a, "no explain topics match \"{s}\" — run `tau explain --list` for the full topic index\n", .{query}));
         return b.toOwnedSlice(a);
     }
@@ -654,7 +707,26 @@ test "resolve: topics resolve prefixed and bare" {
     try testing.expect(resolve("privavy") == null);
 }
 
-test "suggestQuery covers error codes, types, config keys, env vars, clients, and topics" {
+test "resolve: subcommand names resolve prefixed and bare" {
+    const bare = resolve("doctor").?;
+    try testing.expect(bare == .subcommand);
+    try testing.expectEqualStrings("doctor", bare.subcommand.name);
+    const prefixed = resolve("subcommand.fleet").?;
+    try testing.expect(prefixed == .subcommand);
+    try testing.expectEqualStrings("fleet", prefixed.subcommand.name);
+    // Every registered subcommand resolves both ways.
+    for (subcat.names) |name| {
+        try testing.expect(resolve(name).? == .subcommand);
+        const q = try std.fmt.allocPrint(testing.allocator, "subcommand.{s}", .{name});
+        defer testing.allocator.free(q);
+        try testing.expect(resolve(q).? == .subcommand);
+    }
+    try testing.expect(resolve("subcommand.") == null);
+    try testing.expect(resolve("subcommand.bogus") == null);
+    try testing.expect(resolve("doktor") == null);
+}
+
+test "suggestQuery covers error codes, types, config keys, env vars, clients, topics, and subcommands" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -674,6 +746,9 @@ test "suggestQuery covers error codes, types, config keys, env vars, clients, an
     // Topic typos land on the nearest topic spelling.
     try testing.expectEqualStrings(" — did you mean \"tau explain privacy\"?", suggestQuery(a, "privavy").?);
     try testing.expectEqualStrings(" — did you mean \"tau explain topic.privacy\"?", suggestQuery(a, "topic.privavy").?);
+    // Subcommand typos land on the nearest subcommand spelling.
+    try testing.expectEqualStrings(" — did you mean \"tau explain doctor\"?", suggestQuery(a, "doktor").?);
+    try testing.expectEqualStrings(" — did you mean \"tau explain subcommand.fleet\"?", suggestQuery(a, "subcommand.flet").?);
     // Unrelated queries and decimal-parseable input get no guess.
     try testing.expect(suggestQuery(a, "bogus") == null);
     try testing.expect(suggestQuery(a, "0") == null);
@@ -702,9 +777,11 @@ test "formatEntryJson dispatches per entry kind" {
     try testing.expect(std.mem.indexOf(u8, client, "\"client\":\"zed\"") != null);
     const topic = try formatEntryJson(a, .{ .topic = @import("topiccatalog.zig").findSpec("privacy").? });
     try testing.expect(std.mem.indexOf(u8, topic, "\"topic\":\"privacy\"") != null);
+    const sub = try formatEntryJson(a, .{ .subcommand = subcat.findSpec("setup").? });
+    try testing.expect(std.mem.indexOf(u8, sub, "\"subcommand\":\"setup\"") != null);
 }
 
-test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + clients + topics arrays" {
+test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + clients + topics + subcommands arrays" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -716,6 +793,7 @@ test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + 
     try testing.expect(std.mem.indexOf(u8, cat, "\"env_vars\":[") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "\"clients\":[") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "\"topics\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, cat, "\"subcommands\":[") != null);
     // Every catalog member appears exactly once — flat keys and members.
     for (cfgschema.key_catalog) |ks| {
         var buf: [80]u8 = undefined;
@@ -742,6 +820,11 @@ test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + 
         const needle = std.fmt.bufPrint(&buf, "\"topic\":\"{s}\"", .{s.name}) catch unreachable;
         try testing.expect(std.mem.indexOf(u8, cat, needle) != null);
     }
+    for (subcat.specs) |s| {
+        var buf: [80]u8 = undefined;
+        const needle = std.fmt.bufPrint(&buf, "\"subcommand\":\"{s}\"", .{s.name}) catch unreachable;
+        try testing.expect(std.mem.indexOf(u8, cat, needle) != null);
+    }
     // The catalog JSON must parse cleanly.
     const v = try std.json.parseFromSliceLeaky(std.json.Value, a, cat, .{});
     try testing.expect(v.object.get("config_keys").?.array.items.len == cfgschema.key_catalog.len);
@@ -749,9 +832,10 @@ test "formatCatalogJson emits errors + config_keys + doctor_checks + env_vars + 
     try testing.expect(v.object.get("env_vars").?.array.items.len == envvars.specs.len);
     try testing.expect(v.object.get("clients").?.array.items.len == setup.all_clients.len);
     try testing.expect(v.object.get("topics").?.array.items.len == topiccat.specs.len);
+    try testing.expect(v.object.get("subcommands").?.array.items.len == subcat.specs.len);
 }
 
-test "formatCatalogHuman renders all six sections" {
+test "formatCatalogHuman renders all seven sections" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -767,6 +851,8 @@ test "formatCatalogHuman renders all six sections" {
     try testing.expect(std.mem.indexOf(u8, cat, "client  claude-desktop (mcacp · direct)") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "client  goose (mcacp · snippet)") != null);
     try testing.expect(std.mem.indexOf(u8, cat, "topic  privacy") != null);
+    try testing.expect(std.mem.indexOf(u8, cat, "subcommand  doctor") != null);
+    try testing.expect(std.mem.indexOf(u8, cat, "subcommand  setup") != null);
 }
 
 test "formatIndexJson emits the topics object and every listed topic resolves" {
@@ -785,6 +871,7 @@ test "formatIndexJson emits the topics object and every listed topic resolves" {
     try testing.expect(topics.get("env_vars").?.array.items.len == envvars.names.len);
     try testing.expect(topics.get("clients").?.array.items.len == setup.all_clients.len);
     try testing.expect(topics.get("topics").?.array.items.len == topiccat.names.len);
+    try testing.expect(topics.get("subcommands").?.array.items.len == subcat.names.len);
     // Every indexed name resolves — the index is a list of valid queries.
     for (topics.get("errors").?.array.items) |e| {
         const code = e.object.get("code").?.integer;
@@ -807,6 +894,9 @@ test "formatIndexJson emits the topics object and every listed topic resolves" {
     }
     for (topics.get("topics").?.array.items) |e| {
         try testing.expect(resolve(e.string).? == .topic);
+    }
+    for (topics.get("subcommands").?.array.items) |e| {
+        try testing.expect(resolve(e.string).? == .subcommand);
     }
 }
 
@@ -864,6 +954,11 @@ test "searchCatalog: a term matches name and body text across registries" {
     // whose fails_when/remediation say bundle.
     const b = try searchCatalog(a, "proxy");
     try testing.expect(hasCheck(b, "proxy_env"));
+    // Subcommand entries search their name + summary + usage + related
+    // links — "self-update" lives in upgrade's summary.
+    const u = try searchCatalog(a, "self-update");
+    try testing.expectEqual(@as(usize, 1), u.subcommands.len);
+    try testing.expectEqualStrings("upgrade", u.subcommands[0].name);
     // Unknown text matches nothing at all.
     const n = try searchCatalog(a, "zzzyyqq");
     try testing.expectEqual(@as(usize, 0), n.errors.len);
@@ -872,6 +967,7 @@ test "searchCatalog: a term matches name and body text across registries" {
     try testing.expectEqual(@as(usize, 0), n.env_vars.len);
     try testing.expectEqual(@as(usize, 0), n.clients.len);
     try testing.expectEqual(@as(usize, 0), n.topics.len);
+    try testing.expectEqual(@as(usize, 0), n.subcommands.len);
 }
 
 test "searchCatalog: multi-term queries AND across the search text" {
@@ -908,6 +1004,11 @@ test "searchCatalog: prefixed spellings and client aliases reach their entries" 
     const p = try searchCatalog(a, "redact");
     try testing.expectEqual(@as(usize, 1), p.topics.len);
     try testing.expectEqualStrings("privacy", p.topics[0].name);
+    // A prefixed subcommand spelling hits the canonical name in the
+    // haystack too.
+    const sd = try searchCatalog(a, "subcommand.doctor");
+    try testing.expectEqual(@as(usize, 1), sd.subcommands.len);
+    try testing.expectEqualStrings("doctor", sd.subcommands[0].name);
 }
 
 test "formatSearchJson emits query + filtered topics and every listed name resolves" {
@@ -931,10 +1032,11 @@ test "formatSearchJson emits query + filtered topics and every listed name resol
     for (topics.get("env_vars").?.array.items) |e| try testing.expect(resolve(e.string).? == .env);
     for (topics.get("clients").?.array.items) |e| try testing.expect(resolve(e.string).? == .client);
     for (topics.get("topics").?.array.items) |e| try testing.expect(resolve(e.string).? == .topic);
+    for (topics.get("subcommands").?.array.items) |e| try testing.expect(resolve(e.string).? == .subcommand);
     // JSON escaping inside the query member.
     const esc = try formatSearchJson(a, "say \"hi\"");
     try testing.expect(std.mem.startsWith(u8, esc, "{\"query\":\"say \\\"hi\\\"\",\"topics\":"));
-    // No matches: six empty arrays, still a valid result object.
+    // No matches: seven empty arrays, still a valid result object.
     const none = try formatSearchJson(a, "zzzyyqq");
     try testing.expect(std.mem.indexOf(u8, none, "\"errors\":[]") != null);
     try testing.expect(std.mem.indexOf(u8, none, "\"clients\":[]") != null);
@@ -953,7 +1055,7 @@ test "formatSearchHuman renders matching sections, omits empty ones" {
     try testing.expectEqualStrings("no explain topics match \"zzzyyqq\" — run `tau explain --list` for the full topic index\n", none);
 }
 
-test "formatIndexHuman renders all six sections with resolvable names" {
+test "formatIndexHuman renders all seven sections with resolvable names" {
     var ar = std.heap.ArenaAllocator.init(testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -970,4 +1072,6 @@ test "formatIndexHuman renders all six sections with resolvable names" {
     try testing.expect(std.mem.indexOf(u8, idx, "  client.zed\n") != null);
     try testing.expect(std.mem.indexOf(u8, idx, "topics:") != null);
     try testing.expect(std.mem.indexOf(u8, idx, "  topic.privacy\n") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "subcommands:") != null);
+    try testing.expect(std.mem.indexOf(u8, idx, "  subcommand.doctor\n") != null);
 }

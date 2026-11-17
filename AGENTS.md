@@ -315,7 +315,7 @@ tau config edit ./ci.json              # Explicit path
 
 #### 20. Offline Explain Catalog
 ```bash
-tau explain                       # List the error + config-key + doctor-check + env-var + client + topic catalog (JSON)
+tau explain                       # List the error + config-key + doctor-check + env-var + client + topic + subcommand catalog (JSON)
 tau explain 106                   # Error entry by exit code: cause + hint + docs
 tau explain AuthFailed            # Same, by wire `type` tag
 tau explain timeout_ms            # Config key: type + constraints + description
@@ -325,6 +325,8 @@ tau explain TAU_ENDPOINT          # Env var: consumers + summary (from docs/env.
 tau explain client.zed            # Editor client: prereqs + paths + setup + verify (from docs/compatibility.md)
 tau explain code                  # Same, a bare --client name/alias (code → vscode, claude → claude-desktop)
 tau explain privacy               # Curated topic: local state, egress, and secret redaction (src/topiccatalog.zig)
+tau explain doctor                # Subcommand: summary + usage + examples + related links (src/subcommandcatalog.zig)
+tau explain subcommand.fleet      # Same, the canonical prefixed spelling
 tau explain --json 106            # Pin the schema-checked JSON form (default)
 tau explain --human 80            # Prose instead of JSON
 tau explain --list                # Topic index: every resolvable name, no entry bodies

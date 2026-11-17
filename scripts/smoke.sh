@@ -4715,6 +4715,15 @@ test_group_golden_maintenance() {
   golden_check ex-topic-unknown    1 "$BIN" explain topic.bogus
   golden_check ex-dym-topic        1 "$BIN" explain privavy
 
+  # ── registered subcommands (src/subcommandcatalog.zig) — bare,
+  # `subcommand.<name>`, --human, unknown, typo ──
+  golden_check ex-cmd              0 "$BIN" explain doctor
+  golden_check ex-cmd-prefixed     0 "$BIN" explain subcommand.fleet
+  golden_check ex-cmd-human        0 "$BIN" explain --human setup
+  golden_check ex-cmd-unknown      1 "$BIN" explain subcommand.bogus
+  golden_check ex-dym-cmd          1 "$BIN" explain doktor
+  golden_check ex-dym-cmd-prefixed 1 "$BIN" explain subcommand.flet
+
   # --list — the topic index: every resolvable name, no entry bodies.
   golden_check ex-list             0 "$BIN" explain --list
   golden_check ex-list-json        0 "$BIN" explain --json --list
@@ -4725,6 +4734,7 @@ test_group_golden_maintenance() {
   # --human prose, the no-match shape, and the arg-validation envelopes.
   golden_check ex-search           0 "$BIN" explain --search timeout
   golden_check ex-search-multi     0 "$BIN" explain --search "api key"
+  golden_check ex-search-sub       0 "$BIN" explain --search self-update
   golden_check ex-search-human     0 "$BIN" explain --human --search proxy_env
   golden_check ex-search-none      0 "$BIN" explain --search zzzyyqq
   golden_check ex-search-missing  80 "$BIN" explain --search
@@ -6029,7 +6039,7 @@ test_group_explain() {
   capture k7 "$BIN" explain agent.timeout
   ok "explain: unknown dotted path exits 1" "$k7_rc" 1
   contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
-  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, client, or topic'
+  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, client, topic, or subcommand'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
@@ -6227,6 +6237,47 @@ test_group_explain() {
   ok "explain: unknown topic exits 1" "$t6_rc" 1
   contains "explain: unknown topic emits not_found" "$t6_err" '"type":"not_found"'
 
+  # Registered subcommands — the src/subcommandcatalog.zig registry,
+  # pinned against the args.zig command surface by the Zig tests.
+  # `subcommand.<name>` is the namespaced spelling, bare resolves too.
+  capture u1 "$BIN" explain doctor
+  ok "explain: subcommand entry exits 0" "$u1_rc" 0
+  contains "explain: subcommand entry carries name" "$u1_out" '"subcommand":"doctor"'
+  contains "explain: subcommand entry carries summary" "$u1_out" '"summary":"Validate your setup'
+  contains "explain: subcommand entry carries usage" "$u1_out" '"usage":"tau doctor'
+  contains "explain: subcommand entry carries examples" "$u1_out" '"examples":["tau doctor'
+  contains "explain: subcommand links its checks" "$u1_out" '"doctor_checks":["doctor.config_file"'
+  contains "explain: subcommand entry carries docs" "$u1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/doctor.md"'
+
+  capture u2 "$BIN" explain subcommand.fleet
+  ok "explain: prefixed subcommand exits 0" "$u2_rc" 0
+  contains "explain: prefixed subcommand resolves" "$u2_out" '"subcommand":"fleet"'
+  contains "explain: fleet entry carries usage" "$u2_out" '"usage":"tau fleet'
+
+  capture u3 "$BIN" explain --human doctor
+  ok "explain: --human subcommand exits 0" "$u3_rc" 0
+  contains "explain: --human prints subcommand tag" "$u3_out" 'subcommand  doctor'
+  contains "explain: --human prints usage" "$u3_out" 'usage:'
+  contains "explain: --human prints examples" "$u3_out" 'examples:     tau doctor'
+  contains "explain: --human links checks" "$u3_out" 'doctor checks:'
+
+  # The no-query catalog carries the seventh slice.
+  contains "explain: catalog lists subcommands" "$r3_out" '"subcommands":['
+  contains "explain: catalog includes a subcommand" "$r3_out" '"subcommand":"doctor"'
+  contains "explain: catalog includes a second subcommand" "$r3_out" '"subcommand":"fleet"'
+
+  # Subcommand typos get the same did-you-mean — bare and prefixed.
+  capture u4 "$BIN" explain doktor
+  ok "explain: subcommand typo exits 1" "$u4_rc" 1
+  contains "explain: subcommand typo suggests doctor" "$u4_err" 'did you mean \"tau explain doctor\"?'
+  capture u5 "$BIN" explain subcommand.flet
+  ok "explain: prefixed subcommand typo exits 1" "$u5_rc" 1
+  contains "explain: prefixed typo suggests subcommand.fleet" "$u5_err" 'did you mean \"tau explain subcommand.fleet\"?'
+  capture u6 "$BIN" explain subcommand.bogus
+  ok "explain: unknown subcommand exits 1" "$u6_rc" 1
+  contains "explain: unknown subcommand emits not_found" "$u6_err" '"type":"not_found"'
+  lacks "explain: unknown subcommand gets no suggestion" "$u6_err" 'did you mean'
+
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
   ok "explain: bad flag exits 80" "$r8_rc" 80
@@ -6267,6 +6318,8 @@ test_group_explain() {
   contains "explain: --list client ids are namespaced" "$li1_out" '"client.zed"'
   contains "explain: --list lists topics" "$li1_out" '"topics":['
   contains "explain: --list topic names are namespaced" "$li1_out" '"topic.privacy"'
+  contains "explain: --list lists subcommands" "$li1_out" '"subcommands":['
+  contains "explain: --list subcommand names are namespaced" "$li1_out" '"subcommand.doctor"'
   lacks "explain: --list carries no entry bodies" "$li1_out" '"remediation"'
 
   capture li2 "$BIN" explain --human --list
@@ -6277,6 +6330,8 @@ test_group_explain() {
   contains "explain: --human --list names a client" "$li2_out" 'client.zed'
   contains "explain: --human --list prints topics section" "$li2_out" 'topics:'
   contains "explain: --human --list names a topic" "$li2_out" 'topic.privacy'
+  contains "explain: --human --list prints subcommands section" "$li2_out" 'subcommands:'
+  contains "explain: --human --list names a subcommand" "$li2_out" 'subcommand.doctor'
 
   # --list is mutex with a query in either order.
   capture li3 "$BIN" explain --list 106
@@ -6321,6 +6376,13 @@ test_group_explain() {
   # summary/details, not its name.
   capture s4 _env_no_tau "$BIN" explain --search redact
   contains "explain: --search body-text hits the topic" "$s4_out" '"topic.privacy"'
+
+  # Subcommand names and body text are searchable too — "self-update"
+  # lives in the upgrade subcommand's summary.
+  capture s4b _env_no_tau "$BIN" explain --search self-update
+  ok "explain: --search subcommand exits 0" "$s4b_rc" 0
+  contains "explain: --search hits the upgrade subcommand" "$s4b_out" '"subcommand.upgrade"'
+  contains "explain: --search timeout hits a subcommand" "$s1_out" '"subcommand.doctor"'
 
   # Nothing matches: empty arrays, exit 0 — a valid result, not an error.
   capture s5 _env_no_tau "$BIN" explain --search zzzyyqq
@@ -6427,6 +6489,12 @@ test_group_explain() {
     else
       ok "explain: topic entry validates against schema" 1 0
     fi
+    # A subcommand entry validates against the same schema.
+    if printf '%s' "$u1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: subcommand entry validates against schema" 0 0
+    else
+      ok "explain: subcommand entry validates against schema" 1 0
+    fi
     # The --list topic index validates against the same schema.
     if printf '%s' "$li1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
       ok "explain: --list index validates against schema" 0 0
@@ -6450,7 +6518,7 @@ bin_path, idx_path = sys.argv[1], sys.argv[2]
 topics = json.load(open(idx_path))["topics"]
 queries = [str(e["code"]) for e in topics["errors"]]
 queries += [e["type"] for e in topics["errors"]]
-for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics"):
+for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics", "subcommands"):
     queries += topics[group]
 bad = [q for q in queries
        if subprocess.run([bin_path, "explain", q],
@@ -6472,7 +6540,7 @@ bin_path, idx_path = sys.argv[1], sys.argv[2]
 topics = json.load(open(idx_path))["topics"]
 queries = [str(e["code"]) for e in topics["errors"]]
 queries += [e["type"] for e in topics["errors"]]
-for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics"):
+for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics", "subcommands"):
     queries += topics[group]
 bad = [q for q in queries
        if subprocess.run([bin_path, "explain", q],

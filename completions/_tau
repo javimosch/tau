@@ -306,7 +306,9 @@ _tau() {
                     # src/doctorcatalog.zig; TAU_* names mirror the Spec
                     # registry in src/envvars.zig; client.* names mirror the
                     # ClientKind tables in src/setup.zig; topic.* names mirror
-                    # the Spec registry in src/topiccatalog.zig.
+                    # the Spec registry in src/topiccatalog.zig; subcommand.*
+                    # names mirror the Spec registry in
+                    # src/subcommandcatalog.zig.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -399,8 +401,17 @@ _tau() {
                     local -a topics=(
                         'topic.privacy:curated topic'
                     )
+                    local -a subs=(
+                        'subcommand.acp:subcommand' 'subcommand.models:subcommand'
+                        'subcommand.version:subcommand' 'subcommand.upgrade:subcommand'
+                        'subcommand.doctor:subcommand' 'subcommand.bug:subcommand'
+                        'subcommand.guide:subcommand' 'subcommand.explain:subcommand'
+                        'subcommand.skills:subcommand' 'subcommand.init:subcommand'
+                        'subcommand.setup:subcommand' 'subcommand.completions:subcommand'
+                        'subcommand.fleet:subcommand' 'subcommand.config:subcommand'
+                    )
                     _arguments \
-                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, client, or topic" err_codes cfg_keys checks env_vars clients topics' \
+                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, client, topic, or subcommand" err_codes cfg_keys checks env_vars clients topics subs' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]' \
                         '--list[print the resolvable-topic index]' \

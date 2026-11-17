@@ -35,7 +35,8 @@ $TauArgumentCompleter = {
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
     # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
     # TAU_* names mirror the Spec registry in src/envvars.zig; client.*
-    # names mirror the ClientKind tables in src/setup.zig.
+    # names mirror the ClientKind tables in src/setup.zig; subcommand.*
+    # names mirror the Spec registry in src/subcommandcatalog.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
         '$schema', 'provider', 'model', 'api_key', 'keys', 'mode', 'stream',
         'thinking', 'debug', 'temperature', 'max_tokens', 'timeout_ms',
@@ -74,6 +75,11 @@ $TauArgumentCompleter = {
         'client.roo-code', 'client.kilo-code', 'client.amazonq',
         'client.codex',
         'topic.privacy',
+        'subcommand.acp', 'subcommand.models', 'subcommand.version',
+        'subcommand.upgrade', 'subcommand.doctor', 'subcommand.bug',
+        'subcommand.guide', 'subcommand.explain', 'subcommand.skills',
+        'subcommand.init', 'subcommand.setup', 'subcommand.completions',
+        'subcommand.fleet', 'subcommand.config',
         '--human', '--json', '--list', '--search')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'codex', 'all')

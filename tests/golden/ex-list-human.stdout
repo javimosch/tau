@@ -125,3 +125,19 @@ clients:
 
 topics:
   topic.privacy
+
+subcommands:
+  subcommand.acp
+  subcommand.models
+  subcommand.version
+  subcommand.upgrade
+  subcommand.doctor
+  subcommand.bug
+  subcommand.guide
+  subcommand.explain
+  subcommand.skills
+  subcommand.init
+  subcommand.setup
+  subcommand.completions
+  subcommand.fleet
+  subcommand.config

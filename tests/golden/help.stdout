@@ -222,20 +222,23 @@ Models:
 
 Explain catalog (offline — no API key needed):
   tau explain                   List the error + config-key + doctor-check
-                                + env-var + client + topic catalog as JSON
+                                + env-var + client + topic + subcommand
+                                catalog as JSON
   tau explain <name>            Print an error's cause + remediation hint,
                                 a config key's type/constraints, a doctor
                                 check's fails-when + remediation
                                 (`tau explain doctor.<check>`), a TAU_* env
                                 var's consumers + summary, a client's
                                 setup prereqs + config paths + verify step
-                                (`tau explain client.zed`), or a curated
-                                topic (`tau explain privacy`)
+                                (`tau explain client.zed`), a curated
+                                topic (`tau explain privacy`), or a
+                                subcommand's usage + examples + related
+                                links (`tau explain doctor`)
       --json                    ...pin the schema-checked JSON form (default)
       --human                   ...as prose (e.g. `tau explain --human 106`)
   tau explain --list            Topic index — every resolvable name
                                 (codes/types, keys, checks, TAU_*,
-                                clients, topics)
+                                clients, topics, subcommands)
   tau explain --search <text>   Full-text search over the whole
                                 catalog — the filtered topic index
 

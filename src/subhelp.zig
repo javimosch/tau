@@ -154,10 +154,10 @@ const doctor_help =
 
 const explain_help =
     \\tau explain - offline error + config-key + doctor-check + env-var
-    \\+ client + topic catalog lookup (no API key needed)
+    \\+ client + topic + subcommand catalog lookup (no API key needed)
     \\
     \\Usage:
-    \\  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>>] [--json|--human]
+    \\  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>] [--json|--human]
     \\  tau explain --list [--json|--human]
     \\  tau explain --search <text> [--json|--human]
     \\
@@ -183,6 +183,12 @@ const explain_help =
     \\                    stores locally, what leaves the machine, and how
     \\                    diagnostics redact secrets. Bare names resolve too
     \\                    (`tau explain privacy`)
+    \\  subcommand.<name> A registered subcommand (e.g. subcommand.doctor,
+    \\                    subcommand.setup) — prints the summary, a
+    \\                    condensed usage line, runnable example
+    \\                    invocations, and links to the related error type
+    \\                    tags, config keys, and doctor checks. Bare names
+    \\                    resolve too (`tau explain doctor`)
     \\
     \\Options:
     \\      --json   Stable schema-checked JSON form (default;
@@ -190,8 +196,8 @@ const explain_help =
     \\      --human  Render as prose
     \\      --list   Print the topic index — every resolvable name
     \\               (error codes + types, config keys, doctor checks,
-    \\               TAU_* env vars, client ids, topics) instead of full
-    \\               entries; takes no query
+    \\               TAU_* env vars, client ids, topics, subcommands)
+    \\               instead of full entries; takes no query
     \\      --search <text>
     \\               Print the topic index filtered to entries whose
     \\               name or body text (cause/hint, description,
@@ -212,6 +218,8 @@ const explain_help =
     \\  tau explain TAU_ENDPOINT
     \\  tau explain client.zed
     \\  tau explain privacy
+    \\  tau explain doctor
+    \\  tau explain subcommand.setup
     \\  tau explain --human 105
     \\
 ;

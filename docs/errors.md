@@ -85,10 +85,15 @@ clients resolve from the generated
 [docs/compatibility.md](compatibility.md) matrix (`tau explain
 client.zed`, a bare client name, or a `--client` alias like `code` or
 `claude`); the bare catalog lists them under `doctor_checks`, `env_vars`,
-and `clients`. `tau explain --list` prints just the topic index —
+and `clients`. Registered subcommands resolve too — `tau explain
+doctor` or `tau explain subcommand.doctor` prints the summary, a
+condensed usage line, runnable examples, and links to the related
+error type tags, config keys, and doctor checks. `tau explain --list`
+prints just the topic index —
 `{"topics":{"errors":[{code,type}, ...],"config_keys":[...],
 "doctor_checks":["doctor.<id>", ...],"env_vars":["TAU_*", ...],
-"clients":["client.<name>", ...],"topics":["topic.<name>", ...]}}`
+"clients":["client.<name>", ...],"topics":["topic.<name>", ...],
+"subcommands":["subcommand.<name>", ...]}}`
 — so every name a query accepts is enumerable without the entry
 bodies. `tau explain --search <text>` prints that same index filtered
 to the entries whose name or body text matches every
