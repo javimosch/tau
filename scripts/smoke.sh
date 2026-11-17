@@ -5854,6 +5854,37 @@ PY
 # re-anchored to the release tag, plus an index.json manifest — and ships
 # as the tau-schemas.tar.gz release asset. All checks run offline; ci.yml's
 # "Versioned schema drift check" step runs the same --check.
+#
+# The group also runs the live scripting-contract check (issue #454):
+# index.json drives one deterministic invocation per published command and
+# each output is validated against schema/v<ver>/<file> — the artifact
+# integrators actually pin to a release tag.
+
+# _vpub_check <checker> <schema> <allowed-rcs> <name> <cmd...>
+# Run <cmd...> capturing stdout, then emit one ok(): passes iff the exit
+# code is in <allowed-rcs> ("|"-separated, e.g. "0|1") and the output
+# validates against <schema> via <checker> (check-cli-schema.py for single
+# objects; check-doctor-schema.py / check-setup-schema.py for NDJSON
+# streams — all three take --schema).
+_vpub_check() {
+  local checker="$1" schema="$2" want="$3" name="$4"; shift 4
+  local out="$SMOKE_TEMP/vpub-$vpub_seq.out" rc
+  vpub_seq=$((vpub_seq + 1))
+  "$@" >"$out" 2>/dev/null; rc=$?
+  case "|$want|" in
+    *"|$rc|"*)
+      if python3 "$checker" --schema "$schema" "$out" >/dev/null 2>&1; then
+        ok "versioned-schemas: $name validates" 0 0
+      else
+        ok "versioned-schemas: $name validates" 1 0
+      fi
+      ;;
+    *)
+      ok "versioned-schemas: $name validates (exit $rc, want $want)" 1 0
+      ;;
+  esac
+}
+
 test_group_versioned_schemas() {
   note "versioned schema publication (schema/v<version>/)"
 
@@ -5881,6 +5912,7 @@ test_group_versioned_schemas() {
     skip_test "versioned-schemas: --check detects tampering" "python3 not on PATH"
     skip_test "versioned-schemas: --check detects stale files" "python3 not on PATH"
     skip_test "versioned-schemas: unmapped schema fails closed" "python3 not on PATH"
+    skip_test "versioned-schemas: live --json contract validation" "python3 not on PATH"
     return 0
   fi
 
@@ -5930,6 +5962,108 @@ test_group_versioned_schemas() {
     ok "versioned-schemas: unmapped schema fails closed" 0 0
   fi
   rm -f "$stage/tau-rogue.schema.json"
+
+  # ── Live contract validation against the published set (issue #454) ──
+  # index.json is the coverage driver: every published schema's command is
+  # run deterministically and its stdout validated against
+  # schema/v<ver>/<file> — the artifact integrators pin to a release tag,
+  # not the moving schema/ master copy. An index entry with no case arm
+  # below fails closed, so adding a schema forces a staging decision.
+  local check_cli="$ROOT/scripts/check-cli-schema.py"
+  local check_doc="$ROOT/scripts/check-doctor-schema.py"
+  local check_set="$ROOT/scripts/check-setup-schema.py"
+  local scrubp pub_home pub_init_home pub_file pub_cmd pub_rc pub_out
+  local pub_seen=0 pub_total vpub_seq=0
+  scrubp=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
+
+  # Staging the deterministic invocations need: a HOME with a real config
+  # (config show / validate / doctor), a fresh HOME for init.
+  pub_home="$SMOKE_TEMP/vpub-home"; mkdir -p "$pub_home/.config/tau"
+  printf '{"provider":"openai","api_key":"sk-pub-secret-1"}' >"$pub_home/.config/tau/config.json"
+  pub_init_home="$SMOKE_TEMP/vpub-init-home"; mkdir -p "$pub_init_home"
+
+  if [ ! -f "$dir/index.json" ]; then
+    skip_test "versioned-schemas: live contract validation" "schema/v$ver/index.json missing"
+  elif python3 - "$dir/index.json" >"$SMOKE_TEMP/vpub-index.txt" 2>/dev/null <<'PYEOF'
+import json, sys
+for s in json.load(open(sys.argv[1], encoding="utf-8"))["schemas"]:
+    print(s["file"] + "\t" + s["command"])
+PYEOF
+  then
+    pub_total=$(wc -l <"$SMOKE_TEMP/vpub-index.txt" | tr -d ' ')
+    while IFS=$'\t' read -r pub_file pub_cmd; do
+      [ -n "$pub_file" ] || continue
+      pub_seen=$((pub_seen + 1))
+      pub_out="$SMOKE_TEMP/vpub-cfgschema-$pub_seen.out"
+      case "$pub_file" in
+        tau-version.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "$BIN" version --json ;;
+        tau-bug.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" "$BIN" bug --json --offline --no-report ;;
+        tau-completions.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_home" SHELL=/bin/bash \
+            "$BIN" completions install --json ;;
+        tau-config-show.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_home" "$BIN" config show --json ;;
+        tau-config-validate.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "$BIN" config validate --json "$pub_home/.config/tau/config.json" ;;
+        tau-config.schema.json)
+          # `config schema` emits the document itself — byte-identical to
+          # the published copy except the re-anchored $id line.
+          "$BIN" config schema >"$pub_out" 2>/dev/null; pub_rc=$?
+          grep -v '"\$id"' "$pub_out" >"$SMOKE_TEMP/vpub-emit.json" 2>/dev/null
+          grep -v '"\$id"' "$dir/$pub_file" >"$SMOKE_TEMP/vpub-pub.json" 2>/dev/null
+          if [ "$pub_rc" -eq 0 ] \
+             && diff -q "$SMOKE_TEMP/vpub-emit.json" "$SMOKE_TEMP/vpub-pub.json" >/dev/null 2>&1; then
+            ok "versioned-schemas: $pub_cmd emits the schema (mod \$id)" 0 0
+          else
+            ok "versioned-schemas: $pub_cmd emits the schema (mod \$id)" 1 0
+          fi
+          # A real config document validates against the published schema.
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "config.json document" \
+            cat "$pub_home/.config/tau/config.json" ;;
+        tau-doctor.schema.json)
+          _vpub_check "$check_doc" "$dir/$pub_file" "0|1" "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_home" "$BIN" doctor --json --offline ;;
+        tau-explain.schema.json)
+          # The explain schema is a oneOf over every output shape; no other
+          # group validates explain output against a schema, so exercise
+          # each shape here.
+          local q
+          for q in 106 compact_threshold doctor.config_file TAU_API_KEY \
+                   client.zed topic.privacy subcommand.doctor; do
+            _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd $q" \
+              "$BIN" explain --json "$q"
+          done
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd (catalog)" \
+            "$BIN" explain --json
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd --list" \
+            "$BIN" explain --json --list
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd --search" \
+            "$BIN" explain --json --search config ;;
+        tau-init.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_init_home" "$BIN" init --json ;;
+        tau-setup.schema.json)
+          _vpub_check "$check_set" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$SMOKE_TEMP/vpub-setup-home" SHELL=/bin/bash \
+            XIAOMI_API_KEY=vpub-key "$BIN" setup --json --offline ;;
+        tau-upgrade.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 1 "$pub_cmd" \
+            env TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --json ;;
+        *)
+          ok "versioned-schemas: $pub_file has a live-contract case" 1 0 ;;
+      esac
+    done <"$SMOKE_TEMP/vpub-index.txt"
+    ok "versioned-schemas: every published schema exercised" "$pub_seen" "$pub_total"
+  else
+    ok "versioned-schemas: index.json parses" 1 0
+  fi
 }
 
 # Group: tau explain — offline error-catalog lookup
