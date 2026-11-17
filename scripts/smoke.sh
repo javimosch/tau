@@ -72,6 +72,7 @@ ALL_TEST_GROUPS=(
   "config-schema:test_group_config_schema"
   "init:test_group_init"
   "setup:test_group_setup"
+  "setup-failure:test_group_setup_failure"
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
   "doc-snippets:test_group_doc_snippets"
@@ -2857,6 +2858,178 @@ test_group_setup() {
   ok "round-trip remove exits 0" "$s39_rc" 0
   cmp -s "$mock_home32/before.json" "$mock_home32/.codeium/windsurf/mcp_config.json"
   ok "user file restored byte-for-byte" "$?" 0
+}
+
+# Group: `tau setup --client` failure paths — the binary-facing byte-fidelity
+# contract. A failed or declined client write must leave every pre-existing
+# config byte-identical: settings files setup refuses to splice, files whose
+# write fails partway through setup, and the shared mcacp bridge config. New
+# files (fresh settings, paste-ready snippets under ~/.config/tau/snippets/)
+# are allowed; existing user bytes are not.
+test_group_setup_failure() {
+  local h ob orig_bashrc
+
+  note "setup --client failure paths leave existing configs byte-identical"
+
+  # ── --client rejected at parse time: nothing in HOME is created ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  capture sf_bad env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client bogus
+  ok "setup --client bogus exits 80" "$sf_bad_rc" 80
+  contains "bad client names the accepted values" "$sf_bad_err" 'invalid --client'
+  [ -z "$(find "$h" -mindepth 1 -print -quit)" ]; ok "rejected --client created nothing under HOME" "$?" 0
+
+  # ── Every JSONC-backed client seeded with a file setup must not touch ────
+  # Mix of unparseable documents, valid docs without a tau entry, and an
+  # empty file — plus the shared mcacp bridge config and tau's own
+  # config.json. After `setup --client all`, all go "manual" and every
+  # seeded byte survives verbatim.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  ob="$(mktemp -d)"; register_temp_dir "$ob"
+  mkdir -p "$h/.config/zed" "$h/.config/Code/User" "$h/.config/Cursor/User" \
+    "$h/.jetbrains" "$h/.codeium/windsurf" "$h/.gemini" "$h/.config/Claude" \
+    "$h/.config/opencode" \
+    "$h/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings" \
+    "$h/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings" \
+    "$h/.config/kilo" "$h/.aws/amazonq" "$h/.config/mcacp" "$h/.config/tau"
+  printf '{\n  // user comment\n  "theme": "dark"\n}\n'        > "$h/.config/zed/settings.json"
+  printf '{"editor.fontSize": 14}\n'                           > "$h/.config/Code/User/settings.json"
+  printf '{ not json\n'                                        > "$h/.config/Cursor/User/settings.json"
+  printf '{"agent_servers": {}}\n'                             > "$h/.jetbrains/acp.json"
+  printf '{"mcpServers":{"mine":{"command":"m","args":["x"]}}}\n' > "$h/.codeium/windsurf/mcp_config.json"
+  printf '{ nope\n'                                            > "$h/.gemini/settings.json"
+  printf '{"mcpServers":{}}\n'                                 > "$h/.config/Claude/claude_desktop_config.json"
+  printf '{"mcp":{}}\n'                                        > "$h/.config/opencode/opencode.json"
+  : > "$h/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+  printf 'broken{{\n'                                          > "$h/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"
+  printf '{"mcp":{}}\n'                                        > "$h/.config/kilo/kilo.jsonc"
+  printf '{"mcpServers":{}}\n'                                 > "$h/.aws/amazonq/mcp.json"
+  printf '{"agent_servers":{"mine":{"command":"m"}}}\n'        > "$h/.config/mcacp/mcacp.json"
+  printf '{\n  // sentinel comment\n  "provider": "xiaomi",\n  "model": "mimo-v2.5"\n}\n' > "$h/.config/tau/config.json"
+  orig_bashrc="$ob/.bashrc"
+  printf '# user rc\nexport EDITOR=vim\n' > "$h/.bashrc"
+  cp "$h/.bashrc" "$orig_bashrc"
+  # Snapshot every seeded file for the post-run byte compare. .bashrc is
+  # excluded — setup appends the rc hook by design, checked separately below.
+  (cd "$h" && find . -type f ! -name .bashrc -print | while read -r f; do
+    mkdir -p "$ob/$(dirname "$f")"; cp "$f" "$ob/$f"
+  done)
+
+  capture sf_all env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client all --yes
+  ok "setup --client all on unwritable-content corpus exits 0" "$sf_all_rc" 0
+  contains "clients step reports manual across the board" "$sf_all_out" '"step":"clients","status":"manual"'
+  contains "zed went manual, not installed" "$sf_all_out" '"client":"zed","path":'
+  # The real assertion: every file that existed before the run is unchanged.
+  local sf_drift
+  sf_drift="$(cd "$ob" && find . -type f -print | while read -r f; do
+    cmp -s "$f" "$h/$f" || echo "$f"
+  done)"
+  if [ -z "$sf_drift" ]; then
+    ok "all 14 pre-existing files byte-identical after setup --client all" 0 0
+  else
+    ok "all 14 pre-existing files byte-identical after setup --client all (drift:$sf_drift)" 1 0
+  fi
+  # The seeded .bashrc was appended to, never rewritten: its original bytes
+  # are a strict prefix of the post-run file.
+  local rc_size
+  rc_size=$(wc -c < "$orig_bashrc")
+  head -c "$rc_size" "$h/.bashrc" | cmp -s - "$orig_bashrc"
+  ok "seeded .bashrc kept its original bytes as a prefix" "$?" 0
+  # Snippets landed under tau's own dir — setup acted, this wasn't vacuous.
+  [ -f "$h/.config/tau/snippets/zed.jsonc" ]; ok "paste-ready zed snippet was written" "$?" 0
+  [ -f "$h/.config/tau/snippets/mcacp.jsonc" ]; ok "paste-ready mcacp snippet was written" "$?" 0
+
+  # ── --import on an unparseable settings file: no splice, no write ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.codeium/windsurf"
+  printf '{ not json\n' > "$h/.codeium/windsurf/mcp_config.json"
+  cp "$h/.codeium/windsurf/mcp_config.json" "$h/before.json"
+  capture sf_imp env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "--import on unparseable file exits 0 (manual)" "$sf_imp_rc" 0
+  contains "windsurf reports manual, not failed" "$sf_imp_out" '"status":"manual"'
+  cmp -s "$h/before.json" "$h/.codeium/windsurf/mcp_config.json"
+  ok "--import left the unparseable file byte-identical" "$?" 0
+
+  # ── --import where the splice succeeds but the write is denied ────
+  # The strongest partial-write pin: a valid file is parsed, a new body is
+  # computed, then writeFile fails (read-only file). The original bytes must
+  # be exactly where the user left them — not truncated, not half-spliced.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.codeium/windsurf"
+  printf '{\n  // keep me\n  "mcpServers": {\n    "mine": { "command": "mine" }\n  }\n}\n' \
+    > "$h/.codeium/windsurf/mcp_config.json"
+  cp "$h/.codeium/windsurf/mcp_config.json" "$h/before.json"
+  chmod 0444 "$h/.codeium/windsurf/mcp_config.json"
+  capture sf_ro env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "--import on a read-only file exits 1" "$sf_ro_rc" 1
+  contains "windsurf entry reports failed" "$sf_ro_out" '"status":"failed"'
+  contains "failure names the write target" "$sf_ro_out" 'could not write'
+  contains "clients step reports failed" "$sf_ro_out" '"step":"clients","status":"failed"'
+  cmp -s "$h/before.json" "$h/.codeium/windsurf/mcp_config.json"
+  ok "denied --import write left the file byte-identical" "$?" 0
+
+  # ── Fresh-file write denied: no partial/empty file left behind ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/zed"
+  chmod 0555 "$h/.config/zed"
+  capture sf_deny env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes
+  ok "setup --client zed into unwritable dir exits 1" "$sf_deny_rc" 1
+  contains "zed entry reports failed" "$sf_deny_out" '"status":"failed"'
+  [ ! -e "$h/.config/zed/settings.json" ]; ok "no partial settings.json left behind" "$?" 0
+  [ -z "$(ls -A "$h/.config/zed")" ]; ok "unwritable dir left completely empty" "$?" 0
+  chmod 0755 "$h/.config/zed"
+
+  # ── Settings path is a directory: manual outcome, directory untouched ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/Cursor/User/settings.json"
+  capture sf_dir env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client cursor --yes
+  ok "dir-in-place settings path exits 0 (manual)" "$sf_dir_rc" 0
+  contains "cursor reports manual" "$sf_dir_out" '"status":"manual"'
+  contains "reason names the unreadable file" "$sf_dir_out" 'could not read the existing settings file'
+  [ -d "$h/.config/Cursor/User/settings.json" ]; ok "directory still in place" "$?" 0
+  [ -z "$(ls -A "$h/.config/Cursor/User/settings.json")" ]; ok "directory left empty" "$?" 0
+
+  # ── Fallback snippet write fails: the real settings file is still safe ────
+  # An unparseable zed file normally gets a paste-ready snippet — block the
+  # snippets dir itself (a regular file in its place) so the fallback write
+  # fails too. Neither file may change.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/zed" "$h/.config/tau"
+  printf '{ broken\n' > "$h/.config/zed/settings.json"
+  printf 'not a dir\n' > "$h/.config/tau/snippets"
+  cp "$h/.config/zed/settings.json" "$h/before-settings.json"
+  cp "$h/.config/tau/snippets" "$h/before-snippets"
+  capture sf_snip env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes
+  ok "blocked snippet path exits 1" "$sf_snip_rc" 1
+  contains "zed entry reports failed" "$sf_snip_out" '"status":"failed"'
+  cmp -s "$h/before-settings.json" "$h/.config/zed/settings.json"
+  ok "settings file byte-identical when even the snippet write failed" "$?" 0
+  cmp -s "$h/before-snippets" "$h/.config/tau/snippets"
+  ok "the file blocking the snippets dir is itself untouched" "$?" 0
+
+  # ── Bridge-side existing config: client installs, bridge stays intact ────
+  # windsurf's settings file is absent (setup writes it fresh — fine), but
+  # the shared mcacp.json is an existing file setup must not rewrite.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/mcacp"
+  printf '{"agent_servers":{"mine":{"command":"m"}}}\n' > "$h/.config/mcacp/mcacp.json"
+  cp "$h/.config/mcacp/mcacp.json" "$h/before-mcacp.json"
+  capture sf_bridge env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --yes
+  ok "bridge-conflict run exits 0 (manual)" "$sf_bridge_rc" 0
+  contains "bridge reports manual" "$sf_bridge_out" '"bridge_status":"manual"'
+  cmp -s "$h/before-mcacp.json" "$h/.config/mcacp/mcacp.json"
+  ok "existing mcacp.json byte-identical" "$?" 0
+  # And the fresh windsurf file that did get written is complete, not partial.
+  [ -f "$h/.codeium/windsurf/mcp_config.json" ]; ok "fresh windsurf file written" "$?" 0
+  grep -q '"mcpServers"' "$h/.codeium/windsurf/mcp_config.json"; ok "fresh windsurf file carries the servers section" "$?" 0
+  grep -q '"mcacp"' "$h/.codeium/windsurf/mcp_config.json"; ok "fresh windsurf file carries the mcacp entry" "$?" 0
 }
 
 # Group: runnable client-config examples under examples/clients/ —
