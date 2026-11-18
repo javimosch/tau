@@ -194,6 +194,9 @@ pub const Config = struct {
     /// setup_shell/setup_dry_run — the same fields the shared install
     /// machinery in setup.zig already consumes.
     completions_sub: ?[]const u8 = null,
+    /// `tau completions candidates <group>` — the candidate set to emit
+    /// (config-set | config-get | config-unset).
+    completions_group: ?[]const u8 = null,
 
     // --- Error catalog (`tau explain`) ---
     /// `tau explain <code|type>` query. Null means list the whole catalog.

@@ -29,7 +29,8 @@ $TauArgumentCompleter = {
     $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive', '--dry-run', '--remove', '--uninstall', '--import', '--detect', '--json')
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report', '--attach-report',
                      '--dry-run', '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
-    $completionsArgs = @('install', '--shell', '--dry-run', '--json')
+    $completionsArgs = @('install', 'candidates', '--shell', '--dry-run', '--json')
+    $candidateGroups = @('config-set', 'config-get', 'config-unset')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
@@ -296,12 +297,53 @@ $TauArgumentCompleter = {
     switch ($sub) {
         'acp'    { return & $emit $acpArgs 'Command' }
         'skills' { return & $emit $skillSubs 'Command' }
-        'config' { return & $emit ($configSubs + $configFlags) 'ParameterName' }
+        'config' {
+            # First non-flag word after `config` is the sub-subcommand; the
+            # first positional after get|set|unset is the <key> position —
+            # candidates come from the binary (dynamic): config-set lists
+            # every settable key, config-get|config-unset the keys present
+            # in the config file.
+            $configSub = ''
+            $posCount = 0
+            $seenConfig = $false
+            $skipNext = $false
+            foreach ($w in $context) {
+                if ($skipNext) { $skipNext = $false; continue }
+                if (-not $seenConfig) {
+                    if ($w -eq 'config') { $seenConfig = $true }
+                    continue
+                }
+                if ($configSub -eq '') {
+                    if (-not $w.StartsWith('-')) { $configSub = $w }
+                    continue
+                }
+                if ($w -eq '--mode') { $skipNext = $true; continue }
+                if ($w -ne '' -and -not $w.StartsWith('-')) { $posCount++ }
+            }
+            if ($configSub -in 'get', 'set', 'unset' -and $posCount -eq 0) {
+                $keys = @(& tau completions candidates "config-$configSub" 2>$null)
+                return & $emit $keys 'ParameterValue'
+            }
+            if ($configSub -in 'get', 'set', 'unset') { return & $emit $configFlags 'ParameterName' }
+            return & $emit ($configSubs + $configFlags) 'ParameterName'
+        }
         'guide'  { return & $emit $guideFlags 'ParameterName' }
         'init'   { return & $emit $initFlags 'ParameterName' }
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
         'setup'  { return & $emit $setupFlags 'ParameterName' }
-        'completions' { return & $emit $completionsArgs 'ParameterName' }
+        'completions' {
+            $cmplSub = ''
+            $seenCmpl = $false
+            foreach ($w in $context) {
+                if (-not $seenCmpl) {
+                    if ($w -eq 'completions') { $seenCmpl = $true }
+                    continue
+                }
+                if (-not $w.StartsWith('-')) { $cmplSub = $w; break }
+            }
+            if ($cmplSub -eq 'candidates') { return & $emit $candidateGroups 'ParameterValue' }
+            return & $emit $completionsArgs 'ParameterName'
+        }
         'bug'    { return & $emit $bugFlags 'ParameterName' }
         'version' { return & $emit $versionFlags 'ParameterName' }
         'upgrade' { return & $emit $upgradeFlags 'ParameterName' }

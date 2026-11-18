@@ -382,6 +382,7 @@ const completions_help =
     \\
     \\Usage:
     \\  tau completions install [--shell <name>] [--dry-run] [--json]
+    \\  tau completions candidates <group>
     \\
     \\Commands:
     \\  install          Write the completion script for the detected
@@ -391,6 +392,12 @@ const completions_help =
     \\                   step. Idempotent: re-runs report
     \\                   "already_installed"/"present" and never
     \\                   duplicate the rc hook.
+    \\  candidates       Emit dynamic completion candidates (one per
+    \\                   line) for a group — the shipped scripts call
+    \\                   this at completion time: config-set lists
+    \\                   every key `tau config set` accepts;
+    \\                   config-get|config-unset list the keys present
+    \\                   in the config file
     \\
     \\Options:
     \\      --shell <name>  Shell to install for:
@@ -410,6 +417,7 @@ const completions_help =
     \\  tau completions install
     \\  tau completions install --shell zsh
     \\  tau completions install --shell all --dry-run
+    \\  tau completions candidates config-set
     \\
 ;
 

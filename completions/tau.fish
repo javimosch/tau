@@ -67,6 +67,88 @@ function __tau_at_files
     end
 end
 
+# True while `tau config get|set|unset` is on the line and the cursor is at
+# the <key> position — the first positional after the sub-subcommand.
+function __tau_config_key_pos
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    # The in-progress word is -opc's last element when non-empty; it is the
+    # candidate being completed, not a finished positional.
+    if test -n (commandline -ct | string collect)
+        set -e tokens[-1]
+    end
+    set -l seen_config 0
+    set -l csub ''
+    set -l pos 0
+    set -l skip 0
+    for t in $tokens
+        if test $skip -eq 1
+            set skip 0
+            continue
+        end
+        if test $seen_config -eq 0
+            test "$t" = config; and set seen_config 1
+            continue
+        end
+        if test -z "$csub"
+            string match -q -- '-*' $t; or set csub $t
+            continue
+        end
+        switch $t
+            case --mode
+                set skip 1
+            case '-*' ''
+            case '*'
+                set pos (math $pos + 1)
+        end
+    end
+    contains -- $csub get set unset; and test $pos -eq 0
+end
+
+# Echo the candidates group for the config sub-subcommand on the line
+# (get|set|unset -> config-get|config-set|config-unset), nothing otherwise.
+function __tau_config_key_group
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    set -l seen 0
+    for t in $tokens
+        if test $seen -eq 0
+            test "$t" = config; and set seen 1
+            continue
+        end
+        switch $t
+            case get set unset
+                echo "config-$t"
+                return 0
+        end
+    end
+    return 1
+end
+
+# True while `tau completions candidates` is on the line and the <group>
+# position is being completed.
+function __tau_completions_needs_group
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    if test -n (commandline -ct | string collect)
+        set -e tokens[-1]
+    end
+    set -l seen_cmpl 0
+    set -l seen_cand 0
+    for t in $tokens
+        if test $seen_cmpl -eq 0
+            test "$t" = completions; and set seen_cmpl 1
+            continue
+        end
+        if test $seen_cand -eq 0
+            test "$t" = candidates; and set seen_cand 1
+            continue
+        end
+        test -n "$t"; and return 1
+    end
+    test $seen_cand -eq 1
+end
+
 # ── Completion entries ──────────────────────────────────────────────────────
 
 # Prompts are free text; file paths are offered only via -F options and the
@@ -180,6 +262,11 @@ complete -c tau -n $config -f -l mode -x -a 'text json' -d 'output mode'
 complete -c tau -n $config -f -l json -d 'stable JSON output (show|validate)'
 complete -c tau -n $config -f -l raw -d 'print secret values unredacted (config get)'
 
+# Dynamic key candidates — the binary enumerates settable keys
+# (`config set`) or the keys present in the config file
+# (`config get|unset`) at completion time.
+complete -c tau -n '__tau_config_key_pos' -f -a '(tau completions candidates (__tau_config_key_group) 2>/dev/null)'
+
 # ── tau init / tau doctor / tau setup ───────────────────────────────────────
 set -l init '__tau_using_subcommand init'
 complete -c tau -n $init -f -l force -d 'overwrite an existing config file'
@@ -222,6 +309,8 @@ complete -c tau -n $setup -f -l json -d 'emit the stable schema-checked NDJSON s
 # ── tau completions ───────────────────────────────────────────────────────
 set -l cmpl '__tau_using_subcommand completions'
 complete -c tau -n $cmpl -f -a install -d 'install generated completions into your shell profile'
+complete -c tau -n $cmpl -f -a candidates -d 'emit dynamic completion candidates for a group'
+complete -c tau -n '__tau_completions_needs_group' -f -a 'config-set config-get config-unset' -d 'candidate group'
 complete -c tau -n $cmpl -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
 complete -c tau -n $cmpl -f -l dry-run -d 'preview the install; change nothing'
 complete -c tau -n $cmpl -f -l json -d 'emit the stable schema-checked result object'

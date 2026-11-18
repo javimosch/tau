@@ -7220,7 +7220,7 @@ test_group_completions() {
 
     missing=""
     for word in acp fleet skills models guide \
-                completions install \
+                completions install candidates \
                 xiaomi openai deepseek opencode-go text json \
                 author critic coordinator none \
                 bash ls read write edit grep find calculator; do
@@ -7290,6 +7290,58 @@ test_group_completions() {
   capture cif env -u HOME "$BIN" completions install --shell bash
   ok "completions install with no HOME exits 1" "$cif_rc" 1
   contains "missing HOME reports failed" "$cif_out" '"status":"failed"'
+
+  # ── tau completions candidates ────────────────────────────────────────
+  # Dynamic key completion for `tau config get|set|unset <key>` positions:
+  # the shipped scripts call the binary at completion time. config-set
+  # lists every settable key; config-get/config-unset list the keys
+  # present in the config file.
+  capture cset "$BIN" completions candidates config-set
+  ok "candidates config-set exits 0" "$cset_rc" 0
+  contains "config-set lists provider" "$cset_out" "provider"
+  contains "config-set lists mode" "$cset_out" "mode"
+  contains "config-set lists a keys.<provider> entry" "$cset_out" "keys.openai"
+  lacks "config-set omits the non-settable \$schema member" "$cset_out" '$schema'
+
+  # config-get/config-unset reflect the live file: seeded members (and the
+  # keys.<provider> entries inside `keys`) complete, unset keys do not.
+  local chome5 chome6
+  chome5="$(mktemp -d)"; register_temp_dir "$chome5"
+  mkdir -p "$chome5/.config/tau"
+  printf '{\n  // starter\n  "provider": "openai",\n  "keys": {"openai": "sk-x"},\n  "mode": "text"\n}\n' > "$chome5/.config/tau/config.json"
+  capture cget env HOME="$chome5" "$BIN" completions candidates config-get
+  ok "candidates config-get exits 0" "$cget_rc" 0
+  contains "config-get lists a file key" "$cget_out" "provider"
+  contains "config-get lists a keys.<provider> member" "$cget_out" "keys.openai"
+  lacks "config-get omits unset keys" "$cget_out" "timeout_ms"
+  capture cun env HOME="$chome5" "$BIN" completions candidates config-unset
+  ok "candidates config-unset exits 0" "$cun_rc" 0
+  contains "config-unset mirrors config-get" "$cun_out" "keys.openai"
+
+  # No config file -> empty candidate list, still exit 0.
+  chome6="$(mktemp -d)"; register_temp_dir "$chome6"
+  capture cempty env HOME="$chome6" "$BIN" completions candidates config-get
+  ok "config-get with no config file exits 0" "$cempty_rc" 0
+  if [ -z "$cempty_out" ]; then
+    ok "config-get emits nothing without a config file" 0 0
+  else
+    ok "config-get emits nothing without a config file" 1 0
+  fi
+
+  # Missing/invalid group and trailing args are invalid-argument envelopes.
+  capture cmiss "$BIN" completions candidates
+  ok "candidates with no group exits 80" "$cmiss_rc" 80
+  contains "no-group error names the groups" "$cmiss_err" "config-set | config-get | config-unset"
+  capture cbad "$BIN" completions candidates bogus
+  ok "candidates bogus group exits 80" "$cbad_rc" 80
+  capture cextra "$BIN" completions candidates config-set extra
+  ok "candidates extra arg exits 80" "$cextra_rc" 80
+
+  # Every shipped script calls the binary for the dynamic candidates.
+  for f in $files; do
+    grep -Fq "completions candidates" "$ROOT/$f"
+    ok "$f calls completions candidates" "$?" 0
+  done
 }
 
 # Group: release surface — install.sh installer + release workflow drift guards.
