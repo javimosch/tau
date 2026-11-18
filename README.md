@@ -150,6 +150,10 @@ values into the file):
 ./zig-out/bin/tau init --stdout # preview without writing
 ```
 
+On success `tau init` also prints a getting-started checklist to stderr —
+`tau setup --client` to wire your editor, `tau doctor` to health-check the
+install, and `tau explain --list` to browse the offline topic catalog.
+
 Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
 installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
 to override), can write ACP client config for your editor

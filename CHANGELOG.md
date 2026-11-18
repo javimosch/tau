@@ -19,6 +19,13 @@ are backward compatible.
 
 ### Added
 
+- **`tau init` now prints a getting-started checklist** — after a successful
+  scaffold (write path or `--stdout`), stderr carries a short "Next steps"
+  list pointing at `tau setup --client` (editor wiring), `tau doctor`
+  (install/auth health check), and `tau explain --list` (the offline topic
+  catalog). stdout stays a pure schema-pinned JSON result object — or the
+  JSONC scaffold under `--stdout` — and refused/failed runs print no
+  checklist (#468)
 - **`tau config set|unset --dry-run` — preview the exact write before it
   happens** — renders the unified diff the real run would apply (`---`/`+++`
   git-style headers, `@@` hunks with context, `/dev/null` for a
