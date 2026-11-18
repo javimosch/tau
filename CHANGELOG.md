@@ -19,6 +19,18 @@ are backward compatible.
 
 ### Added
 
+- **`tau config set|unset --dry-run` — preview the exact write before it
+  happens** — renders the unified diff the real run would apply (`---`/`+++`
+  git-style headers, `@@` hunks with context, `/dev/null` for a
+  not-yet-existing file) plus the `<path>.bak` path a real run now preserves
+  the original at before rewriting. `action` is `create` or `modify`;
+  `backup_path` is present only for in-place rewrites. Secrets are safe:
+  `api_key`/`keys.*` values anywhere in the file are masked inside the diff
+  (and marked `diff_redacted:true`), so an unrelated `config set provider`
+  preview can never leak a stored key through context lines. Rejected on
+  `config get` (it never writes) with a clear argument error; `--mode text`
+  prints a human summary followed by the diff. All four shell completions
+  offer the flag (#465)
 - **`tau explain client.<name>` — the offline catalog now covers supported
   editor clients** — every row of the generated
   [docs/compatibility.md](docs/compatibility.md) matrix resolves as a

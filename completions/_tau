@@ -176,6 +176,7 @@ _tau() {
                                     _arguments \
                                         '1: :_tau_config_keys config-set' \
                                         '2:value:' \
+                                        '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
@@ -189,6 +190,7 @@ _tau() {
                                 unset)
                                     _arguments \
                                         '1: :_tau_config_keys config-unset' \
+                                        '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;

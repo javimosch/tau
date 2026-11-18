@@ -152,7 +152,7 @@ _tau_complete() {
                     if [[ $pos_count -eq 0 ]]; then
                         COMPREPLY=($(compgen -W "$(command tau completions candidates "config-$config_sub" 2>/dev/null)" -- "$cur"))
                     else
-                        COMPREPLY=($(compgen -W "--mode" -- "$cur"))
+                        COMPREPLY=($(compgen -W "--mode --dry-run" -- "$cur"))
                     fi
                     ;;
                 get)

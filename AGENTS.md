@@ -298,7 +298,9 @@ tau config get provider                  # Read a FILE value (JSON mode default)
 tau config get api_key --mode text       # → "***last4" (secrets redacted; --raw prints raw)
 tau config unset keys.openai             # Remove a key
 tau config set mode text ./ci.json       # Optional trailing path
-# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename).
+tau config set mode text --dry-run       # Preview exact diff + .bak backup path; writes nothing
+# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename);
+# a real set|unset preserves the previous bytes at <path>.bak first.
 # Exit 0 ok; 1 = key/file not found or invalid file; 80 = bad key/value/args.
 ```
 

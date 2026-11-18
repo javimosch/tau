@@ -186,8 +186,12 @@ Config:
                               (schema/tau-config-validate.schema.json)
   tau config set <key> <v> [path]  Schema-checked edit to the config FILE
                                  (keys are <field> or keys.<provider>; creates the file)
+      --dry-run                  Preview the exact write — unified diff
+                                 + .bak backup path — change nothing
   tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
   tau config unset <key> [path] Remove a key from the config file
+      --dry-run                  Preview the exact diff + backup path;
+                                 change nothing
   tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
                               VISUAL > EDITOR > vi/notepad); validates on save
   tau config schema             Print the config file's JSON Schema

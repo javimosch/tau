@@ -102,6 +102,8 @@ const config_help =
     \\      --json             Stable schema-checked JSON (show, validate)
     \\      --mode text|json   Output mode
     \\      --raw              (get only) Print the value unredacted
+    \\      --dry-run          (set|unset) Preview the exact write — unified
+    \\                         diff + .bak backup path — change nothing
     \\
     \\Examples:
     \\  tau config show
@@ -109,6 +111,7 @@ const config_help =
     \\  tau config validate
     \\  tau config set provider openai
     \\  tau config set keys.openai sk-your-key
+    \\  tau config set mode text --dry-run
     \\  tau config get provider
     \\  tau config unset model
     \\  tau config edit

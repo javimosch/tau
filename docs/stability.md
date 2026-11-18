@@ -144,7 +144,11 @@ These cross-cutting conventions are part of the contract:
   defaults** (full chain in [docs/configuration.md](configuration.md),
   including the `api_key` resolution order).
 - `tau config set|get|unset|validate|schema` are the supported way to
-  edit and verify the file programmatically.
+  edit and verify the file programmatically. `set`/`unset` preserve the
+  previous file at `<path>.bak` before rewriting, and `--dry-run`
+  previews the exact write as a `{"dry_run":true,"action","backup_path","diff"}`
+  payload (the diff is a git-style unified diff; `diff_redacted:true`
+  marks secret values masked for display).
 
 ### Environment variables
 

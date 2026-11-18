@@ -22,7 +22,7 @@ $TauArgumentCompleter = {
                      '--items', '--schema')
     $skillSubs   = @('list', 'search', 'load')
     $configSubs  = @('show', 'validate', 'set', 'get', 'unset', 'edit', 'schema')
-    $configFlags = @('--mode', '--raw', '--json')
+    $configFlags = @('--mode', '--raw', '--json', '--dry-run')
     $guideFlags  = @('--human')
     $initFlags   = @('--force', '--stdout', '--provider', '--json')
     $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '-y', '--json', '--report', '--shell', '--provider', '--model', '--api-key')

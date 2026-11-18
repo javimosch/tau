@@ -1222,6 +1222,64 @@ test_group_config_edit() {
   contains "broken JSON reports position" "$out" 'config.json:2:'
   contains "broken JSON shows the source snippet" "$out" 'note: '
   contains "broken JSON snippet has a caret" "$out" '^'
+
+  # --dry-run: previews the exact write (diff + .bak path), changes nothing.
+  printf '{\n  "provider": "openai",\n  "keys": { "openai": "sk-dry-secret-zz" }\n}\n' > "$cfg"
+  rm -f "$cfg.bak"
+  out=$(HOME="$mock_home" "$BIN" config set mode text --dry-run); rc=$?
+  ok "config set --dry-run -> exit 0" "$rc" 0
+  contains "dry-run reports dry_run marker" "$out" '"dry_run":true'
+  contains "dry-run reports modify action" "$out" '"action":"modify"'
+  contains "dry-run reports backup path" "$out" '"backup_path":"'"$cfg"'.bak"'
+  contains "dry-run diff adds the new member" "$out" '+  \"mode\": \"text\"'
+  contains "dry-run diff carries context" "$out" '\"provider\": \"openai\"'
+  if printf '%s' "$out" | grep -q 'sk-dry-secret-zz'; then
+    ok "dry-run diff leaks stored secret" 1 0
+  else
+    ok "dry-run diff masks stored secret" 0 0
+  fi
+  contains "dry-run marks masked diff" "$out" '"diff_redacted":true'
+  contains "config file untouched by dry-run" "$(cat "$cfg")" 'sk-dry-secret-zz'
+  if [ -f "$cfg.bak" ]; then ok "dry-run left no .bak" 1 0; else ok "dry-run left no .bak" 0 0; fi
+
+  # unset --dry-run: same preview, removal direction.
+  out=$(HOME="$mock_home" "$BIN" config unset keys.openai --dry-run); rc=$?
+  ok "config unset --dry-run -> exit 0" "$rc" 0
+  contains "unset preview reports removed" "$out" '"removed":true'
+  lacks "unset preview masks removed secret" "$out" 'sk-dry-secret-zz'
+  contains "unset preview keeps the file intact" "$(cat "$cfg")" 'sk-dry-secret-zz'
+
+  # create preview: missing file -> /dev/null diff, no backup_path.
+  local dry_home; dry_home="$(mktemp -d)"; register_temp_dir "$dry_home"
+  out=$(HOME="$dry_home" "$BIN" config set provider openai --dry-run); rc=$?
+  ok "set --dry-run on missing file -> exit 0" "$rc" 0
+  contains "create action reported" "$out" '"action":"create"'
+  contains "create diff reads /dev/null" "$out" '--- /dev/null'
+  lacks "create has no backup path" "$out" 'backup_path'
+  if [ -f "$dry_home/.config/tau/config.json" ]; then ok "dry-run created nothing" 1 0; else ok "dry-run created nothing" 0 0; fi
+
+  # get rejects --dry-run at parse time (it never writes).
+  HOME="$mock_home" "$BIN" config get provider --dry-run >/dev/null 2>&1
+  ok "get --dry-run -> exit 80" "$?" 80
+
+  # Real writes preserve the original at <path>.bak (the advertised backup).
+  printf '{\n  "provider": "openai"\n}\n' > "$cfg"
+  rm -f "$cfg.bak"
+  HOME="$mock_home" "$BIN" config set mode text >/dev/null 2>&1
+  if [ -f "$cfg.bak" ]; then
+    contains "bak preserves pre-write bytes" "$(cat "$cfg.bak")" '"provider": "openai"'
+  else
+    ok "set wrote a .bak backup" 1 0
+  fi
+  HOME="$mock_home" "$BIN" config unset mode >/dev/null 2>&1
+  contains "unset refreshed .bak" "$(cat "$cfg.bak")" '"mode": "text"'
+
+  # --mode text renders a human summary + the diff.
+  out=$(HOME="$mock_home" "$BIN" config set mode json --dry-run --mode text); rc=$?
+  ok "set --dry-run --mode text -> exit 0" "$rc" 0
+  contains "text preview names the action" "$out" 'would set "mode"'
+  contains "text preview shows backup" "$out" 'backup: '
+  contains "text preview shows the diff" "$out" '@@ -'
 }
 
 # Group: `tau config edit` — interactive $EDITOR edit, schema-checked on save.

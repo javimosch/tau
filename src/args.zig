@@ -987,9 +987,9 @@ pub fn parse(
             return .{ .action = .config, .config = ecfg };
         }
         if (eq(argv[1], "set") or eq(argv[1], "get") or eq(argv[1], "unset")) {
-            // tau config set <key> <value> [path] [--mode text|json]
+            // tau config set <key> <value> [path] [--dry-run] [--mode text|json]
             // tau config get <key> [path] [--raw] [--mode text|json]
-            // tau config unset <key> [path] [--mode text|json]
+            // tau config unset <key> [path] [--dry-run] [--mode text|json]
             var ecfg: Config = base;
             ecfg.config_sub = argv[1];
             const need_val = eq(argv[1], "set");
@@ -1009,6 +1009,8 @@ pub fn parse(
                     }
                 } else if (eq(a, "--raw")) {
                     ecfg.config_raw = true;
+                } else if (eq(a, "--dry-run")) {
+                    ecfg.config_dry_run = true;
                 } else if (a.len > 0 and a[0] != '-') {
                     pos_count += 1;
                     if (pos_count == 1) {
@@ -1032,6 +1034,9 @@ pub fn parse(
             }
             if (ecfg.config_raw and !eq(argv[1], "get")) {
                 return errResult(arena, "--raw only applies to config get", .{});
+            }
+            if (ecfg.config_dry_run and eq(argv[1], "get")) {
+                return errResult(arena, "--dry-run only applies to config set and unset", .{});
             }
             return .{ .action = .config, .config = ecfg };
         }
@@ -2327,6 +2332,37 @@ test "parse: config set|get|unset capture key, value, path, --raw" {
     try std.testing.expectEqual(Action.err, extra.action);
     const raw_on_set = try parseArgv(a, &.{ "tau", "config", "set", "k", "v", "--raw" }, .{});
     try std.testing.expectEqual(Action.err, raw_on_set.action);
+}
+
+test "parse: config set|unset accept --dry-run; config get rejects it" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const s = try parseArgv(a, &.{ "tau", "config", "set", "provider", "openai", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.config, s.action);
+    try std.testing.expectEqualStrings("set", s.config.config_sub.?);
+    try std.testing.expect(s.config.config_dry_run);
+    try std.testing.expect(!s.config.config_raw);
+
+    const u = try parseArgv(a, &.{ "tau", "config", "unset", "mode", "--dry-run" }, .{});
+    try std.testing.expectEqualStrings("unset", u.config.config_sub.?);
+    try std.testing.expect(u.config.config_dry_run);
+
+    // --dry-run composes with --mode and the path positional.
+    const m = try parseArgv(a, &.{ "tau", "config", "set", "k", "v", "f.json", "--dry-run", "--mode", "text" }, .{});
+    try std.testing.expect(m.config.config_dry_run);
+    try std.testing.expectEqualStrings("f.json", m.config.edit_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, m.config.mode);
+
+    // get never writes — --dry-run there is an argument error like --raw on
+    // set.
+    const g = try parseArgv(a, &.{ "tau", "config", "get", "k", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.err, g.action);
+    try std.testing.expectEqualStrings("--dry-run only applies to config set and unset", g.err_msg.?);
+
+    const bare = try parseArgv(a, &.{ "tau", "config", "set", "k", "v" }, .{});
+    try std.testing.expect(!bare.config.config_dry_run);
 }
 
 test "parse: config show rejects positional prompt arguments" {

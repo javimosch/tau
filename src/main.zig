@@ -271,8 +271,12 @@ const help_text =
     \\                              (schema/tau-config-validate.schema.json)
     \\  tau config set <key> <v> [path]  Schema-checked edit to the config FILE
     \\                                 (keys are <field> or keys.<provider>; creates the file)
+    \\      --dry-run                  Preview the exact write — unified diff
+    \\                                 + .bak backup path — change nothing
     \\  tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
     \\  tau config unset <key> [path] Remove a key from the config file
+    \\      --dry-run                  Preview the exact diff + backup path;
+    \\                                 change nothing
     \\  tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
     \\                              VISUAL > EDITOR > vi/notepad); validates on save
     \\  tau config schema             Print the config file's JSON Schema
@@ -562,9 +566,9 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau config show [--flags] [--json]", .b = "print the resolved effective config (file+env+flags merged; keys redacted). --json pins the stable JSON form (schema/tau-config-show.schema.json)." },
     .{ .a = "tau config validate [path] [--json]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit). --json pins the stable report (schema/tau-config-validate.schema.json)." },
-    .{ .a = "tau config set <key> <value> [path]", .b = "schema-checked edit to the config FILE (<field> or keys.<provider>); creates the file if missing." },
+    .{ .a = "tau config set <key> <value> [path] [--dry-run]", .b = "schema-checked edit to the config FILE (<field> or keys.<provider>); creates the file if missing; --dry-run previews the exact diff + .bak backup path." },
     .{ .a = "tau config get <key> [path] [--raw]", .b = "print a config file value; secrets are redacted unless --raw." },
-    .{ .a = "tau config unset <key> [path]", .b = "remove a key from the config file." },
+    .{ .a = "tau config unset <key> [path] [--dry-run]", .b = "remove a key from the config file; --dry-run previews the exact diff + .bak backup path." },
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau config schema", .b = "emit the JSON Schema (draft 2020-12) for the config file — also published at schema/tau-config.schema.json for editor autocomplete/validation." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
@@ -1230,6 +1234,7 @@ pub fn main(init: std.process.Init) !void {
                     parsed.config.edit_path,
                     init.environ_map,
                     parsed.config.config_raw,
+                    parsed.config.config_dry_run,
                     parsed.config.mode,
                 ) catch |err| {
                     printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "config edit failed", false);

@@ -327,6 +327,10 @@ pub const Config = struct {
     edit_path: ?[]const u8 = null,
     /// `tau config get --raw` — print secret values unredacted.
     config_raw: bool = false,
+    /// `tau config set|unset --dry-run` — preview the exact write the real
+    /// run would perform (unified diff + `.bak` backup path) without
+    /// touching the file. Rejected on `get` (it never writes).
+    config_dry_run: bool = false,
 
     // --- Bug report (src/bug.zig) ---
     /// `tau bug --title <t>` — pre-filled issue title (default "Bug report").

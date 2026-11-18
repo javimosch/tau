@@ -570,13 +570,14 @@ checked-in JSON Schemas ([schema/](schema/)) that CI validates real binary
 output against — see [docs/stability.md](docs/stability.md).
 
 Edit the file programmatically (git-config style — comments preserved, values
-schema-checked, writes atomic):
+schema-checked, writes atomic, originals backed up to `<path>.bak`):
 
 ```bash
 tau config set provider openai           # creates the file if missing
 tau config set keys.openai sk-...        # per-provider API key
 tau config get provider                  # read a value (secrets redacted)
 tau config unset keys.openai             # remove a key
+tau config set mode text --dry-run       # preview the exact diff + backup path, change nothing
 tau config validate                      # offline schema check (CI/pre-commit)
 tau config schema                        # JSON Schema for editor autocomplete
 ```
