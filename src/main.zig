@@ -909,6 +909,9 @@ pub fn main(init: std.process.Init) !void {
     const base_cfg: Config = configfile.load(io, arena, init.environ_map);
     // Warn if the config file exists but has invalid JSON (load degrades silently).
     if (base_cfg.config_warning) |w| printWarnJson(w);
+    // Human-readable companion to the warn envelope: path:line:col plus the
+    // offending source line with a caret under the error column.
+    if (base_cfg.config_parse_note) |n| writeErr(n);
     // Warn on unrecognized TAU_* env vars — a typo (TAU_ENDPONT) is otherwise
     // silently ignored by every consumer (src/envvars.zig registry).
     if (envvars.unknownVarWarning(arena, init.environ_map)) |w| printWarnJson(w);
@@ -1211,6 +1214,7 @@ pub fn main(init: std.process.Init) !void {
                     },
                     .fail => |f| {
                         printErrorJson(f.code, f.type_name, f.message, false);
+                        if (f.note) |n| writeErr(n);
                         std.process.exit(f.code);
                     },
                 }
@@ -1238,6 +1242,7 @@ pub fn main(init: std.process.Init) !void {
                     },
                     .fail => |f| {
                         printErrorJson(f.code, f.type_name, f.message, false);
+                        if (f.note) |n| writeErr(n);
                         std.process.exit(f.code);
                     },
                 }

@@ -55,7 +55,7 @@ pub const static_specs = [_]CheckSpec{
     .{
         .name = "config_file",
         .fails_when = "~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional",
-        .remediation = "fix the JSON or delete the file — `tau config validate` pinpoints the error with line/column; `tau doctor --fix` moves a broken config to config.json.bak and writes a starter",
+        .remediation = "fix the JSON with `tau config edit` or pinpoint it with `tau config validate` (path:line:col plus the offending source line with a caret); `tau doctor --fix` moves a broken config to config.json.bak and writes a starter",
     },
     .{
         .name = "config_deprecated_keys",

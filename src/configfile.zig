@@ -91,8 +91,11 @@ pub fn path(arena: std.mem.Allocator, env: *std.process.Environ.Map) ?[]u8 {
 
 /// Remove JSONC-style comments (`//` line and `/* */` block) so the strict
 /// std.json parser accepts a commented config file (e.g. one written by
-/// `tau init`). Newlines inside comments are preserved so line numbers stay
-/// stable. Comment markers inside string literals are kept verbatim.
+/// `tau init`). Line comments are dropped; block comments are padded with
+/// spaces, and newlines inside either are preserved, so every remaining
+/// byte keeps its original line/column — parse-error positions always map
+/// onto the real file. Comment markers inside string literals are kept
+/// verbatim.
 pub fn stripComments(arena: std.mem.Allocator, bytes: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     var i: usize = 0;
@@ -124,13 +127,23 @@ pub fn stripComments(arena: std.mem.Allocator, bytes: []const u8) ![]u8 {
                 continue;
             }
             if (bytes[i + 1] == '*') {
-                // Block comment: keep newlines so line numbers stay stable.
+                // Block comment: pad every byte with a space (newlines kept)
+                // so the stripped text keeps the original byte offsets —
+                // error positions map exactly onto the real file, which is
+                // what the caret snippets parse failures print point at.
+                try out.append(arena, ' ');
+                try out.append(arena, ' ');
                 i += 2;
-                while (i + 1 < bytes.len and !(bytes[i] == '*' and bytes[i + 1] == '/')) {
-                    if (bytes[i] == '\n') try out.append(arena, '\n');
+                while (i < bytes.len) {
+                    if (bytes[i] == '*' and i + 1 < bytes.len and bytes[i + 1] == '/') {
+                        try out.append(arena, ' ');
+                        try out.append(arena, ' ');
+                        i += 2;
+                        break;
+                    }
+                    try out.append(arena, if (bytes[i] == '\n') '\n' else ' ');
                     i += 1;
                 }
-                i = if (i + 1 < bytes.len) i + 2 else bytes.len; // skip */ or EOF
                 continue;
             }
         }
@@ -145,10 +158,8 @@ pub const JsonPos = struct { line: usize, col: usize };
 
 /// Line/column of the first JSON syntax error in `bytes`, or null when the
 /// document parses. The file is JSONC: comments are stripped before the
-/// strict scan — stripComments preserves newlines, so line numbers always
-/// match the original file (columns can differ only when a block comment
-/// precedes the error on the same line — the same caveat `config validate`
-/// reports under).
+/// strict scan — stripComments preserves byte offsets, so the position is
+/// always exact in the original file.
 pub fn jsonErrorPos(arena: std.mem.Allocator, bytes: []const u8) ?JsonPos {
     const stripped = stripComments(arena, bytes) catch bytes;
     var scanner = std.json.Scanner.initCompleteInput(arena, stripped);
@@ -179,6 +190,64 @@ pub fn offsetPos(bytes: []const u8, off: usize) JsonPos {
     return pos;
 }
 
+/// A JSON syntax error prepared for human display: the 1-based position plus
+/// the offending line from the ORIGINAL file bytes (comments included), so
+/// the caret snippet shows what the file really contains.
+pub const JsonDiag = struct {
+    line: usize,
+    col: usize,
+    source: []const u8,
+};
+
+/// Line `n` (1-based) of `bytes`, or "" when the file is shorter. A trailing
+/// '\r' (CRLF files) is dropped so the caret column stays honest.
+pub fn sourceLineAt(bytes: []const u8, n: usize) []const u8 {
+    var it = std.mem.splitScalar(u8, bytes, '\n');
+    var i: usize = 1;
+    while (it.next()) |line| : (i += 1) {
+        if (i == n) {
+            return if (line.len > 0 and line[line.len - 1] == '\r') line[0 .. line.len - 1] else line;
+        }
+    }
+    return "";
+}
+
+/// jsonErrorPos plus the offending source line — position and snippet in one
+/// result for the parse-failure surfaces (load warning, `config
+/// get|set|unset`, `config validate`, `doctor config_file`).
+pub fn jsonErrorDiag(arena: std.mem.Allocator, bytes: []const u8) ?JsonDiag {
+    const pos = jsonErrorPos(arena, bytes) orelse return null;
+    return .{ .line = pos.line, .col = pos.col, .source = sourceLineAt(bytes, pos.line) };
+}
+
+/// The caret snippet under the offending source line —
+///   "  3 |   bad\n    |   ^\n"
+/// rendered for stderr "note:" blocks and `config validate --mode text`.
+/// When the error sits past the end of the line (a truncated file) the caret
+/// lands one column beyond the last byte.
+pub fn formatSnippet(arena: std.mem.Allocator, diag: JsonDiag) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    const num = try std.fmt.allocPrint(arena, "{d}", .{diag.line});
+    try b.appendSlice(arena, "  ");
+    try b.appendSlice(arena, num);
+    try b.appendSlice(arena, " | ");
+    try b.appendSlice(arena, diag.source);
+    try b.append(arena, '\n');
+    try b.appendSlice(arena, "  ");
+    for (0..num.len) |_| try b.append(arena, ' ');
+    try b.appendSlice(arena, " | ");
+    for (1..diag.col) |_| try b.append(arena, ' ');
+    try b.appendSlice(arena, "^\n");
+    return b.toOwnedSlice(arena);
+}
+
+/// "note: <path>:<line>:<col>\n" followed by the caret snippet — the
+/// human-readable stderr block printed after a warn/err envelope when the
+/// config file fails to parse.
+pub fn formatNote(arena: std.mem.Allocator, file_path: []const u8, diag: JsonDiag) ![]u8 {
+    return std.fmt.allocPrint(arena, "note: {s}:{d}:{d}\n{s}", .{ file_path, diag.line, diag.col, try formatSnippet(arena, diag) });
+}
+
 /// Load ~/.config/tau/config.json into a base Config. Missing file / bad JSON /
 /// no HOME all degrade gracefully to defaults (never errors — config file is
 /// optional). JSONC-style comments (`//`, `/* */`) are stripped before parsing.
@@ -196,10 +265,12 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     var fc = std.json.parseFromSliceLeaky(FileConfig, arena, stripped, .{
         .ignore_unknown_fields = true,
     }) catch {
-        cfg.config_warning = if (jsonErrorPos(arena, bytes)) |pos|
-            std.fmt.allocPrint(arena, "config file has invalid JSON at line {d}, column {d} and was ignored: {s} — fix the JSON syntax or delete the file", .{ pos.line, pos.col, p }) catch null
-        else
-            std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s} — fix the JSON syntax or delete the file", .{p}) catch null;
+        if (jsonErrorDiag(arena, bytes)) |d| {
+            cfg.config_warning = std.fmt.allocPrint(arena, "config file has invalid JSON at {s}:{d}:{d} and was ignored — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)", .{ p, d.line, d.col }) catch null;
+            cfg.config_parse_note = formatNote(arena, p, d) catch null;
+        } else {
+            cfg.config_warning = std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s} — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)", .{p}) catch null;
+        }
         return cfg;
     };
 
@@ -581,12 +652,52 @@ test "jsonErrorPos: reports line/column of the first syntax error" {
     try testing.expectEqual(@as(usize, 3), pos.line);
     try testing.expect(pos.col >= 1);
 
-    // Comments don't shift line numbers (newlines preserved by stripComments).
+    // Comments don't shift positions at all (stripComments pads block
+    // comments with spaces, so columns map exactly onto the raw file).
     const pos2 = jsonErrorPos(arena, "// header\n{\n  /* block\n     comment */\n  \"a\":,\n}").?;
     try testing.expectEqual(@as(usize, 5), pos2.line);
+    try testing.expectEqual(@as(usize, 7), pos2.col);
+
+    // A block comment on the same line before the error keeps the column
+    // exact — the padded strip preserves every byte offset, so the `,` is
+    // reported at its true column in the raw file.
+    const pos3 = jsonErrorPos(arena, "{ /* c */ \"a\":,\n}").?;
+    try testing.expectEqual(@as(usize, 1), pos3.line);
+    try testing.expectEqual(@as(usize, 15), pos3.col);
 }
 
-test "load: malformed JSON warning carries line/column context" {
+test "sourceLineAt: returns the raw line, drops a trailing CR" {
+    try testing.expectEqualStrings("two", sourceLineAt("one\ntwo\nthree", 2));
+    try testing.expectEqualStrings("one", sourceLineAt("one\ntwo", 1));
+    try testing.expectEqualStrings("", sourceLineAt("one\ntwo", 3));
+    try testing.expectEqualStrings("two", sourceLineAt("one\r\ntwo\r\n", 2));
+}
+
+test "jsonErrorDiag + formatSnippet + formatNote: position and caret" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    // Clean document -> null.
+    try testing.expectEqual(@as(?JsonDiag, null), jsonErrorDiag(arena, "{ \"a\": 1 }"));
+
+    const d = jsonErrorDiag(arena, "{\n  \"provider\": \"openai\",\n  bad\n}").?;
+    try testing.expectEqual(@as(usize, 3), d.line);
+    try testing.expectEqual(@as(usize, 3), d.col);
+    try testing.expectEqualStrings("  bad", d.source);
+
+    const snip = try formatSnippet(arena, d);
+    try testing.expectEqualStrings("  3 |   bad\n    |   ^\n", snip);
+
+    const note = try formatNote(arena, "/x/config.json", d);
+    try testing.expectEqualStrings("note: /x/config.json:3:3\n  3 |   bad\n    |   ^\n", note);
+
+    // A truncated file points one column past the last byte of the line.
+    const d2 = jsonErrorDiag(arena, "{\"provider\": \"openai\",\n").?;
+    try testing.expectEqual(@as(usize, 2), d2.line);
+}
+
+test "load: malformed JSON warning carries file:line:col and a note snippet" {
     var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_inst.deinit();
     const arena = arena_inst.allocator();
@@ -597,9 +708,21 @@ test "load: malformed JSON warning carries line/column context" {
 
     const cfg = load(testing.io, arena, &th.env);
     const w = cfg.config_warning.?;
-    try testing.expect(std.mem.indexOf(u8, w, "invalid JSON at line 3, column") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "invalid JSON at") != null);
+    try testing.expect(std.mem.indexOf(u8, w, ":3:3") != null);
     try testing.expect(std.mem.indexOf(u8, w, "was ignored") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "tau config edit") != null);
+    try testing.expect(std.mem.indexOf(u8, w, "tau explain config.<key>") != null);
     try testing.expect(std.mem.indexOf(u8, w, th.home) != null);
+
+    // The companion stderr note carries the same position plus the source
+    // line with a caret under the error column.
+    const n = cfg.config_parse_note.?;
+    try testing.expect(std.mem.indexOf(u8, n, "note: ") != null);
+    try testing.expect(std.mem.indexOf(u8, n, ":3:3\n") != null);
+    try testing.expect(std.mem.indexOf(u8, n, "  bad\n") != null);
+    try testing.expect(std.mem.indexOf(u8, n, "^") != null);
+    try testing.expect(std.mem.indexOf(u8, n, th.home) != null);
 }
 
 test "load: commented (JSONC) config file parses cleanly" {

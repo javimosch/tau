@@ -66,10 +66,12 @@ pub const Entry = union(enum) {
 /// matched case-insensitively — so `tau explain timeout` keeps meaning the
 /// Timeout error, not a config key), then the config-key catalog, then the
 /// doctor-check catalog, then the TAU_* env-var catalog, then the client
-/// catalog. The `doctor.<id>` and `client.<name>` prefixes skip the shared
-/// namespace: `api_key` resolves the config key while `doctor.api_key`
-/// resolves the check of the same name; `client.zed` resolves the editor
-/// client while bare `client_zed` keeps resolving the doctor check. Env-var
+/// catalog. The `config.<key>`, `doctor.<id>`, and `client.<name>` prefixes
+/// skip the shared namespace: `api_key` resolves the config key while
+/// `doctor.api_key` resolves the check of the same name; `client.zed`
+/// resolves the editor client while bare `client_zed` keeps resolving the
+/// doctor check; `config.provider` is the namespaced spelling of `provider`.
+/// Env-var
 /// names are exact (uppercase) — `TAU_*` spellings cannot collide with the
 /// other catalogs, so they need no prefix. Subcommand names resolve last —
 /// the earlier registries win on any shared name (`doctor` stays the
@@ -88,14 +90,15 @@ pub fn resolve(query: []const u8) ?Entry {
 }
 
 /// Every query `tau explain` resolves — each catalog `type_name` and decimal
-/// code, each config-key name and `keys.<provider>` member path, each
-/// doctor-check id in both `doctor.<id>` and bare spellings, each TAU_*
-/// env-var name, each client name in both `client.<name>` and bare
-/// spellings, each topic in both `topic.<name>` and bare spellings, and
-/// each subcommand in both `subcommand.<name>` and bare spellings —
+/// code, each config-key name and `keys.<provider>` member path in both
+/// `config.<key>` and bare spellings, each doctor-check id in both
+/// `doctor.<id>` and bare spellings, each TAU_* env-var name, each client
+/// name in both `client.<name>` and bare spellings, each topic in both
+/// `topic.<name>` and bare spellings, and each subcommand in both
+/// `subcommand.<name>` and bare spellings —
 /// so a suggestion always resolves on retry.
 const candidates = blk: {
-    var c: [errors.specs.len * 2 + cfgschema.key_catalog.len + cfgschema.deprecated_key_specs.len + doctorcat.check_catalog.len * 2 + envvars.names.len + setup.all_clients.len * 2 + topiccat.names.len * 2 + subcat.names.len * 2][]const u8 = undefined;
+    var c: [errors.specs.len * 2 + cfgschema.key_catalog.len * 2 + cfgschema.deprecated_key_specs.len * 2 + doctorcat.check_catalog.len * 2 + envvars.names.len + setup.all_clients.len * 2 + topiccat.names.len * 2 + subcat.names.len * 2][]const u8 = undefined;
     for (errors.specs, 0..) |s, i| {
         c[i * 2] = s.type_name;
         c[i * 2 + 1] = std.fmt.comptimePrint("{d}", .{s.code});
@@ -103,11 +106,13 @@ const candidates = blk: {
     var n = errors.specs.len * 2;
     for (cfgschema.key_catalog) |ks| {
         c[n] = ks.name;
-        n += 1;
+        c[n + 1] = "config." ++ ks.name;
+        n += 2;
     }
     for (cfgschema.deprecated_key_specs) |ks| {
         c[n] = ks.name;
-        n += 1;
+        c[n + 1] = "config." ++ ks.name;
+        n += 2;
     }
     for (doctorcat.check_catalog) |cs| {
         c[n] = cs.name;

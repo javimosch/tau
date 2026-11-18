@@ -227,6 +227,11 @@ pub const Config = struct {
     /// Set by configfile.load() when the config file exists but has invalid JSON.
     /// main.zig emits a warning and continues with defaults.
     config_warning: ?[]const u8 = null,
+    /// Set by configfile.load() alongside config_warning when a JSON syntax
+    /// error was located: a multi-line "note:" block (path:line:col + the
+    /// offending source line with a caret) that main.zig prints on stderr
+    /// right after the warn envelope.
+    config_parse_note: ?[]const u8 = null,
     /// Set by configfile.load() to the path of the config file that was read
     /// (set even when the JSON is invalid — config_warning covers that case).
     config_path: ?[]const u8 = null,

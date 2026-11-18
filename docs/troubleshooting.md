@@ -198,7 +198,7 @@ cataloged one section per check — symptom, cause, fix — in
 
 | Check | Fails or warns when | Remediate |
 |-------|---------------------|-----------|
-| `config_file` | ~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional | fix the JSON or delete the file — `tau config validate` pinpoints the error with line/column; `tau doctor --fix` moves a broken config to config.json.bak and writes a starter |
+| `config_file` | ~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional | fix the JSON with `tau config edit` or pinpoint it with `tau config validate` (path:line:col plus the offending source line with a caret); `tau doctor --fix` moves a broken config to config.json.bak and writes a starter |
 | `config_deprecated_keys` | the config file still uses a deprecated or renamed key spelling (e.g. compact_keep_recent) — old spellings still load with a warn envelope during the deprecation window but are scheduled for removal (skipped when there is no config file or it doesn't parse) | run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name |
 | `config_permissions` | the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys) | run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself |
 | `plaintext_secrets` | credentials sit on disk as plaintext — api_key/keys.* values in the config file, or `env` blocks inside client settings files (warn only; reports key names and counts, never values) | move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable |
@@ -463,17 +463,26 @@ goal, and nothing to continue — give it a prompt or resume a goal session.
 
 ## Warnings (run continues)
 
-### `{"warn":{"message":"config file has invalid JSON at line <L>, column <C> and was ignored: <path> — fix the JSON syntax or delete the file"}}`
+### `{"warn":{"message":"config file has invalid JSON at <path>:<L>:<C> and was ignored — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)"}}`
 
 `~/.config/tau/config.json` exists but doesn't parse. tau falls back to
 defaults — flags and env vars still work. The message names the syntax
-error's line and column (the same position `tau config validate` reports —
-line numbers are exact even in a commented JSONC file; a block comment on the
-same line before the error can shift the column). Fix the syntax or delete
-the file, or run `tau doctor --fix` — it moves the broken file to
-`config.json.bak` and scaffolds a fresh one. The file is JSONC: `//` and
-`/* */` comments are allowed (the `tau init` scaffold is commented), but
-trailing commas are not.
+error's `path:line:col` (the same position `tau config validate` reports,
+exact even in a commented JSONC file), and a `note:` block follows on stderr
+showing the offending source line with a caret under the error column:
+
+```text
+note: /home/agent/.config/tau/config.json:3:3
+  3 |   bad
+    |   ^
+```
+
+Fix the syntax with `tau config edit` (it opens the file in your editor and
+revalidates on save), delete the file, or run `tau doctor --fix` — it moves
+the broken file to `config.json.bak` and scaffolds a fresh one. `tau config
+validate` pinpoints the same position; `tau explain config.<key>` documents
+every valid key. The file is JSONC: `//` and `/* */` comments are allowed
+(the `tau init` scaffold is commented), but trailing commas are not.
 
 ### `failed to save session <name>: <err>` (stderr, non-fatal)
 

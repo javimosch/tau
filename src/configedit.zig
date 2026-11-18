@@ -20,10 +20,13 @@ const suggest = @import("suggest.zig");
 pub const Sub = enum { set, get, unset };
 
 /// Caller-facing failure: rendered as an {"err"} envelope on stderr, exit code.
+/// `note` is an optional human-readable block (e.g. the source snippet for a
+/// JSON syntax error) printed on stderr right after the envelope.
 pub const Fail = struct {
     code: u8,
     type_name: []const u8,
     message: []const u8,
+    note: ?[]const u8 = null,
 };
 
 /// Outcome of a set/get/unset: stdout payload on success, or an envelope to
@@ -715,13 +718,21 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
 /// A file that passed both the structural scan and a strict JSON parse.
 const ParsedDoc = struct { bytes: []const u8, obj: Obj };
 
+/// An unreadable-or-unparsable config file as a caller-facing failure: the
+/// full {"err"} message plus, for syntax errors, the stderr "note:" block
+/// carrying the offending source line with a caret.
+const InvalidDoc = struct {
+    message: []const u8,
+    note: ?[]const u8 = null,
+};
+
 /// Read + structurally scan the config file. `.missing` means the file does
 /// not exist; `.blank` carries a file with only whitespace/comments (set keeps
 /// them and appends a fresh object).
 const Doc = union(enum) {
     missing,
     blank: []const u8,
-    invalid: []const u8, // reason for the {"err"} message
+    invalid: InvalidDoc,
     parsed: ParsedDoc,
 };
 
@@ -769,28 +780,35 @@ fn notSetHint(arena: std.mem.Allocator, parsed: ?ParsedDoc, kp: KeyPath) ![]cons
     return "";
 }
 
-/// Reason string for an unparsable config file — carries the syntax error's
-/// line/column when one is known (same diagnostics `config validate` uses).
-fn invalidJsonReason(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
-    if (configfile.jsonErrorPos(arena, bytes)) |pos| {
-        return std.fmt.allocPrint(arena, "invalid JSON at line {d}, column {d} — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`", .{ pos.line, pos.col });
+/// The invalid-JSON failure for a config file: an {"err"} message naming
+/// path:line:col plus the stderr "note:" block (source line + caret) when
+/// the syntax error can be located (same diagnostics `config validate`
+/// uses). Falls back to a position-less message — callers only reach here on
+/// a strict parse failure, so a missing position means the error had no
+/// diagnostics.
+fn invalidJsonDoc(arena: std.mem.Allocator, path: []const u8, bytes: []const u8) !InvalidDoc {
+    if (configfile.jsonErrorDiag(arena, bytes)) |d| {
+        return .{
+            .message = try std.fmt.allocPrint(arena, "config file {s}:{d}:{d}: invalid JSON — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)", .{ path, d.line, d.col }),
+            .note = try configfile.formatNote(arena, path, d),
+        };
     }
-    return "invalid JSON — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`";
+    return .{ .message = try std.fmt.allocPrint(arena, "config file {s}: invalid JSON — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)", .{path}) };
 }
 
 fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
         switch (err) {
             error.FileNotFound => return .missing,
-            error.AccessDenied => return .{ .invalid = "permission denied" },
-            error.IsDir => return .{ .invalid = "path is a directory" },
+            error.AccessDenied => return .{ .invalid = .{ .message = try std.fmt.allocPrint(arena, "config file {s}: permission denied", .{path}) } },
+            error.IsDir => return .{ .invalid = .{ .message = try std.fmt.allocPrint(arena, "config file {s}: path is a directory", .{path}) } },
             else => return err,
         }
     };
     if (skipTrivia(bytes, 0) == bytes.len) return .{ .blank = bytes };
     const obj = scanDoc(arena, bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.InvalidJson => return .{ .invalid = try invalidJsonReason(arena, bytes) },
+        error.InvalidJson => return .{ .invalid = try invalidJsonDoc(arena, path, bytes) },
     };
     // The scanner is structural only — confirm the document also parses as
     // strict JSON (comments stripped) so we never splice into a file that
@@ -798,7 +816,7 @@ fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
     const stripped = configfile.stripComments(arena, bytes) catch bytes;
     _ = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
-        return .{ .invalid = try invalidJsonReason(arena, bytes) };
+        return .{ .invalid = try invalidJsonDoc(arena, path, bytes) };
     };
     return .{ .parsed = .{ .bytes = bytes, .obj = obj } };
 }
@@ -910,7 +928,7 @@ pub fn run(
             const parsed = switch (doc) {
                 .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
                 .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
-                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .invalid => |iv| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = iv.message, .note = iv.note } },
                 .parsed => |p| p,
             };
             const slice = try lookupValue(arena, parsed, kp) orelse {
@@ -927,7 +945,7 @@ pub fn run(
                 .fail => |f| return .{ .fail = f },
             };
             const src: []const u8 = switch (doc) {
-                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .invalid => |iv| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = iv.message, .note = iv.note } },
                 .missing => "{}\n",
                 // Blank (whitespace/comments only): append an empty object so
                 // the existing comment header survives.
@@ -957,7 +975,7 @@ pub fn run(
             const parsed = switch (doc) {
                 .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
                 .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
-                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .invalid => |iv| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = iv.message, .note = iv.note } },
                 .parsed => |p| p,
             };
             const new_bytes = (applyUnset(arena, parsed, kp) catch |err| {
@@ -2011,7 +2029,7 @@ test "run: set/get/unset surface did-you-mean hints and line/column" {
     try testing.expect(std.mem.indexOf(u8, unset_typo.message, "did you mean \"proivder\"?") != null);
 }
 
-test "run: malformed config file reports line/column in the invalid_config error" {
+test "run: malformed config file reports path:line:col plus a snippet note" {
     var ar = testArena();
     defer ar.deinit();
     const arena = ar.allocator();
@@ -2025,11 +2043,20 @@ test "run: malformed config file reports line/column in the invalid_config error
     const f = try failMessage(try th.sub(arena, .get, "provider", null, false));
     try testing.expectEqual(@as(u8, 1), f.code);
     try testing.expectEqualStrings("invalid_config", f.type_name);
-    try testing.expect(std.mem.indexOf(u8, f.message, "invalid JSON at line 3, column") != null);
+    try testing.expect(std.mem.indexOf(u8, f.message, ":3:3: invalid JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, f.message, "tau config edit") != null);
+    try testing.expect(std.mem.indexOf(u8, f.message, "tau explain config.<key>") != null);
+    // The stderr note carries the offending source line with a caret.
+    const note = f.note.?;
+    try testing.expect(std.mem.indexOf(u8, note, "note: ") != null);
+    try testing.expect(std.mem.indexOf(u8, note, ":3:3\n") != null);
+    try testing.expect(std.mem.indexOf(u8, note, "  bad\n") != null);
+    try testing.expect(std.mem.indexOf(u8, note, "^") != null);
 
     // set refuses to touch the broken file with the same positioned error.
     const fs = try failMessage(try th.sub(arena, .set, "mode", "text", false));
-    try testing.expect(std.mem.indexOf(u8, fs.message, "invalid JSON at line 3, column") != null);
+    try testing.expect(std.mem.indexOf(u8, fs.message, ":3:3: invalid JSON") != null);
+    try testing.expect(fs.note != null);
 }
 
 test "migrateRenamedKeys: renames in place, preserving comments and order" {

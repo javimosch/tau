@@ -1015,7 +1015,8 @@ test_group_config_validate() {
   printf '{"provider": "openai",\n' > "$tmpdir/broken.json"
   out=$("$BIN" config validate "$tmpdir/broken.json"); rc=$?
   ok "config validate broken JSON -> exit 1" "$rc" 1
-  contains "syntax error reports position" "$out" 'invalid JSON at line'
+  contains "syntax error reports position" "$out" '"line":2'
+  contains "syntax error carries a snippet" "$out" '"snippet":"'
 
   # Non-object top level.
   printf '["provider","openai"]' > "$tmpdir/arr.json"
@@ -1218,7 +1219,9 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?
   ok "set on broken JSON -> exit 1" "$rc" 1
   contains "broken JSON reported" "$out" 'invalid JSON'
-  contains "broken JSON reports position" "$out" 'at line 2, column'
+  contains "broken JSON reports position" "$out" 'config.json:2:'
+  contains "broken JSON shows the source snippet" "$out" 'note: '
+  contains "broken JSON snippet has a caret" "$out" '^'
 }
 
 # Group: `tau config edit` — interactive $EDITOR edit, schema-checked on save.
@@ -1335,7 +1338,7 @@ test_group_doctor() {
   ok "malformed config exit 1" "$doc_badcfg_rc" 1
   contains "config_file fails" "$doc_badcfg_out" '"name":"config_file","status":"fail"'
   contains "config_file message names path" "$doc_badcfg_out" '.config/tau/config.json'
-  contains "config_file message has line/column" "$doc_badcfg_out" 'at line 1, column'
+  contains "config_file message has line/column" "$doc_badcfg_out" 'config.json:1:'
   contains "api_key check still ran" "$doc_badcfg_out" '"name":"api_key"'
   contains "endpoint check still ran" "$doc_badcfg_out" '"name":"endpoint_reachable"'
 
@@ -6012,6 +6015,15 @@ test_group_explain() {
   ok "explain: dotted member path exits 0" "$k3_rc" 0
   contains "explain: dotted entry names the member path" "$k3_out" '"key":"keys.openai"'
   contains "explain: dotted entry is a non-empty string" "$k3_out" '"constraints":"non-empty"'
+
+  # The `config.` prefix is the namespaced spelling — same convention as
+  # `doctor.<id>` — so parse-failure hints can cite `tau explain config.<key>`.
+  capture k3c "$BIN" explain config.provider
+  ok "explain: config.<key> exits 0" "$k3c_rc" 0
+  contains "explain: config.<key> resolves the key" "$k3c_out" '"key":"provider"'
+  capture k3d "$BIN" explain config.keys.openai
+  ok "explain: config.<member> exits 0" "$k3d_rc" 0
+  contains "explain: config.<member> resolves" "$k3d_out" '"key":"keys.openai"'
 
   capture k3b "$BIN" explain --human stream
   ok "explain: --human key exits 0" "$k3b_rc" 0

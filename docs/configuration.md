@@ -455,8 +455,9 @@ CLI misuse. Every problem is listed at once — unknown keys, wrong value types,
 unknown `provider`/`mode` values, out-of-range numbers (`compact_threshold`
 outside 0–1, negative `temperature`, negative or overflowing integers), and
 `keys` entries that aren't strings or name an unknown provider. Syntax errors
-report a line and column. Key *values* are never echoed — `api_key`/`keys`
-contents stay secret.
+report the `line`/`column` and a `snippet` (the offending source line with a
+caret under the error column). Key *values* are never echoed —
+`api_key`/`keys` contents stay secret.
 
 Example failure output:
 
@@ -503,7 +504,8 @@ tau config set provider openai ./ci.json  # explicit path (like validate)
   suggests the nearest schema key (or `keys.<provider>` for a `key.x` dotted
   path), while `get`/`unset` name the closest key actually present in the
   file, catching typos written there. A malformed file reports the syntax
-  error's line and column, matching `config validate`.
+  error's `path:line:col` plus the offending source line with a caret,
+  matching `config validate`.
 - **Secrets**: `api_key` and `keys.*` values are masked (`***last4`) in all
   `set`/`get` output; `get --raw` prints the stored value verbatim.
 
