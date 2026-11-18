@@ -229,6 +229,10 @@ def render_doctor_doc(rows):
     w("curl, no detected client, `--deep`/`--probe`/`--selftest` not passed —")
     w("kept it from running, not that it passed or failed.")
     w("")
+    w("Bare `tau doctor --fix` remediates every fixable check behind")
+    w("per-fix confirmation; `tau doctor --fix <check-id>` scopes the")
+    w("remediation to the single named check.")
+    w("")
     w("## Checks")
     w("")
     for r in rows:

@@ -1519,6 +1519,45 @@ test_group_doctor() {
   "$BIN" doctor --shell tcsh >/dev/null 2>&1; ok "doctor --shell tcsh -> exit 80" "$?" 80
   "$BIN" doctor --fix --shell >/dev/null 2>&1; ok "doctor --shell missing value -> exit 80" "$?" 80
 
+  # 14c. --fix <check-id>: scoped remediation — the named check's fix is the
+  #     only plan entry, other fixable outcomes are untouched. An unknown id
+  #     is an exit-80 usage error with a did-you-mean; a check without a
+  #     remediation reports a skipped outcome instead of an empty fixes list.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  capture doc_scope_bad env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix confg_file
+  ok "--fix <unknown check> -> exit 80" "$doc_scope_bad_rc" 80
+  contains "unknown check error names the id" "$doc_scope_bad_err" 'unknown doctor check: confg_file'
+  contains "unknown check error suggests nearest" "$doc_scope_bad_err" 'did you mean \"config_file\"'
+  contains "unknown check hint points at explain --list" "$doc_scope_bad_err" 'tau explain --list'
+  capture doc_scope_skip env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix config_file
+  contains "scoped --fix previews only the named fix" "$doc_scope_skip_out" '"id":"scaffold_config","check":"config_file","status":"skipped"'
+  contains "scoped --fix omits other planned fixes" "$doc_scope_skip_out" '"fixes":[{"id":"scaffold_config"'
+  if [ ! -f "$mock_config/config.json" ]; then
+    ok "scoped --fix unconfirmed wrote nothing" 0 0
+  else
+    ok "scoped --fix unconfirmed wrote nothing" 1 0
+  fi
+  capture doc_scope_nofix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix api_key
+  contains "no-remediation check reports skipped" "$doc_scope_nofix_out" '"id":"api_key","check":"api_key","status":"skipped"'
+  contains "no-remediation detail explains" "$doc_scope_nofix_out" 'no automatic remediation'
+  capture doc_scope_apply env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix shell_completions --yes
+  ok "scoped --fix --yes exits 0" "$doc_scope_apply_rc" 0
+  contains "scoped apply ran the named fix" "$doc_scope_apply_out" '"id":"install_completions","check":"shell_completions","status":"applied"'
+  contains "scoped apply ran no other fix" "$doc_scope_apply_out" '"detail":"installed completions for bash"}]'
+  if [ -f "$mock_home/.local/share/bash-completion/completions/tau" ] && [ ! -f "$mock_config/config.json" ]; then
+    ok "scoped apply touched only completions" 0 0
+  else
+    ok "scoped apply touched only completions" 1 0
+  fi
+  # Restore the post-#14 state (scaffolded config + installed completions)
+  # that the secret-hygiene section below builds on.
+  env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes >/dev/null 2>&1 || true
+
   # 14b. Secret-hygiene checks: plaintext credentials in the config file and
   #     env blocks inside client settings warn (never fail), key material is
   #     never printed, and loose client files are --fix-remediated to 0600.

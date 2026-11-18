@@ -27,6 +27,10 @@ A `skip` status means the check's own gate — `--offline`, missing
 curl, no detected client, `--deep`/`--probe`/`--selftest` not passed —
 kept it from running, not that it passed or failed.
 
+Bare `tau doctor --fix` remediates every fixable check behind
+per-fix confirmation; `tau doctor --fix <check-id>` scopes the
+remediation to the single named check.
+
 ## Checks
 
 ### `config_file`

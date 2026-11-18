@@ -135,8 +135,9 @@ const doctor_help =
     \\                         every provider (~1 token per keyed provider)
     \\      --selftest         Credential-free end-to-end check against a
     \\                         loopback stub provider (no keys, no network)
-    \\      --fix              Propose remediations for fixable checks;
-    \\                         prompts per fix on a TTY
+    \\      --fix [<check>]    Propose remediations — every fixable check,
+    \\                         or just the named check; prompts per fix on
+    \\                         a TTY (see `tau explain doctor.<check>`)
     \\  -y, --yes              Apply --fix remediations without prompting
     \\      --json             Stream NDJSON check/fix events + verdict
     \\                         (schema/tau-doctor.schema.json)
@@ -150,6 +151,7 @@ const doctor_help =
     \\  tau doctor --offline
     \\  tau doctor --selftest
     \\  tau doctor --fix --yes
+    \\  tau doctor --fix shell_completions --yes
     \\  tau doctor --probe
     \\  tau doctor --report
     \\

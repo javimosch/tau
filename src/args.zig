@@ -366,10 +366,11 @@ pub fn parse(
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
-    // [--probe] [--selftest] [--fix] [--yes] [--shell sh] [--json] [--report]`
-    // — setup diagnostics; a command, not a prompt. An unknown provider is
-    // carried into the report as a failed check instead of exiting 80. --fix
-    // proposes remediations, --yes applies them without prompting
+    // [--probe] [--selftest] [--fix [check-id]] [--yes] [--shell sh] [--json]
+    // [--report]` — setup diagnostics; a command, not a prompt. An unknown
+    // provider is carried into the report as a failed check instead of
+    // exiting 80. --fix proposes remediations (bare = every fixable check;
+    // `--fix <check-id>` scopes to one), --yes applies them without prompting
     // (non-interactive use). --probe live-verifies connectivity and
     // credentials for every provider in the registry (per-provider pass/fail
     // rows). --selftest runs a credential-free end-to-end session against a
@@ -407,6 +408,13 @@ pub fn parse(
                 dcfg.doctor_selftest = true;
             } else if (eq(a, "--fix")) {
                 dcfg.doctor_fix = true;
+                // Optional scope: `--fix <check-id>` remediates one check
+                // instead of every fixable outcome. A flag token (or end of
+                // argv) means bare --fix — the whole plan.
+                if (j + 1 < argv.len and argv[j + 1].len > 0 and argv[j + 1][0] != '-') {
+                    j += 1;
+                    dcfg.doctor_fix_id = argv[j];
+                }
             } else if (eq(a, "--yes") or eq(a, "-y")) {
                 // --yes implies --fix (nothing else to approve).
                 dcfg.doctor_fix = true;
@@ -2511,9 +2519,44 @@ test "parse: doctor selects the doctor action with defaults" {
     try std.testing.expect(!p.config.doctor_selftest);
     try std.testing.expect(!p.config.doctor_json);
     try std.testing.expect(!p.config.doctor_report);
+    try std.testing.expect(!p.config.doctor_fix);
+    try std.testing.expect(p.config.doctor_fix_id == null);
     try std.testing.expect(p.config.doctor_bad_provider == null);
     // Default provider resolved like a normal run.
     try std.testing.expectEqualStrings(provider_mod.providers[0].name, p.config.provider);
+}
+
+test "parse: doctor --fix takes an optional check-id scope" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Bare --fix scopes to nothing — every fixable check.
+    const bare = try parseArgv(a, &.{ "tau", "doctor", "--fix" }, .{});
+    try std.testing.expect(bare.config.doctor_fix);
+    try std.testing.expect(bare.config.doctor_fix_id == null);
+
+    // --fix <check-id> scopes the plan to one check.
+    const scoped = try parseArgv(a, &.{ "tau", "doctor", "--fix", "config_permissions", "--yes" }, .{});
+    try std.testing.expect(scoped.config.doctor_fix);
+    try std.testing.expect(scoped.config.doctor_yes);
+    try std.testing.expectEqualStrings("config_permissions", scoped.config.doctor_fix_id.?);
+
+    // A flag token after --fix is not a check id — bare --fix + --yes.
+    const flag_next = try parseArgv(a, &.{ "tau", "doctor", "--fix", "--yes" }, .{});
+    try std.testing.expect(flag_next.config.doctor_fix);
+    try std.testing.expect(flag_next.config.doctor_yes);
+    try std.testing.expect(flag_next.config.doctor_fix_id == null);
+
+    // --yes then --fix <id>: the scope still lands.
+    const yes_first = try parseArgv(a, &.{ "tau", "doctor", "--yes", "--fix", "shell_completions" }, .{});
+    try std.testing.expect(yes_first.config.doctor_yes);
+    try std.testing.expectEqualStrings("shell_completions", yes_first.config.doctor_fix_id.?);
+
+    // Value-flags still parse after a scoped --fix.
+    const mixed = try parseArgv(a, &.{ "tau", "doctor", "--fix", "shell_completions", "--shell", "zsh" }, .{});
+    try std.testing.expectEqualStrings("shell_completions", mixed.config.doctor_fix_id.?);
+    try std.testing.expectEqualStrings("zsh", mixed.config.setup_shell.?);
 }
 
 test "parse: doctor accepts --offline/--deep and provider/model/api-key overrides" {
