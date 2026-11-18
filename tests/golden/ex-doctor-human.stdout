@@ -1,0 +1,4 @@
+doctor check  api_key
+  fails when: no API key resolves at any level of the precedence chain
+  fix:        pass --api-key, set the provider env var or TAU_API_KEY, or add api_key/keys.<provider> to config.json — `tau init` scaffolds a starter
+  docs:       https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#setup--config-problems--tau-doctor

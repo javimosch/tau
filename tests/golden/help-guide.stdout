@@ -1,0 +1,11 @@
+tau guide - embedded operator manual (drive tau with no external docs)
+
+Usage:
+  tau guide [--human]
+
+Options:
+      --human   Render the guide as markdown (default: JSON for agents)
+
+Examples:
+  tau guide
+  tau guide --human

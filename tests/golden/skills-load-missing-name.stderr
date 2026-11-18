@@ -1,0 +1,1 @@
+{"err":{"code":82,"type":"missing_required_field","message":"skill name required","recoverable":false,"hint":"the message names the missing input — supply it and retry","docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md","explain":"tau explain 82","catalog":"https://github.com/javimosch/tau/blob/master/docs/errors.md"}}

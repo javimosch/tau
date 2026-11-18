@@ -1,0 +1,5 @@
+{
+  "provider": "openai",
+  "compact_keep_recent_tokens": 8000,
+  "mode": "json"
+}

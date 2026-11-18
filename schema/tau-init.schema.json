@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/javimosch/tau/master/schema/tau-init.schema.json",
+  "title": "tau init --json output",
+  "description": "Schema for the single JSON object `tau init [--json]` prints on stdout after writing (or overwriting with --force) the starter config. --stdout prints the JSONC scaffold itself instead of this object and is mutually exclusive with --json. New keys may be added (additive); existing keys keep their names and types.",
+  "type": "object",
+  "required": ["config_path", "provider", "created", "overwritten", "detected_env_keys"],
+  "additionalProperties": false,
+  "properties": {
+    "config_path": { "type": "string", "minLength": 1, "description": "Absolute path of the config file that was written, e.g. ~/.config/tau/config.json." },
+    "provider": { "type": "string", "minLength": 1, "description": "Provider the scaffold was seeded for — an explicit --provider, else the first provider with a detected env key, else the default." },
+    "created": { "type": "boolean", "description": "true when the run wrote a config file (always true on a successful write-path run)." },
+    "overwritten": { "type": "boolean", "description": "true when an existing config file was replaced via --force." },
+    "detected_env_keys": {
+      "type": "array",
+      "description": "Names of the provider API-key environment variables found set on this machine (TAU_API_KEY included when the fallback is set). Values, never key material — only variable names.",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "examples": [
+    { "config_path": "/home/u/.config/tau/config.json", "provider": "xiaomi", "created": true, "overwritten": false, "detected_env_keys": ["XIAOMI_API_KEY"] },
+    { "config_path": "/home/u/.config/tau/config.json", "provider": "openai", "created": true, "overwritten": true, "detected_env_keys": ["OPENAI_API_KEY", "TAU_API_KEY"] }
+  ]
+}

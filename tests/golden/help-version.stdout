@@ -1,0 +1,20 @@
+tau version - print the version (command form of -v/--version)
+
+Usage:
+  tau version [--verbose] [--check] [--json] [--mode text|json]
+
+Options:
+      --verbose        Include build metadata (git commit, target
+                       triple, build date, zig version)
+      --check          Non-blocking check for a newer release; always
+                       exits 0 (opt out: TAU_NO_UPDATE_CHECK=1)
+      --json           Stable {"name","version",...} object for
+                       scripts (schema/tau-version.schema.json);
+                       mutually exclusive with --mode text
+      --mode text|json Output mode
+
+Examples:
+  tau version
+  tau version --verbose
+  tau version --check
+  tau version --json

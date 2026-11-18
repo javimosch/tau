@@ -1,0 +1,1 @@
+{"ok":true,"status":"installed","shells":[{"shell":"zsh","rc":"<HOME>/.zshrc","rc_status":"present","status":"already_installed","path":"<HOME>/.zsh/completions/_tau"}],"version":"0.4.0","done":true}

@@ -1,0 +1,1 @@
+{"env":"TAU_BIN","section":"external","consumers":"a2a-spawn · scripts/smoke.sh","summary":"Path to the tau binary, skipping PATH resolution.","docs":"https://github.com/javimosch/tau/blob/master/docs/env.md"}

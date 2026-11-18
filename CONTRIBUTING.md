@@ -53,7 +53,12 @@ All tests live under `src/` and are auto-discovered via `src/main.zig`. A passin
 
 ### Smoke tests
 
-Smoke tests exercise the compiled binary end-to-end:
+Smoke tests exercise the compiled binary end-to-end. The `ci` workflow
+(`.github/workflows/ci.yml`) runs the unit tests plus both offline smoke
+suites on a native runner for every released platform (Linux x86_64/aarch64,
+macOS x86_64/aarch64, Windows x86_64) on each PR and push to `master` — keep
+new checks portable, or gate them on the documented platform contract (e.g.
+the `acp` daemon returns exit 111 on Windows).
 
 ```bash
 # Offline CLI tests only (fast, no API key required)
@@ -76,6 +81,62 @@ Useful environment variables for debugging smoke failures:
 | `SMOKE_VERBOSE=1` | Print each test name as it runs |
 | `SMOKE_DEBUG=1` | Verbose debug output |
 | `TAU_BIN=/path/to/tau` | Override which binary is tested |
+| `GOLDEN_UPDATE=1` | Regenerate `tests/golden/` snapshots instead of comparing |
+
+### Golden error-contract snapshots
+
+The `golden-errors` smoke group byte-compares stdout, stderr, and the exit
+status of every deterministic failure path against snapshots in
+`tests/golden/` (`<case>.stdout` / `<case>.stderr`). It pins the error codes,
+envelope shapes, and remediation hints that agents and scripts depend on.
+
+If you intentionally change an error message, envelope field, stream
+(stdout vs stderr), or exit code, refresh the snapshots and include the
+resulting golden diff in your PR so reviewers can see the contract change:
+
+```bash
+GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-errors
+```
+
+The `error-coverage` group keeps that table honest:
+`scripts/check-error-golden-coverage.py` fails when an exit code listed in
+`docs/errors.md` is exercised by no golden test — so adding a catalog entry
+means adding (or pointing at) a `golden_check` case or a pinned
+`{"err":...}` snapshot for it. Platform-only codes (e.g. 111, emitted only
+on Windows) are covered by the platform-gated contract assertions in the
+smoke script instead.
+
+The `golden-onboarding` group applies the same technique to the first-run
+surface — `tau init`, `tau setup` (incl. `--client`), and `tau config edit`.
+In addition to stdout/stderr/exit-code snapshots it byte-locks generated
+files (`tests/golden/<case>.config`, `.zshrc`, `.json`, `.lua`, `.snippet`).
+Volatile values (the temporary `$HOME`, the tau binary path embedded in
+editor configs, and the curl version in the embedded doctor report) are
+normalized to `<HOME>` / `<TAU>` / `<VER>` before comparing. Regenerate with:
+
+```bash
+GOLDEN_UPDATE=1 ./scripts/smoke.sh --group golden-onboarding
+```
+
+### README + cookbook snippets
+
+The `doc-snippets` group executes documentation, not just reads it:
+`scripts/extract-doc-snippets.py` pulls every `tau ...` command printed in
+README.md's fenced bash blocks and the harness runs each verbatim in a
+scratch `HOME` — sessions, goal mode, `--role`, and `tau fleet` included —
+then runs every `examples/[0-9]*.sh` cookbook recipe to completion. Provider
+HTTP is stubbed by `scripts/lib/fake-curl`, a `curl` shim placed earlier on
+`PATH`, so nothing touches the network and no real API key is needed. If a
+documented command stops working, this group fails. POSIX-only (the shim is
+an extensionless script); the Windows CI leg skips it.
+
+```bash
+./scripts/smoke.sh --group doc-snippets
+```
+
+When adding a `tau` command to the README, keep it runnable in that
+environment: placeholders like `fleet status <id>` bind to the newest fleet
+manifest the run created, but other angle-bracket placeholders will fail.
 
 ### Resource benchmark
 
@@ -106,7 +167,8 @@ src/
     provider.zig    # provider routing and HTTP serialization
 build.zig           # Zig build script
 scripts/            # smoke.sh, benchmark-resources.sh
-completions/        # bash (tau.bash) and zsh (_tau) completion scripts
+completions/        # bash (tau.bash), zsh (_tau), fish (tau.fish), PowerShell (tau.ps1)
+tests/golden/       # byte-exact stdout/stderr snapshots for the error contract
 examples/           # annotated real-world workflow scripts
 docs/               # changelog, roadmap, architecture notes
 ```

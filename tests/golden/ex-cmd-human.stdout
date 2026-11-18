@@ -1,0 +1,8 @@
+subcommand  setup
+  summary:      One-shot onboarding — init + completions + editor-client wiring + doctor verdict
+  usage:        tau setup [--shell <name>] [--client <name>] [--yes|--non-interactive] [--dry-run|--import|--remove|--detect] [--json]
+  examples:     tau setup · tau setup --dry-run · tau setup --yes --client zed · tau setup --detect
+  errors:       invalid_argument
+  config keys:  provider
+  doctor checks:doctor.client_wiring · doctor.shell_completions · doctor.config_file
+  docs:         https://github.com/javimosch/tau/blob/master/docs/editors.md

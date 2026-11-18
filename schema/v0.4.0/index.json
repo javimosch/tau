@@ -1,0 +1,60 @@
+{
+  "version": "0.4.0",
+  "schemas": [
+    {
+      "command": "tau bug --json",
+      "file": "tau-bug.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-bug.schema.json"
+    },
+    {
+      "command": "tau completions install --json",
+      "file": "tau-completions.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-completions.schema.json"
+    },
+    {
+      "command": "tau config show --json",
+      "file": "tau-config-show.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-config-show.schema.json"
+    },
+    {
+      "command": "tau config validate --json",
+      "file": "tau-config-validate.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-config-validate.schema.json"
+    },
+    {
+      "command": "tau config schema",
+      "file": "tau-config.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-config.schema.json"
+    },
+    {
+      "command": "tau doctor --json",
+      "file": "tau-doctor.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-doctor.schema.json"
+    },
+    {
+      "command": "tau explain --json",
+      "file": "tau-explain.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-explain.schema.json"
+    },
+    {
+      "command": "tau init --json",
+      "file": "tau-init.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-init.schema.json"
+    },
+    {
+      "command": "tau setup --json",
+      "file": "tau-setup.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-setup.schema.json"
+    },
+    {
+      "command": "tau upgrade --json",
+      "file": "tau-upgrade.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-upgrade.schema.json"
+    },
+    {
+      "command": "tau version --json",
+      "file": "tau-version.schema.json",
+      "id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-version.schema.json"
+    }
+  ]
+}

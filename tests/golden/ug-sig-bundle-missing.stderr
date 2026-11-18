@@ -1,0 +1,5 @@
+install.sh: platform=<OS>-<ARCH> release=v99.9.9 dest=<HOME>/ug-dest
+install.sh: url=file://<HOME>/ug-srv-sigmiss/download/v99.9.9/tau-<OS>-<ARCH>.tar.gz
+install.sh: checksum verified against SHA256SUMS.txt
+curl: (<RC>) <MSG>
+install.sh: could not download tau-<OS>-<ARCH>.tar.gz.sigstore.json for v99.9.9 — the release ships no signature bundle (or the mirror is incomplete); refusing to install (unset TAU_VERIFY_SIGSTORE to skip signature verification)

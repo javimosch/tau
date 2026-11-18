@@ -1,0 +1,9 @@
+{
+  "acp.agents": {
+    "tau": {
+      "command": "tau",
+      "args": ["acp", "serve"],
+      "env": {}
+    }
+  }
+}

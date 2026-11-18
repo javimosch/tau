@@ -1,0 +1,1 @@
+{"env":"TAU_ENDPOINT","section":"tau","consumers":"tau","summary":"Overrides the provider's endpoint URL (works for chat and `tau acp`). Useful for proxies, gateways, and local OpenAI-compatible servers.","docs":"https://github.com/javimosch/tau/blob/master/docs/env.md"}
