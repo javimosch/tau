@@ -2347,6 +2347,15 @@ test_group_init() {
     ok "init existing -> already_exists envelope" 1 0
   fi
 
+  # Getting-started checklist: every successful init prints the three next-step
+  # pointers on stderr while stdout stays a pure JSON result object.
+  contains "init prints getting-started checklist to stderr" "$init_write_err" "Next steps:"
+  contains "checklist points at tau setup --client" "$init_write_err" "tau setup --client"
+  contains "checklist points at tau doctor" "$init_write_err" "tau doctor"
+  contains "checklist points at tau explain --list" "$init_write_err" "tau explain --list"
+  lacks "init stdout stays a pure JSON result" "$init_write_out" "Next steps:"
+  lacks "failed init prints no checklist" "$init_again_err" "Next steps:"
+
   # --force overwrites and reports it.
   capture init_force env HOME="$mock_home" "$BIN" init --force
   ok "init --force exits 0" "$init_force_rc" 0

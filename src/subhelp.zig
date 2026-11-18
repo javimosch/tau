@@ -295,6 +295,10 @@ const init_help =
     \\      --json             Pin the stable schema-checked result object
     \\                         (schema/tau-init.schema.json)
     \\
+    \\On success a getting-started checklist (next steps: `tau setup --client`,
+    \\`tau doctor`, `tau explain --list`) is printed to stderr; stdout stays a
+    \\pure JSON result object or the JSONC scaffold under --stdout.
+    \\
     \\Examples:
     \\  tau init
     \\  tau init --provider openai

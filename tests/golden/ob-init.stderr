@@ -1,0 +1,4 @@
+Next steps:
+  tau setup --client <editor>  wire tau into your editor's agent config
+  tau doctor                   check install, auth, and client wiring
+  tau explain --list           browse the offline topic catalog

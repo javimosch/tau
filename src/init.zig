@@ -176,6 +176,18 @@ fn printErr(arena: std.mem.Allocator, code: u8, err_type: []const u8, message: [
     term.err(j);
 }
 
+/// Human-facing getting-started checklist printed on stderr after a
+/// successful init — stdout stays a pure JSON result object (or the JSONC
+/// scaffold under --stdout). Points at the three onboarding follow-ups:
+/// editor wiring, the health check, and the offline help catalog.
+pub const getting_started =
+    \\Next steps:
+    \\  tau setup --client <editor>  wire tau into your editor's agent config
+    \\  tau doctor                   check install, auth, and client wiring
+    \\  tau explain --list           browse the offline topic catalog
+    \\
+;
+
 /// `tau init` — write (or, with to_stdout, print) a commented starter
 /// ~/.config/tau/config.json seeded from detected provider env keys.
 /// Returns a semantic exit code.
@@ -193,6 +205,7 @@ pub fn run(
 
     if (to_stdout) {
         term.out(body);
+        term.err(getting_started);
         return 0;
     }
 
@@ -238,6 +251,7 @@ pub fn run(
     }
     try out.appendSlice(arena, "]}\n");
     term.out(out.items);
+    term.err(getting_started);
     return 0;
 }
 
@@ -442,4 +456,11 @@ test "run without HOME fails with exit 110" {
     var env = std.process.Environ.Map.init(a);
     const code = try run(testing.io, a, &env, false, false, null);
     try testing.expectEqual(@as(u8, 110), code);
+}
+
+test "getting_started checklist points at setup --client, doctor, and explain --list" {
+    try testing.expect(std.mem.indexOf(u8, getting_started, "tau setup --client") != null);
+    try testing.expect(std.mem.indexOf(u8, getting_started, "tau doctor") != null);
+    try testing.expect(std.mem.indexOf(u8, getting_started, "tau explain --list") != null);
+    try testing.expect(std.mem.endsWith(u8, getting_started, "\n"));
 }
