@@ -1,0 +1,4 @@
+env var  TAU_YES (tau)
+  consumers: tau
+  summary:   `1`/`true`/`yes`/`on` enables `tau setup --yes` and `tau upgrade --yes` (approve write steps without prompting). Any other value is off.
+  docs:      https://github.com/javimosch/tau/blob/master/docs/env.md

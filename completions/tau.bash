@@ -27,7 +27,7 @@ _tau_complete() {
     local subcommand="" i
     for ((i = 1; i < cword; i++)); do
         case "${words[i]}" in
-            acp|fleet|skills|models)
+            acp|fleet|skills|models|init|config|guide|doctor|setup|completions|bug|version|upgrade|explain)
                 subcommand="${words[i]}"
                 break
                 ;;
@@ -47,11 +47,17 @@ _tau_complete() {
         --role)
             COMPREPLY=($(compgen -W "author critic coordinator none" -- "$cur"))
             return ;;
+        --shell)
+            COMPREPLY=($(compgen -W "bash zsh fish pwsh all" -- "$cur"))
+            return ;;
         --tools|-t|--exclude-tools|-xt)
-            COMPREPLY=($(compgen -W "bash ls read write edit grep find" -- "$cur"))
+            COMPREPLY=($(compgen -W "bash ls read write edit grep find calculator" -- "$cur"))
             return ;;
         --load-agents-md)
             declare -f _filedir &>/dev/null && _filedir
+            return ;;
+        --dir)
+            declare -f _filedir &>/dev/null && _filedir -d
             return ;;
         --schema)
             if [[ "$cur" == @* ]]; then
@@ -101,7 +107,11 @@ _tau_complete() {
                 fi
             done
             if [[ -z "$fleet_sub" ]]; then
-                COMPREPLY=($(compgen -W "run status list logs cancel" -- "$cur"))
+                # Flags are valid before the sub-subcommand too, so offer both.
+                COMPREPLY=($(compgen -W "run status list logs cancel \
+                    --goal --id --api-key --provider --model \
+                    --coordinator-model --worker-model --sequential --parallel \
+                    --items --schema" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "--goal --id --api-key --provider --model \
                     --coordinator-model --worker-model --sequential --parallel \
@@ -113,13 +123,116 @@ _tau_complete() {
             COMPREPLY=($(compgen -W "list search load" -- "$cur"))
             ;;
 
+        config)
+            # First non-flag word after `config` is the sub-subcommand; the
+            # first positional after get|set|unset is the <key> position —
+            # candidates come from the binary (dynamic): config-set lists
+            # every settable key, config-get|config-unset the keys present
+            # in the config file.
+            local config_sub="" seen_config=0 pos_count=0 skip=0 w
+            for ((i = 1; i < cword; i++)); do
+                w="${words[i]}"
+                if [[ $skip -eq 1 ]]; then skip=0; continue; fi
+                if [[ $seen_config -eq 0 ]]; then
+                    [[ "$w" == config ]] && seen_config=1
+                    continue
+                fi
+                if [[ -z "$config_sub" ]]; then
+                    [[ "$w" != -* ]] && config_sub="$w"
+                    continue
+                fi
+                case "$w" in
+                    --mode) skip=1 ;;
+                    -*) ;;
+                    *) pos_count=$((pos_count + 1)) ;;
+                esac
+            done
+            case "$config_sub" in
+                set|unset)
+                    if [[ $pos_count -eq 0 ]]; then
+                        COMPREPLY=($(compgen -W "$(command tau completions candidates "config-$config_sub" 2>/dev/null)" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "--mode --dry-run" -- "$cur"))
+                    fi
+                    ;;
+                get)
+                    if [[ $pos_count -eq 0 ]]; then
+                        COMPREPLY=($(compgen -W "$(command tau completions candidates config-get 2>/dev/null)" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "--mode --raw" -- "$cur"))
+                    fi
+                    ;;
+                "")
+                    COMPREPLY=($(compgen -W "show validate set get unset edit schema --mode --raw --json" -- "$cur"))
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--mode --raw --json" -- "$cur"))
+                    ;;
+            esac
+            ;;
+
+        init)
+            COMPREPLY=($(compgen -W "--force --stdout --provider --json" -- "$cur"))
+            ;;
+
+        doctor)
+            COMPREPLY=($(compgen -W "--offline --deep --probe --selftest --fix --yes -y --json --report --shell --provider --model --api-key" -- "$cur"))
+            ;;
+
+        bug)
+            COMPREPLY=($(compgen -W "--title --body --labels --open --out --no-report --attach-report --dry-run --offline --deep --shell --provider --model --api-key --json" -- "$cur"))
+            ;;
+
+        setup)
+            COMPREPLY=($(compgen -W "--shell --client --offline --deep --provider --model --api-key --yes -y --non-interactive --dry-run --remove --uninstall --import --detect --json" -- "$cur"))
+            ;;
+
+        completions)
+            local cmpl_sub="" seen_cmpl=0
+            for ((i = 1; i < cword; i++)); do
+                if [[ $seen_cmpl -eq 0 ]]; then
+                    [[ "${words[i]}" == completions ]] && seen_cmpl=1
+                elif [[ -z "$cmpl_sub" && "${words[i]}" != -* ]]; then
+                    cmpl_sub="${words[i]}"
+                fi
+            done
+            if [[ "$cmpl_sub" == "candidates" ]]; then
+                COMPREPLY=($(compgen -W "config-set config-get config-unset" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "install candidates --shell --dry-run --json" -- "$cur"))
+            fi
+            ;;
+
+        guide)
+            COMPREPLY=($(compgen -W "--human" -- "$cur"))
+            ;;
+
         models)
             # No additional completions for `models`.
             ;;
 
+        version)
+            COMPREPLY=($(compgen -W "--verbose --check --json --mode" -- "$cur"))
+            ;;
+
+        upgrade)
+            COMPREPLY=($(compgen -W "--yes -y --dir --dry-run --verify-signature --json" -- "$cur"))
+            ;;
+
+        explain)
+            # Codes mirror src/errors.zig; config keys mirror docs/config.md;
+            # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
+            # TAU_* names mirror the Spec registry in src/envvars.zig; client.*
+            # names mirror the ClientKind tables in src/setup.zig; topic.*
+            # names mirror the Spec registry in src/topiccatalog.zig;
+            # subcommand.* names mirror the Spec registry in
+            # src/subcommandcatalog.zig.
+            COMPREPLY=($(compgen -W '1 80 82 105 106 110 111 $schema provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent compact_keep_recent_tokens goal_max_iterations goal_max_continues keys.xiaomi keys.openai keys.deepseek keys.opencode-go doctor.config_deprecated_keys doctor.config_file doctor.config_permissions doctor.plaintext_secrets doctor.shell_completions doctor.provider_resolution doctor.api_key doctor.curl doctor.proxy_env doctor.tls_ca doctor.endpoint_reachable doctor.auth_probe doctor.client_wiring doctor.client_permissions doctor.provider_probes doctor.update_available doctor.selftest doctor.client_zed doctor.client_nvim doctor.client_emacs doctor.client_vscode doctor.client_cursor doctor.client_jetbrains doctor.client_windsurf doctor.client_gemini doctor.client_claude_desktop doctor.client_opencode doctor.client_cline doctor.client_goose doctor.client_continue doctor.client_roo_code doctor.client_kilo_code doctor.client_amazonq doctor.client_codex doctor.probe_xiaomi doctor.probe_xiaomi_auth doctor.probe_openai doctor.probe_openai_auth doctor.probe_deepseek doctor.probe_deepseek_auth doctor.probe_opencode-go doctor.probe_opencode-go_auth TAU_API_KEY TAU_ENDPOINT TAU_DEBUG_LOG TAU_EDITOR TAU_YES TAU_NONINTERACTIVE TAU_SETUP_SHELL TAU_SETUP_CLIENT TAU_SETUP_IMPORT TAU_NO_UPDATE_CHECK TAU_UPDATE_URL TAU_INSTALL_URL TAU_CHANGELOG_URL TAU_INSTALL_DIR TAU_VERIFY_SIGSTORE TAU_VERSION TAU_BASE_URL TAU_OS TAU_ARCH TAU_SKIP_CHECKSUM TAU_BIN TAU_TOOLS TAU_THINKING TAU_DEBUG client.zed client.nvim client.emacs client.vscode client.cursor client.jetbrains client.windsurf client.gemini client.claude-desktop client.opencode client.cline client.goose client.continue client.roo-code client.kilo-code client.amazonq client.codex topic.privacy subcommand.acp subcommand.models subcommand.version subcommand.upgrade subcommand.doctor subcommand.bug subcommand.guide subcommand.explain subcommand.skills subcommand.init subcommand.setup subcommand.completions subcommand.fleet subcommand.config --human --json --list --search' -- "$cur"))
+            ;;
+
         *)
             # Top-level: subcommands + all global flags
-            local top_level="acp models skills fleet
+            local top_level="acp models skills fleet init config guide doctor setup completions bug version upgrade explain
                 --help -h --version -v --help-json
                 --print -p
                 --mode --stream --no-stream

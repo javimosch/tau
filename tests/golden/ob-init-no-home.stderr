@@ -1,0 +1,1 @@
+{"err":{"code":110,"type":"internal_error","message":"HOME is not set -- cannot locate ~/.config/tau/config.json","explain":"tau explain 110","catalog":"https://github.com/javimosch/tau/blob/master/docs/errors.md"}}

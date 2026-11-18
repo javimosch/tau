@@ -1,0 +1,2 @@
+{"step":"detect_clients","status":"ok","clients":[{"client":"zed","detected":true,"wiring":"ok","config_dir":"<HOME>/.config/zed","path":"<HOME>/.config/zed/settings.json"}],"detected":1}
+{"step":"setup","ok":true,"version":"0.4.0","detect":true,"done":true}

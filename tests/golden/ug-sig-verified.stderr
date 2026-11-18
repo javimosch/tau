@@ -1,0 +1,8 @@
+install.sh: platform=<OS>-<ARCH> release=v99.9.9 dest=<HOME>/ug-dest
+install.sh: url=file://<HOME>/ug-srv-sig/download/v99.9.9/tau-<OS>-<ARCH>.tar.gz
+install.sh: checksum verified against SHA256SUMS.txt
+install.sh: sigstore signature verified (keyless cosign)
+install.sh: installed tau -> <HOME>/ug-dest/tau
+tau 99.9.9
+install.sh: note: <HOME>/ug-dest is not on your PATH — add it with:
+    export PATH="<HOME>/ug-dest:$PATH"

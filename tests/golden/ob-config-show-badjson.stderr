@@ -1,0 +1,4 @@
+{"warn":{"message":"config file has invalid JSON at <HOME>/.config/tau/config.json:3:3 and was ignored — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)"}}
+note: <HOME>/.config/tau/config.json:3:3
+  3 |   bad
+    |   ^

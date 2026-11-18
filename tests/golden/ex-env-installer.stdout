@@ -1,0 +1,1 @@
+{"env":"TAU_VERSION","section":"installer","consumers":"install.sh · install.ps1","summary":"Pins the version to install (default: the latest release). Same role as `--version`/`-Version`.","docs":"https://github.com/javimosch/tau/blob/master/docs/env.md"}

@@ -1,0 +1,1 @@
+{"code":106,"type":"AuthFailed","recoverable":false,"cause":"the provider rejected the API key, or no key was found anywhere in the resolution chain","hint":"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY","docs":"https://github.com/javimosch/tau/blob/master/docs/providers.md"}

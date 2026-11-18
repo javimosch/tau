@@ -1,0 +1,16 @@
+tau skills - autodiscover and load agent skills (~/.agents/skills/)
+
+Usage:
+  tau skills list
+  tau skills search <query>
+  tau skills load <name>
+
+Commands:
+  list             List all discoverable skills (JSON)
+  search <query>   Search skills by keyword
+  load <name>      Load a skill into system context
+
+Examples:
+  tau skills list
+  tau skills search memory
+  tau skills load agent-memory-toolbox

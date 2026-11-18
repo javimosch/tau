@@ -1,0 +1,9 @@
+client  nvim (acp · snippet)
+  prereqs:   Neovim with avante.nvim or CodeCompanion.nvim installed; tau installed and configured — `tau doctor` reports an ok provider and API key
+  setup:     tau setup --client nvim --yes
+  paths:     config dir ~/.config/nvim
+             settings   ~/.config/nvim/init.lua
+             snippet    ~/.config/tau/snippets/nvim.lua
+  verify:    pick the tau provider/adapter in your plugin (e.g. :AvanteSwitchProvider)
+  doctor:    client_nvim (resolve via `tau explain doctor.client_nvim`)
+  docs:      https://github.com/javimosch/tau/blob/master/docs/clients/nvim.md

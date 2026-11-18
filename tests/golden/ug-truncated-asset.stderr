@@ -1,0 +1,8 @@
+install.sh: platform=<OS>-<ARCH> release=v99.9.9 dest=<HOME>/ug-dest
+install.sh: url=file://<HOME>/ug-srv-trunc/download/v99.9.9/tau-<OS>-<ARCH>.tar.gz
+install.sh: checksum verified against SHA256SUMS.txt
+
+gzip: <MSG>
+tar: <MSG>
+tar: <MSG>
+install.sh: failed to extract tau-<OS>-<ARCH>.tar.gz

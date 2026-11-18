@@ -11,6 +11,41 @@ full agentic tool loop and streams back `session/update` notifications
 (`tool_call` → `tool_call_update` → `agent_message_chunk`), ending with a
 `session/prompt` response carrying a `stopReason`.
 
+> **Shortcut:** `tau setup --client zed` (or `nvim`, `vscode`, `cursor`,
+> `jetbrains`, `windsurf`, `gemini`, `claude-desktop`, `opencode`, `cline`,
+> `goose`, `continue`, `roo-code`, `kilo-code`, `amazonq`, `codex`,
+> `all`)
+> writes these
+> configs for you
+> during onboarding — a minimal settings
+> file when none exists, or a paste-ready snippet under
+> `~/.config/tau/snippets/` when the file already exists (your comments are
+> preserved). MCP clients (Windsurf, Gemini CLI, Claude Desktop, OpenCode,
+> Cline, Goose, Continue, Roo Code, Kilo Code, Amazon Q Developer,
+> Codex CLI)
+> also get the
+> shared `~/.config/mcacp/mcacp.json` bridge config in the same pass. Run it
+> without `--client` to see which editors were detected — or
+> `tau setup --detect` for the full read-only inventory (config dirs,
+> detection status, wiring state per client). To undo the wiring,
+> `tau setup --remove [--client <name>] [--dry-run]` splices the tau (or
+> mcacp) entry back out — comments and your other settings survive
+> byte-for-byte, files left with no settings are deleted, and the shared
+> bridge entry goes once no remaining client still uses it.
+> [docs/editors.md](editors.md) walks through what `--client` writes for Zed,
+> VS Code, Cursor, Neovim, and the MCP clients, step by step — and
+> [docs/clients/](clients/zed.md) has a dedicated guide per client
+> ([Zed](clients/zed.md), [VS Code](clients/vscode.md),
+> [Cursor](clients/cursor.md), [JetBrains](clients/jetbrains.md),
+> [Neovim](clients/nvim.md), [Emacs](clients/emacs.md),
+> [Windsurf](clients/windsurf.md), [Gemini CLI](clients/gemini-cli.md),
+> [Claude Desktop](clients/claude-desktop.md),
+> [OpenCode](clients/opencode.md), [Cline](clients/cline.md),
+> [Goose](clients/goose.md), [Continue](clients/continue.md),
+> [Roo Code](clients/roo-code.md), [Kilo Code](clients/kilo-code.md),
+> [Amazon Q Developer](clients/amazonq.md),
+> [Codex CLI](clients/codex.md)).
+
 ## Quick start: tau in Zed
 
 1. Build or install tau so the binary is on your `PATH` (or note its absolute
@@ -65,6 +100,10 @@ If `tau` is not on `PATH` inside Zed's spawn environment, use the absolute path:
 
 ## Editor integrations
 
+Ready-to-paste settings files for the clients below live in
+[`examples/clients/`](../examples/clients/README.md) — `tau setup --client`
+writes the same files automatically.
+
 Every client below does the same thing under the hood: spawn `tau acp serve`
 and speak JSON-RPC over stdio. Only the config file format differs. In all
 cases provider, model, and API keys come from `~/.config/tau/config.json` and
@@ -74,7 +113,10 @@ the spawned process's environment — the `args` list must only contain
 ### JetBrains IDEs
 
 AI Assistant ships with ACP support (no JetBrains AI subscription required).
-Open the AI Chat tool window, click the options button, and choose **Add
+The fastest path is `tau setup --client jetbrains`, which writes the file
+below — the step-by-step guide is
+[docs/clients/jetbrains.md](clients/jetbrains.md). By hand: open the AI Chat
+tool window, click the options button, and choose **Add
 Custom Agent** — this creates `~/.jetbrains/acp.json`. Fill it in:
 
 ```json
@@ -196,7 +238,10 @@ Then select the `tau` adapter in a chat buffer, or set
 
 [agent-shell](https://github.com/xenodium/agent-shell) (on MELPA, with its
 dependency [acp.el](https://github.com/xenodium/acp.el)) is a native Emacs
-client for ACP agents. Register tau as a custom agent:
+client for ACP agents. `tau setup --client emacs` writes a paste-ready
+snippet to `~/.config/tau/snippets/emacs.el` — the step-by-step guide is
+[docs/clients/emacs.md](clients/emacs.md). By hand, register tau as a
+custom agent:
 
 ```elisp
 (defun agent-shell-make-tau-config ()
@@ -209,7 +254,7 @@ client for ACP agents. Register tau as a custom agent:
    :shell-prompt-regexp "tau> "
    :needs-authentication nil
    :client-maker
-   (lambda ()
+   (lambda (_buffer)
      (acp-make-client
       :command "tau"
       :command-params '("acp" "serve")
@@ -218,9 +263,10 @@ client for ACP agents. Register tau as a custom agent:
 (add-to-list 'agent-shell-agent-configs (agent-shell-make-tau-config))
 ```
 
-`:environment-variables` takes `"VAR=value"` strings; omit it entirely if tau
-authenticates via `~/.config/tau/config.json`. Run `M-x agent-shell` and pick
-`tau`.
+agent-shell calls `:client-maker` with the shell buffer — the lambda must
+accept (and may ignore) that argument. `:environment-variables` takes
+`"VAR=value"` strings; omit it entirely if tau authenticates via
+`~/.config/tau/config.json`. Run `M-x agent-shell` and pick `tau`.
 
 ### Terminal — Toad
 
@@ -232,6 +278,164 @@ toad acp "tau acp serve" .
 ```
 
 The trailing `.` sets the agent's working directory to the project root.
+
+### Cursor
+
+Cursor doesn't host ACP agents natively, but it is VS Code-compatible — the
+same [ACP Client](https://open-vsx.org/extension/formulahendry/acp-client)
+extension from the Open VSX registry adds ACP support, and the config shape is
+identical to VS Code's (`acp.agents`). Merge the `tau` entry into Cursor's
+`settings.json` (`~/.config/Cursor/User/settings.json` on Linux,
+`~/Library/Application Support/Cursor/User/settings.json` on macOS,
+`%APPDATA%\Cursor\User\settings.json` on Windows):
+
+```json
+{
+  "acp.agents": {
+    "tau": {
+      "command": "tau",
+      "args": ["acp", "serve"],
+      "env": {}
+    }
+  }
+}
+```
+
+`tau setup --client cursor` writes this file directly — the step-by-step
+guide is [docs/clients/cursor.md](clients/cursor.md), and the entry above is
+[`examples/clients/cursor.json`](../examples/clients/cursor.json).
+
+### Claude Desktop (via an MCP↔ACP bridge)
+
+Claude Desktop speaks MCP, not ACP, so it can't spawn `tau acp serve`
+directly. An MCP↔ACP bridge such as [mcacp](https://github.com/Oortonaut/mcacp)
+sits in the middle — Claude Desktop launches the bridge as an MCP server, and
+the bridge spawns and drives tau as an ACP agent:
+
+```
+Claude Desktop ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+```
+
+1. Add the bridge to `claude_desktop_config.json`
+   (`~/Library/Application Support/Claude/` on macOS, `%APPDATA%\Claude\` on
+   Windows):
+
+   ```json
+   {
+     "mcpServers": {
+       "mcacp": {
+         "command": "npx",
+         "args": ["-y", "mcacp"]
+       }
+     }
+   }
+   ```
+
+2. Declare tau to the bridge in `~/.config/mcacp/mcacp.json` — the
+   `agent_servers` shape matches Zed/JetBrains:
+
+   ```json
+   {
+     "agent_servers": {
+       "tau": {
+         "command": "tau",
+         "args": ["acp", "serve"],
+         "env": {}
+       }
+     }
+   }
+   ```
+
+3. Restart Claude Desktop and ask it to use the tau agent — mcacp's
+   session/prompt tools spawn `tau acp serve` and stream the exchange.
+
+Both files ship as [`examples/clients/claude-desktop.json`](../examples/clients/claude-desktop.json)
+and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json); the full
+walkthrough is [docs/clients/claude-desktop.md](clients/claude-desktop.md).
+
+### OpenCode (via an MCP↔ACP bridge)
+
+OpenCode itself *serves* ACP (`opencode acp` makes it an agent for editors)
+but can't consume other ACP agents — what it consumes natively are MCP
+servers. `tau setup` therefore wires it through the same mcacp bridge as
+the other MCP clients:
+
+```
+OpenCode ──MCP(stdio)──> mcacp ──ACP(stdio)──> tau acp serve
+```
+
+```bash
+tau setup --client opencode
+```
+
+1. The bridge lands in `~/.config/opencode/opencode.json` (or a
+   project-local `opencode.json`) under OpenCode's `mcp` section — a local
+   server whose `command` array is the whole spawn line:
+
+   ```json
+   {
+     "mcp": {
+       "mcacp": {
+         "type": "local",
+         "command": ["npx", "-y", "mcacp"],
+         "enabled": true
+       }
+     }
+   }
+   ```
+
+   (OpenCode v2 also accepts the nested `"mcp": {"servers": {…}}` layout —
+   see [docs/clients/opencode.md](clients/opencode.md).)
+
+2. `~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau`
+   entry, shared with every other MCP client.
+
+3. Restart OpenCode and run `opencode mcp list` — `mcacp` shows as
+   connected and tau's tools surface as `mcacp_<tool>`.
+
+Both files ship as [`examples/clients/opencode.json`](../examples/clients/opencode.json)
+and [`examples/clients/mcacp.json`](../examples/clients/mcacp.json).
+
+### Cline, Goose, and Continue (via the same MCP↔ACP bridge)
+
+Three more MCP clients wire the same way:
+
+- **Cline** (the `saoudrizwan.claude-dev` VS Code extension) — `tau setup
+  --client cline` writes the standard `mcpServers.mcacp` entry into
+  `cline_mcp_settings.json` plus the shared bridge config; see
+  [docs/clients/cline.md](clients/cline.md).
+- **Goose** — `~/.config/goose/config.yaml` is YAML, so
+  `tau setup --client goose` writes the shared bridge config and drops a
+  paste-ready `extensions:` YAML snippet; see
+  [docs/clients/goose.md](clients/goose.md).
+- **Continue** — `~/.continue/config.yaml` is YAML too;
+  `tau setup --client continue` writes the bridge config plus a
+  `mcpServers:` snippet; see [docs/clients/continue.md](clients/continue.md).
+
+### Roo Code, Kilo Code, and Amazon Q Developer (via the same MCP↔ACP bridge)
+
+Three more MCP clients wire through the same bridge:
+
+- **Roo Code** (the `rooveterinaryinc.roo-cline` VS Code extension) —
+  `tau setup --client roo-code` writes the standard `mcpServers.mcacp`
+  entry into its extension-global `mcp_settings.json` plus the shared
+  bridge config; see [docs/clients/roo-code.md](clients/roo-code.md).
+- **Kilo Code** — `tau setup --client kilo-code` writes a `mcp.mcacp`
+  local-server entry into `~/.config/kilo/kilo.jsonc` (the same
+  command-array shape as OpenCode) plus the shared bridge config; see
+  [docs/clients/kilo-code.md](clients/kilo-code.md).
+- **Amazon Q Developer** — `tau setup --client amazonq` writes the
+  standard `mcpServers.mcacp` entry into `~/.aws/amazonq/mcp.json` plus
+  the shared bridge config; see
+  [docs/clients/amazonq.md](clients/amazonq.md).
+- **Codex CLI** — `tau setup --client codex` writes the shared bridge
+  config plus a paste-ready TOML `[mcp_servers.mcacp]` snippet (Codex's
+  `~/.codex/config.toml` is never spliced); see
+  [docs/clients/codex.md](clients/codex.md).
+
+All of them launch the bridge (`npx -y mcacp`); the shared
+`~/.config/mcacp/mcacp.json` carries the real `agent_servers.tau` entry
+for every MCP client.
 
 ## Other ACP clients
 

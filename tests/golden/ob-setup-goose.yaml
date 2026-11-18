@@ -1,0 +1,13 @@
+# tau via the mcacp MCP->ACP bridge — merge into ~/.config/goose/config.yaml.
+# If an "extensions:" map already exists, add just the inner "mcacp"
+# entry to it; otherwise add the whole block. The bridge itself is
+# configured separately — see snippets/mcacp.jsonc.
+extensions:
+  mcacp:
+    type: stdio
+    name: mcacp
+    enabled: true
+    cmd: npx
+    args: ["-y", "mcacp"]
+    envs: {}
+    timeout: 300

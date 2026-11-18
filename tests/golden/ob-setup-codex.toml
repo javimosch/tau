@@ -1,0 +1,8 @@
+# tau via the mcacp MCP->ACP bridge — merge into ~/.codex/config.toml.
+# Each MCP server is its own [mcp_servers.<name>] table — paste this
+# one alongside your other servers (or run 'codex mcp add mcacp --
+# npx -y mcacp'). The bridge itself is configured separately — see
+# snippets/mcacp.jsonc.
+[mcp_servers.mcacp]
+command = "npx"
+args = ["-y", "mcacp"]

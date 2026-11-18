@@ -1,0 +1,4 @@
+config key  stream (boolean)
+  constraints: —
+  description: Stream responses token-by-token (SSE).
+  docs:  https://github.com/javimosch/tau/blob/master/docs/config.md

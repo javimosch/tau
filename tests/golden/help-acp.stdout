@@ -1,0 +1,27 @@
+tau acp - Agent Client Protocol server (JSON-RPC for editor clients)
+
+Usage:
+  tau acp serve [--acp-socket <path>] [--max-iterations <n>]
+  tau acp start [--acp-socket <path>]
+  tau acp stop
+  tau acp status
+
+Commands:
+  serve                    Run the JSON-RPC agent server on stdio
+                           (default when no command is given), or on
+                           a Unix socket with --acp-socket
+  start                    Launch the server as a background daemon
+  stop                     Stop the background daemon
+  status                   Report daemon status as JSON
+
+Options:
+      --acp-socket <path>  Unix socket path
+                           (default ~/.config/tau/acp.sock)
+      --max-iterations <n> Tool-loop runaway backstop (default: 100)
+
+Examples:
+  tau acp serve
+  tau acp serve --acp-socket /tmp/tau.sock
+  tau acp start
+  tau acp status
+  tau acp stop
