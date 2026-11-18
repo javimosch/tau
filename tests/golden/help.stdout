@@ -144,9 +144,9 @@ Diagnostics:
                               against a loopback stub provider and verify the
                               canned reply comes back (no real keys/network)
       --provider/--model/--api-key   Diagnose an override instead of the configured default
-      --fix                     Propose remediations for fixable checks (missing
-                              config, loose permissions, missing completions);
-                              prompts per fix on a TTY
+      --fix [<check>]           Propose remediations for fixable checks (missing
+                              config, loose permissions, missing completions) —
+                              or just the named check; prompts per fix on a TTY
       --yes                     Apply --fix remediations without prompting
       --json                    Stream NDJSON check/fix events + a done:true
                               verdict instead of the single-object report

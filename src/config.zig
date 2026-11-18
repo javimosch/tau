@@ -249,6 +249,9 @@ pub const Config = struct {
     /// permissions, missing completions). Each fix needs confirmation unless
     /// --yes is passed or stdin is a TTY (interactive prompt).
     doctor_fix: bool = false,
+    /// `tau doctor --fix <check-id>` — scope remediation to a single check
+    /// instead of every fixable outcome (null = all fixable checks).
+    doctor_fix_id: ?[]const u8 = null,
     /// `tau doctor --yes` — apply --fix remediations without prompting.
     doctor_yes: bool = false,
     /// `tau doctor --json` — emit NDJSON events (one per check/fix plus a
