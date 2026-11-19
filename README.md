@@ -159,7 +159,8 @@ installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|a
 to override), can write ACP client config for your editor
 (`--client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all` — step-by-step guide in
 [docs/editors.md](docs/editors.md), all clients in [docs/acp.md](docs/acp.md),
-per-client setup guides in [docs/clients/](docs/clients/zed.md)),
+per-client setup guides in [docs/clients/](docs/clients/zed.md) — full catalog
+with per-OS config paths in [docs/clients.md](docs/clients.md)),
 and finishes with the `tau doctor` health report:
 
 ```bash

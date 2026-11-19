@@ -132,6 +132,16 @@ jobs:
         shell: bash
         run: python3 scripts/gen-doctor-checks-doc.py --check
 
+      - name: Clients doc drift check
+        # docs/clients.md is generated from the ClientKind tables in
+        # src/setup.zig + the client catalog in src/clientcatalog.zig (the
+        # same registry `tau explain client.<id>` reads) by
+        # scripts/gen-clients-doc.py — this proves the shipped catalog is
+        # in sync (the unit suite and the clients-doc smoke group pin the
+        # same invariant). Regenerate: python3 scripts/gen-clients-doc.py
+        shell: bash
+        run: python3 scripts/gen-clients-doc.py --check
+
       - name: Doctor stream schema + doc drift check
         # schema/tau-doctor.schema.json describes every NDJSON line
         # `tau doctor --json` emits — validate real shipped-binary output
