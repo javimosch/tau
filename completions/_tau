@@ -412,6 +412,7 @@ _tau() {
                     )
                     local -a topics=(
                         'topic.privacy:curated topic'
+                        'topic.trust:curated topic'
                     )
                     local -a subs=(
                         'subcommand.acp:subcommand' 'subcommand.models:subcommand'

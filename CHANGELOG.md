@@ -19,6 +19,22 @@ are backward compatible.
 
 ### Added
 
+- **`tau explain trust` — a curated topic covering the release trust
+  story** — `trust` (and the canonical `topic.trust` spelling) resolves to a
+  schema-pinned catalog entry explaining how to verify a tau release is
+  authentic, layer by layer: the fail-closed `SHA256SUMS.txt` checksum gate
+  in `install.sh`/`install.ps1`, opt-in cosign/Sigstore signature
+  verification (`tau upgrade --verify-signature`, `TAU_VERIFY_SIGSTORE=1`),
+  SLSA v1 build-provenance attestations (`gh attestation verify <asset>
+  --repo javimosch/tau`), and the per-archive CycloneDX `<asset>.sbom.json`
+  files — plus the caveat that signature bundles, attestations, and SBOMs
+  only exist on releases produced after the signing pipeline shipped
+  (v0.4.0 predates it, so opt-in verification fails closed there by
+  design). The topic joins `privacy` in the hand-written
+  `src/topiccatalog.zig` registry: `topic.trust` is advertised by all four
+  shell completions, listed by `tau explain --list`, matchable by
+  `--search <text>` body text, and suggested by the did-you-mean path on
+  near-miss queries (#480)
 - **`tau init` now prints a getting-started checklist** — after a successful
   scaffold (write path or `--stdout`), stderr carries a short "Next steps"
   list pointing at `tau setup --client` (editor wiring), `tau doctor`

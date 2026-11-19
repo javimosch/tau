@@ -186,8 +186,11 @@ const explain_help =
     \\                    resolve too (`zed`, `code`, `claude`)
     \\  topic.<name>      A curated topic — `privacy` covers what tau
     \\                    stores locally, what leaves the machine, and how
-    \\                    diagnostics redact secrets. Bare names resolve too
-    \\                    (`tau explain privacy`)
+    \\                    diagnostics redact secrets; `trust` covers release
+    \\                    verification — checksums, cosign/Sigstore
+    \\                    signatures, SLSA provenance attestations, and
+    \\                    CycloneDX SBOMs. Bare names resolve too
+    \\                    (`tau explain privacy`, `tau explain trust`)
     \\  subcommand.<name> A registered subcommand (e.g. subcommand.doctor,
     \\                    subcommand.setup) — prints the summary, a
     \\                    condensed usage line, runnable example
@@ -223,6 +226,7 @@ const explain_help =
     \\  tau explain TAU_ENDPOINT
     \\  tau explain client.zed
     \\  tau explain privacy
+    \\  tau explain trust
     \\  tau explain doctor
     \\  tau explain subcommand.setup
     \\  tau explain --human 105

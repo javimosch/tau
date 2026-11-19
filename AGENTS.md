@@ -328,6 +328,7 @@ tau explain TAU_ENDPOINT          # Env var: consumers + summary (from docs/env.
 tau explain client.zed            # Editor client: prereqs + paths + setup + verify (from docs/compatibility.md)
 tau explain code                  # Same, a bare --client name/alias (code → vscode, claude → claude-desktop)
 tau explain privacy               # Curated topic: local state, egress, and secret redaction (src/topiccatalog.zig)
+tau explain trust                 # Curated topic: release verification — checksums, signatures, provenance, SBOMs
 tau explain doctor                # Subcommand: summary + usage + examples + related links (src/subcommandcatalog.zig)
 tau explain subcommand.fleet      # Same, the canonical prefixed spelling
 tau explain --json 106            # Pin the schema-checked JSON form (default)
