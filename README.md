@@ -330,6 +330,10 @@ tau fleet run --goal "ship X"   # Multi-agent dispatch
 tau fleet --help                # Per-subcommand usage + runnable examples
 ```
 
+The full flag-by-flag surface on one browsable page — every subcommand's
+`--help`, the global flag table, goal-mode directives, and exit codes —
+is generated, drift-checked **[docs/cli-reference.md](docs/cli-reference.md)**.
+
 ---
 
 ## What You Get

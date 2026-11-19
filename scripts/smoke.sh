@@ -105,6 +105,7 @@ ALL_TEST_GROUPS=(
   "cli-schemas:test_group_cli_schemas"
   "compat-doc:test_group_compat_doc"
   "clients-doc:test_group_clients_doc"
+  "cli-reference-doc:test_group_cli_reference_doc"
   "stability-doc:test_group_stability_doc"
   "changelog:test_group_changelog"
   "versioned-schemas:test_group_versioned_schemas"
@@ -5891,6 +5892,79 @@ PYEOF
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/clients.md.bak" "$doc"
   else
     skip_test "clients-doc: --check detects a stale doc" "docs/clients.md missing"
+  fi
+}
+
+# Group: generated docs/cli-reference.md drift check
+# docs/cli-reference.md is rendered by scripts/gen-cli-reference-doc.py
+# from flag_specs + help_text in src/main.zig, the per-subcommand help
+# pages in src/subhelp.zig, and the Spec registry in
+# src/subcommandcatalog.zig (the same catalog `tau explain
+# subcommand.<name>` reads); --check regenerates in memory and fails on
+# drift. Fully offline.
+test_group_cli_reference_doc() {
+  note "generated docs/cli-reference.md drift check"
+
+  local doc="$ROOT/docs/cli-reference.md"
+  local gen="$ROOT/scripts/gen-cli-reference-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "cli-reference-doc: docs/cli-reference.md exists" 0 0
+    contains "cli-reference-doc: reference declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "cli-reference-doc: docs/cli-reference.md exists" 1 0
+    contains "cli-reference-doc: reference declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "cli-reference-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "cli-reference-doc: sections match the live catalog" "python3 not on PATH"
+    skip_test "cli-reference-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "cli-reference-doc: --check passes (no drift)" 0 0
+  else
+    ok "cli-reference-doc: --check passes (no drift)" 1 0
+  fi
+
+  # The generated sections must match the live `tau explain --list`
+  # subcommand catalog exactly — one `### `tau name`` per subcommand, in
+  # the same order, each closing on its `tau explain subcommand.<name>`
+  # link.
+  "$BIN" explain --list --json > "$SMOKE_TEMP/cli-ref-catalog.json" 2>/dev/null
+  if python3 - "$doc" "$SMOKE_TEMP/cli-ref-catalog.json" <<'PYEOF'
+import json, re, sys
+doc = open(sys.argv[1]).read()
+doc_ids = re.findall(r"^### `tau ([a-z-]+)`$", doc, re.M)
+live = [s[len("subcommand."):]
+        for s in json.load(open(sys.argv[2]))["topics"]["subcommands"]]
+links = re.findall(
+    r"^- \*\*Explain:\*\* `tau explain subcommand\.([^`]+)` "
+    r"\(bare `tau explain [^`]+` resolves too\)$", doc, re.M)
+sys.exit(0 if doc_ids == live and links == live else 1)
+PYEOF
+  then
+    ok "cli-reference-doc: sections match the live catalog" 0 0
+  else
+    ok "cli-reference-doc: sections match the live catalog" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/cli-reference.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "cli-reference-doc: --check detects a stale doc" 0 1
+    else
+      ok "cli-reference-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/cli-reference.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/cli-reference.md.bak" "$doc"
+  else
+    skip_test "cli-reference-doc: --check detects a stale doc" "docs/cli-reference.md missing"
   fi
 }
 
