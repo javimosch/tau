@@ -124,7 +124,51 @@ _tau_complete() {
             ;;
 
         config)
-            COMPREPLY=($(compgen -W "show validate set get unset edit schema --mode --raw --json" -- "$cur"))
+            # First non-flag word after `config` is the sub-subcommand; the
+            # first positional after get|set|unset is the <key> position —
+            # candidates come from the binary (dynamic): config-set lists
+            # every settable key, config-get|config-unset the keys present
+            # in the config file.
+            local config_sub="" seen_config=0 pos_count=0 skip=0 w
+            for ((i = 1; i < cword; i++)); do
+                w="${words[i]}"
+                if [[ $skip -eq 1 ]]; then skip=0; continue; fi
+                if [[ $seen_config -eq 0 ]]; then
+                    [[ "$w" == config ]] && seen_config=1
+                    continue
+                fi
+                if [[ -z "$config_sub" ]]; then
+                    [[ "$w" != -* ]] && config_sub="$w"
+                    continue
+                fi
+                case "$w" in
+                    --mode) skip=1 ;;
+                    -*) ;;
+                    *) pos_count=$((pos_count + 1)) ;;
+                esac
+            done
+            case "$config_sub" in
+                set|unset)
+                    if [[ $pos_count -eq 0 ]]; then
+                        COMPREPLY=($(compgen -W "$(command tau completions candidates "config-$config_sub" 2>/dev/null)" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "--mode" -- "$cur"))
+                    fi
+                    ;;
+                get)
+                    if [[ $pos_count -eq 0 ]]; then
+                        COMPREPLY=($(compgen -W "$(command tau completions candidates config-get 2>/dev/null)" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "--mode --raw" -- "$cur"))
+                    fi
+                    ;;
+                "")
+                    COMPREPLY=($(compgen -W "show validate set get unset edit schema --mode --raw --json" -- "$cur"))
+                    ;;
+                *)
+                    COMPREPLY=($(compgen -W "--mode --raw --json" -- "$cur"))
+                    ;;
+            esac
             ;;
 
         init)
@@ -144,7 +188,19 @@ _tau_complete() {
             ;;
 
         completions)
-            COMPREPLY=($(compgen -W "install --shell --dry-run --json" -- "$cur"))
+            local cmpl_sub="" seen_cmpl=0
+            for ((i = 1; i < cword; i++)); do
+                if [[ $seen_cmpl -eq 0 ]]; then
+                    [[ "${words[i]}" == completions ]] && seen_cmpl=1
+                elif [[ -z "$cmpl_sub" && "${words[i]}" != -* ]]; then
+                    cmpl_sub="${words[i]}"
+                fi
+            done
+            if [[ "$cmpl_sub" == "candidates" ]]; then
+                COMPREPLY=($(compgen -W "config-set config-get config-unset" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "install candidates --shell --dry-run --json" -- "$cur"))
+            fi
             ;;
 
         guide)

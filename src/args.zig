@@ -116,7 +116,7 @@ const flag_pool = blk: {
 const acp_words = [_][]const u8{ "serve", "start", "stop", "status" };
 const skills_words = [_][]const u8{ "list", "search", "load" };
 const fleet_words = [_][]const u8{ "run", "status", "list", "logs", "cancel" };
-const completions_words = [_][]const u8{"install"};
+const completions_words = [_][]const u8{ "install", "candidates" };
 const config_words = [_][]const u8{ "show", "validate", "set", "get", "unset", "edit", "schema" };
 
 /// The top-level `tau <sub>` surface plus the arg words that make a mistyped
@@ -759,12 +759,29 @@ pub fn parse(
     // its rc/profile hook. The install flags share setup_shell/setup_dry_run
     // — the fields the shared machinery in setup.zig consumes. Output is a
     // single stable JSON result object; --json is the contract spelling.
+    //
+    // `tau completions candidates <group>` — the internal surface the
+    // shipped scripts call at completion time: emits one candidate per
+    // line. `config-set` lists every settable key; `config-get` and
+    // `config-unset` list the keys present in the config file.
     if (argv.len > 0 and eq(argv[0], "completions")) {
         if (wantsHelp(argv[1..])) return subHelp("completions", base);
         var ccfg: Config = base;
-        if (argv.len < 2) return errResult(arena, "completions subcommand required: install", .{});
+        if (argv.len < 2) return errResult(arena, "completions subcommand required: install | candidates", .{});
+        if (eq(argv[1], "candidates")) {
+            const candmod = @import("candidates.zig");
+            ccfg.completions_sub = "candidates";
+            if (argv.len < 3)
+                return errResult(arena, "completions candidates requires a group: {s}", .{try candmod.groupNames(arena)});
+            if (!candmod.isGroup(argv[2]))
+                return errResult(arena, "invalid completions candidates group (want {s}): {s}{s}", .{ try candmod.groupNames(arena), argv[2], try suggest.hint(arena, argv[2], &candmod.groups) });
+            ccfg.completions_group = argv[2];
+            if (argv.len > 3)
+                return errResult(arena, "unknown completions candidates argument: {s}{s}", .{ argv[3], try argHint(arena, argv[3], &.{}) });
+            return .{ .action = .completions, .config = ccfg };
+        }
         if (!eq(argv[1], "install"))
-            return errResult(arena, "invalid completions subcommand (want install): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &completions_words) });
+            return errResult(arena, "invalid completions subcommand (want install | candidates): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &completions_words) });
         ccfg.completions_sub = argv[1];
         var j: usize = 2;
         while (j < argv.len) : (j += 1) {
@@ -2115,6 +2132,31 @@ test "parse: completions install flags + validation" {
     const h2 = try parseArgv(a, &.{ "tau", "completions", "bogus", "--help" }, .{});
     try std.testing.expectEqual(Action.help, h2.action);
     try std.testing.expectEqualStrings("completions", h2.config.help_sub.?);
+}
+
+test "parse: completions candidates validates its group" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Each config group lands on completions_group; the subcommand selector
+    // is "candidates".
+    for ([_][]const u8{ "config-set", "config-get", "config-unset" }) |g| {
+        const p = try parseArgv(a, &.{ "tau", "completions", "candidates", g }, .{});
+        try std.testing.expectEqual(Action.completions, p.action);
+        try std.testing.expectEqualStrings("candidates", p.config.completions_sub.?);
+        try std.testing.expectEqualStrings(g, p.config.completions_group.?);
+    }
+
+    // Missing group, invalid group, and trailing args are invalid arguments.
+    const none = try parseArgv(a, &.{ "tau", "completions", "candidates" }, .{});
+    try std.testing.expectEqual(Action.err, none.action);
+    const bogus = try parseArgv(a, &.{ "tau", "completions", "candidates", "bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bogus.action);
+    const extra = try parseArgv(a, &.{ "tau", "completions", "candidates", "config-set", "extra" }, .{});
+    try std.testing.expectEqual(Action.err, extra.action);
+    const flag = try parseArgv(a, &.{ "tau", "completions", "candidates", "config-set", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, flag.action);
 }
 
 test "parse: TAU_SETUP_IMPORT env enables setup --import" {

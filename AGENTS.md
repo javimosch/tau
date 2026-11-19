@@ -409,11 +409,16 @@ tau setup --detect --client zed # ...scoped to one client (writes nothing)
 tau completions install            # Install generated completions for $SHELL (+rc hook)
 tau completions install --shell zsh # Pick a shell: bash|zsh|fish|pwsh|all
 tau completions install --dry-run  # Preview (would_install/would_append); writes nothing
+tau completions candidates config-set    # Dynamic <key> candidates: every settable key
+tau completions candidates config-get    # ...or the keys present in the config file
 # The `tau setup` completions step as a standalone command — one stable
 # JSON result object (schema/tau-completions.schema.json):
 #   {"ok":bool,"status":"installed|would_install|skipped|failed",
 #    "shells":[{shell,status,path,rc,rc_status}], "version":"0.4.0","done":true}
 # Exit 0 on success/skip, 1 on install failure. --json is the contract spelling.
+# `candidates <group>` (config-set|config-get|config-unset) emits one
+# completion candidate per line — the shipped shell scripts call it at
+# completion time for `tau config get|set|unset <key>` positions.
 ```
 
 #### 18. Version & Build Metadata

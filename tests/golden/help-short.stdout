@@ -95,6 +95,12 @@ Setup:
       --dry-run               Preview the install; change nothing
       --json                  Pin the stable schema-checked result object
                               (schema/tau-completions.schema.json)
+  tau completions candidates <group>
+                              Emit dynamic completion candidates (one
+                              per line) for the shell scripts:
+                              config-set lists every settable key;
+                              config-get|config-unset list the keys
+                              present in the config file
 
 Goal mode (in the prompt):
   /goal <objective>            Work autonomously until the objective is audited-complete

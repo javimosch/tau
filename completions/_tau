@@ -14,6 +14,15 @@
 #   4. Rebuild the completion cache:
 #        rm -f ~/.zcompdump && compinit
 
+# Dynamic config-key candidates: the binary computes them at completion
+# time — `config-set` lists every key `tau config set` accepts;
+# `config-get`/`config-unset` list the keys present in the config file.
+_tau_config_keys() {
+    local -a keys
+    keys=(${(f)"$(command tau completions candidates "$1" 2>/dev/null)"})
+    (( ${#keys[@]} )) && compadd -a keys
+}
+
 _tau() {
     local curcontext="$curcontext" state line
     typeset -A opt_args
@@ -165,21 +174,21 @@ _tau() {
                                     ;;
                                 set)
                                     _arguments \
-                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '1: :_tau_config_keys config-set' \
                                         '2:value:' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
                                 get)
                                     _arguments \
-                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '1: :_tau_config_keys config-get' \
                                         '--raw[print secret values unredacted]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
                                 unset)
                                     _arguments \
-                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '1: :_tau_config_keys config-unset' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
@@ -233,7 +242,8 @@ _tau() {
 
                 completions)
                     _arguments \
-                        '1: :(install)' \
+                        '1: :(install candidates)' \
+                        '2:group:(config-set config-get config-unset)' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
                         '--dry-run[preview the install; change nothing]' \
                         '--json[emit the stable schema-checked result object]'
