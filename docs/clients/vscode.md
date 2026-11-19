@@ -42,9 +42,10 @@ file and `"next"` is the remaining in-editor step:
 }
 ```
 
-at `~/.config/Code/User/settings.json` (`~/Library/Application
-Support/Code/User/settings.json` on macOS, `%APPDATA%\Code\User\settings.json`
-on Windows). When setup writes the file, `"command"` is the absolute path to
+at `~/.config/Code/User/settings.json` —
+`~/Library/Application Support/Code/User/settings.json` on macOS,
+`%APPDATA%\Code\User\settings.json` on Windows. When setup writes the
+file, `"command"` is the absolute path to
 the tau binary it ran from — GUI editors can't resolve a bare `tau` from
 your interactive shell's PATH.
 

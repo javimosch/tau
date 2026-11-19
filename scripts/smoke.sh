@@ -104,6 +104,7 @@ ALL_TEST_GROUPS=(
   "doctor-checks:test_group_doctor_checks"
   "cli-schemas:test_group_cli_schemas"
   "compat-doc:test_group_compat_doc"
+  "clients-doc:test_group_clients_doc"
   "stability-doc:test_group_stability_doc"
   "changelog:test_group_changelog"
   "versioned-schemas:test_group_versioned_schemas"
@@ -5818,6 +5819,78 @@ test_group_compat_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/compatibility.md.bak" "$doc"
   else
     skip_test "compat-doc: --check detects a stale doc" "docs/compatibility.md missing"
+  fi
+}
+
+# Group: generated docs/clients.md drift check
+# docs/clients.md is rendered by scripts/gen-clients-doc.py from the
+# ClientKind tables in src/setup.zig + the client catalog in
+# src/clientcatalog.zig (the same registry `tau explain client.<id>`
+# reads) + doctor check/fix ids in src/doctor.zig; --check regenerates in
+# memory and fails on drift. Fully offline.
+test_group_clients_doc() {
+  note "generated docs/clients.md drift check"
+
+  local doc="$ROOT/docs/clients.md"
+  local gen="$ROOT/scripts/gen-clients-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "clients-doc: docs/clients.md exists" 0 0
+    contains "clients-doc: catalog declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "clients-doc: docs/clients.md exists" 1 0
+    contains "clients-doc: catalog declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "clients-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "clients-doc: sections match the live catalog" "python3 not on PATH"
+    skip_test "clients-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "clients-doc: --check passes (no drift)" 0 0
+  else
+    ok "clients-doc: --check passes (no drift)" 1 0
+  fi
+
+  # The generated sections must match the live `tau explain` catalog
+  # exactly — one ### `name` per client, same order, each closing on its
+  # `tau explain client.<name>` link, and every linked guide exists.
+  "$BIN" explain --json > "$SMOKE_TEMP/clients-catalog.json" 2>/dev/null
+  if python3 - "$doc" "$SMOKE_TEMP/clients-catalog.json" <<'PYEOF'
+import json, os, re, sys
+doc_path = sys.argv[1]
+doc = open(doc_path).read()
+doc_ids = re.findall(r"^### `([^`]+)`$", doc, re.M)
+live = [e["client"] for e in json.load(open(sys.argv[2]))["clients"]]
+links = re.findall(r"^- \*\*Explain:\*\* `tau explain client\.([^`]+)`$", doc, re.M)
+guides = re.findall(r"\[docs/clients/([^]]+)\]\(clients/([^)]+)\)", doc)
+missing = [t for t, l in guides if t != l or not os.path.exists(
+    os.path.join(os.path.dirname(doc_path), "clients", l))]
+sys.exit(0 if doc_ids == live and links == live and not missing else 1)
+PYEOF
+  then
+    ok "clients-doc: sections match the live catalog" 0 0
+  else
+    ok "clients-doc: sections match the live catalog" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/clients.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "clients-doc: --check detects a stale doc" 0 1
+    else
+      ok "clients-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/clients.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/clients.md.bak" "$doc"
+  else
+    skip_test "clients-doc: --check detects a stale doc" "docs/clients.md missing"
   fi
 }
 

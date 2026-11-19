@@ -113,8 +113,8 @@ Merge each fragment into the named file by hand and restart Windsurf.
 
 Paste the two verified blocks above into place yourself:
 
-- Windsurf's `mcp_config.json` lives at `~/.codeium/windsurf/`
-  (`%USERPROFILE%\.codeium\windsurf\` on Windows). If the file already has
+- Windsurf's `mcp_config.json` lives at `~/.codeium/windsurf/mcp_config.json`
+  (`%USERPROFILE%\.codeium\windsurf\mcp_config.json` on Windows). If the file already has
   a `"mcpServers"` object, add only the inner `"mcacp"` entry to it.
 - The bridge config goes at `~/.config/mcacp/mcacp.json` — replace
   `"command": "tau"` with the absolute path to your tau binary

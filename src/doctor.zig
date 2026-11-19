@@ -759,7 +759,7 @@ fn clientCheckName(arena: std.mem.Allocator, k: setup.ClientKind) []const u8 {
 
 /// The per-client FixKind, or null for the snippet-only clients (nvim's Lua,
 /// Emacs's elisp, Goose/Continue's YAML, Codex's TOML — manual only).
-fn clientFixKind(k: setup.ClientKind) ?FixKind {
+pub fn clientFixKind(k: setup.ClientKind) ?FixKind {
     return switch (k) {
         .zed => .wire_client_zed,
         .vscode => .wire_client_vscode,

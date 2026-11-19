@@ -14,6 +14,7 @@
 const std = @import("std");
 const json = @import("json.zig");
 const setup = @import("setup.zig");
+const doctor = @import("doctor.zig");
 const doctorcat = @import("doctorcatalog.zig");
 
 /// Per-client guide links resolve under docs/clients/ — each guide is the
@@ -92,6 +93,67 @@ fn mergeTarget(k: setup.ClientKind) []const u8 {
         .continue_ => "~/.continue/config.yaml",
         .codex => "~/.codex/config.toml",
         else => unreachable,
+    };
+}
+
+/// `--client` spellings beyond the canonical clientName — must stay in
+/// sync with setup.parseClientName: scripts/gen-clients-doc.py parses both
+/// sides and fails on any mismatch; the alias test pins resolution.
+pub fn clientAliases(k: setup.ClientKind) []const []const u8 {
+    return switch (k) {
+        .vscode => &.{"code"},
+        .gemini => &.{"gemini-cli"},
+        .claude_desktop => &.{"claude"},
+        .roo => &.{"roo"},
+        .kilo => &.{"kilo"},
+        .amazonq => &.{"amazon-q"},
+        .codex => &.{"codex-cli"},
+        else => &.{},
+    };
+}
+
+/// The config-format label for clients setup can't splice — shared by the
+/// "manual only" wiring-check wording here and docs/compatibility.md.
+pub fn manualLabel(k: setup.ClientKind) []const u8 {
+    return switch (k) {
+        .nvim => "Lua plugin",
+        .emacs => "elisp",
+        .goose, .continue_ => "YAML",
+        .codex => "TOML",
+        else => unreachable,
+    };
+}
+
+/// Where the client natively resolves its settings file per OS. `tau
+/// setup` writes the `~`-relative settings_path on every OS — for clients
+/// whose native layout matches, that row repeats the same path. Any path
+/// that differs from settings_path must appear verbatim in the client's
+/// docs/clients/<file>.md guide — the native-paths test pins that.
+pub const NativePaths = struct {
+    linux: []const u8,
+    macos: []const u8,
+    windows: []const u8,
+};
+
+pub fn nativePaths(k: setup.ClientKind) NativePaths {
+    return switch (k) {
+        .zed => .{ .linux = "~/.config/zed/settings.json", .macos = "~/.config/zed/settings.json", .windows = "%APPDATA%\\Zed\\settings.json" },
+        .nvim => .{ .linux = "~/.config/nvim/init.lua", .macos = "~/.config/nvim/init.lua", .windows = "%LOCALAPPDATA%\\nvim\\init.lua" },
+        .emacs => .{ .linux = "~/.emacs.d/init.el", .macos = "~/.emacs.d/init.el", .windows = "%APPDATA%\\.emacs.d\\init.el" },
+        .vscode => .{ .linux = "~/.config/Code/User/settings.json", .macos = "~/Library/Application Support/Code/User/settings.json", .windows = "%APPDATA%\\Code\\User\\settings.json" },
+        .cursor => .{ .linux = "~/.config/Cursor/User/settings.json", .macos = "~/Library/Application Support/Cursor/User/settings.json", .windows = "%APPDATA%\\Cursor\\User\\settings.json" },
+        .jetbrains => .{ .linux = "~/.jetbrains/acp.json", .macos = "~/.jetbrains/acp.json", .windows = "~/.jetbrains/acp.json" },
+        .windsurf => .{ .linux = "~/.codeium/windsurf/mcp_config.json", .macos = "~/.codeium/windsurf/mcp_config.json", .windows = "%USERPROFILE%\\.codeium\\windsurf\\mcp_config.json" },
+        .gemini => .{ .linux = "~/.gemini/settings.json", .macos = "~/.gemini/settings.json", .windows = "%USERPROFILE%\\.gemini\\settings.json" },
+        .claude_desktop => .{ .linux = "~/.config/Claude/claude_desktop_config.json", .macos = "~/Library/Application Support/Claude/claude_desktop_config.json", .windows = "%APPDATA%\\Claude\\claude_desktop_config.json" },
+        .opencode => .{ .linux = "~/.config/opencode/opencode.json", .macos = "~/.config/opencode/opencode.json", .windows = "~/.config/opencode/opencode.json" },
+        .cline => .{ .linux = "~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", .macos = "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", .windows = "%APPDATA%\\Code\\User\\globalStorage\\saoudrizwan.claude-dev\\settings\\cline_mcp_settings.json" },
+        .goose => .{ .linux = "~/.config/goose/config.yaml", .macos = "~/.config/goose/config.yaml", .windows = "%APPDATA%\\Block\\goose\\config\\config.yaml" },
+        .continue_ => .{ .linux = "~/.continue/config.yaml", .macos = "~/.continue/config.yaml", .windows = "%USERPROFILE%\\.continue\\config.yaml" },
+        .roo => .{ .linux = "~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json", .macos = "~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json", .windows = "%APPDATA%\\Code\\User\\globalStorage\\rooveterinaryinc.roo-cline\\settings\\mcp_settings.json" },
+        .kilo => .{ .linux = "~/.config/kilo/kilo.jsonc", .macos = "~/.config/kilo/kilo.jsonc", .windows = "~/.config/kilo/kilo.jsonc" },
+        .amazonq => .{ .linux = "~/.aws/amazonq/mcp.json", .macos = "~/.aws/amazonq/mcp.json", .windows = "~/.aws/amazonq/mcp.json" },
+        .codex => .{ .linux = "~/.codex/config.toml", .macos = "~/.codex/config.toml", .windows = "~/.codex/config.toml" },
     };
 }
 
@@ -204,6 +266,58 @@ pub fn formatClientHuman(a: std.mem.Allocator, s: Spec) ![]u8 {
         try b.appendSlice(a, try std.fmt.allocPrint(a, "             bridge     {s}\n", .{bp}));
     }
     try b.appendSlice(a, try std.fmt.allocPrint(a, "  verify:    {s}\n  doctor:    {s} (resolve via `tau explain doctor.{s}`)\n  docs:      {s}\n", .{ s.verify, s.doctor_check, s.doctor_check, s.docs }));
+    return b.toOwnedSlice(a);
+}
+
+/// The docs/clients.md section for one client — the exact bytes
+/// scripts/gen-clients-doc.py emits; the doc-mirror test pins it verbatim
+/// so the page can never drift from the registry it catalogs.
+fn clientSectionMarkdown(a: std.mem.Allocator, k: setup.ClientKind) ![]u8 {
+    const s = try specFor(a, k);
+    const nat = nativePaths(k);
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(a, try std.fmt.allocPrint(a, "### `{s}`\n\n- **`--client`:** `{s}`", .{ s.client, s.client }));
+    const aliases = clientAliases(k);
+    if (aliases.len > 0) {
+        try b.appendSlice(a, " (alias");
+        if (aliases.len > 1) try b.appendSlice(a, "es");
+        for (aliases, 0..) |al, i| {
+            try b.appendSlice(a, if (i == 0) " " else ", ");
+            try b.appendSlice(a, try std.fmt.allocPrint(a, "`{s}`", .{al}));
+        }
+        try b.appendSlice(a, ")");
+    }
+    try b.appendSlice(a, try std.fmt.allocPrint(a, " — `{s}`\n- **Transport / wiring:** `{s}` — {s} · `{s}` — {s}\n- **Prerequisites:** {s}\n- **Paths:** {s} `{s}` · detection dir `{s}` · snippet `{s}`", .{
+        s.setup_cmd,
+        @tagName(s.transport),
+        if (s.transport == .mcacp) "the editor speaks MCP, not ACP; its server entry launches the `npx -y mcacp` bridge" else "the editor spawns `tau acp serve` itself",
+        @tagName(s.wiring),
+        if (s.wiring == .direct) "setup splices the settings file (an existing file is never rewritten — a paste-ready snippet drops instead)" else try std.fmt.allocPrint(a, "setup can't splice the {s} config; it always drops a paste-ready snippet to merge by hand", .{manualLabel(k)}),
+        s.prereqs,
+        if (s.wiring == .direct) "settings" else "merge target",
+        s.settings_path,
+        s.config_dir,
+        s.snippet_path,
+    }));
+    if (s.bridge_path) |bp| {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, " · bridge `{s}`", .{bp}));
+    }
+    try b.appendSlice(a, try std.fmt.allocPrint(a, "\n- **Native locations:** Linux `{s}` · macOS `{s}` · Windows `{s}`\n- **Wiring check:** `{s}` — reported once `{s}` exists; {s} (`tau explain doctor.{s}`)\n- **Explain:** `tau explain client.{s}`\n- **Guide:** [docs/clients/{s}.md](clients/{s}.md)\n- **Finish in the editor:** {s}\n", .{
+        nat.linux,
+        nat.macos,
+        nat.windows,
+        s.doctor_check,
+        s.config_dir,
+        if (doctor.clientFixKind(k)) |f|
+            try std.fmt.allocPrint(a, "`tau doctor --fix` runs `{s}`", .{@tagName(f)})
+        else
+            try std.fmt.allocPrint(a, "manual only — `tau doctor` can't verify the {s} config; `{s}` (re)generates the snippet", .{ manualLabel(k), s.setup_cmd }),
+        s.doctor_check,
+        s.client,
+        guideFile(k),
+        guideFile(k),
+        s.verify,
+    }));
     return b.toOwnedSlice(a);
 }
 
@@ -403,4 +517,69 @@ test "explain: formatClientHuman renders prereqs, paths, verify, and docs" {
     try testing.expect(std.mem.indexOf(u8, got, s.verify) != null);
     try testing.expect(std.mem.indexOf(u8, got, "doctor.client_windsurf") != null);
     try testing.expect(std.mem.indexOf(u8, got, s.docs) != null);
+}
+
+test "clientAliases: every alias resolves via parseClientName to its client" {
+    for (setup.all_clients) |k| {
+        for (clientAliases(k)) |al| {
+            const got = setup.parseClientName(al) orelse {
+                std.debug.print("parseClientName failed to resolve alias '{s}'\n", .{al});
+                return error.TestUnexpectedResult;
+            };
+            try testing.expectEqual(k, got);
+            try testing.expect(!std.mem.eql(u8, al, setup.clientName(k)));
+        }
+    }
+}
+
+test "manualLabel covers exactly the snippet-only clients" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    for (setup.all_clients) |k| {
+        const s = try specFor(a, k);
+        if (s.wiring == .snippet) {
+            try testing.expect(manualLabel(k).len > 0);
+        }
+    }
+}
+
+test "nativePaths: paths that differ from the tau-written path appear in the guide" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    for (setup.all_clients) |k| {
+        const s = try specFor(a, k);
+        const nat = nativePaths(k);
+        const guide = try std.fmt.allocPrint(a, "docs/clients/{s}.md", .{guideFile(k)});
+        const text = try std.Io.Dir.cwd().readFileAlloc(testing.io, guide, a, .unlimited);
+        for ([_][]const u8{ nat.linux, nat.macos, nat.windows }) |p| {
+            // The tau-written `~` path needs no native equivalent in the
+            // guide — every other (real per-OS) location must be documented.
+            if (std.mem.eql(u8, p, s.settings_path)) continue;
+            if (std.mem.indexOf(u8, text, p) == null) {
+                std.debug.print("{s} does not document native path {s}\n", .{ guide, p });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+test "explain: client sections mirror docs/clients.md verbatim" {
+    const gpa = testing.allocator;
+    const doc = std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/clients.md", gpa, .unlimited) catch {
+        std.debug.print("docs/clients.md missing — run scripts/gen-clients-doc.py\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    defer gpa.free(doc);
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    for (setup.all_clients) |k| {
+        const section = try clientSectionMarkdown(a, k);
+        if (std.mem.indexOf(u8, doc, section) == null) {
+            std.debug.print("docs/clients.md missing client section '{s}'\n", .{setup.clientName(k)});
+            return error.TestUnexpectedResult;
+        }
+    }
 }

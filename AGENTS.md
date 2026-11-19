@@ -528,6 +528,7 @@ tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundl
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
 | `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
 | `docs/clients/*.md` | Per-MCP-client setup guides — `setup-verify` fenced snippets mirror `src/setup.zig` renderers (unit test) and `scripts/check-client-guides.py` diffs them against `tau setup --client` (client-guides smoke group) | Client wiring/snippet changes |
+| `src/clientcatalog.zig` | Client Spec registry behind `tau explain client.<id>` (+ prereqs/aliases/native per-OS paths); `scripts/gen-clients-doc.py` → `docs/clients.md` (clients-doc smoke group + CI drift-check, doc-mirror unit test pins sections verbatim) | Adding/renaming a client, its prereqs, or its native paths |
 | `src/bug.zig` | `tau bug` pre-filled GitHub issue (URL + report bundle) | `tau bug` flags/output, issue-URL shape |
 | `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
