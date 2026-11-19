@@ -1,10 +1,12 @@
 //! The curated-topic catalog behind `tau explain <topic>` — free-standing
 //! subjects that don't belong to a generated registry (no error code,
-//! config key, doctor check, env var, or client row backs them). The first
-//! and currently only topic is `privacy` (`tau explain privacy`), which
-//! covers what tau stores locally, what leaves the machine, and how the
-//! diagnostics surfaces (`--debug` logs, `tau doctor --report`, `tau bug`)
-//! redact secrets.
+//! config key, doctor check, env var, or client row backs them). `privacy`
+//! (`tau explain privacy`) covers what tau stores locally, what leaves the
+//! machine, and how the diagnostics surfaces (`--debug` logs,
+//! `tau doctor --report`, `tau bug`) redact secrets; `trust`
+//! (`tau explain trust`) covers the release trust story — checksums,
+//! cosign/Sigstore signatures, SLSA provenance attestations, and CycloneDX
+//! SBOMs.
 //!
 //! Unlike the other catalogs these entries are hand-written rather than
 //! derived from a code table, so nothing regenerates them — add a Spec
@@ -38,6 +40,13 @@ pub const specs = [_]Spec{
         .details = "tau transmits to two places only: the configured provider endpoint (prompts, system prompt, tool arguments and results, @file contents — nothing else; TAU_ENDPOINT may point at a local server) and GitHub (the `tau version --check`/`tau upgrade` release lookup — TAU_NO_UPDATE_CHECK=1 opts out — and the `tau bug` pre-filled issue URL, which opens in your browser and sends nothing until you submit). `tau acp serve` and the mcacp bridge are local stdio. Local state lives under ~/.config/tau/: config.json (may hold api_key — `tau explain doctor.config_permissions` and `tau explain doctor.plaintext_secrets` cover tightening it), sessions/<name>.json transcripts (full prompt + reply text, NOT redacted), fleets/ manifests, snippets/ (client wiring fragments, no secrets), and debug/<timestamp>.log written only with --debug (TAU_DEBUG_LOG overrides the path). The diagnostics bundle `tau doctor --report` renders — and `tau bug` carries into the issue body (`--attach-report` reuses a report captured earlier, e.g. at crash time; `--out` writes the bundle to a file; `--no-report` omits it) — contains build metadata, doctor check results, and a sanitized effective config. Redaction: the resolved API key plus every configured/env key, Bearer tokens, \"api_key\"-style JSON fields, and *_KEY=/*_TOKEN= env assignments mask to ***REDACTED*** in the debug-log file, the report bundle, and the `tau bug` issue body and URL — but --debug's live stderr stays raw and session transcripts are unredacted, so review files before sharing.",
         .see_also = &.{ "tau bug", "tau bug --attach-report", "tau doctor --report", "tau explain TAU_DEBUG_LOG", "tau explain TAU_NO_UPDATE_CHECK", "tau explain doctor.plaintext_secrets" },
         .docs = version.troubleshooting_doc_url ++ "#diagnostic-toolkit",
+    },
+    .{
+        .name = "trust",
+        .summary = "how to verify a tau release is authentic — checksums, cosign/Sigstore signatures, SLSA provenance attestations, and CycloneDX SBOMs",
+        .details = "Releases produced by the signing pipeline ship a layered trust story — pick the level you need; each layer is independent and strictly stronger than the last. Layer 1, checksum: every release publishes SHA256SUMS.txt covering all archives, and install.sh/install.ps1 verify it fail-closed before writing the binary (TAU_SKIP_CHECKSUM=1 opts out — only with another trust path; manual check: grep ' <asset>$' SHA256SUMS.txt | sha256sum -c -). Layer 2, signature: opt-in cosign/Sigstore verification of the <asset>.sigstore.json bundle — `tau upgrade --verify-signature` or `TAU_VERIFY_SIGSTORE=1` for install.sh/install.ps1; it requires cosign on PATH and fails closed when cosign or the bundle is missing. Manual check: cosign verify-blob --bundle <asset>.sigstore.json --certificate-identity-regexp '^https://github\\.com/javimosch/tau/\\.github/workflows/release\\.yml@refs/tags/v' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' <asset>. All signing is keyless — the release job mints a short-lived Fulcio certificate from its GitHub OIDC identity and records every signature in the Rekor transparency log, so there is no private key to lose or rotate. Layer 3, provenance: SLSA v1 build-provenance attestations for every asset live in the repo's GitHub attestation store — gh attestation verify <asset> --repo javimosch/tau proves which repo, workflow, ref, and runner produced the bytes (no bundle download needed). Layer 4, contents: <asset>.sbom.json is a CycloneDX SBOM — the first component carries the archive's own SHA-256 and the rest hash every file inside the archive; SBOMs are signed and attested like the archives. Caveats: signature bundles, attestations, and SBOMs only exist on releases produced after the signing pipeline shipped — v0.4.0 predates it, so opt-in verification fails closed there (a missing bundle is the intended signal, not an error to bypass); a failed cosign verify-blob or gh attestation verify means the asset was not produced by the release workflow — do not run it.",
+        .see_also = &.{ "tau upgrade --verify-signature", "tau version --check", "tau explain TAU_VERIFY_SIGSTORE", "tau explain TAU_SKIP_CHECKSUM", "tau explain TAU_BASE_URL", "tau explain privacy" },
+        .docs = version.troubleshooting_doc_url ++ "#install--upgrade-failures",
     },
 };
 
@@ -147,6 +156,26 @@ test "privacy entry covers diagnostics, redaction, bundle, and tau bug" {
         try testing.expect(std.mem.startsWith(u8, item, "tau "));
     }
     try testing.expect(found_bug);
+}
+
+test "trust entry covers checksums, signatures, provenance, and SBOMs" {
+    const s = findSpec("trust").?;
+    // The task-pinned coverage: the checksum layer, opt-in cosign/Sigstore
+    // signatures, SLSA provenance attestations, and CycloneDX SBOMs — plus
+    // the upgrade/installer flags that drive them.
+    try testing.expect(std.mem.indexOf(u8, s.details, "SHA256SUMS.txt") != null);
+    try testing.expect(std.mem.indexOf(u8, s.details, "--verify-signature") != null);
+    try testing.expect(std.mem.indexOf(u8, s.details, "TAU_VERIFY_SIGSTORE") != null);
+    try testing.expect(std.mem.indexOf(u8, s.details, "cosign verify-blob") != null);
+    try testing.expect(std.mem.indexOf(u8, s.details, "SLSA") != null);
+    try testing.expect(std.mem.indexOf(u8, s.details, "gh attestation verify") != null);
+    try testing.expect(std.mem.indexOf(u8, s.details, "sbom.json") != null);
+    var found_upgrade = false;
+    for (s.see_also) |item| {
+        if (std.mem.eql(u8, item, "tau upgrade --verify-signature")) found_upgrade = true;
+        try testing.expect(std.mem.startsWith(u8, item, "tau "));
+    }
+    try testing.expect(found_upgrade);
 }
 
 test "formatTopicJson emits the pinned member order" {

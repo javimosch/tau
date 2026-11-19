@@ -125,6 +125,7 @@ clients:
 
 topics:
   topic.privacy
+  topic.trust
 
 subcommands:
   subcommand.acp

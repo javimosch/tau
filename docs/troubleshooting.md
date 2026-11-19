@@ -96,7 +96,11 @@ prints the topic index — every resolvable name grouped as
 the entry bodies. Curated topics round out the catalog:
 `tau explain privacy` (also `topic.privacy`) prints what tau stores
 locally, what leaves the machine, and how the diagnostics surfaces redact
-secrets — with `tau bug`/`tau doctor --report` cross-links. Registered
+secrets — with `tau bug`/`tau doctor --report` cross-links.
+`tau explain trust` (also `topic.trust`) covers the release trust story —
+checksum verification, opt-in cosign/Sigstore signatures, SLSA provenance
+attestations, and CycloneDX SBOMs, with the commands that drive each layer.
+Registered
 subcommands resolve by `subcommand.<name>` or a bare name:
 `tau explain doctor` prints the subcommand's summary, condensed usage
 line, runnable examples, and links to its related error type tags,
@@ -547,6 +551,7 @@ any of them.
 | `tau config validate [path]` | Offline config-file validation (`{"ok","errors":[…]}` on stdout, exit 1 on failure) — CI/pre-commit gate |
 | `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics, `--dry-run` previews the exact envelope — bundle + a `redactions` mask count — with no side effects) |
 | `tau explain privacy` | What tau stores locally, what leaves the machine, and how the debug log, report bundle, and `tau bug` issue redact secrets |
+| `tau explain trust` | The release trust story — fail-closed SHA256 checksums, opt-in cosign/Sigstore signature verification (`tau upgrade --verify-signature`, `TAU_VERIFY_SIGSTORE=1`), SLSA build-provenance attestations (`gh attestation verify`), and CycloneDX SBOMs |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau <sub> --help` | Per-subcommand usage + runnable examples (`tau fleet --help`, `tau doctor --help`, …) |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |

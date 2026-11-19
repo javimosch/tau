@@ -75,7 +75,7 @@ $TauArgumentCompleter = {
         'client.cline', 'client.goose', 'client.continue',
         'client.roo-code', 'client.kilo-code', 'client.amazonq',
         'client.codex',
-        'topic.privacy',
+        'topic.privacy', 'topic.trust',
         'subcommand.acp', 'subcommand.models', 'subcommand.version',
         'subcommand.upgrade', 'subcommand.doctor', 'subcommand.bug',
         'subcommand.guide', 'subcommand.explain', 'subcommand.skills',

@@ -572,7 +572,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau config schema", .b = "emit the JSON Schema (draft 2020-12) for the config file — also published at schema/tau-config.schema.json for editor autocomplete/validation." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
-    .{ .a = "tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, a doctor check's fails-when + remediation, a TAU_* env var's consumers + summary, a client's setup prereqs + paths + verify step, a curated topic like `privacy`, or a subcommand's usage + examples + related errors/keys/checks (JSON; --json pins the schema, --human for prose, --list for the topic index, --search <text> to filter it)." },
+    .{ .a = "tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, a doctor check's fails-when + remediation, a TAU_* env var's consumers + summary, a client's setup prereqs + paths + verify step, a curated topic like `privacy` or `trust`, or a subcommand's usage + examples + related errors/keys/checks (JSON; --json pins the schema, --human for prose, --list for the topic index, --search <text> to filter it)." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
 };

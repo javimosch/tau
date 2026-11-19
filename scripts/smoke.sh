@@ -4822,6 +4822,9 @@ test_group_golden_maintenance() {
   golden_check ex-topic            0 "$BIN" explain privacy
   golden_check ex-topic-prefixed   0 "$BIN" explain topic.privacy
   golden_check ex-topic-human      0 "$BIN" explain --human privacy
+  golden_check ex-topic-trust          0 "$BIN" explain trust
+  golden_check ex-topic-trust-prefixed 0 "$BIN" explain topic.trust
+  golden_check ex-topic-trust-human    0 "$BIN" explain --human trust
   golden_check ex-topic-unknown    1 "$BIN" explain topic.bogus
   golden_check ex-dym-topic        1 "$BIN" explain privavy
 
@@ -6428,6 +6431,39 @@ test_group_explain() {
   ok "explain: unknown topic exits 1" "$t6_rc" 1
   contains "explain: unknown topic emits not_found" "$t6_err" '"type":"not_found"'
 
+  # `tau explain trust` covers the release trust story — checksum
+  # verification, opt-in cosign/Sigstore signatures, SLSA provenance
+  # attestations, and CycloneDX SBOMs.
+  capture t7 "$BIN" explain trust
+  ok "explain: trust topic exits 0" "$t7_rc" 0
+  contains "explain: trust entry carries name" "$t7_out" '"topic":"trust"'
+  contains "explain: trust entry details checksum" "$t7_out" 'SHA256SUMS.txt'
+  contains "explain: trust entry details signature" "$t7_out" 'cosign verify-blob'
+  contains "explain: trust entry details provenance" "$t7_out" 'gh attestation verify'
+  contains "explain: trust entry details sbom" "$t7_out" 'sbom.json'
+  contains "explain: trust cross-links upgrade flag" "$t7_out" '"see_also":["tau upgrade --verify-signature"'
+  contains "explain: trust anchors install failures" "$t7_out" 'troubleshooting.md#install--upgrade-failures'
+
+  capture t8 "$BIN" explain topic.trust
+  ok "explain: prefixed trust exits 0" "$t8_rc" 0
+  contains "explain: prefixed trust resolves" "$t8_out" '"topic":"trust"'
+
+  capture t9 "$BIN" explain --human trust
+  ok "explain: --human trust exits 0" "$t9_rc" 0
+  contains "explain: --human prints trust tag" "$t9_out" 'topic  trust'
+  contains "explain: --human trust cross-links upgrade" "$t9_out" 'see also: tau upgrade --verify-signature'
+
+  # The no-query catalog carries the second topic too.
+  contains "explain: catalog includes trust" "$r3_out" '"topic":"trust"'
+
+  # Trust typos get the same did-you-mean — namespaced and bare.
+  capture t10 "$BIN" explain trus
+  ok "explain: trust typo exits 1" "$t10_rc" 1
+  contains "explain: trust typo suggests trust" "$t10_err" 'did you mean \"tau explain trust\"?'
+  capture t11 "$BIN" explain topic.trus
+  ok "explain: prefixed trust typo exits 1" "$t11_rc" 1
+  contains "explain: prefixed typo suggests topic.trust" "$t11_err" 'did you mean \"tau explain topic.trust\"?'
+
   # Registered subcommands — the src/subcommandcatalog.zig registry,
   # pinned against the args.zig command surface by the Zig tests.
   # `subcommand.<name>` is the namespaced spelling, bare resolves too.
@@ -6509,6 +6545,7 @@ test_group_explain() {
   contains "explain: --list client ids are namespaced" "$li1_out" '"client.zed"'
   contains "explain: --list lists topics" "$li1_out" '"topics":['
   contains "explain: --list topic names are namespaced" "$li1_out" '"topic.privacy"'
+  contains "explain: --list names the trust topic" "$li1_out" '"topic.trust"'
   contains "explain: --list lists subcommands" "$li1_out" '"subcommands":['
   contains "explain: --list subcommand names are namespaced" "$li1_out" '"subcommand.doctor"'
   lacks "explain: --list carries no entry bodies" "$li1_out" '"remediation"'
@@ -6521,6 +6558,7 @@ test_group_explain() {
   contains "explain: --human --list names a client" "$li2_out" 'client.zed'
   contains "explain: --human --list prints topics section" "$li2_out" 'topics:'
   contains "explain: --human --list names a topic" "$li2_out" 'topic.privacy'
+  contains "explain: --human --list names trust" "$li2_out" 'topic.trust'
   contains "explain: --human --list prints subcommands section" "$li2_out" 'subcommands:'
   contains "explain: --human --list names a subcommand" "$li2_out" 'subcommand.doctor'
 
@@ -6567,6 +6605,11 @@ test_group_explain() {
   # summary/details, not its name.
   capture s4 _env_no_tau "$BIN" explain --search redact
   contains "explain: --search body-text hits the topic" "$s4_out" '"topic.privacy"'
+
+  # "attestation" lives only in the trust topic's details.
+  capture s4c _env_no_tau "$BIN" explain --search attestation
+  ok "explain: --search attestation exits 0" "$s4c_rc" 0
+  contains "explain: --search body-text hits trust" "$s4c_out" '"topic.trust"'
 
   # Subcommand names and body text are searchable too — "self-update"
   # lives in the upgrade subcommand's summary.
