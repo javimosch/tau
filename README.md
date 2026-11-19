@@ -389,6 +389,11 @@ tau --mode text "Explain this in simple terms"
 tau --stream "Count to 10 slowly"
 ```
 
+Runnable end-to-end recipes (file tools, sessions + goal mode, provider
+switching, `--schema` structured output) live in
+[**examples/**](examples/README.md) — each script runs as-is once an API key
+is exported.
+
 ---
 
 ## 🏗️ Architecture
