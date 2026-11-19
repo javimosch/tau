@@ -97,6 +97,29 @@ What it demonstrates:
 
 CLI flags always override the config file.
 
+### `04-structured-output.sh` — constrain replies to a JSON Schema
+
+Covers `--schema` (inline and `@file`), decoding `.content` with `jq`, and
+the error surface for a bad schema path.
+
+```bash
+bash examples/04-structured-output.sh
+```
+
+What it demonstrates:
+
+| Step | Command pattern | What happens |
+|------|----------------|--------------|
+| Inline schema | `tau --schema '{...}' "…"` | `.content` is a JSON document, not prose |
+| jq decode | `jq -r '.content' \| jq '.'` | Extract typed fields, filter arrays |
+| Raw JSON out | `tau --mode text --schema '{...}' "…"` | stdout IS the JSON — straight into a pipe |
+| Schema file | `tau --schema @schema.json "…"` | Keep larger schemas in files |
+| Bad path | `tau --schema @missing.json "…"` | Exit 80 with an `{"err"}` envelope |
+
+`--schema` relies on provider-side structured output (`response_format`) —
+tau does not re-validate the reply locally, so validate in your pipeline if
+the contract must be airtight.
+
 ---
 
 ## Editor/desktop client configs — `clients/`
