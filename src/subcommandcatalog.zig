@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const json = @import("json.zig");
+const subhelp = @import("subhelp.zig");
 const version = @import("version.zig");
 
 /// Repo-rooted doc links — sibling catalogs carry narrower constants for
@@ -282,6 +283,44 @@ pub fn formatSubcommandHuman(a: std.mem.Allocator, s: Spec) ![]u8 {
     return b.toOwnedSlice(a);
 }
 
+/// One `label \`a\`, \`b\`` group in the Related line — groups join with
+/// ` · ` separators (skipped entirely when the list is empty).
+fn appendRelGroup(a: std.mem.Allocator, b: *std.ArrayList(u8), first: *bool, label: []const u8, items: []const []const u8) !void {
+    if (!first.*) try b.appendSlice(a, " · ");
+    first.* = false;
+    try b.appendSlice(a, label);
+    for (items, 0..) |s, i| {
+        try b.appendSlice(a, if (i == 0) " `" else ", `");
+        try b.appendSlice(a, s);
+        try b.append(a, '`');
+    }
+}
+
+/// The docs/cli-reference.md section for one subcommand — the exact bytes
+/// scripts/gen-cli-reference-doc.py emits; the doc-mirror test pins it
+/// verbatim so the page can never drift from the help text or catalog.
+fn subcommandSectionMarkdown(a: std.mem.Allocator, s: Spec) ![]u8 {
+    const help = subhelp.lookup(s.name) orelse "";
+    var b: std.ArrayList(u8) = .empty;
+    try b.appendSlice(a, try std.fmt.allocPrint(a, "### `tau {s}`\n\n{s}\n\n```text\n{s}```\n\n- **Related:** ", .{ s.name, s.summary, help }));
+    var first = true;
+    if (s.errors.len > 0) try appendRelGroup(a, &b, &first, "errors", s.errors);
+    if (s.config_keys.len > 0) try appendRelGroup(a, &b, &first, "config keys", s.config_keys);
+    if (s.doctor_checks.len > 0) try appendRelGroup(a, &b, &first, "checks", s.doctor_checks);
+    if (first) try b.appendSlice(a, "—");
+    try b.appendSlice(a, try std.fmt.allocPrint(a, "\n- **Explain:** `tau explain subcommand.{s}` (bare `tau explain {s}` resolves too)\n", .{ s.name, s.name }));
+    // Repo-relative display path; href relative to docs/ (repo-root pages
+    // climb one level, docs/* pages drop the docs/ prefix).
+    if (std.mem.startsWith(u8, s.docs, repo_doc_base)) {
+        const rel = s.docs[repo_doc_base.len..];
+        const href = if (std.mem.startsWith(u8, rel, "docs/")) rel[5..] else try std.fmt.allocPrint(a, "../{s}", .{rel});
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "- **Docs:** [{s}]({s})\n", .{ rel, href }));
+    } else {
+        try b.appendSlice(a, try std.fmt.allocPrint(a, "- **Docs:** [{s}]({s})\n", .{ s.docs, s.docs }));
+    }
+    return b.toOwnedSlice(a);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -435,4 +474,21 @@ test "formatSubcommandHuman renders summary, usage, examples, links, and docs" {
     try testing.expect(std.mem.indexOf(u8, out, "doctor checks:doctor.client_wiring") != null);
     try testing.expect(std.mem.indexOf(u8, out, "docs:         https://") != null);
     try testing.expect(std.mem.endsWith(u8, out, "\n"));
+}
+
+test "subcommandSectionMarkdown mirrors docs/cli-reference.md verbatim" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const doc = std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/cli-reference.md", a, .unlimited) catch {
+        std.debug.print("docs/cli-reference.md missing — run scripts/gen-cli-reference-doc.py\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    for (specs) |s| {
+        const section = try subcommandSectionMarkdown(a, s);
+        if (std.mem.indexOf(u8, doc, section) == null) {
+            std.debug.print("docs/cli-reference.md missing subcommand section '{s}'\n", .{s.name});
+            return error.TestUnexpectedResult;
+        }
+    }
 }

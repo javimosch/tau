@@ -142,6 +142,18 @@ jobs:
         shell: bash
         run: python3 scripts/gen-clients-doc.py --check
 
+      - name: CLI reference doc drift check
+        # docs/cli-reference.md is generated from flag_specs + help_text
+        # in src/main.zig + the per-subcommand help pages in
+        # src/subhelp.zig + the Spec registry in
+        # src/subcommandcatalog.zig by
+        # scripts/gen-cli-reference-doc.py — this proves the shipped
+        # reference is in sync (the doc-mirror unit tests and the
+        # cli-reference-doc smoke group pin the same invariant).
+        # Regenerate: python3 scripts/gen-cli-reference-doc.py
+        shell: bash
+        run: python3 scripts/gen-cli-reference-doc.py --check
+
       - name: Doctor stream schema + doc drift check
         # schema/tau-doctor.schema.json describes every NDJSON line
         # `tau doctor --json` emits — validate real shipped-binary output

@@ -1414,6 +1414,40 @@ test "formatHelpJson includes every flag from flag_specs" {
     }
 }
 
+test "docs/cli-reference.md global flags table mirrors flag_specs" {
+    const gpa = std.testing.allocator;
+    const doc = std.Io.Dir.cwd().readFileAlloc(std.testing.io, "docs/cli-reference.md", gpa, .unlimited) catch {
+        std.debug.print("docs/cli-reference.md missing — run scripts/gen-cli-reference-doc.py\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    defer gpa.free(doc);
+    for (flag_specs) |f| {
+        // Row prefix `| `--long` | `short`|— | `arg`|— |` — cells escape
+        // `|` as `\|` like the generated table (e.g. --role's arg).
+        const short_cell = if (f.short) |s| try std.fmt.allocPrint(gpa, "`{s}`", .{s}) else "—";
+        defer if (f.short != null) gpa.free(short_cell);
+        var arg_cell: []const u8 = "—";
+        var arg_alloc: ?[]u8 = null;
+        defer if (arg_alloc) |x| gpa.free(x);
+        if (f.arg) |x| {
+            var esc: std.ArrayList(u8) = .empty;
+            defer esc.deinit(gpa);
+            for (x) |ch| {
+                if (ch == '|') try esc.append(gpa, '\\');
+                try esc.append(gpa, ch);
+            }
+            arg_alloc = try std.fmt.allocPrint(gpa, "`{s}`", .{esc.items});
+            arg_cell = arg_alloc.?;
+        }
+        const row = try std.fmt.allocPrint(gpa, "| `{s}` | {s} | {s} |", .{ f.long, short_cell, arg_cell });
+        defer gpa.free(row);
+        if (std.mem.indexOf(u8, doc, row) == null) {
+            std.debug.print("docs/cli-reference.md missing flag row '{s}'\n", .{row});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
 test "formatErrorJson escapes quotes and backslashes in message" {
     const gpa = std.testing.allocator;
     const got = try formatErrorJson(gpa, 80, "invalid_argument", "invalid --timeout-ms: \"bad\"", false);
