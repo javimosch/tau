@@ -22,14 +22,21 @@ This page catalogs every check id the report can emit — the symptom
 `tau explain doctor.<id>` (`--list` indexes every resolvable topic,
 `--search <text>` filters it full-text). `client_<name>` rows appear
 once per detected editor client; `probe_<provider>` and
-`probe_<provider>_auth` rows run only under `tau doctor --probe`.
-A `skip` status means the check's own gate — `--offline`, missing
-curl, no detected client, `--deep`/`--probe`/`--selftest` not passed —
-kept it from running, not that it passed or failed.
+`probe_<provider>_auth` rows run under `tau doctor --probe` — or
+individually under `tau doctor --check <id>`). A `skip` status means
+the check's own gate — `--offline`, missing curl, no detected client,
+`--deep`/`--probe`/`--selftest` not passed — kept it from running,
+not that it passed or failed.
 
 Bare `tau doctor --fix` remediates every fixable check behind
 per-fix confirmation; `tau doctor --fix <check-id>` scopes the
-remediation to the single named check.
+remediation to the single named check. `tau doctor --check <check-id>`
+reruns one named check — the report carries just that row and the
+verdict/exit code reflects it, the fast verify loop after a fix.
+Naming a check implies its opt-in gate (a probe row runs without
+`--probe`, `auth_probe` without `--deep`, `selftest` without
+`--selftest`); `--offline` still skips the network rows. Check ids
+are the catalog below — the `doctor.<id>` spelling resolves too.
 
 ## Checks
 

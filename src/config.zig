@@ -252,6 +252,12 @@ pub const Config = struct {
     /// `tau doctor --fix <check-id>` — scope remediation to a single check
     /// instead of every fixable outcome (null = all fixable checks).
     doctor_fix_id: ?[]const u8 = null,
+    /// `tau doctor --check <check-id>` — rerun a single named check instead of
+    /// the full suite; the report carries just that row and the exit code
+    /// reflects it (the post-fix status verify loop after `tau doctor --fix`).
+    /// Opt-in gates the full report expands (--deep/--probe/--selftest) are
+    /// implied by the explicit request; --offline is still honored.
+    doctor_check_id: ?[]const u8 = null,
     /// `tau doctor --yes` — apply --fix remediations without prompting.
     doctor_yes: bool = false,
     /// `tau doctor --json` — emit NDJSON events (one per check/fix plus a

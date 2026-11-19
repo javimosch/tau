@@ -147,6 +147,9 @@ Diagnostics:
       --fix [<check>]           Propose remediations for fixable checks (missing
                               config, loose permissions, missing completions) —
                               or just the named check; prompts per fix on a TTY
+      --check <check>           Rerun one named check and report just that
+                              row — the verify loop after --fix (ids:
+                              `tau explain --list` / doctor.<id>)
       --yes                     Apply --fix remediations without prompting
       --json                    Stream NDJSON check/fix events + a done:true
                               verdict instead of the single-object report

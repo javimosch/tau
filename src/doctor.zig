@@ -21,6 +21,14 @@
 // stdin gets a y/N prompt, non-interactive runs report them as skipped. The
 // emitted report reflects the post-fix state when anything was applied.
 //
+// `--check <check-id>` reruns one named check — the report carries just that
+// row and the verdict/exit code reflects it, which is the fast verify loop
+// after a --fix. Ids come from the same catalog `tau explain doctor.<id>`
+// uses (including client_<name> and probe_<provider>[_auth] rows); an unknown
+// id is a usage error with a did-you-mean hint. Naming a check implies its
+// opt-in gate — a probe row runs without --probe, auth_probe without --deep,
+// selftest without --selftest — while --offline still skips network rows.
+//
 // Two advisory checks watch secret hygiene: `plaintext_secrets` warns when
 // credentials sit on disk as plaintext (config `api_key`/`keys.*` values or
 // env blocks inside client settings files) — not auto-fixable, since
@@ -47,6 +55,7 @@ const json = @import("json.zig");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const configedit = @import("configedit.zig");
+const doctorcatalog = @import("doctorcatalog.zig");
 const initmod = @import("init.zig");
 const setup = @import("setup.zig");
 const debuglog = @import("debuglog.zig");
@@ -1678,32 +1687,172 @@ fn addCheck(arena: std.mem.Allocator, list: *std.ArrayList(Check), c: Check, cfg
     }
 }
 
+// ---------------------------------------------------------------------------
+// --check <check-id> single-check scope
+// ---------------------------------------------------------------------------
+
+/// `--check` scope test: a null scope wants every row; a named scope wants
+/// exactly one check row.
+fn wanted(scope: ?[]const u8, name: []const u8) bool {
+    const s = scope orelse return true;
+    return std.mem.eql(u8, s, name);
+}
+
+/// A resolved `probe_<provider>`/`probe_<provider>_auth` scope.
+const ProbeScope = struct { p: cfgmod.Provider, auth: bool };
+
+/// Parse a `probe_<provider>`/`probe_<provider>_auth` scope to its provider
+/// plus which of the two rows was named. Returns null for non-probe ids.
+fn probeScope(scope: []const u8) ?ProbeScope {
+    if (!std.mem.startsWith(u8, scope, "probe_")) return null;
+    const rest = scope["probe_".len..];
+    const auth = std.mem.endsWith(u8, rest, "_auth");
+    const pname = if (auth) rest[0 .. rest.len - "_auth".len] else rest;
+    for (cfgmod.providers) |p| {
+        if (std.mem.eql(u8, p.name, pname)) return .{ .p = p, .auth = auth };
+    }
+    return null;
+}
+
+/// Parse a `client_<name>` scope to its ClientKind — the same naming rule as
+/// clientCheckName (hyphens become underscores). Returns null for non-client
+/// ids (`client_wiring`/`client_permissions` are their own static rows).
+fn clientScope(arena: std.mem.Allocator, scope: []const u8) ?setup.ClientKind {
+    if (!std.mem.startsWith(u8, scope, "client_")) return null;
+    for (setup.all_clients) |k| {
+        if (std.mem.eql(u8, clientCheckName(arena, k), scope)) return k;
+    }
+    return null;
+}
+
+/// The `client_<name>` row for a --check scope — inspects only the named
+/// client. An undetected client reports a skip row instead of vanishing the
+/// way its row does in the full report.
+fn scopedClientCheck(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, k: setup.ClientKind) Check {
+    const name = clientCheckName(arena, k);
+    const home = env.get("HOME") orelse
+        return .{ .name = name, .status = .skip, .message = "skipped (HOME is not set)" };
+    const w = setup.inspectClientWiring(io, arena, home, k) catch |err|
+        return .{
+            .name = name,
+            .status = .warn,
+            .message = std.fmt.allocPrint(arena, "could not inspect client wiring: {s}", .{@errorName(err)}) catch "could not inspect client wiring",
+        };
+    if (w.state == .not_detected)
+        return .{
+            .name = name,
+            .status = .skip,
+            .message = std.fmt.allocPrint(arena, "{s} not detected — no config dir found", .{setup.clientName(k)}) catch "client not detected",
+            .hint = std.fmt.allocPrint(arena, "install {s}, then run 'tau setup --client {s}'", .{ setup.clientName(k), setup.clientName(k) }) catch "client not installed",
+        };
+    return clientWiringRow(arena, k, w);
+}
+
+/// Every check id `tau explain doctor.<id>` resolves — the did-you-mean
+/// candidate pool for a mistyped `--check <id>` (the same catalog the
+/// resolver runs against).
+fn catalogNames(arena: std.mem.Allocator) ![]const []const u8 {
+    const names = try arena.alloc([]const u8, doctorcatalog.check_catalog.len);
+    for (doctorcatalog.check_catalog, 0..) |cs, i| names[i] = cs.name;
+    return names;
+}
+
 /// Run every check and return the raw list. Local checks run first
 /// (config file, permissions, completions), then provider/key, then the
 /// curl-gated network checks.
 pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]Check {
+    return collectChecksImpl(io, gpa, arena, cfg, env, null);
+}
+
+/// collectChecks with an optional `--check <id>` scope. A scope names one
+/// catalog check id: only that check runs (plus silent prerequisites — curl
+/// for the curl-gated rows, the connectivity probe for a *_auth probe row)
+/// and exactly one row is emitted. Opt-in gates that keep the default report
+/// cheap (--deep, --probe, --selftest) are implied by the explicit request;
+/// --offline still skips the network rows.
+fn collectChecksImpl(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg_in: Config, env: *std.process.Environ.Map, scope: ?[]const u8) ![]Check {
+    var cfg = cfg_in;
+    if (scope) |s| {
+        // An explicitly named check runs — its opt-in flag is implied.
+        if (std.mem.eql(u8, s, "selftest")) cfg.doctor_selftest = true;
+        if (std.mem.eql(u8, s, "auth_probe")) cfg.doctor_deep = true;
+    }
     var checks: std.ArrayList(Check) = .empty;
-    try addCheck(arena, &checks, checkConfigFile(io, arena, env), cfg);
-    try addCheck(arena, &checks, checkConfigDeprecatedKeys(io, arena, env), cfg);
-    try addCheck(arena, &checks, checkConfigPermissions(io, arena, env), cfg);
-    try addCheck(arena, &checks, checkPlaintextSecrets(io, arena, env), cfg);
-    try addCheck(arena, &checks, checkProvider(arena, cfg), cfg);
-    const rk = cfgmod.resolveApiKeyInfo(cfg, env);
-    try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
-    try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
-    for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
-    try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
-    const curl_check = checkCurl(io, gpa, arena);
-    const curl_ok = curl_check.status == .ok;
-    try addCheck(arena, &checks, curl_check, cfg);
+    if (wanted(scope, "config_file")) try addCheck(arena, &checks, checkConfigFile(io, arena, env), cfg);
+    if (wanted(scope, "config_deprecated_keys")) try addCheck(arena, &checks, checkConfigDeprecatedKeys(io, arena, env), cfg);
+    if (wanted(scope, "config_permissions")) try addCheck(arena, &checks, checkConfigPermissions(io, arena, env), cfg);
+    if (wanted(scope, "plaintext_secrets")) try addCheck(arena, &checks, checkPlaintextSecrets(io, arena, env), cfg);
+    if (wanted(scope, "provider_resolution")) try addCheck(arena, &checks, checkProvider(arena, cfg), cfg);
+    // Resolved key feeds api_key and auth_probe; skip the lookup otherwise.
+    const need_key = wanted(scope, "api_key") or wanted(scope, "auth_probe");
+    const rk = if (need_key) cfgmod.resolveApiKeyInfo(cfg, env) else null;
+    if (wanted(scope, "api_key")) try addCheck(arena, &checks, checkApiKey(arena, cfg, rk), cfg);
+    if (wanted(scope, "shell_completions")) try addCheck(arena, &checks, checkCompletions(io, arena, cfg, env), cfg);
+    if (scope) |s| {
+        if (clientScope(arena, s)) |k| {
+            try addCheck(arena, &checks, scopedClientCheck(io, arena, env, k), cfg);
+        } else if (std.mem.eql(u8, s, "client_wiring")) {
+            // The placeholder row: the same "none detected" skip the full
+            // report emits when it applies, otherwise a pointer at the
+            // per-client rows the scope could name instead.
+            const rows = try clientWiringChecks(io, arena, env);
+            var row: Check = .{
+                .name = "client_wiring",
+                .status = .skip,
+                .message = std.fmt.allocPrint(arena, "{d} client row(s) emitted — per-client ids are client_<name>", .{rows.len}) catch "per-client ids are client_<name>",
+                .hint = "run `tau doctor --check client_<name>` for a single client, or `tau doctor` for the full wiring report",
+            };
+            for (rows) |r| {
+                if (std.mem.eql(u8, r.name, "client_wiring")) {
+                    row = r;
+                    break;
+                }
+            }
+            try addCheck(arena, &checks, row, cfg);
+        }
+    } else {
+        for (try clientWiringChecks(io, arena, env)) |c| try addCheck(arena, &checks, c, cfg);
+    }
+    if (wanted(scope, "client_permissions")) try addCheck(arena, &checks, checkClientPermissions(io, arena, env), cfg);
+    // curl gates endpoint/auth/probe/update/selftest rows. Under a scope that
+    // names one of them it still runs — silently — to supply curl_ok.
+    const needs_curl = scope == null or
+        wanted(scope, "curl") or wanted(scope, "endpoint_reachable") or
+        wanted(scope, "auth_probe") or wanted(scope, "update_available") or
+        wanted(scope, "selftest") or probeScope(scope.?) != null;
+    var curl_ok = false;
+    if (needs_curl) {
+        const curl_check = checkCurl(io, gpa, arena);
+        curl_ok = curl_check.status == .ok;
+        if (wanted(scope, "curl")) try addCheck(arena, &checks, curl_check, cfg);
+    }
     // Proxy + CA rows: local env/filesystem diagnostics — they run under
     // --offline too, and they explain the failures endpoint_reachable can
     // only report as "unreachable" behind corporate networks.
-    try addCheck(arena, &checks, checkProxyEnv(arena, cfg, env), cfg);
-    try addCheck(arena, &checks, checkTlsCa(io, arena, env), cfg);
-    try addCheck(arena, &checks, checkEndpoint(io, gpa, arena, cfg, curl_ok), cfg);
-    try addCheck(arena, &checks, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok), cfg);
-    if (cfg.doctor_probe) {
+    if (wanted(scope, "proxy_env")) try addCheck(arena, &checks, checkProxyEnv(arena, cfg, env), cfg);
+    if (wanted(scope, "tls_ca")) try addCheck(arena, &checks, checkTlsCa(io, arena, env), cfg);
+    if (wanted(scope, "endpoint_reachable")) try addCheck(arena, &checks, checkEndpoint(io, gpa, arena, cfg, curl_ok), cfg);
+    if (wanted(scope, "auth_probe")) try addCheck(arena, &checks, checkAuthProbe(io, gpa, arena, cfg, rk, curl_ok), cfg);
+    if (scope) |s| {
+        if (probeScope(s)) |ps| {
+            // One named probe row; the connectivity probe also gates the
+            // *_auth row (no POST against a dead endpoint).
+            const probe = checkProviderProbe(io, gpa, arena, cfg, ps.p, curl_ok);
+            if (ps.auth) {
+                try addCheck(arena, &checks, checkProviderAuthProbe(io, gpa, arena, cfg, env, ps.p, probe.status == .ok, curl_ok), cfg);
+            } else {
+                try addCheck(arena, &checks, probe, cfg);
+            }
+        } else if (std.mem.eql(u8, s, "provider_probes")) {
+            // The placeholder row is itself a resolvable id.
+            try addCheck(arena, &checks, .{
+                .name = "provider_probes",
+                .status = .skip,
+                .message = "skipped",
+                .hint = "pass --probe to live-verify every provider, or --check probe_<provider> for a single row",
+            }, cfg);
+        }
+    } else if (cfg.doctor_probe) {
         // The --probe sweep emits two rows per registry provider: connectivity
         // (probe_<name>) then credentials (probe_<name>_auth). The auth row
         // skips when its connectivity row failed — no point in a 15s POST
@@ -1726,10 +1875,10 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     }
     // Advisory only: warns when a newer release exists upstream. Never fails;
     // opts out via --offline, TAU_NO_UPDATE_CHECK, or a missing curl.
-    try addCheck(arena, &checks, checkUpdateAvailable(io, gpa, arena, cfg, env, curl_ok), cfg);
+    if (wanted(scope, "update_available")) try addCheck(arena, &checks, checkUpdateAvailable(io, gpa, arena, cfg, env, curl_ok), cfg);
     // Last and heaviest: a self-spawned end-to-end session against a loopback
     // stub (opt-in via --selftest; a skip row otherwise).
-    try addCheck(arena, &checks, checkSelftest(io, gpa, arena, cfg, env, curl_ok), cfg);
+    if (wanted(scope, "selftest")) try addCheck(arena, &checks, checkSelftest(io, gpa, arena, cfg, env, curl_ok), cfg);
     return checks.toOwnedSlice(arena);
 }
 
@@ -1991,27 +2140,41 @@ fn anyApplied(outcomes: []const FixOutcome) bool {
 /// only when confirmed (--yes, or a y/yes answer on a TTY prompt).
 /// The report carries a "fixes" array and reflects the post-fix state when
 /// anything was applied — in --json mode a re-diagnosed check re-emits with
-/// its post-fix status.
+/// its post-fix status. cfg.doctor_check_id narrows the whole run to one
+/// named check — the verify loop after a fix — and an unknown id is a usage
+/// error (invalid_argument, exit 80).
 pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) !u8 {
+    var scope: ?[]const u8 = null;
+    if (cfg.doctor_check_id) |qid| {
+        // --check <check-id>: rerun one named check. The id resolves against
+        // the same catalog `tau explain doctor.<id>` uses (the `doctor.`
+        // prefix is accepted too); anything else is a usage error — same as
+        // an unknown --fix scope.
+        scope = if (doctorcatalog.findCheck(qid)) |spec| spec.name else blk: {
+            const hint = try suggest.hint(arena, qid, try catalogNames(arena));
+            errors.printErr(arena, errors.invalid_argument, try std.fmt.allocPrint(arena, "unknown doctor check: {s}{s}", .{ qid, hint }), .{ .hint = "run `tau explain --list` for resolvable check ids" });
+            break :blk null;
+        };
+        if (scope == null) return 80;
+    }
     if (!cfg.doctor_fix) {
         if (cfg.doctor_json) {
-            const checks = try collectChecks(io, gpa, arena, cfg, env);
+            const checks = try collectChecksImpl(io, gpa, arena, cfg, env, scope);
             term.out(try formatVerdictJson(arena, checks, null));
             term.out("\n");
             return if (summarize(checks).fail == 0) 0 else 1;
         }
         if (cfg.doctor_report) {
-            const checks = try collectChecks(io, gpa, arena, cfg, env);
+            const checks = try collectChecksImpl(io, gpa, arena, cfg, env, scope);
             term.out(try formatReportMarkdown(io, arena, checks, null, cfg, env));
             return if (summarize(checks).fail == 0) 0 else 1;
         }
-        const report = try collectReport(io, gpa, arena, cfg, env);
-        term.out(report.json);
-        term.out("\n");
-        return if (report.ok) 0 else 1;
+        const checks = try collectChecksImpl(io, gpa, arena, cfg, env, scope);
+        term.out(try formatReportJson(arena, checks, null));
+        return if (summarize(checks).fail == 0) 0 else 1;
     }
 
-    const checks = try collectChecks(io, gpa, arena, cfg, env);
+    const checks = try collectChecksImpl(io, gpa, arena, cfg, env, scope);
     var planned: []PlannedFix = &.{};
     var outcomes: std.ArrayList(FixOutcome) = .empty;
     if (cfg.doctor_fix_id) |id| {
@@ -2074,8 +2237,9 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     }
 
     // Re-diagnose only when a fix actually changed something; the emitted
-    // report (and exit code) then reflects the post-remediation state.
-    const final_checks = if (anyApplied(outcomes.items)) try collectChecks(io, gpa, arena, cfg, env) else checks;
+    // report (and exit code) then reflects the post-remediation state — a
+    // --check scope re-diagnoses just the named check.
+    const final_checks = if (anyApplied(outcomes.items)) try collectChecksImpl(io, gpa, arena, cfg, env, scope) else checks;
     if (cfg.doctor_json) {
         term.out(try formatVerdictJson(arena, final_checks, outcomes.items));
         term.out("\n");
@@ -2758,6 +2922,121 @@ test "scopeFix: named check yields a one-fix plan, no-fix and unknown resolve cl
     }
 
     try testing.expectEqual(FixScope.unknown, scopeFix("confg_file", &checks));
+}
+
+// ---------------------------------------------------------------------------
+// --check <check-id> scope tests
+// ---------------------------------------------------------------------------
+
+test "wanted/probeScope/clientScope: scope parsing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try testing.expect(wanted(null, "anything"));
+    try testing.expect(wanted("curl", "curl"));
+    try testing.expect(!wanted("curl", "config_file"));
+
+    // probe_<name> vs probe_<name>_auth resolve to the provider + row kind.
+    const ps = probeScope("probe_openai").?;
+    try testing.expectEqualStrings("openai", ps.p.name);
+    try testing.expect(!ps.auth);
+    const psa = probeScope("probe_openai_auth").?;
+    try testing.expectEqualStrings("openai", psa.p.name);
+    try testing.expect(psa.auth);
+    try testing.expect(probeScope("probe_nope") == null);
+    try testing.expect(probeScope("config_file") == null);
+
+    // client_<name> maps by the same hyphen->underscore rule the rows use.
+    try testing.expectEqual(setup.ClientKind.zed, clientScope(a, "client_zed").?);
+    try testing.expectEqual(setup.ClientKind.claude_desktop, clientScope(a, "client_claude_desktop").?);
+    try testing.expect(clientScope(a, "client_wiring") == null);
+    try testing.expect(clientScope(a, "client_permissions") == null);
+    try testing.expect(clientScope(a, "client_nope") == null);
+    try testing.expect(clientScope(a, "config_file") == null);
+}
+
+test "collectChecksImpl --check scope: exactly one row, only the named check runs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    const checks = try collectChecksImpl(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &home.env, "config_file");
+    try testing.expectEqual(@as(usize, 1), checks.len);
+    try testing.expectEqualStrings("config_file", checks[0].name);
+    try testing.expectEqual(CheckStatus.ok, checks[0].status);
+
+    // The scope's opt-in gate is implied but --offline still gates the row.
+    const probe = try collectChecksImpl(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &home.env, "probe_openai");
+    try testing.expectEqual(@as(usize, 1), probe.len);
+    try testing.expectEqualStrings("probe_openai", probe[0].name);
+    try testing.expectEqual(CheckStatus.skip, probe[0].status);
+    try testing.expect(std.mem.indexOf(u8, probe[0].message, "--offline") != null);
+
+    // A *_auth probe scope emits only the auth row, not the connectivity row.
+    const auth = try collectChecksImpl(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &home.env, "probe_openai_auth");
+    try testing.expectEqual(@as(usize, 1), auth.len);
+    try testing.expectEqualStrings("probe_openai_auth", auth[0].name);
+
+    // Placeholder ids resolve too.
+    const ph = try collectChecksImpl(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &home.env, "provider_probes");
+    try testing.expectEqual(@as(usize, 1), ph.len);
+    try testing.expectEqualStrings("provider_probes", ph[0].name);
+}
+
+test "collectChecksImpl --check scope: client rows inspect only the named client" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // Undetected client -> a skip row instead of the vanishing full-report row.
+    const undetected = try collectChecksImpl(testing.io, testing.allocator, a, .{}, &home.env, "client_zed");
+    try testing.expectEqual(@as(usize, 1), undetected.len);
+    try testing.expectEqualStrings("client_zed", undetected[0].name);
+    try testing.expectEqual(CheckStatus.skip, undetected[0].status);
+    try testing.expect(std.mem.indexOf(u8, undetected[0].message, "not detected") != null);
+
+    // Detected client -> the same row clientWiringChecks would emit.
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/zed", .{home.home}));
+    const detected = try collectChecksImpl(testing.io, testing.allocator, a, .{}, &home.env, "client_zed");
+    try testing.expectEqual(@as(usize, 1), detected.len);
+    try testing.expectEqualStrings("client_zed", detected[0].name);
+    try testing.expectEqual(CheckStatus.warn, detected[0].status);
+    try testing.expectEqual(FixKind.wire_client_zed, detected[0].fix.?);
+
+    // client_wiring scope reports the aggregate placeholder.
+    const agg = try collectChecksImpl(testing.io, testing.allocator, a, .{}, &home.env, "client_wiring");
+    try testing.expectEqual(@as(usize, 1), agg.len);
+    try testing.expectEqualStrings("client_wiring", agg[0].name);
+    try testing.expectEqual(CheckStatus.skip, agg[0].status);
+}
+
+test "collectChecksImpl: every catalog id emits exactly one row" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+
+    // Offline + no credentials so nothing reaches the network or a TTY — the
+    // contract is that every resolvable id produces exactly one row. The
+    // selftest row is excluded: its implied opt-in spawns a child process
+    // (smoke coverage runs it against the real binary).
+    for (doctorcatalog.check_catalog) |cs| {
+        if (std.mem.eql(u8, cs.name, "selftest")) continue;
+        const checks = try collectChecksImpl(testing.io, testing.allocator, a, .{ .doctor_offline = true }, &home.env, cs.name);
+        if (checks.len != 1 or !std.mem.eql(u8, checks[0].name, cs.name)) {
+            std.debug.print("scoped --check '{s}' emitted {d} row(s)\n", .{ cs.name, checks.len });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "checkNames: every collected check is a did-you-mean candidate" {

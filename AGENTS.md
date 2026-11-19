@@ -250,6 +250,7 @@ tau doctor --selftest                  # Credential-free e2e check: self-spawn a
 tau doctor --provider openai           # Diagnose an override instead of the configured default
 tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
 tau doctor --fix [<check-id>]        # Remediate fixable checks — all, or one named check (prompts per fix; --yes applies)
+tau doctor --check <check-id>        # Rerun one named check — report carries just that row (post-fix verify; ids via `tau explain --list`)
 tau doctor --report                  # Redacted Markdown bundle for bug reports
 tau doctor --json                    # NDJSON: {"check":{...},"done":false} per check, {"fix":{...}} under --fix, terminal {"ok":...,"done":true}
 # → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}

@@ -87,8 +87,8 @@ pub const specs = [_]Spec{
     .{
         .name = "doctor",
         .summary = "Validate your setup — config file, credentials, client wiring, connectivity",
-        .usage = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [-y|--yes]] [--client <name>] [--json|--report]",
-        .examples = &.{ "tau doctor", "tau doctor --offline", "tau doctor --fix --yes", "tau doctor --json" },
+        .usage = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [-y|--yes]] [--check <id>] [--client <name>] [--json|--report]",
+        .examples = &.{ "tau doctor", "tau doctor --offline", "tau doctor --fix --yes", "tau doctor --check config_file", "tau doctor --json" },
         .errors = &.{"invalid_argument"},
         .config_keys = &.{ "provider", "api_key", "timeout_ms" },
         .doctor_checks = &.{ "doctor.config_file", "doctor.provider_resolution", "doctor.api_key", "doctor.tls_ca", "doctor.update_available" },

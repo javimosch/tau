@@ -138,6 +138,8 @@ const doctor_help =
     \\      --fix [<check>]    Propose remediations — every fixable check,
     \\                         or just the named check; prompts per fix on
     \\                         a TTY (see `tau explain doctor.<check>`)
+    \\      --check <check>    Rerun one named check and report just that
+    \\                         row — the verify loop after --fix
     \\  -y, --yes              Apply --fix remediations without prompting
     \\      --json             Stream NDJSON check/fix events + verdict
     \\                         (schema/tau-doctor.schema.json)
@@ -152,6 +154,7 @@ const doctor_help =
     \\  tau doctor --selftest
     \\  tau doctor --fix --yes
     \\  tau doctor --fix shell_completions --yes
+    \\  tau doctor --check shell_completions
     \\  tau doctor --probe
     \\  tau doctor --report
     \\
