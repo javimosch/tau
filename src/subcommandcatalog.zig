@@ -137,8 +137,8 @@ pub const specs = [_]Spec{
     .{
         .name = "init",
         .summary = "Write a commented starter ~/.config/tau/config.json",
-        .usage = "tau init [--force] [--stdout] [--provider <name>] [--json]",
-        .examples = &.{ "tau init", "tau init --provider openai", "tau init --stdout" },
+        .usage = "tau init [--force] [--stdout] [--dry-run] [--provider <name>] [--json]",
+        .examples = &.{ "tau init", "tau init --provider openai", "tau init --stdout", "tau init --dry-run" },
         .errors = &.{"invalid_argument"},
         .config_keys = &.{ "provider", "model", "api_key" },
         .doctor_checks = &.{ "doctor.config_file", "doctor.config_permissions" },

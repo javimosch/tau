@@ -1,22 +1,27 @@
 tau init - write a commented starter ~/.config/tau/config.json
 
 Usage:
-  tau init [--force] [--stdout] [--provider <name>] [--json]
+  tau init [--force] [--stdout] [--dry-run] [--provider <name>] [--json]
 
 Options:
       --force            Overwrite an existing config file
       --stdout           Print the starter config without writing it
-                         (mutex with --json)
+                         (mutex with --json/--dry-run)
+      --dry-run          Preview the exact files and config the scaffold
+                         would write (files[] + JSONC body in the result
+                         object); change nothing (mutex with --stdout)
       --provider <name>  Scaffold for a specific provider
       --json             Pin the stable schema-checked result object
                          (schema/tau-init.schema.json)
 
 On success a getting-started checklist (next steps: `tau setup --client`,
-`tau doctor`, `tau explain --list`) is printed to stderr; stdout stays a
-pure JSON result object or the JSONC scaffold under --stdout.
+`tau doctor`, `tau explain --list`) is printed to stderr — including under
+--dry-run; stdout stays a pure JSON result object or the JSONC scaffold
+under --stdout.
 
 Examples:
   tau init
   tau init --provider openai
   tau init --stdout
+  tau init --dry-run
   tau init --force

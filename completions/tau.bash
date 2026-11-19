@@ -172,7 +172,7 @@ _tau_complete() {
             ;;
 
         init)
-            COMPREPLY=($(compgen -W "--force --stdout --provider --json" -- "$cur"))
+            COMPREPLY=($(compgen -W "--force --stdout --dry-run --provider --json" -- "$cur"))
             ;;
 
         doctor)

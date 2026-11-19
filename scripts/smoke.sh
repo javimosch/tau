@@ -4364,6 +4364,23 @@ test_group_golden_onboarding() {
   golden_check_n ob-init-json         0 "$BIN" init --json
   golden_check_n ob-init-json-stdout-mutex 80 "$BIN" init --json --stdout
 
+  # --dry-run previews the exact files + config body (files[] with a create_dir
+  # entry on a fresh HOME) and changes nothing — not even the parent dir. On an
+  # existing config the command as spelled still fails without --force; --force
+  # previews the overwrite. --stdout is mutex (the body is already embedded).
+  _golden_fresh_home
+  golden_check_n ob-init-dry-run      0 "$BIN" init --dry-run
+  if [ -e "$_GOLDEN_HOME/.config" ]; then
+    ok "init --dry-run wrote no file or dir" 1 0
+  else
+    ok "init --dry-run wrote no file or dir" 0 0
+  fi
+  golden_check_n ob-init-dry-run-stdout-mutex 80 "$BIN" init --dry-run --stdout
+  golden_check_n ob-init-dry-run-again 0 "$BIN" init --dry-run
+  _golden_env "$BIN" init >/dev/null 2>&1
+  golden_check_n ob-init-dry-run-exists 1 "$BIN" init --dry-run
+  golden_check_n ob-init-dry-run-force  0 "$BIN" init --dry-run --force
+
   # ── tau setup ──
   # Arg-validation failures never reach the doctor step — pin unconditionally.
   golden_check_n ob-setup-bad-client 80 "$BIN" setup --client vim
@@ -5621,6 +5638,30 @@ test_group_cli_schemas() {
   ok "cli-schemas: init --json --stdout -> exit 80" "$rc" 80
   "$BIN" init --stdout --json >/dev/null 2>&1; rc=$?
   ok "cli-schemas: init --stdout --json -> exit 80" "$rc" 80
+
+  # --dry-run previews the would-be writes (dry_run/action/files members) and
+  # changes nothing; the same schema validates. Mutex with --stdout either order.
+  local dry_home="$SMOKE_TEMP/init-dry-home"
+  mkdir -p "$dry_home"
+  out=$("${scrub[@]}" HOME="$dry_home" "$BIN" init --json --dry-run); rc=$?
+  ok "cli-schemas: init --json --dry-run exit 0" "$rc" 0
+  contains "cli-schemas: init --dry-run marker" "$out" '"dry_run":true'
+  contains "cli-schemas: init --dry-run action" "$out" '"action":"create"'
+  contains "cli-schemas: init --dry-run files" "$out" '"files":[{'
+  if printf '%s' "$out" | python3 "$check" --schema "$init_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: init --json --dry-run validates" 0 0
+  else
+    ok "cli-schemas: init --json --dry-run validates" 1 0
+  fi
+  if [ -e "$dry_home/.config/tau/config.json" ] || [ -e "$dry_home/.config/tau" ]; then
+    ok "cli-schemas: init --dry-run wrote nothing" 1 0
+  else
+    ok "cli-schemas: init --dry-run wrote nothing" 0 0
+  fi
+  "$BIN" init --dry-run --stdout >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: init --dry-run --stdout -> exit 80" "$rc" 80
+  "$BIN" init --stdout --dry-run >/dev/null 2>&1; rc=$?
+  ok "cli-schemas: init --stdout --dry-run -> exit 80" "$rc" 80
 
   # ── tau upgrade --json ─────────────────────────────────────────────────
   # Update check disabled: checked:false + status "skipped", exit 1.

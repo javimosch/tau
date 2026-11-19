@@ -188,15 +188,86 @@ pub const getting_started =
     \\
 ;
 
+/// Members shared by the init result object and the --dry-run preview:
+/// scaffold identity plus what happened to the config file. Callers append
+/// either the closing `}` or the dry-run members before it.
+fn appendResultCore(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    path: []const u8,
+    provider_name: []const u8,
+    created: bool,
+    overwritten: bool,
+    det: Detection,
+) !void {
+    try out.appendSlice(arena, "{\"config_path\":");
+    try appendJsonStr(arena, out, path);
+    try out.appendSlice(arena, ",\"provider\":");
+    try appendJsonStr(arena, out, provider_name);
+    try out.appendSlice(arena, ",\"created\":");
+    try out.appendSlice(arena, if (created) "true" else "false");
+    try out.appendSlice(arena, ",\"overwritten\":");
+    try out.appendSlice(arena, if (overwritten) "true" else "false");
+    try out.appendSlice(arena, ",\"detected_env_keys\":[");
+    for (det.keys, 0..) |k, i| {
+        if (i != 0) try out.append(arena, ',');
+        try appendJsonStr(arena, out, k.env_key);
+    }
+    if (det.tau_fallback) {
+        if (det.keys.len > 0) try out.append(arena, ',');
+        try appendJsonStr(arena, out, "TAU_API_KEY");
+    }
+    try out.appendSlice(arena, "]");
+}
+
+/// The --dry-run stdout payload: the result-object members (created and
+/// overwritten stay false — nothing was written) plus "dry_run":true, the
+/// would-be "action" ("create" on a fresh path, "overwrite" when --force
+/// replaces an existing config), and a "files" array naming every
+/// filesystem change in order — the config dir when missing (create_dir),
+/// then the config file whose "content" is the exact JSONC body. The same
+/// create/overwrite vocabulary `config set|unset --dry-run` uses.
+fn renderDryRunJson(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    provider_name: []const u8,
+    det: Detection,
+    new_dir: ?[]const u8,
+    overwrite: bool,
+    body: []const u8,
+) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try appendResultCore(arena, &out, path, provider_name, false, false, det);
+    try out.appendSlice(arena, ",\"dry_run\":true,\"action\":");
+    try appendJsonStr(arena, &out, if (overwrite) "overwrite" else "create");
+    try out.appendSlice(arena, ",\"files\":[");
+    if (new_dir) |d| {
+        try out.appendSlice(arena, "{\"path\":");
+        try appendJsonStr(arena, &out, d);
+        try out.appendSlice(arena, ",\"action\":\"create_dir\"},");
+    }
+    try out.appendSlice(arena, "{\"path\":");
+    try appendJsonStr(arena, &out, path);
+    try out.appendSlice(arena, ",\"action\":");
+    try appendJsonStr(arena, &out, if (overwrite) "overwrite" else "create");
+    try out.appendSlice(arena, ",\"format\":\"jsonc\",\"content\":");
+    try appendJsonStr(arena, &out, body);
+    try out.appendSlice(arena, "}]}\n");
+    return out.items;
+}
+
 /// `tau init` — write (or, with to_stdout, print) a commented starter
 /// ~/.config/tau/config.json seeded from detected provider env keys.
-/// Returns a semantic exit code.
+/// `dry_run` previews the exact files and config body the run would write
+/// (the schema-pinned result object gains dry_run/action/files) and
+/// changes nothing. Returns a semantic exit code.
 pub fn run(
     io: std.Io,
     arena: std.mem.Allocator,
     env: *std.process.Environ.Map,
     force: bool,
     to_stdout: bool,
+    dry_run: bool,
     provider_opt: ?[]const u8,
 ) !u8 {
     const det = try detectKeys(arena, env);
@@ -228,28 +299,24 @@ pub fn run(
     }
 
     // Parent dir: <HOME>/.config/tau (path ends in "/config.json").
-    if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
-        std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
+    const dir = path[0..std.mem.lastIndexOfScalar(u8, path, '/') orelse path.len];
+
+    if (dry_run) {
+        const new_dir: ?[]const u8 = blk: {
+            const st = std.Io.Dir.cwd().statFile(io, dir, .{}) catch break :blk dir;
+            break :blk if (st.kind == .directory) null else dir;
+        };
+        term.out(try renderDryRunJson(arena, path, p.name, det, new_dir, exists, body));
+        term.err(getting_started);
+        return 0;
     }
+
+    std.Io.Dir.cwd().createDirPath(io, dir) catch {};
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = body });
 
     var out: std.ArrayList(u8) = .empty;
-    try out.appendSlice(arena, "{\"config_path\":");
-    try appendJsonStr(arena, &out, path);
-    try out.appendSlice(arena, ",\"provider\":");
-    try appendJsonStr(arena, &out, p.name);
-    try out.appendSlice(arena, ",\"created\":true,\"overwritten\":");
-    try out.appendSlice(arena, if (exists) "true" else "false");
-    try out.appendSlice(arena, ",\"detected_env_keys\":[");
-    for (det.keys, 0..) |k, i| {
-        if (i != 0) try out.append(arena, ',');
-        try appendJsonStr(arena, &out, k.env_key);
-    }
-    if (det.tau_fallback) {
-        if (det.keys.len > 0) try out.append(arena, ',');
-        try appendJsonStr(arena, &out, "TAU_API_KEY");
-    }
-    try out.appendSlice(arena, "]}\n");
+    try appendResultCore(arena, &out, path, p.name, true, exists, det);
+    try out.appendSlice(arena, "}\n");
     term.out(out.items);
     term.err(getting_started);
     return 0;
@@ -398,7 +465,7 @@ test "run writes a commented config on a fresh HOME and it loads cleanly" {
     var th = try InitHome.init(a);
     defer th.deinit();
 
-    const code = try run(testing.io, a, &th.env, false, false, null);
+    const code = try run(testing.io, a, &th.env, false, false, false, null);
     try testing.expectEqual(@as(u8, 0), code);
 
     const body = th.readConfig(a) orelse return error.TestUnexpectedResult;
@@ -424,12 +491,12 @@ test "run refuses to clobber an existing config without --force" {
     try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = p, .data = original });
 
     // Existing file -> exit 1, contents untouched.
-    const code = try run(testing.io, a, &th.env, false, false, null);
+    const code = try run(testing.io, a, &th.env, false, false, false, null);
     try testing.expectEqual(@as(u8, 1), code);
     try testing.expectEqualStrings(original, th.readConfig(a).?);
 
     // --force regenerates the scaffold over it.
-    const forced = try run(testing.io, a, &th.env, true, false, null);
+    const forced = try run(testing.io, a, &th.env, true, false, false, null);
     try testing.expectEqual(@as(u8, 0), forced);
     const new_body = th.readConfig(a) orelse return error.TestUnexpectedResult;
     try testing.expect(std.mem.indexOf(u8, new_body, "//") != null);
@@ -443,7 +510,7 @@ test "run --stdout does not write a file" {
     var th = try InitHome.init(a);
     defer th.deinit();
 
-    const code = try run(testing.io, a, &th.env, false, true, null);
+    const code = try run(testing.io, a, &th.env, false, true, false, null);
     try testing.expectEqual(@as(u8, 0), code);
     try testing.expect(th.readConfig(a) == null);
 }
@@ -454,8 +521,86 @@ test "run without HOME fails with exit 110" {
     const a = ar.allocator();
 
     var env = std.process.Environ.Map.init(a);
-    const code = try run(testing.io, a, &env, false, false, null);
+    const code = try run(testing.io, a, &env, false, false, false, null);
     try testing.expectEqual(@as(u8, 110), code);
+}
+
+test "renderDryRunJson reports the would-be files and embeds the scaffold body" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var env = std.process.Environ.Map.init(a);
+    try env.put("OPENAI_API_KEY", "sk-dry");
+    const det = try detectKeys(a, &env);
+    const body = try renderConfig(a, det, cfgmod.providers[0]);
+
+    const path = "/home/u/.config/tau/config.json";
+    const out = try renderDryRunJson(a, path, "xiaomi", det, "/home/u/.config/tau", false, body);
+
+    // Result-object members present, write verbs stay false (nothing written).
+    try testing.expect(std.mem.indexOf(u8, out, "\"created\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"overwritten\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"dry_run\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"action\":\"create\"") != null);
+    // files[] leads with the missing dir, then the file entry carrying the
+    // exact JSONC body (escaped) the real run would write.
+    try testing.expect(std.mem.indexOf(u8, out, "\"action\":\"create_dir\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"format\":\"jsonc\"") != null);
+    const esc = try jsonmod.escapeAlloc(a, body);
+    try testing.expect(std.mem.indexOf(u8, out, esc) != null);
+    try testing.expect(std.mem.indexOf(u8, out, "OPENAI_API_KEY") != null);
+
+    // Existing dir + overwrite preview: no create_dir entry, action flips.
+    const ow = try renderDryRunJson(a, path, "xiaomi", det, null, true, body);
+    try testing.expect(std.mem.indexOf(u8, ow, "\"action\":\"overwrite\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ow, "create_dir") == null);
+
+    // The payload is a single JSON object (drop the trailing newline).
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, out[0 .. out.len - 1], .{});
+    try testing.expect(parsed == .object);
+}
+
+test "run --dry-run previews the scaffold without writing file or dir" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var th = try InitHome.init(a);
+    defer th.deinit();
+
+    const code = try run(testing.io, a, &th.env, false, false, true, null);
+    try testing.expectEqual(@as(u8, 0), code);
+    try testing.expect(th.readConfig(a) == null);
+    // The parent dir must not be created either — a dry run is side-effect free.
+    const dir = try std.fmt.allocPrint(a, "{s}/.config/tau", .{th.home});
+    if (std.Io.Dir.cwd().statFile(testing.io, dir, .{})) |_| {
+        return error.TestUnexpectedResult;
+    } else |_| {}
+}
+
+test "run --dry-run on an existing config needs --force and still writes nothing" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    var th = try InitHome.init(a);
+    defer th.deinit();
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(a, "{s}/.config/tau", .{th.home}));
+    const p = try th.configPath(a);
+    const original = "{\"provider\":\"deepseek\"}";
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = p, .data = original });
+
+    // Without --force the command as spelled would fail — same exit/envelope
+    // as a real run, contents untouched.
+    const code = try run(testing.io, a, &th.env, false, false, true, null);
+    try testing.expectEqual(@as(u8, 1), code);
+    try testing.expectEqualStrings(original, th.readConfig(a).?);
+
+    // --force previews the overwrite but leaves the file byte-identical.
+    const forced = try run(testing.io, a, &th.env, true, false, true, null);
+    try testing.expectEqual(@as(u8, 0), forced);
+    try testing.expectEqualStrings(original, th.readConfig(a).?);
 }
 
 test "getting_started checklist points at setup --client, doctor, and explain --list" {

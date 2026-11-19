@@ -51,7 +51,9 @@ Setup:
       --force                 Overwrite an existing config file
       --provider <name>       Scaffold for a specific provider
       --stdout                Print the starter config without writing it
-                              (mutex with --json)
+                              (mutex with --json/--dry-run)
+      --dry-run               Preview the exact files + config the
+                              scaffold would write; change nothing
       --json                  Pin the stable schema-checked result object
                               (schema/tau-init.schema.json)
   tau setup                   One-shot onboarding: init + install shell

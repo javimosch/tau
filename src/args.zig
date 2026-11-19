@@ -607,12 +607,16 @@ pub fn parse(
         return .{ .action = .skills, .config = scfg };
     }
 
-    // `tau init [--force] [--stdout] [--provider <name>] [--json]` — write a
-    // commented starter ~/.config/tau/config.json seeded from detected provider
-    // env keys. The write-path stdout result is already a JSON object; --json
-    // is the stable-contract spelling that pins it
+    // `tau init [--force] [--stdout] [--dry-run] [--provider <name>] [--json]`
+    // — write a commented starter ~/.config/tau/config.json seeded from
+    // detected provider env keys. The write-path stdout result is already a
+    // JSON object; --json is the stable-contract spelling that pins it
     // (schema/tau-init.schema.json). --stdout prints the JSONC scaffold
     // itself, not the result object, so it is mutually exclusive with --json.
+    // --dry-run previews the exact files + config body the run would write
+    // (the result object gains dry_run/action/files) and changes nothing;
+    // it embeds the scaffold in "files"[].content, so it is mutually
+    // exclusive with --stdout too.
     if (argv.len > 0 and eq(argv[0], "init")) {
         if (wantsHelp(argv[1..])) return subHelp("init", base);
         var icfg: Config = base;
@@ -623,7 +627,11 @@ pub fn parse(
                 icfg.init_force = true;
             } else if (eq(a, "--stdout")) {
                 if (icfg.cli_json) return errResult(arena, "--json and --stdout are mutually exclusive", .{});
+                if (icfg.init_dry_run) return errResult(arena, "--dry-run and --stdout are mutually exclusive", .{});
                 icfg.init_stdout = true;
+            } else if (eq(a, "--dry-run")) {
+                if (icfg.init_stdout) return errResult(arena, "--dry-run and --stdout are mutually exclusive", .{});
+                icfg.init_dry_run = true;
             } else if (eq(a, "--json")) {
                 if (icfg.init_stdout) return errResult(arena, "--json and --stdout are mutually exclusive", .{});
                 icfg.cli_json = true;
@@ -1975,7 +1983,12 @@ test "parse: init subcommand and validation" {
     try std.testing.expectEqual(Action.init, full.action);
     try std.testing.expect(full.config.init_force);
     try std.testing.expect(full.config.init_stdout);
+    try std.testing.expect(!full.config.init_dry_run);
     try std.testing.expectEqualStrings("openai", full.config.init_provider.?);
+
+    const dry = try parseArgv(a, &.{ "tau", "init", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.init, dry.action);
+    try std.testing.expect(dry.config.init_dry_run);
 
     const bad = try parseArgv(a, &.{ "tau", "init", "--bogus" }, .{});
     try std.testing.expectEqual(Action.err, bad.action);
@@ -2009,6 +2022,29 @@ test "parse: init --json pins the stable result object; --stdout mutex" {
     const rev = try parseArgv(a, &.{ "tau", "init", "--stdout", "--json" }, .{});
     try std.testing.expectEqual(Action.err, rev.action);
     try std.testing.expectEqualStrings("--json and --stdout are mutually exclusive", rev.err_msg.?);
+}
+
+test "parse: init --dry-run previews the scaffold; --stdout mutex" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // --dry-run composes with --json (the preview object is schema-pinned)
+    // and --force (overwrite preview), but the scaffold content it already
+    // embeds in "files"[].content makes --stdout redundant — mutex either order.
+    const p = try parseArgv(a, &.{ "tau", "init", "--dry-run", "--json", "--force" }, .{});
+    try std.testing.expectEqual(Action.init, p.action);
+    try std.testing.expect(p.config.init_dry_run);
+    try std.testing.expect(p.config.cli_json);
+    try std.testing.expect(p.config.init_force);
+
+    const fwd = try parseArgv(a, &.{ "tau", "init", "--dry-run", "--stdout" }, .{});
+    try std.testing.expectEqual(Action.err, fwd.action);
+    try std.testing.expectEqualStrings("--dry-run and --stdout are mutually exclusive", fwd.err_msg.?);
+
+    const rev = try parseArgv(a, &.{ "tau", "init", "--stdout", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.err, rev.action);
+    try std.testing.expectEqualStrings("--dry-run and --stdout are mutually exclusive", rev.err_msg.?);
 }
 
 test "parse: setup --json pins the stable NDJSON stream contract" {

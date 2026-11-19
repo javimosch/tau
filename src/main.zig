@@ -136,7 +136,9 @@ const help_text =
     \\      --force                 Overwrite an existing config file
     \\      --provider <name>       Scaffold for a specific provider
     \\      --stdout                Print the starter config without writing it
-    \\                              (mutex with --json)
+    \\                              (mutex with --json/--dry-run)
+    \\      --dry-run               Preview the exact files + config the
+    \\                              scaffold would write; change nothing
     \\      --json                  Pin the stable schema-checked result object
     \\                              (schema/tau-init.schema.json)
     \\  tau setup                   One-shot onboarding: init + install shell
@@ -556,7 +558,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau --session <name> \"/goal <directive>\"", .b = "autonomous goal mode." },
     .{ .a = "tau acp serve [--acp-socket <path>]", .b = "ACP server (stdio or socket); acp start|stop|status manage a daemon." },
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
-    .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
+    .{ .a = "tau init [--force] [--provider <name>] [--dry-run]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys; --dry-run previews the exact files + config and writes nothing." },
     .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive] [--dry-run] [--remove|--uninstall] [--import] [--detect]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). --dry-run previews every write (would_* statuses) and changes nothing. --remove/--uninstall reverses per-client wiring instead. --import merges existing MCP server entries from the other supported clients into each wired MCP client. --detect is a read-only inventory of supported clients with config paths and wiring status. Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
     .{ .a = "tau completions install [--shell <sh>] [--dry-run]", .b = "install the generated shell completions into your shell profile (detect $SHELL, or --shell bash|zsh|fish|pwsh|all) — the same machinery the setup completions step uses; --json pins the schema-checked result (schema/tau-completions.schema.json). `candidates <group>` emits the dynamic completion candidates the scripts call at completion time." },
     .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [<check>] [--yes]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation (bare = all fixable checks, --fix <check> scopes to one)." },
@@ -966,7 +968,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .init => {
             const initmod = @import("init.zig");
-            const code = initmod.run(io, arena, init.environ_map, parsed.config.init_force, parsed.config.init_stdout, parsed.config.init_provider) catch |err| {
+            const code = initmod.run(io, arena, init.environ_map, parsed.config.init_force, parsed.config.init_stdout, parsed.config.init_dry_run, parsed.config.init_provider) catch |err| {
                 printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "init failed", false);
                 std.process.exit(@intFromEnum(ExitCode.internal_error));
             };
