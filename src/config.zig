@@ -139,6 +139,11 @@ pub const Config = struct {
     init_stdout: bool = false,
     /// `tau init --provider <name>` — scaffold for a specific provider.
     init_provider: ?[]const u8 = null,
+    /// `tau init --dry-run` — preview the exact files and config the
+    /// scaffold would write (a "files" preview object on stdout plus the
+    /// getting-started checklist on stderr) and change nothing. Mutually
+    /// exclusive with --stdout.
+    init_dry_run: bool = false,
 
     // --- Version (src/version.zig) ---
     /// `tau version --verbose` — include build metadata (git commit, target

@@ -272,6 +272,7 @@ complete -c tau -n '__tau_config_key_pos' -f -a '(tau completions candidates (__
 set -l init '__tau_using_subcommand init'
 complete -c tau -n $init -f -l force -d 'overwrite an existing config file'
 complete -c tau -n $init -f -l stdout -d 'print the starter config without writing it'
+complete -c tau -n $init -f -l dry-run -d 'preview the files + config init would write'
 complete -c tau -n $init -f -l provider -x -a 'xiaomi openai deepseek opencode-go' -d 'scaffold for a specific provider'
 complete -c tau -n $init -f -l json -d 'emit the stable schema-checked result object'
 
