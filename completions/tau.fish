@@ -281,6 +281,7 @@ complete -c tau -n $doctor -f -l deep -d 'run an authenticated probe (spends ~1 
 complete -c tau -n $doctor -f -l probe -d 'live-verify connectivity and credentials for every provider'
 complete -c tau -n $doctor -f -l selftest -d 'credential-free end-to-end session against a loopback stub'
 complete -c tau -n $doctor -f -l fix -d 'remediate fixable checks (prompts per fix)'
+complete -c tau -n $doctor -f -l check -d 'rerun one named check — the post-fix verify loop'
 complete -c tau -n $doctor -f -l yes -d 'apply --fix remediations without prompting'
 complete -c tau -n $doctor -f -s y -d 'apply --fix remediations without prompting'
 complete -c tau -n $doctor -f -l json -d 'stream NDJSON check/fix events + done:true verdict'

@@ -366,18 +366,22 @@ pub fn parse(
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
-    // [--probe] [--selftest] [--fix [check-id]] [--yes] [--shell sh] [--json]
-    // [--report]` — setup diagnostics; a command, not a prompt. An unknown
-    // provider is carried into the report as a failed check instead of
-    // exiting 80. --fix proposes remediations (bare = every fixable check;
-    // `--fix <check-id>` scopes to one), --yes applies them without prompting
-    // (non-interactive use). --probe live-verifies connectivity and
-    // credentials for every provider in the registry (per-provider pass/fail
-    // rows). --selftest runs a credential-free end-to-end session against a
-    // loopback stub provider (self-spawned child; no real keys or network).
-    // --json streams NDJSON check/fix events instead of the single-object
-    // report; --report renders a redacted Markdown bundle for bug reports
-    // (--json and --report are mutually exclusive).
+    // [--probe] [--selftest] [--fix [check-id]] [--check <check-id>] [--yes]
+    // [--shell sh] [--json] [--report]` — setup diagnostics; a command, not a
+    // prompt. An unknown provider is carried into the report as a failed check
+    // instead of exiting 80. --fix proposes remediations (bare = every fixable
+    // check; `--fix <check-id>` scopes to one), --yes applies them without
+    // prompting (non-interactive use). --check <check-id> reruns one named
+    // check — the post-fix verify loop — implying its opt-in gate (a probe row
+    // runs without --probe, auth_probe without --deep, selftest without
+    // --selftest) while --offline still skips network rows. --probe
+    // live-verifies connectivity and credentials for every provider in the
+    // registry (per-provider pass/fail rows). --selftest runs a credential-
+    // free end-to-end session against a loopback stub provider (self-spawned
+    // child; no real keys or network). --json streams NDJSON check/fix events
+    // instead of the single-object report; --report renders a redacted
+    // Markdown bundle for bug reports (--json and --report are mutually
+    // exclusive).
     if (argv.len > 0 and eq(argv[0], "doctor")) {
         if (wantsHelp(argv[1..])) return subHelp("doctor", base);
         var dcfg: Config = base;
@@ -419,6 +423,14 @@ pub fn parse(
                 // --yes implies --fix (nothing else to approve).
                 dcfg.doctor_fix = true;
                 dcfg.doctor_yes = true;
+            } else if (eq(a, "--check")) {
+                // `--check <check-id>` reruns one named check — the report
+                // carries just that row. The id is required (unlike --fix's
+                // optional scope) and a flag token never fills it.
+                j += 1;
+                if (j >= argv.len or argv[j].len == 0 or argv[j][0] == '-')
+                    return missing(arena, a);
+                dcfg.doctor_check_id = argv[j];
             } else if (eq(a, "--json")) {
                 dcfg.doctor_json = true;
             } else if (eq(a, "--report")) {
@@ -2557,6 +2569,38 @@ test "parse: doctor --fix takes an optional check-id scope" {
     const mixed = try parseArgv(a, &.{ "tau", "doctor", "--fix", "shell_completions", "--shell", "zsh" }, .{});
     try std.testing.expectEqualStrings("shell_completions", mixed.config.doctor_fix_id.?);
     try std.testing.expectEqualStrings("zsh", mixed.config.setup_shell.?);
+}
+
+test "parse: doctor --check takes a required check-id scope" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Off by default.
+    const p = try parseArgv(a, &.{ "tau", "doctor" }, .{});
+    try std.testing.expect(p.config.doctor_check_id == null);
+
+    // --check <check-id> scopes the run to one named check.
+    const scoped = try parseArgv(a, &.{ "tau", "doctor", "--check", "config_permissions" }, .{});
+    try std.testing.expectEqualStrings("config_permissions", scoped.config.doctor_check_id.?);
+    try std.testing.expect(!scoped.config.doctor_fix);
+
+    // Missing value -> missing-value error (unlike --fix's optional scope).
+    const bare = try parseArgv(a, &.{ "tau", "doctor", "--check" }, .{});
+    try std.testing.expectEqual(Action.err, bare.action);
+    try std.testing.expectEqualStrings("missing value for --check", bare.err_msg.?);
+
+    // A flag token is not a check id.
+    const flag_next = try parseArgv(a, &.{ "tau", "doctor", "--check", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, flag_next.action);
+    try std.testing.expectEqualStrings("missing value for --check", flag_next.err_msg.?);
+
+    // Composes with --fix/--yes/--json.
+    const mixed = try parseArgv(a, &.{ "tau", "doctor", "--check", "shell_completions", "--fix", "--yes", "--json" }, .{});
+    try std.testing.expectEqualStrings("shell_completions", mixed.config.doctor_check_id.?);
+    try std.testing.expect(mixed.config.doctor_fix);
+    try std.testing.expect(mixed.config.doctor_yes);
+    try std.testing.expect(mixed.config.doctor_json);
 }
 
 test "parse: doctor accepts --offline/--deep and provider/model/api-key overrides" {

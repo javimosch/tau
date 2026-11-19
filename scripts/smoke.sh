@@ -1559,6 +1559,74 @@ test_group_doctor() {
   env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
     TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes >/dev/null 2>&1 || true
 
+  # 14d. --check <check-id>: reruns one named check — the report carries just
+  #     that row and the verdict/exit code reflects it (the post-fix verify
+  #     loop). An unknown id is an exit-80 usage error with a did-you-mean;
+  #     a missing value is the standard missing-value error.
+  capture doc_check_bad env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --check confg_file
+  ok "--check unknown id -> exit 80" "$doc_check_bad_rc" 80
+  contains "--check unknown names the id" "$doc_check_bad_err" 'unknown doctor check: confg_file'
+  contains "--check unknown suggests nearest" "$doc_check_bad_err" 'did you mean \"config_file\"'
+  contains "--check unknown hint points at explain --list" "$doc_check_bad_err" 'tau explain --list'
+  "$BIN" doctor --check >/dev/null 2>&1; ok "--check missing value -> exit 80" "$?" 80
+  "$BIN" doctor --check --json >/dev/null 2>&1; ok "--check flag token is not an id -> exit 80" "$?" 80
+
+  capture doc_check_one env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --check config_file
+  ok "--check config_file exit 0" "$doc_check_one_rc" 0
+  contains "--check emits only the named row" "$doc_check_one_out" '"checks":[{"name":"config_file","status":"ok"'
+  contains "--check summary counts one row" "$doc_check_one_out" '"summary":{"ok":1,"warn":0,"fail":0,"skip":0}'
+
+  # The failing-row case drives the exit code the same way the full report does.
+  capture doc_check_fail env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --check api_key
+  ok "--check api_key keyless -> exit 1" "$doc_check_fail_rc" 1
+  contains "--check fail row" "$doc_check_fail_out" '"name":"api_key","status":"fail"'
+  contains "--check fail flips the verdict" "$doc_check_fail_out" '"ok":false'
+
+  # An undetected client reports a skip row rather than vanishing; the
+  # provider_probes placeholder is resolvable too.
+  capture doc_check_client env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --check client_zed
+  contains "--check undetected client skips" "$doc_check_client_out" '"name":"client_zed","status":"skip"'
+  contains "--check undetected message explains" "$doc_check_client_out" 'not detected'
+  capture doc_check_ph env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --check provider_probes
+  contains "--check placeholder row" "$doc_check_ph_out" '"name":"provider_probes","status":"skip"'
+
+  # The post-fix verify loop: warn -> --fix -> --check re-diagnoses the row.
+  chmod 644 "$mock_config/config.json"
+  capture doc_check_pre env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" doctor --offline --check config_permissions
+  contains "--check pre-fix row warns" "$doc_check_pre_out" '"name":"config_permissions","status":"warn"'
+  capture doc_check_fix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" "$BIN" doctor --offline --fix config_permissions --yes
+  contains "scoped fix applied for verify loop" "$doc_check_fix_out" '"id":"chmod_config","check":"config_permissions","status":"applied"'
+  capture doc_check_post env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" "$BIN" doctor --offline --check config_permissions
+  ok "post-fix --check exits 0" "$doc_check_post_rc" 0
+  contains "post-fix --check row is ok" "$doc_check_post_out" '"name":"config_permissions","status":"ok"'
+
+  # --check + --fix in one run: the fix applies and the scoped row re-emits
+  # with its post-fix status.
+  rm -f "$mock_config/config.json"
+  capture doc_check_fixrun env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" "$BIN" doctor --offline --check config_file --fix --yes
+  contains "--check --fix scoped run applies" "$doc_check_fixrun_out" '"id":"scaffold_config","check":"config_file","status":"applied"'
+  contains "--check --fix row re-diagnosed ok" "$doc_check_fixrun_out" '"name":"config_file","status":"ok","message":"config file parsed'
+
+  # Naming a check implies its opt-in gate: --check selftest runs the e2e
+  # probe without --selftest (real loopback stub — needs curl).
+  if command -v curl >/dev/null 2>&1; then
+    capture doc_check_st env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+      HOME="$mock_home" "$BIN" doctor --offline --check selftest
+    contains "--check implies the --selftest gate" "$doc_check_st_out" '"name":"selftest","status":"ok"'
+    contains "--check selftest ran the stub session" "$doc_check_st_out" 'loopback stub provider succeeded'
+  else
+    skip_test "--check selftest implied gate" "curl not available"
+  fi
+
   # 14b. Secret-hygiene checks: plaintext credentials in the config file and
   #     env blocks inside client settings warn (never fail), key material is
   #     never printed, and loose client files are --fix-remediated to 0600.

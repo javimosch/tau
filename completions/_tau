@@ -258,6 +258,7 @@ _tau() {
                         '--probe[live-verify connectivity and credentials for every provider]' \
                         '--selftest[credential-free end-to-end session against a loopback stub]' \
                         '--fix[remediate fixable checks (prompts per fix)]' \
+                        '--check=[rerun one named check — the post-fix verify loop]:check id:' \
                         '--yes[apply --fix remediations without prompting]' \
                         '--json[stream NDJSON check/fix events + done:true verdict]' \
                         '--report[Markdown diagnostics bundle for bug reports]' \

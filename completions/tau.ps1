@@ -25,7 +25,7 @@ $TauArgumentCompleter = {
     $configFlags = @('--mode', '--raw', '--json', '--dry-run')
     $guideFlags  = @('--human')
     $initFlags   = @('--force', '--stdout', '--provider', '--json')
-    $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '-y', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
+    $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--check', '--yes', '-y', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive', '--dry-run', '--remove', '--uninstall', '--import', '--detect', '--json')
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report', '--attach-report',
                      '--dry-run', '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
@@ -188,7 +188,7 @@ $TauArgumentCompleter = {
         '--out'               = 'write the diagnostics bundle to a file'
         '--no-report'         = 'omit the diagnostics bundle'
         '--verbose'           = 'include build metadata in version output'
-        '--check'             = 'non-blocking update check against the latest release'
+        '--check'             = 'update check (version) / rerun one named check (doctor)'
         '--json'              = 'emit the stable schema-pinned JSON output'
         '--dir'               = 'install destination (default: the running binary dir)'
     }
