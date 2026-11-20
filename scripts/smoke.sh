@@ -73,6 +73,7 @@ ALL_TEST_GROUPS=(
   "init:test_group_init"
   "setup:test_group_setup"
   "setup-failure:test_group_setup_failure"
+  "setup-idempotent:test_group_setup_idempotent"
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
   "doc-snippets:test_group_doc_snippets"
@@ -3142,6 +3143,188 @@ test_group_setup_failure() {
   grep -q '"mcacp"' "$h/.codeium/windsurf/mcp_config.json"; ok "fresh windsurf file carries the mcacp entry" "$?" 0
 }
 
+# Group: repeat `tau setup --client` runs — the idempotency contract. A
+# second (and third) run over an already-wired HOME is a verified no-op:
+# every managed file stays byte-identical, no block is appended twice (rc
+# hooks, agent entries, the shared mcacp bridge, imported MCP servers),
+# and the report flips from the write statuses to the no-change ones —
+# exists/already_installed/present on the step surface, manual where a
+# human still owns the merge.
+test_group_setup_idempotent() {
+  local h h2 h3 snap rr_drift
+
+  note "repeat setup --client runs are byte-idempotent"
+
+  # ── setup --shell all --client all, repeated on a fresh HOME ────
+  # Run 1 writes the whole footprint (config.json, 4 completion scripts,
+  # 2 rc blocks, 12 client settings files, the mcacp bridge, 5 snippets).
+  # Run 2 must report the no-change statuses and leave every byte; run 3
+  # must produce the same clients report again — steady state, not decay.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  capture rr_1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all --client all --yes
+  ok "first setup --client all exits 0" "$rr_1_rc" 0
+  contains "first run wires the clients step" "$rr_1_out" '"step":"clients","status":"installed"'
+
+  snap="$(mktemp -d)"; register_temp_dir "$snap"
+  (cd "$h" && find . -type f | sort > "$snap/files.txt")
+  (cd "$h" && while read -r f; do mkdir -p "$snap/tree/$(dirname "$f")"; cp "$f" "$snap/tree/$f"; done < "$snap/files.txt")
+
+  capture rr_2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all --client all --yes
+  ok "second setup --client all exits 0" "$rr_2_rc" 0
+
+  # The no-change report: init exists, rc hooks present, client entries
+  # already_installed or manual, bridge sides already_installed — no
+  # fresh write and no dry-run-style preview anywhere in the transcript.
+  contains "re-run init reports exists" "$rr_2_out" '"step":"init","status":"exists"'
+  contains "re-run rc hooks report present" "$rr_2_out" '"rc_status":"present"'
+  contains "re-run reports already_installed" "$rr_2_out" '"status":"already_installed"'
+  contains "re-run bridge reports already_installed" "$rr_2_out" '"bridge_status":"already_installed"'
+  contains "re-run keeps manual outcomes manual" "$rr_2_out" '"client":"nvim","status":"manual"'
+  lacks "no client entry reports a fresh write" "$rr_2_out" '"status":"installed","command"'
+  lacks "no client entry previews a write" "$rr_2_out" '"status":"would_install"'
+
+  # Census the clients array when python3 is available: all 17 entries,
+  # 12 already_installed + 5 manual, all 11 bridge sides already_installed.
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$rr_2_out" > "$snap/run2.ndjson"
+    if python3 - "$snap/run2.ndjson" <<'PYEOF'
+import json, sys
+step = None
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        continue
+    if obj.get("step") == "clients":
+        step = obj
+assert step is not None, "no clients step line"
+clients = step["clients"]
+assert len(clients) == 17, f"expected 17 client entries, got {len(clients)}"
+statuses = {}
+for c in clients:
+    assert c["status"] in ("already_installed", "manual"), c
+    statuses[c["status"]] = statuses.get(c["status"], 0) + 1
+    if "bridge_status" in c:
+        assert c["bridge_status"] == "already_installed", c
+assert statuses == {"already_installed": 12, "manual": 5}, statuses
+assert sum(1 for c in clients if "bridge_status" in c) == 11
+PYEOF
+    then
+      ok "all 17 re-run client entries report no-change statuses" 0 0
+    else
+      ok "all 17 re-run client entries report no-change statuses" 1 0
+    fi
+  else
+    skip_test "client re-run status census" "python3 not on PATH"
+  fi
+
+  # The file contract: nothing created, nothing removed, every byte kept.
+  (cd "$h" && find . -type f | sort > "$snap/files2.txt")
+  cmp -s "$snap/files.txt" "$snap/files2.txt"
+  ok "re-run created and removed no files" "$?" 0
+  rr_drift="$(cd "$snap/tree" && while read -r f; do cmp -s "$f" "$h/$f" || echo "$f"; done < "$snap/files.txt")"
+  if [ -z "$rr_drift" ]; then
+    ok "every managed file byte-identical after re-run" 0 0
+  else
+    ok "every managed file byte-identical after re-run (drift:$rr_drift)" 1 0
+  fi
+
+  # No block was appended twice: rc markers, agent entries, bridge entry.
+  [ "$(grep -c '# tau completions' "$h/.zshrc")" = "1" ]
+  ok ".zshrc tau marker not duplicated" "$?" 0
+  [ "$(grep -c '# tau completions' "$h/.config/powershell/Microsoft.PowerShell_profile.ps1")" = "1" ]
+  ok "pwsh profile tau marker not duplicated" "$?" 0
+  [ "$(grep -c '"tau":' "$h/.config/mcacp/mcacp.json")" = "1" ]
+  ok "mcacp agent_servers.tau entry not duplicated" "$?" 0
+  [ "$(grep -c '"tau":' "$h/.config/zed/settings.json")" = "1" ]
+  ok "zed agent_servers.tau entry not duplicated" "$?" 0
+  [ "$(grep -c '"mcacp":' "$h/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "windsurf mcpServers.mcacp entry not duplicated" "$?" 0
+  [ "$(grep -c '"mcacp":' "$h/.config/opencode/opencode.json")" = "1" ]
+  ok "opencode mcp.mcacp entry not duplicated" "$?" 0
+
+  # Third run: steady state — identical file tree again AND the clients
+  # step report itself is byte-stable between no-op runs.
+  capture rr_3 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all --client all --yes
+  ok "third setup --client all exits 0" "$rr_3_rc" 0
+  (cd "$h" && find . -type f | sort > "$snap/files3.txt")
+  cmp -s "$snap/files.txt" "$snap/files3.txt"
+  ok "third run created and removed no files" "$?" 0
+  rr_drift="$(cd "$snap/tree" && while read -r f; do cmp -s "$f" "$h/$f" || echo "$f"; done < "$snap/files.txt")"
+  if [ -z "$rr_drift" ]; then
+    ok "every managed file still byte-identical after third run" 0 0
+  else
+    ok "every managed file still byte-identical after third run (drift:$rr_drift)" 1 0
+  fi
+  printf '%s\n' "$rr_2_out" | grep '"step":"clients"' > "$snap/clients2.json"
+  printf '%s\n' "$rr_3_out" | grep '"step":"clients"' > "$snap/clients3.json"
+  cmp -s "$snap/clients2.json" "$snap/clients3.json"
+  ok "clients report is byte-stable between no-op runs" "$?" 0
+
+  # ── --import re-run: the in-place splice is idempotent too ────
+  # windsurf carries a user server, gemini donates a foreign one. Run 1
+  # splices mcacp + other into the file; run 2 must find everything
+  # present and write nothing.
+  h2="$(mktemp -d)"; register_temp_dir "$h2"
+  mkdir -p "$h2/.codeium/windsurf" "$h2/.gemini"
+  printf '{"mcpServers":{"mine":{"command":"m","args":["x"]}}}\n' > "$h2/.codeium/windsurf/mcp_config.json"
+  printf '{"mcpServers":{"other":{"command":"o","args":["y"]}}}\n' > "$h2/.gemini/settings.json"
+  capture ri_1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "first --import run exits 0" "$ri_1_rc" 0
+  contains "--import wires windsurf" "$ri_1_out" '"status":"installed"'
+  contains "--import collects the foreign server" "$ri_1_out" '"name":"other","from":"gemini"'
+  cp "$h2/.codeium/windsurf/mcp_config.json" "$h2/after1-mcp_config.json"
+  cp "$h2/.config/mcacp/mcacp.json" "$h2/after1-mcacp.json"
+
+  capture ri_2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "second --import run exits 0" "$ri_2_rc" 0
+  contains "--import re-run reports already_installed" "$ri_2_out" '"status":"already_installed"'
+  contains "--import re-run imports nothing new" "$ri_2_out" '"imported":[]'
+  contains "--import re-run skips the present server" "$ri_2_out" '"reason":"already present in the target file"'
+  contains "--import re-run bridge already wired" "$ri_2_out" '"bridge_status":"already_installed"'
+  cmp -s "$h2/after1-mcp_config.json" "$h2/.codeium/windsurf/mcp_config.json"
+  ok "windsurf file byte-identical after --import re-run" "$?" 0
+  cmp -s "$h2/after1-mcacp.json" "$h2/.config/mcacp/mcacp.json"
+  ok "mcacp bridge byte-identical after --import re-run" "$?" 0
+  [ "$(grep -c '"mcacp":' "$h2/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "mcacp entry not duplicated by --import re-run" "$?" 0
+  [ "$(grep -c '"other":' "$h2/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "imported server not duplicated by --import re-run" "$?" 0
+  [ "$(grep -c '"mine":' "$h2/.codeium/windsurf/mcp_config.json")" = "1" ]
+  ok "pre-existing server kept exactly once" "$?" 0
+
+  # ── Manual-path re-run: the snippet fallback is idempotent ────
+  # An existing foreign settings file stays manual on every run; neither
+  # the user's file nor the paste-ready snippet drifts by a byte.
+  h3="$(mktemp -d)"; register_temp_dir "$h3"
+  mkdir -p "$h3/.config/Cursor/User"
+  printf '{\n  // keep me\n  "vim_mode": true\n}\n' > "$h3/.config/Cursor/User/settings.json"
+  capture rm_1 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h3" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client cursor --yes
+  ok "first run on foreign file exits 0 (manual)" "$rm_1_rc" 0
+  contains "cursor reports manual" "$rm_1_out" '"status":"manual"'
+  [ -f "$h3/.config/tau/snippets/cursor.jsonc" ]; ok "cursor snippet written" "$?" 0
+  cp "$h3/.config/Cursor/User/settings.json" "$h3/after1-settings.json"
+  cp "$h3/.config/tau/snippets/cursor.jsonc" "$h3/after1-snippet.jsonc"
+
+  capture rm_2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h3" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client cursor --yes
+  ok "re-run on foreign file exits 0 (manual)" "$rm_2_rc" 0
+  contains "re-run still reports manual" "$rm_2_out" '"status":"manual"'
+  cmp -s "$h3/after1-settings.json" "$h3/.config/Cursor/User/settings.json"
+  ok "foreign settings file byte-identical after re-run" "$?" 0
+  cmp -s "$h3/after1-snippet.jsonc" "$h3/.config/tau/snippets/cursor.jsonc"
+  ok "paste-ready snippet byte-identical after re-run" "$?" 0
+}
+
 # Group: runnable client-config examples under examples/clients/ —
 # the shipped files must equal what `tau setup --client --yes` writes.
 test_group_client_examples() {
@@ -6036,6 +6219,37 @@ PY
 # re-anchored to the release tag, plus an index.json manifest — and ships
 # as the tau-schemas.tar.gz release asset. All checks run offline; ci.yml's
 # "Versioned schema drift check" step runs the same --check.
+#
+# The group also runs the live scripting-contract check (issue #454):
+# index.json drives one deterministic invocation per published command and
+# each output is validated against schema/v<ver>/<file> — the artifact
+# integrators actually pin to a release tag.
+
+# _vpub_check <checker> <schema> <allowed-rcs> <name> <cmd...>
+# Run <cmd...> capturing stdout, then emit one ok(): passes iff the exit
+# code is in <allowed-rcs> ("|"-separated, e.g. "0|1") and the output
+# validates against <schema> via <checker> (check-cli-schema.py for single
+# objects; check-doctor-schema.py / check-setup-schema.py for NDJSON
+# streams — all three take --schema).
+_vpub_check() {
+  local checker="$1" schema="$2" want="$3" name="$4"; shift 4
+  local out="$SMOKE_TEMP/vpub-$vpub_seq.out" rc
+  vpub_seq=$((vpub_seq + 1))
+  "$@" >"$out" 2>/dev/null; rc=$?
+  case "|$want|" in
+    *"|$rc|"*)
+      if python3 "$checker" --schema "$schema" "$out" >/dev/null 2>&1; then
+        ok "versioned-schemas: $name validates" 0 0
+      else
+        ok "versioned-schemas: $name validates" 1 0
+      fi
+      ;;
+    *)
+      ok "versioned-schemas: $name validates (exit $rc, want $want)" 1 0
+      ;;
+  esac
+}
+
 test_group_versioned_schemas() {
   note "versioned schema publication (schema/v<version>/)"
 
@@ -6063,6 +6277,7 @@ test_group_versioned_schemas() {
     skip_test "versioned-schemas: --check detects tampering" "python3 not on PATH"
     skip_test "versioned-schemas: --check detects stale files" "python3 not on PATH"
     skip_test "versioned-schemas: unmapped schema fails closed" "python3 not on PATH"
+    skip_test "versioned-schemas: live --json contract validation" "python3 not on PATH"
     return 0
   fi
 
@@ -6112,6 +6327,108 @@ test_group_versioned_schemas() {
     ok "versioned-schemas: unmapped schema fails closed" 0 0
   fi
   rm -f "$stage/tau-rogue.schema.json"
+
+  # ── Live contract validation against the published set (issue #454) ──
+  # index.json is the coverage driver: every published schema's command is
+  # run deterministically and its stdout validated against
+  # schema/v<ver>/<file> — the artifact integrators pin to a release tag,
+  # not the moving schema/ master copy. An index entry with no case arm
+  # below fails closed, so adding a schema forces a staging decision.
+  local check_cli="$ROOT/scripts/check-cli-schema.py"
+  local check_doc="$ROOT/scripts/check-doctor-schema.py"
+  local check_set="$ROOT/scripts/check-setup-schema.py"
+  local scrubp pub_home pub_init_home pub_file pub_cmd pub_rc pub_out
+  local pub_seen=0 pub_total vpub_seq=0
+  scrubp=(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY)
+
+  # Staging the deterministic invocations need: a HOME with a real config
+  # (config show / validate / doctor), a fresh HOME for init.
+  pub_home="$SMOKE_TEMP/vpub-home"; mkdir -p "$pub_home/.config/tau"
+  printf '{"provider":"openai","api_key":"sk-pub-secret-1"}' >"$pub_home/.config/tau/config.json"
+  pub_init_home="$SMOKE_TEMP/vpub-init-home"; mkdir -p "$pub_init_home"
+
+  if [ ! -f "$dir/index.json" ]; then
+    skip_test "versioned-schemas: live contract validation" "schema/v$ver/index.json missing"
+  elif python3 - "$dir/index.json" >"$SMOKE_TEMP/vpub-index.txt" 2>/dev/null <<'PYEOF'
+import json, sys
+for s in json.load(open(sys.argv[1], encoding="utf-8"))["schemas"]:
+    print(s["file"] + "\t" + s["command"])
+PYEOF
+  then
+    pub_total=$(wc -l <"$SMOKE_TEMP/vpub-index.txt" | tr -d ' ')
+    while IFS=$'\t' read -r pub_file pub_cmd; do
+      [ -n "$pub_file" ] || continue
+      pub_seen=$((pub_seen + 1))
+      pub_out="$SMOKE_TEMP/vpub-cfgschema-$pub_seen.out"
+      case "$pub_file" in
+        tau-version.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "$BIN" version --json ;;
+        tau-bug.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" "$BIN" bug --json --offline --no-report ;;
+        tau-completions.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_home" SHELL=/bin/bash \
+            "$BIN" completions install --json ;;
+        tau-config-show.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_home" "$BIN" config show --json ;;
+        tau-config-validate.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "$BIN" config validate --json "$pub_home/.config/tau/config.json" ;;
+        tau-config.schema.json)
+          # `config schema` emits the document itself — byte-identical to
+          # the published copy except the re-anchored $id line.
+          "$BIN" config schema >"$pub_out" 2>/dev/null; pub_rc=$?
+          grep -v '"\$id"' "$pub_out" >"$SMOKE_TEMP/vpub-emit.json" 2>/dev/null
+          grep -v '"\$id"' "$dir/$pub_file" >"$SMOKE_TEMP/vpub-pub.json" 2>/dev/null
+          if [ "$pub_rc" -eq 0 ] \
+             && diff -q "$SMOKE_TEMP/vpub-emit.json" "$SMOKE_TEMP/vpub-pub.json" >/dev/null 2>&1; then
+            ok "versioned-schemas: $pub_cmd emits the schema (mod \$id)" 0 0
+          else
+            ok "versioned-schemas: $pub_cmd emits the schema (mod \$id)" 1 0
+          fi
+          # A real config document validates against the published schema.
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "config.json document" \
+            cat "$pub_home/.config/tau/config.json" ;;
+        tau-doctor.schema.json)
+          _vpub_check "$check_doc" "$dir/$pub_file" "0|1" "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_home" "$BIN" doctor --json --offline ;;
+        tau-explain.schema.json)
+          # The explain schema is a oneOf over every output shape; no other
+          # group validates explain output against a schema, so exercise
+          # each shape here.
+          local q
+          for q in 106 compact_threshold doctor.config_file TAU_API_KEY \
+                   client.zed topic.privacy subcommand.doctor; do
+            _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd $q" \
+              "$BIN" explain --json "$q"
+          done
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd (catalog)" \
+            "$BIN" explain --json
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd --list" \
+            "$BIN" explain --json --list
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd --search" \
+            "$BIN" explain --json --search config ;;
+        tau-init.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$pub_init_home" "$BIN" init --json ;;
+        tau-setup.schema.json)
+          _vpub_check "$check_set" "$dir/$pub_file" 0 "$pub_cmd" \
+            "${scrubp[@]}" HOME="$SMOKE_TEMP/vpub-setup-home" SHELL=/bin/bash \
+            XIAOMI_API_KEY=vpub-key "$BIN" setup --json --offline ;;
+        tau-upgrade.schema.json)
+          _vpub_check "$check_cli" "$dir/$pub_file" 1 "$pub_cmd" \
+            env TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --json ;;
+        *)
+          ok "versioned-schemas: $pub_file has a live-contract case" 1 0 ;;
+      esac
+    done <"$SMOKE_TEMP/vpub-index.txt"
+    ok "versioned-schemas: every published schema exercised" "$pub_seen" "$pub_total"
+  else
+    ok "versioned-schemas: index.json parses" 1 0
+  fi
 }
 
 # Group: tau explain — offline error-catalog lookup

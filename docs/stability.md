@@ -123,7 +123,10 @@ These cross-cutting conventions are part of the contract:
   integrators pin the versioned `$id` while `schema/` keeps resolving to
   latest. Regenerate after a version bump or schema edit with
   `python3 scripts/gen-versioned-schemas.py`; the `versioned-schemas`
-  smoke group and a CI step drift-check the generated set.
+  smoke group and a CI step drift-check the generated set, and the same
+  group validates the live output of every command in `index.json`
+  against the published schemas — a scripting-contract drift check that
+  fails closed on any published schema with no coverage.
 
 ### Config file keys
 
