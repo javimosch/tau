@@ -74,6 +74,7 @@ ALL_TEST_GROUPS=(
   "setup:test_group_setup"
   "setup-failure:test_group_setup_failure"
   "setup-idempotent:test_group_setup_idempotent"
+  "setup-uninstall:test_group_setup_uninstall"
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
   "doc-snippets:test_group_doc_snippets"
@@ -3323,6 +3324,296 @@ PYEOF
   ok "foreign settings file byte-identical after re-run" "$?" 0
   cmp -s "$h3/after1-snippet.jsonc" "$h3/.config/tau/snippets/cursor.jsonc"
   ok "paste-ready snippet byte-identical after re-run" "$?" 0
+}
+
+# Group: `tau setup --uninstall` (alias of --remove) — the reversal
+# contract, exercised end-to-end through the real binary. Removal must
+# touch only tau-managed blocks: the "tau"/"mcacp" entries spliced into
+# client settings files, the shared mcacp bridge entry, and the
+# setup-generated snippets under ~/.config/tau/snippets/. Everything the
+# user wrote — foreign MCP servers, JSONC comments, sibling settings —
+# survives byte-for-byte, and a file that only ever held tau wiring is
+# deleted outright. init's config.json, the completion scripts, and the
+# rc hooks are NOT part of the remove step (the stream is just
+# remove_clients + verdict) and must stay byte-identical. The two
+# documented divergences from byte-exact restore are pinned too: an
+# emptied section husk is lifted with the entry, and a document gone
+# memberless is deleted.
+test_group_setup_uninstall() {
+  local h h2 h3 h4 h5 h6 h7 h8 h9 h10 h11 snap gone drift f
+
+  note "setup --uninstall removes only tau-managed blocks"
+
+  # ── Full sweep: wire every client, then take it all back ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  capture uw_wire env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --shell all --client all --yes
+  ok "wire-all run exits 0" "$uw_wire_rc" 0
+  [ -f "$h/.config/zed/settings.json" ] && [ -f "$h/.config/mcacp/mcacp.json" ] && [ -f "$h/.config/tau/snippets/nvim.lua" ]
+  ok "wire-all wrote client files + bridge + snippets" "$?" 0
+
+  # Snapshot the artifacts --uninstall must NOT touch: config.json, the
+  # 4 completion scripts, and the two rc-hook files.
+  snap="$(mktemp -d)"; register_temp_dir "$snap"
+  for f in .config/tau/config.json .zshrc .config/powershell/Microsoft.PowerShell_profile.ps1 \
+           .local/share/bash-completion/completions/tau .zsh/completions/_tau \
+           .config/fish/completions/tau.fish .config/tau/completions/tau.ps1; do
+    mkdir -p "$snap/keep/$(dirname "$f")"; cp "$h/$f" "$snap/keep/$f"
+  done
+
+  capture uw_sweep env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --yes
+  ok "setup --uninstall sweep exits 0" "$uw_sweep_rc" 0
+  contains "stream carries the remove_clients step" "$uw_sweep_out" '"step":"remove_clients","status":"removed"'
+  contains "sweep verdict ok" "$uw_sweep_out" '"step":"setup","ok":true'
+  contains "sweep verdict carries remove:true" "$uw_sweep_out" '"remove":true'
+  contains "sweep verdict done marker" "$uw_sweep_out" '"done":true'
+  lacks "no init step ran during removal" "$uw_sweep_out" '"step":"init"'
+  lacks "no completions step ran during removal" "$uw_sweep_out" '"step":"completions"'
+  lacks "no doctor step ran during removal" "$uw_sweep_out" '"step":"doctor"'
+
+  # Every tau-managed file is gone: all 12 client settings files, the
+  # mcacp bridge config, and all 5 paste-ready snippets.
+  gone=0
+  for f in .config/zed/settings.json .config/Code/User/settings.json .config/Cursor/User/settings.json \
+           .jetbrains/acp.json .codeium/windsurf/mcp_config.json .gemini/settings.json \
+           .config/Claude/claude_desktop_config.json .config/opencode/opencode.json \
+           .config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json \
+           .config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json \
+           .config/kilo/kilo.jsonc .aws/amazonq/mcp.json \
+           .config/mcacp/mcacp.json \
+           .config/tau/snippets/nvim.lua .config/tau/snippets/emacs.el \
+           .config/tau/snippets/goose.yaml .config/tau/snippets/continue.yaml .config/tau/snippets/codex.toml; do
+    [ -e "$h/$f" ] && { diag "--uninstall left $f behind"; gone=1; }
+  done
+  ok "all 12 client files + bridge + 5 snippets are gone" "$gone" 0
+
+  # Census the remove_clients array when python3 is available: 17
+  # entries — 12 removed (each with file_deleted) + 5 manual; exactly
+  # one bridge removal (the first bridge client deletes the shared
+  # file; the rest report absent).
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$uw_sweep_out" > "$snap/sweep.ndjson"
+    if python3 - "$snap/sweep.ndjson" <<'PYEOF'
+import json, sys
+step = None
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        continue
+    if obj.get("step") == "remove_clients":
+        step = obj
+assert step is not None, "no remove_clients step line"
+clients = step["clients"]
+assert len(clients) == 17, f"expected 17 client entries, got {len(clients)}"
+statuses = {}
+for c in clients:
+    statuses[c["status"]] = statuses.get(c["status"], 0) + 1
+    if c["status"] == "removed":
+        assert c.get("file_deleted") is True, c
+assert statuses == {"removed": 12, "manual": 5}, statuses
+removed_bridges = [c for c in clients if c.get("bridge_status") == "removed"]
+assert len(removed_bridges) == 1, removed_bridges
+assert removed_bridges[0].get("bridge_file_deleted") is True, removed_bridges
+PYEOF
+    then
+      ok "17 entries: 12 removed (file_deleted) + 5 manual; bridge deleted once" 0 0
+    else
+      ok "17 entries: 12 removed (file_deleted) + 5 manual; bridge deleted once" 1 0
+    fi
+  else
+    skip_test "remove_clients entry census" "python3 not on PATH"
+  fi
+
+  # The untouched set: init's config.json, every completion script, and
+  # both rc-hook files are byte-identical — removal reverses client
+  # wiring only.
+  drift=""
+  for f in .config/tau/config.json .zshrc .config/powershell/Microsoft.PowerShell_profile.ps1 \
+           .local/share/bash-completion/completions/tau .zsh/completions/_tau \
+           .config/fish/completions/tau.fish .config/tau/completions/tau.ps1; do
+    cmp -s "$snap/keep/$f" "$h/$f" || drift="$drift $f"
+  done
+  if [ -z "$drift" ]; then
+    ok "config.json + completions + rc hooks byte-identical after sweep" 0 0
+  else
+    ok "config.json + completions + rc hooks byte-identical after sweep (drift:$drift)" 1 0
+  fi
+
+  # A second --uninstall is a verified no-op: the JSON clients report
+  # absent, the 5 uninspectable clients stay manual, nothing is removed
+  # twice, and the verdict still passes.
+  capture uw_again env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --yes
+  ok "second --uninstall exits 0" "$uw_again_rc" 0
+  contains "second sweep reports absent entries" "$uw_again_out" '"status":"absent"'
+  contains "step reports manual when only hand-work remains" "$uw_again_out" '"step":"remove_clients","status":"manual"'
+  lacks "nothing is removed a second time" "$uw_again_out" '"status":"removed"'
+
+  # ── --import round-trip: foreign bytes return verbatim ────
+  # A bridge client wired in place via --import gets only the "mcacp"
+  # entry spliced in. --uninstall must lift exactly that entry,
+  # restoring the user's bytes — comments, own servers, sibling
+  # settings — and deleting the shared bridge it created.
+  h2="$(mktemp -d)"; register_temp_dir "$h2"
+  mkdir -p "$h2/.codeium/windsurf"
+  printf '{\n  // keep me\n  "mcpServers": {\n    "mine": { "command": "mine", "args": ["x"] }\n  },\n  "theme": "dark"\n}\n' \
+    > "$h2/.codeium/windsurf/mcp_config.json"
+  cp "$h2/.codeium/windsurf/mcp_config.json" "$h2/before-mcp_config.json"
+  capture uw_iw env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "--import wire exits 0" "$uw_iw_rc" 0
+  contains "windsurf wired in place" "$uw_iw_out" '"status":"installed"'
+  capture uw_iu env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h2" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client windsurf --yes
+  ok "scoped --uninstall exits 0" "$uw_iu_rc" 0
+  contains "windsurf entry reports removed" "$uw_iu_out" '"status":"removed"'
+  cmp -s "$h2/before-mcp_config.json" "$h2/.codeium/windsurf/mcp_config.json"
+  ok "windsurf file restored byte-identically" "$?" 0
+  [ ! -e "$h2/.config/mcacp/mcacp.json" ]; ok "shared bridge file removed" "$?" 0
+
+  # ── Imported foreign servers are user data: they stay ────
+  # gemini donates "other" via --import; --uninstall removes only tau's
+  # "mcacp" entry — both "mine" and the merged "other" survive, and
+  # gemini's own file (never written by setup) stays byte-identical.
+  h3="$(mktemp -d)"; register_temp_dir "$h3"
+  mkdir -p "$h3/.codeium/windsurf" "$h3/.gemini"
+  printf '{\n  "mcpServers": {\n    "mine": { "command": "mine" }\n  }\n}\n' > "$h3/.codeium/windsurf/mcp_config.json"
+  printf '{"mcpServers":{"other":{"command":"o","args":["y"]}}}\n' > "$h3/.gemini/settings.json"
+  cp "$h3/.gemini/settings.json" "$h3/before-gemini.json"
+  capture uw_jw env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h3" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "--import with a donor exits 0" "$uw_jw_rc" 0
+  contains "the foreign server was imported" "$uw_jw_out" '"name":"other","from":"gemini"'
+  capture uw_ju env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h3" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client windsurf --yes
+  ok "scoped --uninstall after --import exits 0" "$uw_ju_rc" 0
+  [ "$(grep -c '"mine"' "$h3/.codeium/windsurf/mcp_config.json")" = "1" ]; ok "user's own server survives" "$?" 0
+  [ "$(grep -c '"other"' "$h3/.codeium/windsurf/mcp_config.json")" = "1" ]; ok "imported foreign server survives" "$?" 0
+  [ "$(grep -c '"mcacp"' "$h3/.codeium/windsurf/mcp_config.json")" = "0" ]; ok "only tau's mcacp entry was removed" "$?" 0
+  cmp -s "$h3/before-gemini.json" "$h3/.gemini/settings.json"
+  ok "donor's settings file byte-identical throughout" "$?" 0
+
+  # ── Direct client: a hand-pasted tau entry is lifted cleanly ────
+  # The user pasted the snippet into their existing settings file —
+  # setup reports already_installed, and --uninstall restores the
+  # pre-paste bytes: comment, own agent, and sibling settings verbatim.
+  h4="$(mktemp -d)"; register_temp_dir "$h4"
+  mkdir -p "$h4/.config/zed"
+  printf '{\n  // user comment must survive\n  "vim_mode": true,\n  "agent_servers": {\n    "mine": { "type": "custom", "command": "mine" },\n    "tau": { "type": "custom", "command": "tau", "args": ["acp", "serve"] }\n  },\n  "theme": "dark"\n}\n' \
+    > "$h4/.config/zed/settings.json"
+  printf '{\n  // user comment must survive\n  "vim_mode": true,\n  "agent_servers": {\n    "mine": { "type": "custom", "command": "mine" }\n  },\n  "theme": "dark"\n}\n' \
+    > "$h4/expected-settings.json"
+  capture uw_zw env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h4" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes
+  ok "hand-wired zed run exits 0" "$uw_zw_rc" 0
+  contains "hand-wired zed reports already_installed" "$uw_zw_out" '"status":"already_installed"'
+  capture uw_zu env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h4" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client zed --yes
+  ok "zed --uninstall exits 0" "$uw_zu_rc" 0
+  cmp -s "$h4/expected-settings.json" "$h4/.config/zed/settings.json"
+  ok "zed file restored byte-identically (comment + own agent intact)" "$?" 0
+
+  # ── Scoped removal leaves other wired clients untouched ────
+  # zed + windsurf wired; removing only zed must not touch windsurf's
+  # file or the shared bridge.
+  h5="$(mktemp -d)"; register_temp_dir "$h5"
+  capture uw_mw env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h5" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --yes
+  capture uw_mz env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h5" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes
+  cp "$h5/.codeium/windsurf/mcp_config.json" "$h5/before-windsurf.json"
+  cp "$h5/.config/mcacp/mcacp.json" "$h5/before-bridge.json"
+  capture uw_mu env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h5" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client zed --yes
+  ok "zed-scoped --uninstall exits 0" "$uw_mu_rc" 0
+  [ ! -e "$h5/.config/zed/settings.json" ]; ok "zed file removed" "$?" 0
+  cmp -s "$h5/before-windsurf.json" "$h5/.codeium/windsurf/mcp_config.json"
+  ok "windsurf file untouched by scoped removal" "$?" 0
+  cmp -s "$h5/before-bridge.json" "$h5/.config/mcacp/mcacp.json"
+  ok "shared bridge untouched by scoped removal" "$?" 0
+
+  # ── Shared bridge is kept while another MCP client uses it ────
+  h6="$(mktemp -d)"; register_temp_dir "$h6"
+  capture uw_bw env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h6" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --yes
+  capture uw_bg env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h6" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client gemini --yes
+  cp "$h6/.config/mcacp/mcacp.json" "$h6/bridge-before.json"
+  capture uw_bu env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h6" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client windsurf --yes
+  ok "windsurf-scoped --uninstall exits 0" "$uw_bu_rc" 0
+  contains "bridge reports kept" "$uw_bu_out" '"bridge_status":"kept"'
+  contains "kept reason names the surviving client" "$uw_bu_out" 'still used by: gemini'
+  cmp -s "$h6/bridge-before.json" "$h6/.config/mcacp/mcacp.json"
+  ok "bridge file byte-identical while still in use" "$?" 0
+  capture uw_bu2 env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h6" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client gemini --yes
+  ok "gemini --uninstall exits 0" "$uw_bu2_rc" 0
+  contains "last user deletes the bridge" "$uw_bu2_out" '"bridge_file_deleted":true'
+  [ ! -e "$h6/.config/mcacp/mcacp.json" ]; ok "bridge file deleted once unused" "$?" 0
+
+  # ── Pinned divergences: husk lifted, memberless doc deleted ────
+  h7="$(mktemp -d)"; register_temp_dir "$h7"
+  mkdir -p "$h7/.codeium/windsurf"
+  printf '{\n  "mcpServers": {},\n  "x": 1\n}\n' > "$h7/.codeium/windsurf/mcp_config.json"
+  printf '{\n  "x": 1\n}\n' > "$h7/expected-mcp_config.json"
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h7" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes >/dev/null 2>&1
+  capture uw_hu env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h7" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client windsurf --yes
+  ok "husk-case --uninstall exits 0" "$uw_hu_rc" 0
+  cmp -s "$h7/expected-mcp_config.json" "$h7/.codeium/windsurf/mcp_config.json"
+  ok "emptied section husk is lifted with the entry" "$?" 0
+
+  h8="$(mktemp -d)"; register_temp_dir "$h8"
+  mkdir -p "$h8/.gemini"
+  printf '{\n  "mcpServers": {}\n}\n' > "$h8/.gemini/settings.json"
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h8" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client gemini --import --yes >/dev/null 2>&1
+  capture uw_du env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h8" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client gemini --yes
+  ok "memberless-case --uninstall exits 0" "$uw_du_rc" 0
+  contains "memberless doc reports file_deleted" "$uw_du_out" '"file_deleted":true'
+  [ ! -e "$h8/.gemini/settings.json" ]; ok "document gone memberless is deleted" "$?" 0
+
+  # ── --dry-run previews the removal and changes nothing ────
+  h9="$(mktemp -d)"; register_temp_dir "$h9"
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h9" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --yes >/dev/null 2>&1
+  cp "$h9/.codeium/windsurf/mcp_config.json" "$h9/wired.json"
+  cp "$h9/.config/mcacp/mcacp.json" "$h9/wired-bridge.json"
+  capture uw_dry env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h9" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --client windsurf --dry-run
+  ok "--uninstall --dry-run exits 0" "$uw_dry_rc" 0
+  contains "dry-run previews would_remove" "$uw_dry_out" '"status":"would_remove"'
+  contains "dry-run verdict carries dry_run:true" "$uw_dry_out" '"dry_run":true'
+  cmp -s "$h9/wired.json" "$h9/.codeium/windsurf/mcp_config.json"
+  ok "dry-run left the wired file byte-identical" "$?" 0
+  cmp -s "$h9/wired-bridge.json" "$h9/.config/mcacp/mcacp.json"
+  ok "dry-run left the bridge byte-identical" "$?" 0
+
+  # ── Pristine HOME: nothing wired, nothing to remove ────
+  h10="$(mktemp -d)"; register_temp_dir "$h10"
+  capture uw_none env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h10" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --uninstall --yes
+  ok "--uninstall on a pristine HOME exits 0" "$uw_none_rc" 0
+  contains "pristine sweep reports absent" "$uw_none_out" '"status":"absent"'
+  lacks "pristine sweep removes nothing" "$uw_none_out" '"status":"removed"'
+  [ -z "$(find "$h10" -type f)" ]; ok "pristine HOME gained no files" "$?" 0
+
+  # --remove is the same flag spelled the other way.
+  h11="$(mktemp -d)"; register_temp_dir "$h11"
+  env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h11" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes >/dev/null 2>&1
+  capture uw_rm env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h11" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --remove --client zed --yes
+  ok "--remove alias exits 0" "$uw_rm_rc" 0
+  [ ! -e "$h11/.config/zed/settings.json" ]; ok "--remove alias deletes the wired file" "$?" 0
 }
 
 # Group: runnable client-config examples under examples/clients/ —
