@@ -170,6 +170,12 @@ pub const Config = struct {
     /// `tau upgrade --dry-run` — report the update check plus the resolved
     /// install plan without prompting, downloading, or installing anything.
     upgrade_dry_run: bool = false,
+    /// `tau upgrade --check` — report-only update lookup: the latest
+    /// compatible version, the changelog excerpt since the running binary,
+    /// and a post-upgrade `tau doctor` hint — never prompts, never resolves
+    /// an install plan, never touches the filesystem. Mutually exclusive
+    /// with --dry-run.
+    upgrade_check: bool = false,
     /// `tau upgrade --verify-signature` — opt-in Sigstore/cosign verification
     /// of the downloaded asset before the installer swaps it in (env
     /// `TAU_VERIFY_SIGSTORE=1`). Forwarded to install.sh, which fails closed:

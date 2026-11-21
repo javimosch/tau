@@ -306,7 +306,8 @@ _tau() {
                     _arguments \
                         '(-y --yes)'{-y,--yes}'[upgrade without prompting]' \
                         '--dir=[install destination]:dir:_files -/' \
-                        '--dry-run[print the resolved plan; install nothing]' \
+                        '(--dry-run --check)--dry-run[print the resolved plan; install nothing]' \
+                        '(--dry-run --check)--check[report the latest version + notes; install nothing]' \
                         '--verify-signature[verify the cosign signature bundle before the swap]' \
                         '--json[emit the stable schema-checked report object]'
                     ;;

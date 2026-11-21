@@ -77,8 +77,8 @@ pub const specs = [_]Spec{
     .{
         .name = "upgrade",
         .summary = "Self-update in place from the latest GitHub release (POSIX only)",
-        .usage = "tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--verify-signature] [--json]",
-        .examples = &.{ "tau upgrade --dry-run", "tau upgrade --yes" },
+        .usage = "tau upgrade [--yes|-y] [--dir <path>] [--dry-run|--check] [--verify-signature] [--json]",
+        .examples = &.{ "tau upgrade --check", "tau upgrade --dry-run", "tau upgrade --yes" },
         .errors = &.{ "invalid_argument", "unimplemented" },
         .config_keys = &.{},
         .doctor_checks = &.{"doctor.update_available"},

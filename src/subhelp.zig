@@ -454,10 +454,14 @@ const upgrade_help =
     \\tau upgrade - self-update in place from the latest release
     \\
     \\Usage:
-    \\  tau upgrade [--yes|-y] [--dir <path>] [--dry-run]
+    \\  tau upgrade [--yes|-y] [--dir <path>] [--dry-run|--check]
     \\              [--verify-signature] [--json]
     \\
     \\Options:
+    \\      --check      Report-only lookup: latest compatible version,
+    \\                   changelog excerpt, and a post-upgrade `tau doctor`
+    \\                   hint — never prompts or installs (mutually
+    \\                   exclusive with --dry-run)
     \\  -y, --yes        Upgrade without prompting (env TAU_YES=1); a TTY
     \\                   gets a [y/N] prompt instead
     \\      --dir <path> Install destination (default: the running binary's
@@ -479,6 +483,7 @@ const upgrade_help =
     \\naming the fix (checksum mismatch, download failed, offline ...).
     \\
     \\Examples:
+    \\  tau upgrade --check
     \\  tau upgrade --dry-run
     \\  tau upgrade --yes
     \\  tau upgrade --yes --verify-signature

@@ -496,6 +496,54 @@ EOF
   contains "dry-run --verify-signature still dry_run" "$ug_drysig_out" '"status":"dry_run"'
   contains "dry-run --verify-signature names cosign" "$ug_drysig_out" 'cosign signature'
 
+  # 6d. --check is the report-only spelling: status update_available, the
+  #     changelog excerpt rides the report + stderr, the detail names the
+  #     install command and the post-upgrade `tau doctor` verification —
+  #     and nothing is resolved or staged: no install_dir, no prompt
+  #     (stdin pinned to /dev/null), no installer fetch (TAU_INSTALL_URL
+  #     points at a missing file; a fetch attempt would fail the run).
+  capture ug_check env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/ug-changelog.md" \
+    TAU_INSTALL_URL="file://$SMOKE_TEMP/ug-no-such-install.sh" \
+    TAU_INSTALL_DIR="$SMOKE_TEMP/ug-check-dest" \
+    sh -c '"$0" upgrade --check < /dev/null' "$BIN"
+  ok "upgrade --check exit 0" "$ug_check_rc" 0
+  contains "check status update_available" "$ug_check_out" '"status":"update_available"'
+  contains "check update_available flag" "$ug_check_out" '"update_available":true'
+  contains "check carries latest" "$ug_check_out" '"latest":"99.9.9"'
+  contains "check carries release_url" "$ug_check_out" '"release_url":"https://github.com/javimosch/tau/releases/tag/v99.9.9"'
+  contains "check carries changelog entries" "$ug_check_out" '"changelog":[{"version":"99.9.9","notes":"### Added\n- smoke-stub feature\n- second bullet"}]'
+  contains "check detail names the install command" "$ug_check_out" 'run `tau upgrade`'
+  contains "check detail points at post-upgrade doctor" "$ug_check_out" 'tau doctor'
+  contains "check summary on stderr" "$ug_check_err" 'changes in tau 0.4.0 -> 99.9.9:'
+  lacks "check resolves no install_dir" "$ug_check_out" '"install_dir"'
+  [ ! -e "$SMOKE_TEMP/ug-check-dest" ]; ok "check created nothing" "$?" 0
+
+  # 6e. --check stays report-only on the other outcomes: same version is
+  #     still up_to_date, the opt-out still reports checked:false/skipped,
+  #     and a lookup failure still fails with the remediation hint.
+  capture ug_check_same env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-same.json" "$BIN" upgrade --check
+  ok "check same-version exit 0" "$ug_check_same_rc" 0
+  contains "check same-version status" "$ug_check_same_out" '"status":"up_to_date"'
+  contains "check same-version update_available:false" "$ug_check_same_out" '"update_available":false'
+  capture ug_check_off env TAU_NO_UPDATE_CHECK=1 "$BIN" upgrade --check
+  ok "check opt-out exit 1" "$ug_check_off_rc" 1
+  contains "check opt-out checked:false" "$ug_check_off_out" '"checked":false'
+  contains "check opt-out status skipped" "$ug_check_off_out" '"status":"skipped"'
+  capture ug_check_miss env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-missing.json" "$BIN" upgrade --check
+  ok "check lookup-failure exit 1" "$ug_check_miss_rc" 1
+  contains "check lookup-failure status failed" "$ug_check_miss_out" '"status":"failed"'
+  contains "check lookup-failure carries hint" "$ug_check_miss_out" '"hint":"'
+
+  # 6f. --check and --dry-run are the two report-only spellings — mutually
+  #     exclusive in either order.
+  capture ug_check_mutex "$BIN" upgrade --check --dry-run
+  ok "check + dry-run mutex exit 80" "$ug_check_mutex_rc" 80
+  contains "check mutex envelope" "$ug_check_mutex_err" '"type":"invalid_argument"'
+  contains "check mutex names the pair" "$ug_check_mutex_err" '--check and --dry-run are mutually exclusive'
+  capture ug_check_mutex2 "$BIN" upgrade --dry-run --check
+  ok "dry-run + check mutex exit 80" "$ug_check_mutex2_rc" 80
+
   # 7. Installer download failure -> status failed, exit 1 — the summary
   #    still precedes the installer log on stderr.
   capture ug_noinst env TAU_UPDATE_URL="file://$SMOKE_TEMP/ug-rel-newer.json" \
@@ -4916,6 +4964,15 @@ EOF
     TAU_INSTALL_URL="file://$stubs/no-such-install.sh" \
     TAU_INSTALL_DIR="$_GOLDEN_HOME/ug-dest" "$BIN" upgrade --yes
 
+  # ── tau upgrade --check — report-only lookup: latest + notes + the
+  #    post-upgrade doctor pointer; no plan, no prompt, no installer ──
+  golden_check   ug-check-mutex      80 "$BIN" upgrade --check --dry-run
+  golden_check   ug-check-up-to-date  0 env TAU_UPDATE_URL="file://$stubs/same.json" "$BIN" upgrade --check
+  golden_check   ug-check             0 env TAU_UPDATE_URL="file://$stubs/newer.json" \
+    TAU_CHANGELOG_URL="file://$stubs/changelog.md" \
+    TAU_INSTALL_URL="file://$stubs/no-such-install.sh" \
+    "$BIN" upgrade --check
+
   # ── tau upgrade — failure-path goldens carrying the remediation "hint" ──
   # POSIX-only: these run the real install.sh via `sh`; on Windows
   # `tau upgrade` exits 111 (unimplemented) before reaching them.
@@ -5631,6 +5688,21 @@ test_group_cli_schemas() {
     ok "cli-schemas: upgrade --json validates" 0 0
   else
     ok "cli-schemas: upgrade --json validates" 1 0
+  fi
+
+  # upgrade --check against staged release + changelog stubs: status
+  # update_available, still the same schema-pinned report object, exit 0.
+  printf '{"tag_name":"v99.9.9","name":"newer"}' > "$SMOKE_TEMP/cli-ug-newer.json"
+  printf '## [99.9.9]\n\n- stub notes\n' > "$SMOKE_TEMP/cli-ug-changelog.md"
+  out=$(TAU_UPDATE_URL="file://$SMOKE_TEMP/cli-ug-newer.json" \
+    TAU_CHANGELOG_URL="file://$SMOKE_TEMP/cli-ug-changelog.md" \
+    "$BIN" upgrade --json --check); rc=$?
+  ok "cli-schemas: upgrade --json --check exit 0" "$rc" 0
+  contains "cli-schemas: upgrade --check reports update_available" "$out" '"status":"update_available"'
+  if printf '%s' "$out" | python3 "$check" --schema "$ug_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: upgrade --check validates" 0 0
+  else
+    ok "cli-schemas: upgrade --check validates" 1 0
   fi
 
   # ── tau bug --json ─────────────────────────────────────────────────────

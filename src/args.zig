@@ -331,14 +331,17 @@ pub fn parse(
         return .{ .action = .version, .config = vcfg };
     }
 
-    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run] [--verify-signature] [--json]` — self-update
-    // in place: run the same release lookup as `tau version --check`, confirm,
-    // then fetch and exec the release tag's own install.sh so the fail-closed
-    // SHA256-verified install path is reused verbatim. The prompt only
-    // appears on a TTY; automation passes --yes (env TAU_YES=1). The stdout
-    // report is already a single JSON object; --json is the stable-contract
-    // spelling that pins it (schema/tau-upgrade.schema.json). POSIX-only —
-    // Windows re-runs install.ps1.
+    // `tau upgrade [--yes|-y] [--dir <path>] [--dry-run|--check] [--verify-signature] [--json]` —
+    // self-update in place: run the same release lookup as `tau version
+    // --check`, confirm, then fetch and exec the release tag's own install.sh
+    // so the fail-closed SHA256-verified install path is reused verbatim. The
+    // prompt only appears on a TTY; automation passes --yes (env TAU_YES=1).
+    // --check is the report-only spelling: latest compatible version +
+    // changelog excerpt + post-upgrade doctor hint, no plan resolution
+    // (mutually exclusive with --dry-run, which still resolves the plan).
+    // The stdout report is already a single JSON object; --json is the
+    // stable-contract spelling that pins it (schema/tau-upgrade.schema.json).
+    // POSIX-only — Windows re-runs install.ps1.
     if (argv.len > 0 and eq(argv[0], "upgrade")) {
         if (wantsHelp(argv[1..])) return subHelp("upgrade", base);
         var ucfg: Config = base;
@@ -352,7 +355,11 @@ pub fn parse(
                 if (j >= argv.len) return missing(arena, a);
                 ucfg.upgrade_dir = argv[j];
             } else if (eq(a, "--dry-run")) {
+                if (ucfg.upgrade_check) return errResult(arena, "--check and --dry-run are mutually exclusive", .{});
                 ucfg.upgrade_dry_run = true;
+            } else if (eq(a, "--check")) {
+                if (ucfg.upgrade_dry_run) return errResult(arena, "--check and --dry-run are mutually exclusive", .{});
+                ucfg.upgrade_check = true;
             } else if (eq(a, "--verify-signature")) {
                 ucfg.upgrade_verify_signature = true;
             } else if (eq(a, "--json")) {
@@ -2908,6 +2915,27 @@ test "parse: upgrade accepts --yes/-y, --dir and --dry-run" {
 
     const q = try parseArgv(a, &.{ "tau", "upgrade", "-y" }, .{});
     try std.testing.expect(q.config.upgrade_yes);
+}
+
+test "parse: upgrade --check selects report-only mode, mutex with --dry-run" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "upgrade", "--check" }, .{});
+    try std.testing.expectEqual(Action.upgrade, p.action);
+    try std.testing.expect(p.config.upgrade_check);
+    try std.testing.expect(!p.config.upgrade_dry_run);
+
+    const off = try parseArgv(a, &.{ "tau", "upgrade" }, .{});
+    try std.testing.expect(!off.config.upgrade_check);
+
+    // Either order of the two report-only flags is a mutex error.
+    const m1 = try parseArgv(a, &.{ "tau", "upgrade", "--check", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.err, m1.action);
+    try std.testing.expect(std.mem.indexOf(u8, m1.err_msg.?, "mutually exclusive") != null);
+    const m2 = try parseArgv(a, &.{ "tau", "upgrade", "--dry-run", "--check" }, .{});
+    try std.testing.expectEqual(Action.err, m2.action);
 }
 
 test "parse: upgrade --verify-signature opts into the cosign check" {

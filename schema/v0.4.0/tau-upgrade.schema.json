@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/javimosch/tau/v0.4.0/schema/v0.4.0/tau-upgrade.schema.json",
   "title": "tau upgrade --json output",
-  "description": "Schema for the single JSON object `tau upgrade [--json]` prints on stdout. The report is emitted for every outcome — success, skip, and failure — and the process exit code maps from status: up_to_date/upgraded/declined/dry_run -> 0, skipped/failed -> 1 (exit 111 on Windows, where the command is unimplemented). New keys may be added (additive); existing keys keep their names and types.",
+  "description": "Schema for the single JSON object `tau upgrade [--json]` prints on stdout. The report is emitted for every outcome — success, skip, and failure — and the process exit code maps from status: up_to_date/upgraded/declined/dry_run/update_available -> 0, skipped/failed -> 1 (exit 111 on Windows, where the command is unimplemented). New keys may be added (additive); existing keys keep their names and types.",
   "type": "object",
   "required": ["name", "version", "checked", "status", "detail"],
   "additionalProperties": false,
@@ -15,8 +15,8 @@
     "update_available": { "type": "boolean", "description": "true when the latest release is newer than the running binary. Emitted only when checked is true." },
     "status": {
       "type": "string",
-      "enum": ["up_to_date", "upgraded", "declined", "skipped", "failed", "dry_run"],
-      "description": "Outcome of the run. up_to_date: already on the latest release; upgraded: the installer ran and exited 0; declined: the user answered no at the TTY prompt; skipped: the check was disabled or a non-interactive run lacked --yes; failed: the lookup, download, or install errored; dry_run: --dry-run reported the plan without touching anything."
+      "enum": ["up_to_date", "upgraded", "declined", "skipped", "failed", "dry_run", "update_available"],
+      "description": "Outcome of the run. up_to_date: already on the latest release; upgraded: the installer ran and exited 0; declined: the user answered no at the TTY prompt; skipped: the check was disabled or a non-interactive run lacked --yes; failed: the lookup, download, or install errored; dry_run: --dry-run reported the plan without touching anything; update_available: --check reported a newer release without prompting, resolving a plan, or installing anything."
     },
     "detail": { "type": "string", "description": "Human-readable outcome detail — what happened or why nothing did; informational, may be reworded." },
     "hint": { "type": "string", "description": "One-line actionable remediation for the failure — the flag, env var, or command that fixes it (same convention as the {\"err\"} envelope's hint field). Present only when status is \"failed\"; installer failures classify the install.sh error line (checksum mismatch, download failed, extraction failure, unwritable destination, ...)." },
@@ -40,6 +40,7 @@
     { "name": "tau", "version": "0.4.0", "checked": true, "latest": "0.4.0", "tag": "v0.4.0", "update_available": false, "status": "up_to_date", "detail": "tau 0.4.0 is the latest release" },
     { "name": "tau", "version": "0.4.0", "checked": false, "status": "skipped", "detail": "disabled (TAU_NO_UPDATE_CHECK)" },
     { "name": "tau", "version": "0.4.0", "checked": false, "status": "failed", "detail": "release lookup failed (https://api.github.com/repos/javimosch/tau/releases/latest)", "hint": "the release lookup is unreachable — check the network/proxy (tau doctor reports proxy_env) or set TAU_UPDATE_URL to a reachable mirror, then retry" },
-    { "name": "tau", "version": "0.4.0", "checked": true, "latest": "0.5.0", "tag": "v0.5.0", "update_available": true, "status": "dry_run", "detail": "would install tau 0.5.0 via https://example/install.sh into ~/.local/bin", "release_url": "https://github.com/javimosch/tau/releases/tag/v0.5.0", "install_dir": "/home/u/.local/bin", "changelog": [{ "version": "0.5.0", "notes": "### Added\n- new feature" }] }
+    { "name": "tau", "version": "0.4.0", "checked": true, "latest": "0.5.0", "tag": "v0.5.0", "update_available": true, "status": "dry_run", "detail": "would install tau 0.5.0 via https://example/install.sh into ~/.local/bin", "release_url": "https://github.com/javimosch/tau/releases/tag/v0.5.0", "install_dir": "/home/u/.local/bin", "changelog": [{ "version": "0.5.0", "notes": "### Added\n- new feature" }] },
+    { "name": "tau", "version": "0.4.0", "checked": true, "latest": "0.5.0", "tag": "v0.5.0", "update_available": true, "status": "update_available", "detail": "tau 0.5.0 is available — run `tau upgrade` to install it, then `tau doctor` to verify the install", "release_url": "https://github.com/javimosch/tau/releases/tag/v0.5.0", "changelog": [{ "version": "0.5.0", "notes": "### Added\n- new feature" }] }
   ]
 }
