@@ -216,7 +216,7 @@ _tau_complete() {
             ;;
 
         upgrade)
-            COMPREPLY=($(compgen -W "--yes -y --dir --dry-run --verify-signature --json" -- "$cur"))
+            COMPREPLY=($(compgen -W "--yes -y --dir --dry-run --check --verify-signature --json" -- "$cur"))
             ;;
 
         explain)

@@ -38,7 +38,7 @@ PowerShell.
 | `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--attach-report`, `--dry-run`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--check`, `--json`, `--mode` |
-| `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run`, `--json` |
+| `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run`, `--check`, `--verify-signature`, `--json` |
 | `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + config keys (`timeout_ms`, `keys.<provider>`, …) + doctor checks (`doctor.tls_ca`, `doctor.client_zed`, …) + `TAU_*` env vars (`TAU_ENDPOINT`, …) + editor clients (`client.zed`, `client.claude-desktop`, …) + curated topics (`topic.privacy`) + `--json`, `--human`, `--list`, `--search` |
 
 ---

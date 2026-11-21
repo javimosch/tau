@@ -165,7 +165,11 @@ without scraping the installer log.
 failed"` (the `install.sh` fetched from the release tag — or `TAU_INSTALL_URL`
 — didn't arrive) and exit **111** on Windows, where self-update is
 unsupported — re-run `install.ps1` instead. A successful `upgrade` prints
-`{"status":"upgraded",…}`; `"skipped"` when already current — both exit 0.
+`{"status":"upgraded",…}`; `"up_to_date"` when already current — both exit 0.
+`tau upgrade --check` is the report-only spelling: a newer release reports
+`"update_available"` (exit 0) with the latest version, the changelog
+excerpt, and a post-upgrade `tau doctor` hint — it never prompts, resolves
+no install plan, and touches nothing (mutually exclusive with `--dry-run`).
 The release-notes preview (`changes in tau …` on stderr plus the report's
 `"changelog"` field) is advisory only: when the tag's `CHANGELOG.md` can't
 be fetched (`TAU_CHANGELOG_URL` overrides the source, e.g. for mirrors)

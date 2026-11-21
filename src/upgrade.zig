@@ -17,7 +17,12 @@
 // between the installed and target versions render as a pre-upgrade
 // summary on stderr before the prompt/install and ride along as the
 // report's "changelog" field — best-effort, a fetch/parse miss drops the
-// summary, never the upgrade. Failed runs ("status":"failed", exit 1)
+// summary, never the upgrade. --check is the report-only spelling: when a
+// newer release exists it answers status "update_available" with the
+// changelog excerpt and a post-upgrade `tau doctor` pointer, without
+// prompting, resolving an install plan, or staging anything (mutually
+// exclusive with --dry-run, which still resolves the plan). Failed runs
+// ("status":"failed", exit 1)
 // carry a "hint" field with one-line remediation: lookup/download
 // failures name the network or the TAU_*_URL overrides, and installer
 // failures are classified from the install.sh error line (checksum
@@ -39,9 +44,9 @@ const cfgmod = @import("config.zig");
 const Config = cfgmod.Config;
 
 /// Outcome of a `tau upgrade` run — serialized as the "status" field.
-/// Exit-code mapping: up_to_date/upgraded/declined/dry_run -> 0,
-/// skipped/failed -> 1 (a script can tell "nothing was installed" apart
-/// from a user decline).
+/// Exit-code mapping: up_to_date/upgraded/declined/dry_run/update_available
+/// -> 0, skipped/failed -> 1 (a script can tell "nothing was installed"
+/// apart from a user decline).
 pub const Status = enum {
     /// checked, already on the latest release.
     up_to_date,
@@ -55,6 +60,9 @@ pub const Status = enum {
     failed,
     /// --dry-run: the resolved plan was reported, nothing was touched.
     dry_run,
+    /// --check: a newer release exists; reported without prompting,
+    /// resolving a plan, or installing anything.
+    update_available,
 };
 
 /// One release-notes section lifted from the tag's CHANGELOG.md — the
@@ -462,9 +470,6 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
         return 0;
     }
 
-    const dir = resolveInstallDir(io, arena, cfg, env);
-    const url = try installerUrl(arena, env, tag);
-
     // Pre-upgrade summary: the tag's CHANGELOG.md sections in (installed,
     // latest] — rendered on stderr for humans and carried in the report
     // for scripts. Best-effort; a fetch/parse miss changes nothing else.
@@ -473,6 +478,26 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
         const summary = formatChangelogSummary(arena, entries, ver.version, latest) catch null;
         if (summary) |s| term.err(s);
     }
+
+    // --check: report-only — the latest compatible version, the changelog
+    // excerpt, and where to verify afterwards. No prompt, no install-plan
+    // resolution, nothing staged or written.
+    if (cfg.upgrade_check) {
+        emit(arena, .{
+            .checked = true,
+            .latest = latest,
+            .tag = tag,
+            .update_available = true,
+            .status = .update_available,
+            .detail = std.fmt.allocPrint(arena, "tau {s} is available — run `tau upgrade` to install it, then `tau doctor` to verify the install", .{latest}) catch "update available",
+            .release_url = release_url,
+            .changelog = changelog,
+        });
+        return 0;
+    }
+
+    const dir = resolveInstallDir(io, arena, cfg, env);
+    const url = try installerUrl(arena, env, tag);
 
     if (cfg.upgrade_dry_run) {
         emit(arena, .{
@@ -711,6 +736,28 @@ test "installerEnv: --verify-signature injects TAU_VERIFY_SIGSTORE=1" {
     var forced = (try installerEnv(a, &env, true)).?;
     defer forced.deinit();
     try testing.expectEqualStrings("1", forced.get("TAU_VERIFY_SIGSTORE").?);
+}
+
+test "formatReport: update_available status serializes for --check reports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const rep = try formatReport(a, .{
+        .checked = true,
+        .latest = "0.5.0",
+        .tag = "v0.5.0",
+        .update_available = true,
+        .status = .update_available,
+        .detail = "tau 0.5.0 is available — run `tau upgrade` to install it, then `tau doctor` to verify the install",
+        .release_url = "https://github.com/javimosch/tau/releases/tag/v0.5.0",
+    });
+    try testing.expect(std.mem.indexOf(u8, rep, "\"status\":\"update_available\"") != null);
+    try testing.expect(std.mem.indexOf(u8, rep, "\"detail\":\"tau 0.5.0 is available") != null);
+    try testing.expect(std.mem.indexOf(u8, rep, "tau doctor") != null);
+    // A check report carries no install plan fields.
+    try testing.expect(std.mem.indexOf(u8, rep, "install_dir") == null);
+    try testing.expect(std.mem.indexOf(u8, rep, "hint") == null);
 }
 
 test "formatReport: changelog entries serialize as {version,notes} objects" {

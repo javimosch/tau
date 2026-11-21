@@ -32,7 +32,7 @@ $TauArgumentCompleter = {
     $completionsArgs = @('install', 'candidates', '--shell', '--dry-run', '--json')
     $candidateGroups = @('config-set', 'config-get', 'config-unset')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
-    $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
+    $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--check', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
     # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
     # TAU_* names mirror the Spec registry in src/envvars.zig; client.*

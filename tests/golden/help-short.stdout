@@ -214,6 +214,11 @@ Version:
                               your version, confirm, then run the
                               release's own verified install.sh
                               (SHA256-checked, fail-closed). POSIX-only.
+      --check                 Report-only lookup: latest compatible
+                              version, changelog excerpt, and a
+                              post-upgrade `tau doctor` hint —
+                              never prompts or installs (mutually
+                              exclusive with --dry-run)
       --yes, -y               Upgrade without prompting (env TAU_YES=1);
                               a TTY gets a [y/N] prompt instead
       --dir <path>            Install destination (default: the running
