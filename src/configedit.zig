@@ -2436,3 +2436,879 @@ test "run: a real set|unset on an existing file preserves it at <path>.bak" {
     _ = try expectOk(try th.sub(arena, .unset, "provider", null, false));
     try testing.expectEqualStrings(before2, try std.Io.Dir.cwd().readFileAlloc(testing.io, bak, arena, .unlimited));
 }
+
+// ---------------------------------------------------------------------------
+// Byte-for-byte preservation property tests (task #486)
+//
+// Contract under test: `config set|unset` are surgical splices — every byte
+// outside the edited member's span (comments, member ordering, whitespace,
+// odd formatting) survives verbatim, and `<path>.bak` holds the pre-write
+// bytes exactly. `config edit` never rewrites the file itself: a no-op
+// editor leaves it byte-identical and whatever the editor saves lands
+// verbatim (no normalization pass).
+//
+// The tests drive `run`/`runEditor` end-to-end (real file in a temp HOME)
+// over randomized JSONC documents and verify the contract independently:
+// span-bounded byte equality, member order/values via a strict re-parse, a
+// comment census from a second naive scanner, and set idempotence.
+// ---------------------------------------------------------------------------
+
+const PropDoc = struct {
+    bytes: []u8,
+    /// Top-level member names in file order.
+    members: []const []const u8,
+    /// Provider names inside the "keys" member (empty when it is absent).
+    keys_members: []const []const u8,
+};
+
+const PropComment = struct { start: usize, end: usize, text: []const u8 };
+
+/// Independent comment census — deliberately a second, naive scanner so the
+/// property doesn't rest on the implementation's own offsets.
+fn propComments(arena: std.mem.Allocator, bytes: []const u8) ![]PropComment {
+    var out: std.ArrayList(PropComment) = .empty;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const c = bytes[i];
+        if (c == '"') {
+            i += 1;
+            while (i < bytes.len) {
+                if (bytes[i] == '\\') {
+                    i += 2;
+                    continue;
+                }
+                if (bytes[i] == '"') {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if (c == '/' and i + 1 < bytes.len and bytes[i + 1] == '/') {
+            var j = i + 2;
+            while (j < bytes.len and bytes[j] != '\n') j += 1;
+            try out.append(arena, .{ .start = i, .end = j, .text = bytes[i..j] });
+            i = j;
+            continue;
+        }
+        if (c == '/' and i + 1 < bytes.len and bytes[i + 1] == '*') {
+            var j = i + 2;
+            while (j + 1 < bytes.len and !(bytes[j] == '*' and bytes[j + 1] == '/')) j += 1;
+            j = @min(j + 2, bytes.len);
+            try out.append(arena, .{ .start = i, .end = j, .text = bytes[i..j] });
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    return out.toOwnedSlice(arena);
+}
+
+/// Every comment in `orig` that does not overlap the edited span
+/// [dead_start, dead_end) must appear verbatim in `out`.
+fn expectCommentsKept(arena: std.mem.Allocator, orig: []const u8, out: []const u8, dead_start: usize, dead_end: usize) !void {
+    for (try propComments(arena, orig)) |c| {
+        if (c.start < dead_end and dead_start < c.end) continue;
+        if (std.mem.indexOf(u8, out, c.text) == null) {
+            std.debug.print("comment outside edited span [{d},{d}) lost: {s}\n--- orig ---\n{s}\n--- out ---\n{s}\n", .{ dead_start, dead_end, c.text, orig, out });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+/// Strict-parse `bytes` (comments stripped) into its top-level object — the
+/// independent check that a splice produced JSON `config validate` accepts.
+fn strictObj(arena: std.mem.Allocator, bytes: []const u8) !std.json.ObjectMap {
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, bytes) catch bytes, .{}) catch {
+        std.debug.print("expected strict-JSON object, got:\n{s}\n", .{bytes});
+        return error.TestUnexpectedResult;
+    };
+    if (v != .object) {
+        std.debug.print("expected top-level object, got:\n{s}\n", .{bytes});
+        return error.TestUnexpectedResult;
+    }
+    return v.object;
+}
+
+fn objKeys(arena: std.mem.Allocator, o: std.json.ObjectMap) ![]const []const u8 {
+    var ks: std.ArrayList([]const u8) = .empty;
+    var it = o.iterator();
+    while (it.next()) |e| try ks.append(arena, e.key_ptr.*);
+    return ks.toOwnedSlice(arena);
+}
+
+/// `b`'s member order must equal `a`'s with `removed` dropped and/or
+/// `appended` added last — the strict parser's insertion order is the
+/// independent record of file order.
+fn expectOrder(arena: std.mem.Allocator, a: std.json.ObjectMap, b: std.json.ObjectMap, removed: ?[]const u8, appended: ?[]const u8) !void {
+    var want: std.ArrayList([]const u8) = .empty;
+    for (try objKeys(arena, a)) |k| {
+        if (removed) |r| {
+            if (std.mem.eql(u8, k, r)) continue;
+        }
+        try want.append(arena, k);
+    }
+    if (appended) |k| try want.append(arena, k);
+    const got = try objKeys(arena, b);
+    if (want.items.len != got.len) {
+        std.debug.print("member count changed: want {d} keys, got {d}\n", .{ want.items.len, got.len });
+        return error.TestUnexpectedResult;
+    }
+    for (want.items, got) |w, g| try testing.expectEqualStrings(w, g);
+}
+
+/// Every member of `a` except `except` must survive in `b` with an equal value.
+fn expectValuesKept(a: std.json.ObjectMap, b: std.json.ObjectMap, except: ?[]const u8) !void {
+    var it = a.iterator();
+    while (it.next()) |e| {
+        if (except) |x| {
+            if (std.mem.eql(u8, e.key_ptr.*, x)) continue;
+        }
+        const bv = b.get(e.key_ptr.*) orelse {
+            std.debug.print("member lost: {s}\n", .{e.key_ptr.*});
+            return error.TestUnexpectedResult;
+        };
+        try testing.expect(jsonEq(e.value_ptr.*, bv));
+    }
+}
+
+/// After a `set`: top-level order (appended-last on insert), every untouched
+/// member's value, and the edited member holding exactly the coerced token —
+/// recursing into "keys" for `keys.<provider>` targets.
+fn expectSetSemantics(arena: std.mem.Allocator, orig: []const u8, out: []const u8, kp: KeyPath, token: []const u8, field_appended: bool) !void {
+    const o = try strictObj(arena, orig);
+    const n = try strictObj(arena, out);
+    const tok_v = try std.json.parseFromSliceLeaky(std.json.Value, arena, token, .{});
+    switch (kp) {
+        .field => |fname| {
+            try expectOrder(arena, o, n, null, if (field_appended) fname else null);
+            try expectValuesKept(o, n, fname);
+            try testing.expect(jsonEq(tok_v, n.get(fname).?));
+        },
+        .keys_entry => |pname| {
+            const had_keys = if (o.get("keys")) |kv| kv == .object else false;
+            try expectOrder(arena, o, n, null, if (had_keys) null else "keys");
+            try expectValuesKept(o, n, "keys");
+            const nk = n.get("keys").?.object;
+            if (had_keys) {
+                const ok_keys = o.get("keys").?.object;
+                try expectOrder(arena, ok_keys, nk, null, pname);
+                try expectValuesKept(ok_keys, nk, pname);
+            } else {
+                // A fresh "keys" member holds exactly the one entry.
+                const ks = try objKeys(arena, nk);
+                try testing.expectEqual(@as(usize, 1), ks.len);
+                try testing.expectEqualStrings(pname, ks[0]);
+            }
+            try testing.expect(jsonEq(tok_v, nk.get(pname).?));
+        },
+    }
+}
+
+/// After an `unset`: the member is gone, order and every other value intact —
+/// recursing into "keys" for `keys.<provider>` targets.
+fn expectUnsetSemantics(arena: std.mem.Allocator, orig: []const u8, out: []const u8, kp: KeyPath) !void {
+    const o = try strictObj(arena, orig);
+    const n = try strictObj(arena, out);
+    switch (kp) {
+        .field => |fname| {
+            try expectOrder(arena, o, n, fname, null);
+            try expectValuesKept(o, n, fname);
+            try testing.expect(n.get(fname) == null);
+        },
+        .keys_entry => |pname| {
+            try expectOrder(arena, o, n, null, null);
+            try expectValuesKept(o, n, "keys");
+            const ok_keys = o.get("keys").?.object;
+            const nk = n.get("keys").?.object;
+            try expectOrder(arena, ok_keys, nk, pname, null);
+            try expectValuesKept(ok_keys, nk, pname);
+            try testing.expect(nk.get(pname) == null);
+        },
+    }
+}
+
+fn propBakBytes(arena: std.mem.Allocator, th: *const EditHome) !?[]u8 {
+    const bak = try bakPath(arena, try th.configPath(arena));
+    return std.Io.Dir.cwd().readFileAlloc(testing.io, bak, arena, .unlimited) catch null;
+}
+
+/// After a write the `.bak` holds the pre-write bytes verbatim; after a
+/// create-or-no-op there is no `.bak` at all.
+fn expectBak(arena: std.mem.Allocator, th: *const EditHome, want: ?[]const u8) !void {
+    const got = try propBakBytes(arena, th);
+    if (want) |w| {
+        if (got == null) return error.TestUnexpectedResult;
+        try testing.expectEqualStrings(w, got.?);
+    } else {
+        try testing.expect(got == null);
+    }
+}
+
+// --- randomized JSONC document generation -----------------------------------
+
+const prop_known_keys = [_][]const u8{ "provider", "model", "mode", "stream", "thinking", "debug", "temperature", "max_tokens", "timeout_ms", "context_window", "auto_compact", "compact_threshold", "compact_keep_recent_tokens", "goal_max_iterations", "goal_max_continues", "api_key", "keys" };
+const prop_unknown_keys = [_][]const u8{ "zzz_custom", "plugin_flags", "extra", "x_meta", "notes", "legacy_blob" };
+const prop_arb_values = [_][]const u8{
+    "\"plain\"",
+    "\"with \\\"quoted\\\" part\"",
+    "\"// not a comment\"",
+    "\"/* also not a comment */\"",
+    "0",
+    "-17",
+    "3.14159",
+    "true",
+    "false",
+    "null",
+    "[1, \"two\", {\"k\": [true, null]}]",
+    "{\"nested\": {\"deep\": -3.5, \"s\": \"x\"}}",
+    "[]",
+    "{}",
+};
+
+fn propIndent(rnd: std.Random) []const u8 {
+    const opts = [_][]const u8{ "  ", "    ", "\t", " \t", "", "   " };
+    return opts[rnd.intRangeLessThan(usize, 0, opts.len)];
+}
+
+/// A unique-tagged comment (the tag keeps census checks collision-free) with
+/// hostile punctuation inside — braces, quotes, colons, comment openers.
+fn propComment(arena: std.mem.Allocator, tag: usize, block: bool) ![]u8 {
+    if (block) return std.fmt.allocPrint(arena, "/* pb{d} }} \" : , // */", .{tag});
+    return std.fmt.allocPrint(arena, "// pl{d} }} \" : , /*", .{tag});
+}
+
+/// A `{ "<provider>": "sk-..." }` literal for a generated "keys" member,
+/// recording the emitted provider names in `keys_members`.
+fn propKeysToken(arena: std.mem.Allocator, rnd: std.Random, keys_members: *std.ArrayList([]const u8)) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    try b.append(arena, '{');
+    const n = rnd.intRangeLessThan(usize, 0, cfgmod.providers.len + 1);
+    var used = std.StringHashMap(void).init(arena);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const p = cfgmod.providers[rnd.intRangeLessThan(usize, 0, cfgmod.providers.len)].name;
+        if (used.contains(p)) continue;
+        try used.put(p, {});
+        if (keys_members.items.len > 0) try b.append(arena, ',');
+        try b.append(arena, ' ');
+        if (rnd.intRangeLessThan(u8, 0, 6) == 0) try b.appendSlice(arena, "/* ki */ ");
+        const entry = try std.fmt.allocPrint(arena, "\"{s}\": \"sk-doc-{d}\"", .{ p, rnd.intRangeLessThan(u32, 0, 1000) });
+        try b.appendSlice(arena, entry);
+        try keys_members.append(arena, p);
+    }
+    if (keys_members.items.len > 0) try b.append(arena, ' ');
+    try b.append(arena, '}');
+    return b.toOwnedSlice(arena);
+}
+
+/// A valid JSON literal for member `name` of a generated document —
+/// schema-clean for known fields so the doc can double as a `config edit`
+/// fixture; arbitrary JSON (nested arrays/objects, hostile strings) for
+/// unknown members.
+fn propDocToken(arena: std.mem.Allocator, rnd: std.Random, name: []const u8, keys_members: *std.ArrayList([]const u8)) ![]const u8 {
+    if (std.mem.eql(u8, name, "provider")) {
+        return std.fmt.allocPrint(arena, "\"{s}\"", .{cfgmod.providers[rnd.intRangeLessThan(usize, 0, cfgmod.providers.len)].name});
+    }
+    if (std.mem.eql(u8, name, "model")) return std.fmt.allocPrint(arena, "\"m-{d}\"", .{rnd.intRangeLessThan(u32, 0, 1000)});
+    if (std.mem.eql(u8, name, "api_key")) return std.fmt.allocPrint(arena, "\"sk-doc-{d}\"", .{rnd.intRangeLessThan(u32, 0, 1000)});
+    if (std.mem.eql(u8, name, "mode")) return if (rnd.boolean()) "\"json\"" else "\"text\"";
+    if (std.mem.eql(u8, name, "stream") or std.mem.eql(u8, name, "thinking") or std.mem.eql(u8, name, "debug") or std.mem.eql(u8, name, "auto_compact"))
+        return if (rnd.boolean()) "true" else "false";
+    if (std.mem.eql(u8, name, "temperature") or std.mem.eql(u8, name, "compact_threshold"))
+        return std.fmt.allocPrint(arena, "0.{d}", .{rnd.intRangeLessThan(u8, 0, 10)});
+    if (std.mem.eql(u8, name, "keys")) return propKeysToken(arena, rnd, keys_members);
+    if (isKnownField(name)) // remaining fields are ints
+        return std.fmt.allocPrint(arena, "{d}", .{rnd.intRangeLessThan(u32, 1, 100000)});
+    return prop_arb_values[rnd.intRangeLessThan(usize, 0, prop_arb_values.len)];
+}
+
+/// A `config set`-legal raw value for `kp` (mirrors `validRawFor` but picks
+/// randomized raws so the coerced tokens vary too).
+fn propRawFor(arena: std.mem.Allocator, rnd: std.Random, kp: KeyPath) ![]const u8 {
+    switch (kp) {
+        .keys_entry => return std.fmt.allocPrint(arena, "sk-set-{d}", .{rnd.intRangeLessThan(u32, 0, 1000)}),
+        .field => |name| {
+            if (std.mem.eql(u8, name, "provider"))
+                return cfgmod.providers[rnd.intRangeLessThan(usize, 0, cfgmod.providers.len)].name;
+            if (std.mem.eql(u8, name, "mode")) return if (rnd.boolean()) "json" else "text";
+            if (std.mem.eql(u8, name, "api_key"))
+                return std.fmt.allocPrint(arena, "sk-set-{d}", .{rnd.intRangeLessThan(u32, 0, 1000)});
+            if (std.mem.eql(u8, name, "keys")) {
+                const p = cfgmod.providers[rnd.intRangeLessThan(usize, 0, cfgmod.providers.len)].name;
+                return std.fmt.allocPrint(arena, "{{\"{s}\":\"sk-set-{d}\"}}", .{ p, rnd.intRangeLessThan(u32, 0, 1000) });
+            }
+            inline for (file_fields) |f| {
+                if (std.mem.eql(u8, name, f.name)) {
+                    return switch (comptime fieldKind(f.type)) {
+                        .string => std.fmt.allocPrint(arena, "v-{d}", .{rnd.intRangeLessThan(u32, 0, 1000)}),
+                        .boolean => if (rnd.boolean()) "true" else "false",
+                        .integer => std.fmt.allocPrint(arena, "{d}", .{rnd.intRangeLessThan(u32, 1, 10000)}),
+                        .number => std.fmt.allocPrint(arena, "0.{d}", .{rnd.intRangeLessThan(u8, 1, 10)}),
+                        .any_json => "{}",
+                    };
+                }
+            }
+            unreachable;
+        },
+    }
+}
+
+/// A comments-only "blank" file (no braces at all) — `set` must keep every
+/// byte and append a fresh object.
+fn genCommentsOnly(arena: std.mem.Allocator, rnd: std.Random) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    const n = rnd.intRangeLessThan(usize, 1, 4);
+    for (0..n) |t| {
+        try b.appendSlice(arena, try propComment(arena, t, rnd.boolean()));
+        try b.append(arena, '\n');
+    }
+    if (rnd.boolean()) _ = b.pop(); // drop the trailing newline half the time
+    return b.toOwnedSlice(arena);
+}
+
+/// Generate a random JSONC config document — comments (line + block, hostile
+/// contents) in every trivia position, random indentation, blank lines,
+/// colon-spacing variants, occasional single-line layout, unknown members
+/// with arbitrary JSON values. Always strict-JSON-parseable after comment
+/// stripping (`readDoc` requires it); `known_only` restricts members to
+/// schema fields so the doc can pass `config validate` (edit fixtures).
+fn genPropDoc(arena: std.mem.Allocator, rnd: std.Random, known_only: bool) !PropDoc {
+    var b: std.ArrayList(u8) = .empty;
+    var members: std.ArrayList([]const u8) = .empty;
+    var keys_members: std.ArrayList([]const u8) = .empty;
+    var used = std.StringHashMap(void).init(arena);
+    var ctag: usize = 0;
+
+    // Header comments before the object.
+    for (0..rnd.intRangeLessThan(usize, 0, 3)) |_| {
+        try b.appendSlice(arena, try propComment(arena, ctag, rnd.boolean()));
+        ctag += 1;
+        try b.append(arena, '\n');
+    }
+
+    try b.append(arena, '{');
+
+    const single_line = rnd.intRangeLessThan(u8, 0, 7) == 0;
+    const n = rnd.intRangeLessThan(usize, 0, 7);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        var name: ?[]const u8 = null;
+        var tries: usize = 0;
+        while (tries < 80) : (tries += 1) {
+            const known = known_only or rnd.intRangeLessThan(u8, 0, 4) > 0;
+            const cand = if (known)
+                prop_known_keys[rnd.intRangeLessThan(usize, 0, prop_known_keys.len)]
+            else
+                prop_unknown_keys[rnd.intRangeLessThan(usize, 0, prop_unknown_keys.len)];
+            if (!used.contains(cand)) {
+                try used.put(cand, {});
+                name = cand;
+                break;
+            }
+        }
+        if (name == null) break;
+
+        if (i > 0) try b.append(arena, ',');
+        if (single_line) {
+            try b.append(arena, ' ');
+            if (rnd.intRangeLessThan(u8, 0, 5) == 0) {
+                try b.appendSlice(arena, try propComment(arena, ctag, true));
+                ctag += 1;
+                try b.append(arena, ' ');
+            }
+        } else {
+            try b.append(arena, '\n');
+            if (rnd.intRangeLessThan(u8, 0, 4) == 0) try b.append(arena, '\n');
+            if (rnd.boolean()) {
+                try b.appendSlice(arena, propIndent(rnd));
+                try b.appendSlice(arena, try propComment(arena, ctag, rnd.intRangeLessThan(u8, 0, 3) == 0));
+                ctag += 1;
+                try b.append(arena, '\n');
+            }
+            try b.appendSlice(arena, propIndent(rnd));
+        }
+        try b.append(arena, '"');
+        try b.appendSlice(arena, name.?);
+        try b.append(arena, '"');
+        switch (rnd.intRangeLessThan(u8, 0, 8)) {
+            0 => try b.appendSlice(arena, " : "),
+            1 => try b.appendSlice(arena, ":"),
+            2 => try b.appendSlice(arena, "\t:\t"),
+            3 => try b.appendSlice(arena, " /* kc */ : "),
+            else => try b.appendSlice(arena, ": "),
+        }
+        if (rnd.intRangeLessThan(u8, 0, 6) == 0) try b.appendSlice(arena, "/* cv */ ");
+        try b.appendSlice(arena, try propDocToken(arena, rnd, name.?, &keys_members));
+        if (rnd.intRangeLessThan(u8, 0, 5) == 0) {
+            try b.append(arena, ' ');
+            // Always block: a `//` here would eat the `,` that follows.
+            try b.appendSlice(arena, try propComment(arena, ctag, true));
+            ctag += 1;
+        }
+        try members.append(arena, name.?);
+    }
+    // Closing trivia: whitespace only inside a memberless `{ }` — that region
+    // is `set`'s insertion point (comments there are the documented exception
+    // pinned in the fixed-case test below).
+    if (members.items.len == 0) {
+        try b.appendSlice(arena, if (rnd.boolean()) " " else "\n");
+    } else if (single_line) {
+        try b.append(arena, ' ');
+    } else {
+        try b.append(arena, '\n');
+        if (rnd.intRangeLessThan(u8, 0, 4) == 0) {
+            try b.appendSlice(arena, try propComment(arena, ctag, false));
+            ctag += 1;
+            try b.append(arena, '\n');
+        }
+    }
+    try b.append(arena, '}');
+    if (rnd.intRangeLessThan(u8, 0, 4) == 0) {
+        try b.append(arena, ' ');
+        try b.appendSlice(arena, try propComment(arena, ctag, true));
+        ctag += 1;
+    }
+    if (rnd.intRangeLessThan(u8, 0, 4) == 0) try b.append(arena, '\n');
+    return .{
+        .bytes = try b.toOwnedSlice(arena),
+        .members = try members.toOwnedSlice(arena),
+        .keys_members = try keys_members.toOwnedSlice(arena),
+    };
+}
+
+fn containsName(names: []const []const u8, n: []const u8) bool {
+    for (names) |k| {
+        if (std.mem.eql(u8, k, n)) return true;
+    }
+    return false;
+}
+
+// --- operations under test ----------------------------------------------------
+
+/// `set` on a present member must produce exactly `orig` with the value span
+/// [vs, ve) replaced by the coerced token — nothing else may move.
+fn opSetExisting(arena: std.mem.Allocator, th: *EditHome, orig: []const u8, g: PropDoc, rnd: std.Random) anyerror!void {
+    var cands: std.ArrayList([]const u8) = .empty;
+    for (g.members) |m| {
+        if (isKnownField(m)) try cands.append(arena, m);
+    }
+    for (g.keys_members) |p| try cands.append(arena, try std.fmt.allocPrint(arena, "keys.{s}", .{p}));
+    if (cands.items.len == 0) return opSetNew(arena, th, orig, g, rnd);
+    const name = cands.items[rnd.intRangeLessThan(usize, 0, cands.items.len)];
+    const kp = (parseKeyPath(arena, name, true)).ok;
+    const raw = try propRawFor(arena, rnd, kp);
+    const token = (try coerceValue(arena, kp, raw)).ok;
+
+    const obj = try scanDoc(arena, orig);
+    var vs: usize = undefined;
+    var ve: usize = undefined;
+    switch (kp) {
+        .field => |fname| {
+            const m = obj.members[findMember(obj, fname).?];
+            vs = m.value_start;
+            ve = m.value_end;
+        },
+        .keys_entry => |pname| {
+            const km = obj.members[findMember(obj, "keys").?];
+            const inner = try scanObj(arena, orig, km.value_start);
+            const im = inner.members[findMember(inner, pname).?];
+            vs = im.value_start;
+            ve = im.value_end;
+        },
+    }
+    var want: std.ArrayList(u8) = .empty;
+    try want.appendSlice(arena, orig[0..vs]);
+    try want.appendSlice(arena, token);
+    try want.appendSlice(arena, orig[ve..]);
+
+    _ = try expectOk(try th.sub(arena, .set, name, raw, false));
+    const out = th.readConfig(arena).?;
+    try testing.expectEqualStrings(want.items, out);
+    try expectSetSemantics(arena, orig, out, kp, token, false);
+    try expectCommentsKept(arena, orig, out, vs, ve);
+    try expectBak(arena, th, orig);
+
+    // set is byte-idempotent: a second identical set changes nothing.
+    _ = try expectOk(try th.sub(arena, .set, name, raw, false));
+    try testing.expectEqualStrings(out, th.readConfig(arena).?);
+}
+
+/// `set` on an absent member must keep the file's prefix and suffix verbatim
+/// around the insertion point — which is after the last member's value (or
+/// the interior of a memberless object).
+fn opSetNew(arena: std.mem.Allocator, th: *EditHome, orig: []const u8, g: PropDoc, rnd: std.Random) anyerror!void {
+    var cands: std.ArrayList([]const u8) = .empty;
+    inline for (file_fields) |f| {
+        if (!containsName(g.members, f.name)) try cands.append(arena, f.name);
+    }
+    for (cfgmod.providers) |p| {
+        if (!containsName(g.keys_members, p.name)) {
+            try cands.append(arena, try std.fmt.allocPrint(arena, "keys.{s}", .{p.name}));
+        }
+    }
+    if (cands.items.len == 0) return opSetExisting(arena, th, orig, g, rnd);
+    const name = cands.items[rnd.intRangeLessThan(usize, 0, cands.items.len)];
+    const kp = (parseKeyPath(arena, name, true)).ok;
+    const raw = try propRawFor(arena, rnd, kp);
+    const token = (try coerceValue(arena, kp, raw)).ok;
+
+    const obj = try scanDoc(arena, orig);
+    // Insertion happens inside the "keys" object for keys.<p> targets when it
+    // exists; otherwise a member is appended at the top level.
+    var target: Obj = obj;
+    var leaf: []const u8 = name;
+    switch (kp) {
+        .field => {},
+        .keys_entry => |pname| {
+            if (findMember(obj, "keys")) |ki| {
+                target = try scanObj(arena, orig, obj.members[ki].value_start);
+                leaf = pname;
+            } else {
+                leaf = "keys"; // the fresh member inserted is "keys" itself
+            }
+        },
+    }
+    var rs: usize = undefined;
+    var re: usize = undefined;
+    if (target.members.len == 0) {
+        rs = target.open + 1;
+        re = target.close; // empty-object interior is replaced wholesale
+    } else {
+        rs = target.members[target.members.len - 1].value_end;
+        re = rs;
+    }
+
+    _ = try expectOk(try th.sub(arena, .set, name, raw, false));
+    const out = th.readConfig(arena).?;
+    try testing.expectEqualStrings(orig[0..rs], out[0..rs]);
+    const suffix_len = orig.len - re;
+    try testing.expectEqualStrings(orig[re..], out[out.len - suffix_len ..]);
+    const inserted = out[rs .. out.len - suffix_len];
+    const needle = try std.fmt.allocPrint(arena, "\"{s}\":", .{leaf});
+    try testing.expect(std.mem.indexOf(u8, inserted, needle) != null);
+    try expectSetSemantics(arena, orig, out, kp, token, true);
+    try expectCommentsKept(arena, orig, out, rs, re);
+    try expectBak(arena, th, orig);
+
+    _ = try expectOk(try th.sub(arena, .set, name, raw, false));
+    try testing.expectEqualStrings(out, th.readConfig(arena).?);
+}
+
+/// `set` on a missing or comment-only file: every existing byte (all the
+/// comments) survives verbatim and a fresh `{ "key": token }` is appended.
+fn opSetBlankOrMissing(arena: std.mem.Allocator, th: *EditHome, orig: ?[]const u8, rnd: std.Random) !void {
+    const name = prop_known_keys[rnd.intRangeLessThan(usize, 0, prop_known_keys.len)];
+    const kp = (parseKeyPath(arena, name, true)).ok;
+    const raw = try propRawFor(arena, rnd, kp);
+    const token = (try coerceValue(arena, kp, raw)).ok;
+
+    _ = try expectOk(try th.sub(arena, .set, name, raw, false));
+    const out = th.readConfig(arena).?;
+    var want: std.ArrayList(u8) = .empty;
+    if (orig) |o| {
+        try want.appendSlice(arena, o);
+        if (o.len > 0 and o[o.len - 1] != '\n') try want.append(arena, '\n');
+    }
+    try want.appendSlice(arena, "{\n  \"");
+    try jsonmod.escapeInto(arena, &want, name);
+    try want.appendSlice(arena, "\": ");
+    try want.appendSlice(arena, token);
+    try want.appendSlice(arena, "\n}\n");
+    try testing.expectEqualStrings(want.items, out);
+    // Blank files get a .bak of their pre-write bytes; missing files get none.
+    try expectBak(arena, th, orig);
+}
+
+/// `unset` must produce exactly `orig` minus one contiguous removal span —
+/// the member's line, its separator comma, nothing else.
+fn opUnset(arena: std.mem.Allocator, th: *EditHome, orig: []const u8, g: PropDoc, rnd: std.Random) !void {
+    var cands: std.ArrayList([]const u8) = .empty;
+    try cands.appendSlice(arena, g.members);
+    for (g.keys_members) |p| try cands.append(arena, try std.fmt.allocPrint(arena, "keys.{s}", .{p}));
+    if (cands.items.len == 0) return opUnsetAbsent(arena, th, orig, g, rnd);
+    const name = cands.items[rnd.intRangeLessThan(usize, 0, cands.items.len)];
+    const kp = (parseKeyPath(arena, name, false)).ok;
+
+    const obj = try scanDoc(arena, orig);
+    var rs: usize = undefined;
+    var re: usize = undefined;
+    var leaf: []const u8 = name;
+    switch (kp) {
+        .field => |fname| {
+            const m = obj.members[findMember(obj, fname).?];
+            const s = removalSpan(orig, m);
+            rs = s.start;
+            re = s.end;
+            leaf = fname;
+        },
+        .keys_entry => |pname| {
+            const km = obj.members[findMember(obj, "keys").?];
+            const inner = try scanObj(arena, orig, km.value_start);
+            const im = inner.members[findMember(inner, pname).?];
+            const s = removalSpan(orig, im);
+            rs = s.start;
+            re = s.end;
+            leaf = pname;
+        },
+    }
+    // The removed span covers exactly the member — its key token is inside.
+    const kq = try std.fmt.allocPrint(arena, "\"{s}\"", .{leaf});
+    try testing.expect(std.mem.indexOf(u8, orig[rs..re], kq) != null);
+    var want: std.ArrayList(u8) = .empty;
+    try want.appendSlice(arena, orig[0..rs]);
+    try want.appendSlice(arena, orig[re..]);
+
+    _ = try expectOk(try th.sub(arena, .unset, name, null, false));
+    const out = th.readConfig(arena).?;
+    try testing.expectEqualStrings(want.items, out);
+    try expectUnsetSemantics(arena, orig, out, kp);
+    try expectCommentsKept(arena, orig, out, rs, re);
+    try expectBak(arena, th, orig);
+
+    // Removing the same key again reports not_found and changes nothing.
+    try expectFailCode(try th.sub(arena, .unset, name, null, false), 1);
+    try testing.expectEqualStrings(out, th.readConfig(arena).?);
+}
+
+/// `unset`/`set` failures never touch the file — byte-identical, no `.bak`.
+fn opUnsetAbsent(arena: std.mem.Allocator, th: *EditHome, orig: []const u8, g: PropDoc, rnd: std.Random) !void {
+    _ = rnd;
+    var cands: std.ArrayList([]const u8) = .empty;
+    inline for (file_fields) |f| {
+        if (!containsName(g.members, f.name)) try cands.append(arena, f.name);
+    }
+    for (prop_unknown_keys) |k| {
+        if (!containsName(g.members, k)) try cands.append(arena, k);
+    }
+    for (cfgmod.providers) |p| {
+        if (!containsName(g.keys_members, p.name)) {
+            try cands.append(arena, try std.fmt.allocPrint(arena, "keys.{s}", .{p.name}));
+        }
+    }
+    try cands.append(arena, "definitely_absent_key");
+    const name = cands.items[0];
+    try expectFailCode(try th.sub(arena, .unset, name, null, false), 1);
+    try testing.expectEqualStrings(orig, th.readConfig(arena).?);
+    try expectBak(arena, th, null);
+}
+
+fn opSetInvalid(arena: std.mem.Allocator, th: *EditHome, orig: []const u8, rnd: std.Random) !void {
+    const bad = [_]struct { key: []const u8, raw: []const u8 }{
+        .{ .key = "provider", .raw = "zzzcorp-not-a-provider" },
+        .{ .key = "mode", .raw = "yaml" },
+        .{ .key = "stream", .raw = "yes" },
+        .{ .key = "temperature", .raw = "nan" },
+        .{ .key = "max_tokens", .raw = "-1" },
+        .{ .key = "compact_threshold", .raw = "1.5" },
+        .{ .key = "keys.notaprovider", .raw = "sk" },
+        .{ .key = "not_a_field", .raw = "x" },
+    };
+    const b = bad[rnd.intRangeLessThan(usize, 0, bad.len)];
+    try expectFailCode(try th.sub(arena, .set, b.key, b.raw, false), 80);
+    try testing.expectEqualStrings(orig, th.readConfig(arena).?);
+    try expectBak(arena, th, null);
+}
+
+/// `config edit` with a no-op editor leaves the file byte-identical — the
+/// preservation property holds whether or not the file validates clean (a
+/// doc carrying unknown members reports `.invalid`, still untouched).
+fn opEditNoop(arena: std.mem.Allocator, th: *EditHome, orig: []const u8, g: PropDoc) !void {
+    var schema_clean = true;
+    for (g.members) |m| {
+        if (!isKnownField(m)) {
+            schema_clean = false;
+            break;
+        }
+    }
+    try th.env.put("TAU_EDITOR", "true");
+    const outcome = try runEditor(testing.io, arena, try th.configPath(arena), &th.env, .json);
+    switch (outcome) {
+        .ok => {
+            if (!schema_clean) {
+                std.debug.print("expected invalid for unknown members, got ok\n", .{});
+                return error.TestUnexpectedResult;
+            }
+        },
+        .invalid => {
+            if (schema_clean) {
+                std.debug.print("unexpected invalid on schema-clean doc\n--- doc ---\n{s}\n", .{orig});
+                return error.TestUnexpectedResult;
+            }
+        },
+        .fail => |f| {
+            std.debug.print("unexpected fail: {s}\n", .{f.message});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try testing.expectEqualStrings(orig, th.readConfig(arena).?);
+}
+
+/// `config edit` never normalizes: whatever the editor saves lands verbatim —
+/// comments, spacing, ordering, trailing newline or none.
+fn opEditRewrite(arena: std.mem.Allocator, th: *EditHome, rnd: std.Random) !void {
+    const fixture = (try genPropDoc(arena, rnd, true)).bytes;
+    const fpath = try std.fmt.allocPrint(arena, "{s}/fixture-{d}.jsonc", .{ th.home, rnd.int(u32) });
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = fpath, .data = fixture });
+    try th.env.put("TAU_EDITOR", try std.fmt.allocPrint(arena, "cp {s}", .{fpath}));
+    const outcome = try runEditor(testing.io, arena, try th.configPath(arena), &th.env, .json);
+    switch (outcome) {
+        .ok => {},
+        .invalid => |s| {
+            std.debug.print("fixture failed validation:\n{s}\n--- fixture ---\n{s}\n", .{ s, fixture });
+            return error.TestUnexpectedResult;
+        },
+        .fail => |f| {
+            std.debug.print("unexpected fail: {s}\n", .{f.message});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try testing.expectEqualStrings(fixture, th.readConfig(arena).?);
+}
+
+test "property: config set|unset|edit preserve comments, ordering, formatting byte-for-byte" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    const cfg_path = try th.configPath(arena);
+    const bak = try bakPath(arena, cfg_path);
+
+    var prng = std.Random.DefaultPrng.init(0x486);
+    const rnd = prng.random();
+
+    const n_ops = 8;
+    var ran = [_]usize{0} ** n_ops;
+
+    var i: usize = 0;
+    while (i < 220) : (i += 1) {
+        std.Io.Dir.cwd().deleteFile(testing.io, cfg_path) catch {};
+        std.Io.Dir.cwd().deleteFile(testing.io, bak) catch {};
+
+        const variant = rnd.intRangeLessThan(u8, 0, 100);
+        var orig: []const u8 = "";
+        var g: PropDoc = .{ .bytes = "", .members = &.{}, .keys_members = &.{} };
+        var parsed_doc = true;
+        if (variant < 4) {
+            parsed_doc = false; // missing file
+        } else if (variant < 10) {
+            parsed_doc = false;
+            orig = try genCommentsOnly(arena, rnd); // comments only, no braces
+            try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data = orig });
+        } else {
+            g = try genPropDoc(arena, rnd, false);
+            orig = g.bytes;
+            try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data = orig });
+        }
+
+        const opv = rnd.intRangeLessThan(u8, 0, 100);
+        if (!parsed_doc) {
+            try opSetBlankOrMissing(arena, &th, if (variant < 4) null else orig, rnd);
+        } else if (opv < 30) {
+            ran[0] += 1;
+            try opSetExisting(arena, &th, orig, g, rnd);
+        } else if (opv < 56) {
+            ran[1] += 1;
+            try opSetNew(arena, &th, orig, g, rnd);
+        } else if (opv < 76) {
+            ran[2] += 1;
+            try opUnset(arena, &th, orig, g, rnd);
+        } else if (opv < 84) {
+            ran[3] += 1;
+            try opUnsetAbsent(arena, &th, orig, g, rnd);
+        } else if (opv < 91) {
+            ran[4] += 1;
+            try opSetInvalid(arena, &th, orig, rnd);
+        } else if (builtin.os.tag != .windows and opv < 96) {
+            ran[5] += 1;
+            try opEditNoop(arena, &th, orig, g);
+        } else if (builtin.os.tag != .windows) {
+            ran[6] += 1;
+            try opEditRewrite(arena, &th, rnd);
+        } else {
+            ran[7] += 1;
+            try opSetNew(arena, &th, orig, g, rnd);
+        }
+    }
+
+    // Coverage: every operation actually ran (fixed seed — deterministic).
+    try testing.expect(ran[0] > 0); // set existing
+    try testing.expect(ran[1] > 0); // set insert
+    try testing.expect(ran[2] > 0); // unset
+    try testing.expect(ran[3] > 0); // unset absent
+    try testing.expect(ran[4] > 0); // set invalid
+    if (builtin.os.tag != .windows) {
+        try testing.expect(ran[5] > 0); // edit no-op
+        try testing.expect(ran[6] > 0); // edit rewrite
+    }
+}
+
+test "preservation: fixed cases — duplicate members, single-line, tabs, comment-only file" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    const cfg_path = try th.configPath(arena);
+    const bak = try bakPath(arena, cfg_path);
+    const seed = struct {
+        fn f(io: std.Io, path: []const u8, bytes: []const u8) !void {
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes });
+        }
+    }.f;
+
+    // Duplicate member names: the strict-parse gate in readDoc refuses the
+    // file outright (duplicate keys are invalid JSON for std.json) — every
+    // config subcommand reports invalid_config before any splice happens.
+    const dup = "{\n  \"mode\": \"json\", // first\n  \"provider\": \"openai\",\n  \"mode\": \"text\"\n}\n";
+    try seed(testing.io, cfg_path, dup);
+    const dup_fail = try failMessage(try th.sub(arena, .unset, "mode", null, false));
+    try testing.expectEqual(@as(u8, 1), dup_fail.code);
+    try testing.expect(std.mem.indexOf(u8, dup_fail.message, "invalid JSON") != null);
+    try testing.expectEqualStrings(dup, th.readConfig(arena).?);
+
+    // Single-line doc: an inserted member appends inline after the last one;
+    // the comment after it slides behind the new member but survives verbatim.
+    const sl = "{ /* keep */ \"provider\": \"openai\", \"stream\": true /* tail */ }\n";
+    std.Io.Dir.cwd().deleteFile(testing.io, bak) catch {};
+    try seed(testing.io, cfg_path, sl);
+    _ = try expectOk(try th.sub(arena, .set, "model", "m-1", false));
+    try testing.expectEqualStrings("{ /* keep */ \"provider\": \"openai\", \"stream\": true, \"model\": \"m-1\" /* tail */ }\n", th.readConfig(arena).?);
+
+    // Unset the last member of a single-line doc: the preceding comma goes
+    // with it, the rest of the line (spacing included) is untouched.
+    _ = try expectOk(try th.sub(arena, .unset, "model", null, false));
+    try testing.expectEqualStrings("{ /* keep */ \"provider\": \"openai\", \"stream\": true /* tail */ }\n", th.readConfig(arena).?);
+
+    // Tab-indented doc with spaced colon: a value splice keeps tabs verbatim.
+    const tabs = "{\n\t// note\n\t\"provider\"\t:\t\"openai\",\n\t\"stream\" : true\n}\n";
+    try seed(testing.io, cfg_path, tabs);
+    _ = try expectOk(try th.sub(arena, .set, "stream", "false", false));
+    try testing.expectEqualStrings("{\n\t// note\n\t\"provider\"\t:\t\"openai\",\n\t\"stream\" : false\n}\n", th.readConfig(arena).?);
+
+    // Comment-only (blank) file: every comment survives; the object is
+    // appended after them rather than replacing them.
+    const comments_only = "// lead\n/* block */\n";
+    try seed(testing.io, cfg_path, comments_only);
+    _ = try expectOk(try th.sub(arena, .set, "mode", "text", false));
+    try testing.expectEqualStrings("// lead\n/* block */\n{\n  \"mode\": \"text\"\n}\n", th.readConfig(arena).?);
+
+    // CRLF file: existing line endings are untouched; inserted lines use \n.
+    const crlf = "{\r\n  \"provider\": \"openai\"\r\n}\r\n";
+    try seed(testing.io, cfg_path, crlf);
+    _ = try expectOk(try th.sub(arena, .set, "stream", "true", false));
+    try testing.expectEqualStrings("{\r\n  \"provider\": \"openai\",\n  \"stream\": true\r\n}\r\n", th.readConfig(arena).?);
+
+    // Documented boundary: the interior of a memberless `{ }` is the
+    // insertion region — a comment there is not preserved by `set`.
+    const empty_c = "{ /* inside empty braces */ }\n";
+    try seed(testing.io, cfg_path, empty_c);
+    _ = try expectOk(try th.sub(arena, .set, "provider", "openai", false));
+    try testing.expectEqualStrings("{\n  \"provider\": \"openai\"\n}\n", th.readConfig(arena).?);
+}
