@@ -139,6 +139,9 @@ const doctor_help =
     \\                         or just the named check; prompts per fix on
     \\                         a TTY (see `tau explain doctor.<check>`)
     \\  -y, --yes              Apply --fix remediations without prompting
+    \\      --dry-run          Preview each --fix remediation as
+    \\                         "would_apply" — files, actions, rollback;
+    \\                         changes nothing (mutex with --yes)
     \\      --json             Stream NDJSON check/fix events + verdict
     \\                         (schema/tau-doctor.schema.json)
     \\      --report           Print a redacted Markdown diagnostics bundle
@@ -150,6 +153,7 @@ const doctor_help =
     \\  tau doctor
     \\  tau doctor --offline
     \\  tau doctor --selftest
+    \\  tau doctor --fix --dry-run
     \\  tau doctor --fix --yes
     \\  tau doctor --fix shell_completions --yes
     \\  tau doctor --probe

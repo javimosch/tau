@@ -658,7 +658,7 @@ pub fn snippetPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![
 
 /// Where the mcacp bridge-side snippet lands when the existing mcacp.json
 /// can't be touched: ~/.config/tau/snippets/mcacp.jsonc.
-fn mcacpSnippetPath(arena: std.mem.Allocator, home: []const u8) ![]u8 {
+pub fn mcacpSnippetPath(arena: std.mem.Allocator, home: []const u8) ![]u8 {
     return std.fmt.allocPrint(arena, "{s}/.config/tau/snippets/mcacp.jsonc", .{home});
 }
 
@@ -1200,28 +1200,33 @@ fn inspectBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, p
 /// is actually repaired); anything else gets the paste-ready snippet under
 /// ~/.config/tau/snippets/ — existing settings files are never rewritten.
 /// Bridge clients also repair the mcacp side in the same pass. Returns the
-/// report detail; errors surface as a failed fix outcome.
-pub fn remedyClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind, command: []const u8) ![]const u8 {
+/// report detail; errors surface as a failed fix outcome. When `dry` is set
+/// nothing is written and the detail previews the actions ("would write…")
+/// with the same real paths — `tau doctor --fix --dry-run` renders it as
+/// the would_apply preview.
+pub fn remedyClientWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, k: ClientKind, command: []const u8, dry: bool) ![]const u8 {
     const w = try inspectClientWiring(io, arena, home, k);
+    const would: []const u8 = if (dry) "would " else "";
     switch (w.state) {
         .missing_file => {
             const path = w.path.?;
-            _ = try writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), false);
+            _ = try writeIfChanged(io, arena, path, try renderClientJson(arena, k, command), dry);
             if (clientUsesBridge(k)) {
-                const det = try ensureBridgeWiring(io, arena, home, command, false);
-                return std.fmt.allocPrint(arena, "wrote minimal settings file: {s}; {s}", .{ path, det.detail });
+                const det = try ensureBridgeWiring(io, arena, home, command, dry);
+                return std.fmt.allocPrint(arena, "{s}write minimal settings file: {s}; {s}", .{ would, path, det.detail });
             }
-            return std.fmt.allocPrint(arena, "wrote minimal settings file: {s}", .{path});
+            return std.fmt.allocPrint(arena, "{s}write minimal settings file: {s}", .{ would, path });
         },
         .unreadable, .unparseable, .no_entry, .stale => {
             const snip = try snippetPath(arena, home, k);
-            const wrote = try writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), false);
+            const wrote = try writeIfChanged(io, arena, snip, try renderClientSnippet(arena, k, command), dry);
             const base: []const u8 = switch (wrote) {
                 .unchanged => try std.fmt.allocPrint(arena, "snippet already up to date: {s} — merge the \"{s}\" block into {s} by hand", .{ snip, clientEntryName(k), w.path.? }),
+                .would_write => try std.fmt.allocPrint(arena, "would write paste-ready snippet: {s} — merge the \"{s}\" block into {s} by hand", .{ snip, clientEntryName(k), w.path.? }),
                 else => try std.fmt.allocPrint(arena, "wrote paste-ready snippet: {s} — merge the \"{s}\" block into {s} by hand", .{ snip, clientEntryName(k), w.path.? }),
             };
             if (clientUsesBridge(k)) {
-                const det = try ensureBridgeWiring(io, arena, home, command, false);
+                const det = try ensureBridgeWiring(io, arena, home, command, dry);
                 return std.fmt.allocPrint(arena, "{s}; {s}", .{ base, det.detail });
             }
             return base;
@@ -1262,7 +1267,7 @@ fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, co
     if (cur == null and !unreadable) {
         const wrote = try writeIfChanged(io, arena, bpath, try renderMcacpJson(arena, command), dry);
         return .{
-            .detail = try std.fmt.allocPrint(arena, "wrote mcacp bridge config: {s}", .{bpath}),
+            .detail = try std.fmt.allocPrint(arena, "{s}write mcacp bridge config: {s}", .{ if (dry) "would " else "", bpath }),
             .status = if (dry) "would_install" else "installed",
             .path = bpath,
             .outcome = switch (wrote) {
@@ -1287,7 +1292,7 @@ fn ensureBridgeWiring(io: std.Io, arena: std.mem.Allocator, home: []const u8, co
     const snip = try mcacpSnippetPath(arena, home);
     _ = try writeIfChanged(io, arena, snip, try renderMcacpSnippet(arena, command), dry);
     return .{
-        .detail = try std.fmt.allocPrint(arena, "wrote mcacp paste-ready snippet: {s} — merge the \"tau\" block into {s} by hand", .{ snip, bpath }),
+        .detail = try std.fmt.allocPrint(arena, "{s}write mcacp paste-ready snippet: {s} — merge the \"tau\" block into {s} by hand", .{ if (dry) "would " else "", snip, bpath }),
         .status = "manual",
         .path = bpath,
         .snippet_path = snip,
@@ -2891,7 +2896,7 @@ test "remedyClientWiring: missing file gets a minimal one; no-entry gets a snipp
     const zed_dir = try std.fmt.allocPrint(a, "{s}/.config/zed", .{home});
     try std.Io.Dir.cwd().createDirPath(io, zed_dir);
 
-    const d1 = try remedyClientWiring(io, a, home, .zed, exe);
+    const d1 = try remedyClientWiring(io, a, home, .zed, exe, false);
     try testing.expect(std.mem.indexOf(u8, d1, "minimal settings file") != null);
     try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .zed)).state);
 
@@ -2903,7 +2908,7 @@ test "remedyClientWiring: missing file gets a minimal one; no-entry gets a snipp
     const orig = "{\n  // keep me\n  \"vim\": true\n}\n";
     _ = try writeIfChanged(io, a, sp, orig, false);
 
-    const d2 = try remedyClientWiring(io, a, home, .vscode, exe);
+    const d2 = try remedyClientWiring(io, a, home, .vscode, exe, false);
     try testing.expect(std.mem.indexOf(u8, d2, "snippet") != null);
     try testing.expect(std.mem.indexOf(u8, d2, "by hand") != null);
     const snip = try std.Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(a, "{s}/.config/tau/snippets/vscode.jsonc", .{home}), a, .unlimited);
@@ -2914,7 +2919,7 @@ test "remedyClientWiring: missing file gets a minimal one; no-entry gets a snipp
 
     // Re-running the remedy on the unchanged file reports the snippet is
     // already up to date.
-    const d3 = try remedyClientWiring(io, a, home, .vscode, exe);
+    const d3 = try remedyClientWiring(io, a, home, .vscode, exe, false);
     try testing.expect(std.mem.indexOf(u8, d3, "already up to date") != null);
 }
 
@@ -3063,7 +3068,7 @@ test "remedyClientWiring bridge repairs both halves" {
     const cdir = try std.fmt.allocPrint(a, "{s}/.config/Claude", .{home});
     try std.Io.Dir.cwd().createDirPath(io, cdir);
 
-    const d = try remedyClientWiring(io, a, home, .claude_desktop, exe);
+    const d = try remedyClientWiring(io, a, home, .claude_desktop, exe, false);
     try testing.expect(std.mem.indexOf(u8, d, "minimal settings file") != null);
     try testing.expect(std.mem.indexOf(u8, d, "mcacp bridge config") != null);
     try testing.expectEqual(WiringState.ok, (try inspectClientWiring(io, a, home, .claude_desktop)).state);
