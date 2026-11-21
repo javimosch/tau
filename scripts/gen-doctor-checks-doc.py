@@ -176,7 +176,12 @@ def render_region(rows):
     a("| Check | Fails or warns when | Remediate |")
     a("|-------|---------------------|-----------|")
     for r in rows:
-        a(f"| `{r['name']}` | {md_cell(r['fails_when'])} "
+        # The <a name> anchor is the link target for the row's `docs` URL —
+        # CheckSpec.docs and the `docs` member on non-ok report rows both
+        # point at `troubleshooting.md#check-<id>`; dropping or renaming it
+        # breaks the deep link (the doc-mirror test pins this cell shape).
+        a(f"| <a name=\"check-{r['name']}\"></a>`{r['name']}` "
+          f"| {md_cell(r['fails_when'])} "
           f"| {md_cell(r['remediation'])} |")
     a("")
     a(END)

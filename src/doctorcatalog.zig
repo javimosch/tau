@@ -18,8 +18,18 @@ const cfgmod = @import("config.zig");
 const version = @import("version.zig");
 
 /// Every check entry links the doctor section of the troubleshooting page —
-/// the generated table the entry mirrors lives there.
+/// the generated table the entry mirrors lives there. Individual entries
+/// carry a per-row anchor instead (see checkDocsUrl); this section link is
+/// the fallback for specs built outside the catalog.
 pub const doctor_doc_url = version.troubleshooting_doc_url ++ "#setup--config-problems--tau-doctor";
+
+/// The generated check table in docs/troubleshooting.md anchors every row:
+/// `<a name="check-<id>"></a>` sits in the row's first cell, so each
+/// catalog entry's `docs` deep-links its own row. The same URL is emitted
+/// as the `docs` member on non-`ok` `tau doctor` report rows.
+pub fn checkDocsUrl(comptime name: []const u8) []const u8 {
+    return version.troubleshooting_doc_url ++ "#check-" ++ name;
+}
 
 /// One row of the generated check table (and one `tau explain doctor.<id>`
 /// entry): the report's check `name`, the condition that makes it warn or
@@ -160,23 +170,30 @@ fn underscored(comptime s: []const u8) []const u8 {
 /// `probe_<provider>_auth` for every registered provider.
 pub const check_catalog = blk: {
     var c: [static_specs.len + setup.all_clients.len + cfgmod.providers.len * 2]CheckSpec = undefined;
-    for (static_specs, 0..) |s, i| c[i] = s;
+    for (static_specs, 0..) |s, i| {
+        var sp = s;
+        sp.docs = checkDocsUrl(sp.name);
+        c[i] = sp;
+    }
     var n = static_specs.len;
     for (setup.all_clients) |k| {
         const disp = setup.clientName(k);
+        const id = "client_" ++ underscored(disp);
         c[n] = .{
-            .name = "client_" ++ underscored(disp),
+            .name = id,
             .fails_when = client_fails_when,
             .remediation = std.fmt.comptimePrint(client_remediation_tmpl, .{ disp, guideFile(k) }),
+            .docs = checkDocsUrl(id),
         };
         n += 1;
     }
     for (cfgmod.providers) |p| {
-        c[n] = .{ .name = "probe_" ++ p.name, .fails_when = probe_fails_when, .remediation = probe_remediation };
+        c[n] = .{ .name = "probe_" ++ p.name, .fails_when = probe_fails_when, .remediation = probe_remediation, .docs = checkDocsUrl("probe_" ++ p.name) };
         c[n + 1] = .{
             .name = "probe_" ++ p.name ++ "_auth",
             .fails_when = probe_auth_fails_when,
             .remediation = std.fmt.comptimePrint(probe_auth_remediation_tmpl, .{p.name}),
+            .docs = checkDocsUrl("probe_" ++ p.name ++ "_auth"),
         };
         n += 2;
     }
@@ -311,8 +328,8 @@ test "explain: check catalog rows mirror the docs/troubleshooting.md table verba
             if (ch == '|') try esc_r.append(gpa, '\\');
             try esc_r.append(gpa, ch);
         }
-        var buf: [2000]u8 = undefined;
-        const row = std.fmt.bufPrint(&buf, "| `{s}` | {s} | {s} |", .{ cs.name, esc_f.items, esc_r.items }) catch unreachable;
+        var buf: [2200]u8 = undefined;
+        const row = std.fmt.bufPrint(&buf, "| <a name=\"check-{s}\"></a>`{s}` | {s} | {s} |", .{ cs.name, cs.name, esc_f.items, esc_r.items }) catch unreachable;
         if (std.mem.indexOf(u8, doc, row) == null) {
             std.debug.print("docs/troubleshooting.md missing check row '{s}'\n", .{row});
             return error.TestUnexpectedResult;
@@ -355,9 +372,44 @@ test "explain: formatCheckJson emits the check entry shape" {
     try testing.expect(std.mem.startsWith(u8, got, "{\"check\":\"tls_ca\""));
     try testing.expect(std.mem.indexOf(u8, got, "\"fails_when\":\"") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"remediation\":\"") != null);
-    try testing.expect(std.mem.indexOf(u8, got, "docs/troubleshooting.md") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "docs/troubleshooting.md#check-tls_ca") != null);
     const v = try std.json.parseFromSliceLeaky(std.json.Value, ar.allocator(), got, .{});
     try testing.expect(v.object.get("check").?.string.len > 0);
+}
+
+test "check_catalog: every entry's docs deep-links its own anchored row" {
+    const a = testing.allocator;
+    for (check_catalog) |cs| {
+        const want = try std.fmt.allocPrint(a, "{s}#check-{s}", .{ version.troubleshooting_doc_url, cs.name });
+        defer a.free(want);
+        try testing.expectEqualStrings(want, cs.docs);
+    }
+    // A spec built outside the catalog keeps the section-level fallback.
+    const bare = CheckSpec{ .name = "x", .fails_when = "y", .remediation = "z" };
+    try testing.expectEqualStrings(doctor_doc_url, bare.docs);
+}
+
+test "every check id the report emits resolves in the catalog" {
+    // Source-scan pin: doctor.zig's `.name = "<id>"` literals are the
+    // report's fixed check ids — each must resolve (and therefore carry a
+    // generated `docs` anchor). Dynamic rows (client_*/probe_*) are
+    // proven against the same naming rules by the tests above. The scan
+    // stops at the Tests banner so fixture names aren't mistaken for ids.
+    const src_full = @embedFile("doctor.zig");
+    const src = src_full[0..(std.mem.indexOf(u8, src_full, "// Tests") orelse src_full.len)];
+    // Checks name themselves two ways: `.name = "<id>"` inline and
+    // `const name = "<id>"` for the multi-return fns.
+    inline for (.{ ".name = \"", "const name = \"" }) |needle| {
+        var it = std.mem.splitSequence(u8, src, needle);
+        _ = it.next(); // head of the first hit
+        while (it.next()) |rest| {
+            const id = rest[0..(std.mem.indexOfScalar(u8, rest, '"') orelse continue)];
+            if (findCheck(id) == null) {
+                std.debug.print("doctor.zig emits unresolvable check id '{s}'\n", .{id});
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
 }
 
 test "explain: formatCheckHuman renders fails-when, fix, and docs" {

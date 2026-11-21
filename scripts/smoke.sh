@@ -1369,6 +1369,9 @@ test_group_doctor() {
   contains "auth_probe skipped offline" "$doc_keyless_out" '"name":"auth_probe","status":"skip"'
   contains "curl check present" "$doc_keyless_out" '"name":"curl"'
   contains "report has summary" "$doc_keyless_out" '"summary":{'
+  contains "fail check carries its docs deep link" "$doc_keyless_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#check-api_key"'
+  contains "skip check carries its docs deep link" "$doc_keyless_out" 'troubleshooting.md#check-endpoint_reachable"'
+  contains "ok check omits the docs member" "$doc_keyless_out" 'using defaults"}'
 
   # 2. Key via env + --provider override: local checks pass -> exit 0.
   capture doc_openai env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
@@ -6243,7 +6246,7 @@ test_group_explain() {
   contains "explain: check entry carries id" "$d1_out" '"check":"tls_ca"'
   contains "explain: check entry carries fails_when" "$d1_out" '"fails_when":"CURL_CA_BUNDLE/SSL_CERT_FILE'
   contains "explain: check entry carries remediation" "$d1_out" '"remediation":"set CURL_CA_BUNDLE'
-  contains "explain: check entry anchors doctor section" "$d1_out" 'troubleshooting.md#setup--config-problems--tau-doctor'
+  contains "explain: check entry anchors its own table row" "$d1_out" 'troubleshooting.md#check-tls_ca'
 
   capture d2 "$BIN" explain tls_ca
   ok "explain: bare check id exits 0" "$d2_rc" 0
@@ -6814,7 +6817,9 @@ PYEOF
 import sys
 p = sys.argv[1]
 t = open(p).read()
-t = t.replace("| `tls_ca` |", "| `bogus_check` | staged | staged |\n| `tls_ca` |", 1)
+row = '| <a name="check-tls_ca"></a>`tls_ca` |'
+bogus = '| <a name="check-bogus_check"></a>`bogus_check` | staged | staged |'
+t = t.replace(row, bogus + "\n" + row, 1)
 open(p, "w").write(t)
 PYEOF
   if python3 "$check" --tau "$BIN" --doctor-doc "$stage/troubleshooting.md" >/dev/null 2>&1; then
@@ -6906,9 +6911,14 @@ test_group_doctor_checks() {
 import json, re, sys
 doc = open(sys.argv[1]).read()
 region = re.search(r"<!-- BEGIN GENERATED DOCTOR CHECKS.*?<!-- END GENERATED DOCTOR CHECKS -->", doc, re.S).group(0)
-doc_ids = [m.group(1) for m in re.finditer(r"^\| `([^`]+)` \|", region, re.M)]
-live = [e["check"] for e in json.load(open(sys.argv[2]))["doctor_checks"]]
-sys.exit(0 if doc_ids == live else 1)
+# First-cell shape is | <a name="check-<id>"></a>`<id>` | — the anchor is
+# the link target for the entry's `docs` URL and must match the row id.
+rows = re.findall(r'^\| <a name="check-([^"]+)"></a>`([^`]+)` \|', region, re.M)
+doc_ids = [a for a, b in rows if a == b]
+entries = json.load(open(sys.argv[2]))["doctor_checks"]
+live = [e["check"] for e in entries]
+want_docs = ["https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#check-" + i for i in live]
+sys.exit(0 if doc_ids == live and len(rows) == len(live) and [e["docs"] for e in entries] == want_docs else 1)
 PYEOF
   then
     ok "doctor-checks: rows match the live catalog" 0 0
@@ -6943,7 +6953,9 @@ PYEOF
 import sys
 p = sys.argv[1]
 t = open(p).read()
-t = t.replace("| `tls_ca` |", "| `bogus_check` | staged | staged |\n| `tls_ca` |", 1)
+row = '| <a name="check-tls_ca"></a>`tls_ca` |'
+bogus = '| <a name="check-bogus_check"></a>`bogus_check` | staged | staged |'
+t = t.replace(row, bogus + "\n" + row, 1)
 open(p, "w").write(t)
 PYEOF
   if python3 "$gen" --check >/dev/null 2>&1; then
