@@ -146,6 +146,15 @@ fn formatCheckJson(arena: std.mem.Allocator, c: Check) ![]u8 {
         try json.escapeInto(arena, &buf, h);
         try buf.append(arena, '"');
     }
+    if (c.status != .ok) {
+        // Deep link to the row's own anchor in the generated check table —
+        // the same URL `tau explain doctor.<id>` prints for the entry.
+        try buf.appendSlice(arena, ",\"docs\":\"");
+        try buf.appendSlice(arena, version_mod.troubleshooting_doc_url);
+        try buf.appendSlice(arena, "#check-");
+        try json.escapeInto(arena, &buf, c.name);
+        try buf.append(arena, '"');
+    }
     try buf.append(arena, '}');
     return buf.toOwnedSlice(arena);
 }
@@ -2112,10 +2121,14 @@ test "formatCheckJson: escapes fields and omits empty hint" {
     const a = arena.allocator();
 
     const no_hint = try formatCheckJson(a, .{ .name = "api_key", .status = .fail, .message = "no key \"x\"" });
-    try testing.expectEqualStrings("{\"name\":\"api_key\",\"status\":\"fail\",\"message\":\"no key \\\"x\\\"\"}", no_hint);
+    try testing.expect(std.mem.startsWith(u8, no_hint, "{\"name\":\"api_key\",\"status\":\"fail\",\"message\":\"no key \\\"x\\\"\""));
+    // Non-ok rows carry the per-check docs deep link into the generated
+    // troubleshooting.md table; ok rows omit it.
+    try testing.expect(std.mem.indexOf(u8, no_hint, ",\"docs\":\"" ++ version_mod.troubleshooting_doc_url ++ "#check-api_key\"}") != null);
 
     const with_hint = try formatCheckJson(a, .{ .name = "curl", .status = .ok, .message = "curl available", .hint = "line1\nline2" });
     try testing.expect(std.mem.indexOf(u8, with_hint, "\"hint\":\"line1\\nline2\"") != null);
+    try testing.expect(std.mem.indexOf(u8, with_hint, "\"docs\"") == null);
 }
 
 test "formatReportJson: ok=false with summary counts when a check fails" {
@@ -3511,10 +3524,11 @@ test "doctor schema: check def mirrors the serialized Check shape" {
     const a = arena.allocator();
 
     const check = schemaDef(try doctorSchema(a), "check");
-    // Serialized fields = Check fields minus `fix` (internal --fix signal).
+    // Serialized fields = Check fields minus `fix` (internal --fix signal)
+    // plus `docs` — the derived per-check deep link, not a stored field.
     const fields = @typeInfo(Check).@"struct".fields;
     try expectRequired(check, &.{ "name", "status", "message" });
-    try expectProps(check, &.{ "name", "status", "message", "hint" });
+    try expectProps(check, &.{ "name", "status", "message", "hint", "docs" });
     try testing.expectEqual(@as(usize, 5), fields.len); // pins the "minus fix" math above
     try expectEnumMatches(CheckStatus, check.object.get("properties").?.object.get("status").?);
 }
@@ -3596,7 +3610,7 @@ test "docs/doctor-json.md generated reference mirrors the schema" {
         }
     }
     // Every serialized field appears as a table row.
-    inline for (.{ "name", "status", "message", "hint", "id", "check", "detail", "ok", "warn", "fail", "skip", "commit", "target", "build_date", "zig", "version", "done", "fixes", "summary", "build" }) |f| {
+    inline for (.{ "name", "status", "message", "hint", "docs", "id", "check", "detail", "ok", "warn", "fail", "skip", "commit", "target", "build_date", "zig", "version", "done", "fixes", "summary", "build" }) |f| {
         const row = "| `" ++ f ++ "`";
         if (std.mem.indexOf(u8, doc, row) == null) {
             std.debug.print("docs/doctor-json.md missing field row '{s}'\n", .{row});

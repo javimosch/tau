@@ -23,7 +23,7 @@
       },
       "examples": [
         {
-          "check": { "name": "api_key", "status": "fail", "message": "no API key resolved", "hint": "set XIAOMI_API_KEY or add keys.<provider> to config.json" },
+          "check": { "name": "api_key", "status": "fail", "message": "no API key resolved", "hint": "set XIAOMI_API_KEY or add keys.<provider> to config.json", "docs": "https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md#check-api_key" },
           "done": false
         }
       ]
@@ -106,6 +106,10 @@
         "hint": {
           "type": "string",
           "description": "Optional remediation hint shown on non-ok outcomes."
+        },
+        "docs": {
+          "type": "string",
+          "description": "Deep link to this check's own anchored row in the generated docs/troubleshooting.md check table (troubleshooting.md#check-<name>) — present on non-ok rows (warn/fail/skip); the same URL `tau explain doctor.<id>` prints for the entry."
         }
       }
     },

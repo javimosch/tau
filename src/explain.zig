@@ -1080,3 +1080,88 @@ test "formatIndexHuman renders all seven sections with resolvable names" {
     try testing.expect(std.mem.indexOf(u8, idx, "subcommands:") != null);
     try testing.expect(std.mem.indexOf(u8, idx, "  subcommand.doctor\n") != null);
 }
+
+// ---------------------------------------------------------------------------
+// docs-link anchor drift check — every `docs` URL the registries emit must
+// land on a live anchor in its target doc so the deep links never rot.
+// ---------------------------------------------------------------------------
+
+/// GitHub's heading-anchor slug rule: lowercase, keep [a-z0-9_-], map each
+/// whitespace byte to '-', drop everything else (backticks, '&', and the
+/// bytes of multibyte punctuation like the em-dash all drop).
+fn githubSlug(a: std.mem.Allocator, text: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (text) |ch| {
+        if (ch == ' ' or ch == '\t') {
+            try out.append(a, '-');
+        } else if (std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-') {
+            try out.append(a, std.ascii.toLower(ch));
+        }
+    }
+    return out.toOwnedSlice(a);
+}
+
+/// Collect every anchor a markdown doc exposes: explicit `<a name="x">` /
+/// `<a id="x">` targets plus the slug of each ATX heading.
+fn collectAnchors(a: std.mem.Allocator, doc: []const u8, set: *std.StringHashMap(void)) !void {
+    inline for (.{ "name=\"", "id=\"" }) |needle| {
+        var it = std.mem.splitSequence(u8, doc, needle);
+        _ = it.next();
+        while (it.next()) |rest| {
+            if (std.mem.indexOfScalar(u8, rest, '"')) |end| {
+                try set.put(try a.dupe(u8, rest[0..end]), {});
+            }
+        }
+    }
+    var lines = std.mem.splitScalar(u8, doc, '\n');
+    while (lines.next()) |line| {
+        var hashes: usize = 0;
+        while (hashes < line.len and line[hashes] == '#') hashes += 1;
+        if (hashes == 0 or hashes > 6 or hashes >= line.len or line[hashes] != ' ') continue;
+        const text = std.mem.trim(u8, line[hashes + 1 ..], " \t");
+        try set.put(try githubSlug(a, text), {});
+    }
+}
+
+test "explain: every entry's docs link resolves a live anchor in its target doc" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Every `docs` URL a `tau explain` entry can print.
+    var urls: std.ArrayList([]const u8) = .empty;
+    for (errors.specs) |s| try urls.append(a, s.docs);
+    for (cfgschema.key_catalog) |ks| try urls.append(a, ks.docs);
+    for (cfgschema.deprecated_key_specs) |ks| try urls.append(a, ks.docs);
+    for (doctorcat.check_catalog) |cs| try urls.append(a, cs.docs);
+    try urls.append(a, @import("version.zig").env_doc_url);
+    for (setup.all_clients) |k| try urls.append(a, (try clientcat.specFor(a, k)).docs);
+    for (topiccat.specs) |s| try urls.append(a, s.docs);
+    for (subcat.specs) |s| try urls.append(a, s.docs);
+
+    const blob_prefix = "https://github.com/javimosch/tau/blob/master/";
+    var files = std.StringHashMap(std.StringHashMap(void)).init(a);
+    for (urls.items) |u| {
+        const h = std.mem.indexOfScalar(u8, u, '#') orelse continue;
+        const base = u[0..h];
+        const frag = u[h + 1 ..];
+        if (!std.mem.startsWith(u8, base, blob_prefix)) {
+            std.debug.print("docs link outside the repo: {s}\n", .{u});
+            return error.TestUnexpectedResult;
+        }
+        const path = base[blob_prefix.len..];
+        const gop = try files.getOrPut(path);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = std.StringHashMap(void).init(a);
+            const content = std.Io.Dir.cwd().readFileAlloc(testing.io, path, a, .unlimited) catch {
+                std.debug.print("docs link target missing: {s} (from {s})\n", .{ path, u });
+                return error.TestUnexpectedResult;
+            };
+            try collectAnchors(a, content, gop.value_ptr);
+        }
+        if (!gop.value_ptr.contains(frag)) {
+            std.debug.print("dead anchor in {s}#{s} — '{s}' matches no heading or <a name> in {s}\n", .{ base, frag, frag, path });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
