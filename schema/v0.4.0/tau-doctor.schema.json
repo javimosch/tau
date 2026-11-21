@@ -70,7 +70,7 @@
         },
         "dry_run": {
           "type": "boolean",
-          "description": "Present and true only when --dry-run ran a --fix pass — every fix was previewed as \"would_apply\" and none was applied."
+          "description": "Present and true only when --dry-run ran a --fix pass — every fix was previewed as \"would_apply\" (concrete files, actions, and rollback) and none was applied."
         },
         "done": {
           "const": true,
@@ -132,7 +132,7 @@
         "status": {
           "type": "string",
           "enum": ["applied", "declined", "skipped", "failed", "would_apply"],
-          "description": "What happened to the remediation. declined: the user answered no at the confirmation prompt; skipped: no approval channel (non-interactive run without --yes); failed: the fix was attempted and errored; would_apply: --dry-run preview — the repair was described but deliberately not run."
+          "description": "What happened to the remediation. declined: the user answered no at the confirmation prompt; skipped: no approval channel (non-interactive run without --yes); failed: the fix was attempted and errored; would_apply: --dry-run preview — the repair was described (files, actions, rollback) but deliberately not run."
         },
         "detail": {
           "type": "string",

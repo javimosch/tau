@@ -234,7 +234,8 @@ const help_text =
     \\                              or just the named check; prompts per fix on a TTY
     \\      --yes                     Apply --fix remediations without prompting
     \\      --dry-run                 Preview each --fix remediation as
-    \\                              "would_apply" (+ "dry_run":true on the
+    \\                              "would_apply" — concrete files, actions,
+    \\                              and rollback (+ "dry_run":true on the
     \\                              report/verdict); changes nothing —
     \\                              mutually exclusive with --yes
     \\      --json                    Stream NDJSON check/fix events + a done:true

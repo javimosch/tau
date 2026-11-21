@@ -1478,7 +1478,9 @@ test_group_doctor() {
     HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --dry-run
   contains "--dry-run previews the scaffold fix" "$doc_fix_dry_out" '"id":"scaffold_config","check":"config_file","status":"would_apply"'
   contains "--dry-run previews the completions fix" "$doc_fix_dry_out" '"id":"install_completions","check":"shell_completions","status":"would_apply"'
-  contains "--dry-run detail names the repair" "$doc_fix_dry_out" '"detail":"would create'
+  contains "--dry-run detail names the repair" "$doc_fix_dry_out" '"detail":"would mkdir -p'
+  contains "--dry-run detail shows the file" "$doc_fix_dry_out" 'config.json'
+  contains "--dry-run detail names the rollback" "$doc_fix_dry_out" 'rollback: rm '
   contains "--dry-run marks the report" "$doc_fix_dry_out" '"dry_run":true'
   lacks "--dry-run applies nothing" "$doc_fix_dry_out" '"status":"applied"'
   if [ ! -f "$mock_config/config.json" ] && [ ! -e "$mock_home/.local/share/bash-completion/completions/tau" ] && [ ! -d "$mock_home/.config" ]; then

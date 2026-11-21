@@ -1923,25 +1923,11 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
         },
         .wire_client_zed, .wire_client_vscode, .wire_client_cursor, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop, .wire_client_opencode, .wire_client_cline, .wire_client_roo, .wire_client_kilo, .wire_client_amazonq => blk: {
             const home = env.get("HOME") orelse break :blk error.HomeUnset;
-            const ck: setup.ClientKind = switch (pf.kind) {
-                .wire_client_zed => .zed,
-                .wire_client_vscode => .vscode,
-                .wire_client_cursor => .cursor,
-                .wire_client_jetbrains => .jetbrains,
-                .wire_client_windsurf => .windsurf,
-                .wire_client_gemini => .gemini,
-                .wire_client_claude_desktop => .claude_desktop,
-                .wire_client_opencode => .opencode,
-                .wire_client_cline => .cline,
-                .wire_client_roo => .roo,
-                .wire_client_kilo => .kilo,
-                .wire_client_amazonq => .amazonq,
-                else => unreachable,
-            };
+            const ck = clientKindForFix(pf.kind);
             // Same convention as `tau setup --client`: pin the absolute path
             // of this binary so the editor's spawn env can't miss it.
             const command: []const u8 = std.process.executablePathAlloc(io, arena) catch "tau";
-            break :blk setup.remedyClientWiring(io, arena, home, ck, command);
+            break :blk setup.remedyClientWiring(io, arena, home, ck, command, false);
         },
         .chmod_client_files => blk: {
             if (comptime builtin.os.tag == .windows) break :blk error.UnsupportedPlatform;
@@ -1967,6 +1953,171 @@ fn applyFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process
         };
     };
     return .{ .id = @tagName(pf.kind), .check = pf.check, .status = .applied, .detail = detail };
+}
+
+/// The wire_client_* FixKinds map 1:1 onto the JSON settings clients —
+/// shared by applyFix (which wires) and previewFix (which describes).
+fn clientKindForFix(k: FixKind) setup.ClientKind {
+    return switch (k) {
+        .wire_client_zed => .zed,
+        .wire_client_vscode => .vscode,
+        .wire_client_cursor => .cursor,
+        .wire_client_jetbrains => .jetbrains,
+        .wire_client_windsurf => .windsurf,
+        .wire_client_gemini => .gemini,
+        .wire_client_claude_desktop => .claude_desktop,
+        .wire_client_opencode => .opencode,
+        .wire_client_cline => .cline,
+        .wire_client_roo => .roo,
+        .wire_client_kilo => .kilo,
+        .wire_client_amazonq => .amazonq,
+        else => unreachable,
+    };
+}
+
+/// File mode of `path`, or null when it can't be statted (missing, or this
+/// platform has no POSIX modes). Used only for preview text.
+fn statMode(io: std.Io, path: []const u8) ?u32 {
+    if (comptime builtin.os.tag == .windows) return null;
+    const st = std.Io.Dir.cwd().statFile(io, path, .{}) catch return null;
+    return st.permissions.toMode();
+}
+
+/// The --dry-run counterpart of applyFix: describes the concrete edits,
+/// writes, and chmods a planned fix would run plus its rollback path —
+/// computed read-only through the same helpers (path math, stat, and the
+/// shared `dry` writers, which resolve real destinations without touching
+/// the filesystem). Resolution failures fall back to the static "would
+/// <description>", so a preview can never fail the run.
+fn previewFix(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, pf: PlannedFix) []const u8 {
+    return previewFixDetail(io, arena, cfg, env, pf) catch
+        std.fmt.allocPrint(arena, "would {s}", .{pf.description}) catch pf.description;
+}
+
+fn previewFixDetail(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, pf: PlannedFix) ![]const u8 {
+    switch (pf.kind) {
+        .scaffold_config => {
+            const path = configfile.path(arena, env) orelse return error.HomeUnset;
+            const dir = if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| path[0..idx] else ".";
+            return std.fmt.allocPrint(arena, "would mkdir -p {s}, write a starter config to {s}, and restrict it (0700 dir / 0600 file); rollback: rm {s} (rmdir {s} if it was created)", .{ dir, path, path, dir });
+        },
+        .restore_config => {
+            const path = configfile.path(arena, env) orelse return error.HomeUnset;
+            const backup = try std.fmt.allocPrint(arena, "{s}.bak", .{path});
+            return std.fmt.allocPrint(arena, "would mv {s} {s} then write a starter config to {s}; rollback: mv {s} {s}", .{ path, backup, path, backup, path });
+        },
+        .chmod_config => {
+            if (comptime builtin.os.tag == .windows)
+                return std.fmt.allocPrint(arena, "would {s} — POSIX-only; on this platform the fix reports failed", .{pf.description});
+            const path = configfile.path(arena, env) orelse return error.HomeUnset;
+            const dir = if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| path[0..idx] else ".";
+            var acts: std.ArrayList(u8) = .empty;
+            var undos: std.ArrayList(u8) = .empty;
+            if (statMode(io, dir)) |m| {
+                try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "chmod 0700 {s} (now 0{o})", .{ dir, m & 0o777 }));
+                try undos.appendSlice(arena, try std.fmt.allocPrint(arena, "chmod 0{o} {s}", .{ m & 0o777, dir }));
+            } else {
+                try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "chmod 0700 {s}", .{dir}));
+            }
+            if (statMode(io, path)) |m| {
+                try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "; chmod 0600 {s} (now 0{o})", .{ path, m & 0o777 }));
+                if (undos.items.len > 0) try undos.appendSlice(arena, ", ");
+                try undos.appendSlice(arena, try std.fmt.allocPrint(arena, "chmod 0{o} {s}", .{ m & 0o777, path }));
+            }
+            const undo: []const u8 = if (undos.items.len > 0) undos.items else "n/a — nothing to restore";
+            return std.fmt.allocPrint(arena, "would {s}; rollback: {s}", .{ acts.items, undo });
+        },
+        .migrate_config_keys => {
+            const path = configfile.path(arena, env) orelse return error.HomeUnset;
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch
+                return std.fmt.allocPrint(arena, "would read {s} and rename deprecated keys in place", .{path});
+            const res = configedit.migrateRenamedKeys(arena, bytes) catch
+                return std.fmt.allocPrint(arena, "would rename deprecated keys in {s} in place", .{path});
+            if (!res.migrated()) return "no deprecated keys to migrate — nothing would change";
+            return std.fmt.allocPrint(arena, "would rewrite {s} in place — {s}; rollback: rename the keys back (no .bak is written — copy {s} first for a restore point)", .{ path, res.changes, path });
+        },
+        .install_completions => {
+            const home = env.get("HOME") orelse return error.HomeUnset;
+            const shells = try setup.resolveShells(arena, cfg, env);
+            if (shells.len == 0) return "would install/refresh completion scripts (no shell detected — pass --shell <sh>)";
+            var acts: std.ArrayList(u8) = .empty;
+            var undos: std.ArrayList(u8) = .empty;
+            var first = true;
+            for (shells) |k| {
+                const inst = try setup.installCompletion(io, arena, home, k, true);
+                if (!first) try acts.appendSlice(arena, "; ");
+                first = false;
+                if (inst.wrote == .unchanged) {
+                    try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "{s} already current", .{inst.path}));
+                } else {
+                    try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "write {s}", .{inst.path}));
+                    if (undos.items.len > 0) try undos.appendSlice(arena, ", ");
+                    try undos.appendSlice(arena, try std.fmt.allocPrint(arena, "rm {s}", .{inst.path}));
+                }
+                if (inst.rc_status) |rs| {
+                    if (rs == .would_append) {
+                        try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "; append the '# tau completions' block to {s}", .{inst.rc_path.?}));
+                        if (undos.items.len > 0) try undos.appendSlice(arena, ", ");
+                        try undos.appendSlice(arena, try std.fmt.allocPrint(arena, "remove the '# tau completions' block from {s}", .{inst.rc_path.?}));
+                    }
+                }
+                if (k == .zsh) {
+                    const dump = try std.fmt.allocPrint(arena, "{s}/.zcompdump", .{home});
+                    if ((std.Io.Dir.cwd().statFile(io, dump, .{}) catch null) != null)
+                        try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "; rm {s} (stale completion cache)", .{dump}));
+                }
+            }
+            const undo: []const u8 = if (undos.items.len > 0) undos.items else "nothing written — nothing to undo";
+            return std.fmt.allocPrint(arena, "would {s}; rollback: {s}", .{ acts.items, undo });
+        },
+        .wire_client_zed, .wire_client_vscode, .wire_client_cursor, .wire_client_jetbrains, .wire_client_windsurf, .wire_client_gemini, .wire_client_claude_desktop, .wire_client_opencode, .wire_client_cline, .wire_client_roo, .wire_client_kilo, .wire_client_amazonq => {
+            const home = env.get("HOME") orelse return error.HomeUnset;
+            const ck = clientKindForFix(pf.kind);
+            const w = try setup.inspectClientWiring(io, arena, home, ck);
+            const command: []const u8 = std.process.executablePathAlloc(io, arena) catch "tau";
+            const action = setup.remedyClientWiring(io, arena, home, ck, command, true) catch
+                return std.fmt.allocPrint(arena, "would {s}", .{pf.description});
+            var undo: std.ArrayList(u8) = .empty;
+            switch (w.state) {
+                .missing_file => try undo.appendSlice(arena, try std.fmt.allocPrint(arena, "rm {s}", .{w.path.?})),
+                .unreadable, .unparseable, .no_entry, .stale => {
+                    const snip = try setup.snippetPath(arena, home, ck);
+                    try undo.appendSlice(arena, try std.fmt.allocPrint(arena, "rm {s} (the settings file itself is never rewritten)", .{snip}));
+                },
+                else => {},
+            }
+            if (setup.clientUsesBridge(ck)) {
+                const bpath = try setup.mcacpConfigPath(arena, home);
+                const bexists = (std.Io.Dir.cwd().statFile(io, bpath, .{}) catch null) != null;
+                if (undo.items.len > 0) try undo.appendSlice(arena, ", ");
+                if (bexists) {
+                    const bsnip = try setup.mcacpSnippetPath(arena, home);
+                    try undo.appendSlice(arena, try std.fmt.allocPrint(arena, "rm {s} ({s} is never rewritten)", .{ bsnip, bpath }));
+                } else {
+                    try undo.appendSlice(arena, try std.fmt.allocPrint(arena, "rm {s}", .{bpath}));
+                }
+            }
+            const u: []const u8 = if (undo.items.len > 0) undo.items else "remove the new entry by hand";
+            return std.fmt.allocPrint(arena, "{s}; rollback: {s}", .{ action, u });
+        },
+        .chmod_client_files => {
+            if (comptime builtin.os.tag == .windows)
+                return std.fmt.allocPrint(arena, "would {s} — POSIX-only; on this platform the fix reports failed", .{pf.description});
+            const home = env.get("HOME") orelse return error.HomeUnset;
+            var acts: std.ArrayList(u8) = .empty;
+            var undos: std.ArrayList(u8) = .empty;
+            for (clientSecretPaths(arena, home) catch return error.OutOfMemory) |p| {
+                const m = statMode(io, p) orelse continue;
+                if ((m & 0o077) == 0) continue;
+                if (acts.items.len > 0) try acts.appendSlice(arena, "; ");
+                try acts.appendSlice(arena, try std.fmt.allocPrint(arena, "chmod 0600 {s} (now 0{o})", .{ p, m & 0o777 }));
+                if (undos.items.len > 0) try undos.appendSlice(arena, ", ");
+                try undos.appendSlice(arena, try std.fmt.allocPrint(arena, "chmod 0{o} {s}", .{ m & 0o777, p }));
+            }
+            if (acts.items.len == 0) return "all client files already 0600 — nothing would change";
+            return std.fmt.allocPrint(arena, "would {s}; rollback: {s}", .{ acts.items, undos.items });
+        },
+    }
 }
 
 /// Prompt on stderr and read one line from the (TTY) stdin reader. Only an
@@ -2072,7 +2223,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
                     .id = @tagName(pf.kind),
                     .check = pf.check,
                     .status = .would_apply,
-                    .detail = std.fmt.allocPrint(arena, "would {s}", .{pf.description}) catch pf.description,
+                    .detail = previewFix(io, arena, cfg, env, pf),
                 }
             else if (approved)
                 applyFix(io, arena, cfg, env, pf)
@@ -2915,6 +3066,75 @@ test "applyFix restore_config moves an invalid config aside and re-scaffolds" {
     try testing.expect(std.mem.indexOf(u8, body, "\"provider\"") != null);
     const c = checkConfigFile(testing.io, a, &home.env);
     try testing.expectEqual(CheckStatus.ok, c.status);
+}
+
+test "previewFix names concrete files, actions, and rollback without writing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+    std.Io.Dir.cwd().deleteFile(testing.io, cfg_path) catch {};
+
+    // scaffold: the real config path + a delete-the-file rollback.
+    const sc = previewFix(testing.io, a, .{}, &home.env, .{ .kind = .scaffold_config, .check = "config_file", .description = "d" });
+    try testing.expect(std.mem.indexOf(u8, sc, "would") != null);
+    try testing.expect(std.mem.indexOf(u8, sc, cfg_path) != null);
+    try testing.expect(std.mem.indexOf(u8, sc, "rollback:") != null);
+    // Preview is read-only — the file was not created.
+    try testing.expectError(error.FileNotFound, std.Io.Dir.cwd().statFile(testing.io, cfg_path, .{}));
+
+    // restore: the .bak path is both the move target and the rollback source.
+    try home.writeConfig(a, "{ not json ");
+    const rs = previewFix(testing.io, a, .{}, &home.env, .{ .kind = .restore_config, .check = "config_file", .description = "d" });
+    const bak = try std.fmt.allocPrint(a, "{s}.bak", .{cfg_path});
+    try testing.expect(std.mem.indexOf(u8, rs, bak) != null);
+    try testing.expect(std.mem.indexOf(u8, rs, "mv") != null);
+    try testing.expect(std.Io.Dir.cwd().access(testing.io, bak, .{}) == error.FileNotFound);
+}
+
+test "previewFix chmod_config reports current modes as the rollback" {
+    if (comptime builtin.os.tag == .windows) return;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+    const dir_path = try std.fmt.allocPrint(a, "{s}/.config/tau", .{home.home});
+    try home.writeConfig(a, "{\"provider\":\"openai\"}");
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, cfg_path, .fromMode(0o644), .{});
+    try std.Io.Dir.cwd().setFilePermissions(testing.io, dir_path, .fromMode(0o755), .{});
+
+    const d = previewFix(testing.io, a, .{}, &home.env, .{ .kind = .chmod_config, .check = "config_permissions", .description = "d" });
+    try testing.expect(std.mem.indexOf(u8, d, "chmod 0700") != null);
+    try testing.expect(std.mem.indexOf(u8, d, "chmod 0600") != null);
+    try testing.expect(std.mem.indexOf(u8, d, "now 0644") != null);
+    try testing.expect(std.mem.indexOf(u8, d, "rollback:") != null);
+    // Permissions untouched — the preview only statted.
+    const st = try std.Io.Dir.cwd().statFile(testing.io, cfg_path, .{});
+    try testing.expectEqual(@as(u9, 0o644), st.permissions.toMode() & 0o777);
+}
+
+test "previewFix migrate_config_keys names the renames" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const cfg_path = try std.fmt.allocPrint(a, "{s}/.config/tau/config.json", .{home.home});
+    try home.writeConfig(a, "{ \"compact_keep_recent\": 1000 }");
+
+    const d = previewFix(testing.io, a, .{}, &home.env, .{ .kind = .migrate_config_keys, .check = "config_deprecated_keys", .description = "d" });
+    try testing.expect(std.mem.indexOf(u8, d, cfg_path) != null);
+    try testing.expect(std.mem.indexOf(u8, d, "compact_keep_recent") != null);
+    // File bytes untouched.
+    const body = try std.Io.Dir.cwd().readFileAlloc(testing.io, cfg_path, a, .unlimited);
+    try testing.expectEqualStrings("{ \"compact_keep_recent\": 1000 }", body);
 }
 
 test "checkCompletions + install_completions fix round-trips under a mock HOME" {

@@ -18,8 +18,8 @@ Options:
                          a TTY (see `tau explain doctor.<check>`)
   -y, --yes              Apply --fix remediations without prompting
       --dry-run          Preview each --fix remediation as
-                         "would_apply"; changes nothing (mutex with
-                         --yes)
+                         "would_apply" — files, actions, rollback;
+                         changes nothing (mutex with --yes)
       --json             Stream NDJSON check/fix events + verdict
                          (schema/tau-doctor.schema.json)
       --report           Print a redacted Markdown diagnostics bundle
