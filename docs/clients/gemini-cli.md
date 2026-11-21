@@ -113,8 +113,8 @@ Merge each fragment into the named file by hand and restart Gemini CLI.
 
 Paste the two verified blocks above into place yourself:
 
-- Gemini CLI's `settings.json` lives at `~/.gemini/`
-  (`%USERPROFILE%\.gemini\` on Windows). If the file already has a
+- Gemini CLI's `settings.json` lives at `~/.gemini/settings.json`
+  (`%USERPROFILE%\.gemini\settings.json` on Windows). If the file already has a
   `"mcpServers"` object, add only the inner `"mcacp"` entry to it.
 - The bridge config goes at `~/.config/mcacp/mcacp.json` — replace
   `"command": "tau"` with the absolute path to your tau binary

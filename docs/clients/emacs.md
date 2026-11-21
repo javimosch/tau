@@ -74,7 +74,7 @@ shell's PATH.
 Paste the verified block into your init file yourself:
 
 - `~/.emacs.d/init.el`, or `~/.config/emacs/init.el` if you use the XDG
-  layout.
+  layout (`%APPDATA%\.emacs.d\init.el` on Windows).
 - Replace `:command "tau"` with the absolute path to your tau binary
   (`command -v tau`) unless `tau` is on the PATH Emacs sees (check with
   `M-x getenv RET PATH RET`).

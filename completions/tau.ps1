@@ -22,19 +22,22 @@ $TauArgumentCompleter = {
                      '--items', '--schema')
     $skillSubs   = @('list', 'search', 'load')
     $configSubs  = @('show', 'validate', 'set', 'get', 'unset', 'edit', 'schema')
-    $configFlags = @('--mode', '--raw', '--json')
+    $configFlags = @('--mode', '--raw', '--json', '--dry-run')
     $guideFlags  = @('--human')
     $initFlags   = @('--force', '--stdout', '--provider', '--json')
     $doctorFlags = @('--offline', '--deep', '--probe', '--selftest', '--fix', '--yes', '-y', '--dry-run', '--json', '--report', '--shell', '--provider', '--model', '--api-key')
     $setupFlags  = @('--shell', '--client', '--offline', '--deep', '--provider', '--model', '--api-key', '--yes', '-y', '--non-interactive', '--dry-run', '--remove', '--uninstall', '--import', '--detect', '--json')
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report', '--attach-report',
-                     '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
-    $completionsArgs = @('install', '--shell', '--dry-run', '--json')
+                     '--dry-run', '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
+    $completionsArgs = @('install', 'candidates', '--shell', '--dry-run', '--json')
+    $candidateGroups = @('config-set', 'config-get', 'config-unset')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
     # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
-    # TAU_* names mirror the Spec registry in src/envvars.zig.
+    # TAU_* names mirror the Spec registry in src/envvars.zig; client.*
+    # names mirror the ClientKind tables in src/setup.zig; subcommand.*
+    # names mirror the Spec registry in src/subcommandcatalog.zig.
     $explainArgs = @('1', '80', '82', '105', '106', '110', '111',
         '$schema', 'provider', 'model', 'api_key', 'keys', 'mode', 'stream',
         'thinking', 'debug', 'temperature', 'max_tokens', 'timeout_ms',
@@ -66,7 +69,19 @@ $TauArgumentCompleter = {
         'TAU_VERIFY_SIGSTORE', 'TAU_VERSION', 'TAU_BASE_URL', 'TAU_OS',
         'TAU_ARCH', 'TAU_SKIP_CHECKSUM', 'TAU_BIN', 'TAU_TOOLS',
         'TAU_THINKING', 'TAU_DEBUG',
-        '--human', '--json')
+        'client.zed', 'client.nvim', 'client.emacs', 'client.vscode',
+        'client.cursor', 'client.jetbrains', 'client.windsurf',
+        'client.gemini', 'client.claude-desktop', 'client.opencode',
+        'client.cline', 'client.goose', 'client.continue',
+        'client.roo-code', 'client.kilo-code', 'client.amazonq',
+        'client.codex',
+        'topic.privacy',
+        'subcommand.acp', 'subcommand.models', 'subcommand.version',
+        'subcommand.upgrade', 'subcommand.doctor', 'subcommand.bug',
+        'subcommand.guide', 'subcommand.explain', 'subcommand.skills',
+        'subcommand.init', 'subcommand.setup', 'subcommand.completions',
+        'subcommand.fleet', 'subcommand.config',
+        '--human', '--json', '--list', '--search')
     $shells      = @('bash', 'zsh', 'fish', 'pwsh', 'all')
     $clients     = @('zed', 'nvim', 'emacs', 'vscode', 'cursor', 'jetbrains', 'windsurf', 'gemini', 'claude-desktop', 'opencode', 'cline', 'goose', 'continue', 'roo-code', 'kilo-code', 'amazonq', 'codex', 'all')
     $globalFlags = @(
@@ -282,12 +297,53 @@ $TauArgumentCompleter = {
     switch ($sub) {
         'acp'    { return & $emit $acpArgs 'Command' }
         'skills' { return & $emit $skillSubs 'Command' }
-        'config' { return & $emit ($configSubs + $configFlags) 'ParameterName' }
+        'config' {
+            # First non-flag word after `config` is the sub-subcommand; the
+            # first positional after get|set|unset is the <key> position —
+            # candidates come from the binary (dynamic): config-set lists
+            # every settable key, config-get|config-unset the keys present
+            # in the config file.
+            $configSub = ''
+            $posCount = 0
+            $seenConfig = $false
+            $skipNext = $false
+            foreach ($w in $context) {
+                if ($skipNext) { $skipNext = $false; continue }
+                if (-not $seenConfig) {
+                    if ($w -eq 'config') { $seenConfig = $true }
+                    continue
+                }
+                if ($configSub -eq '') {
+                    if (-not $w.StartsWith('-')) { $configSub = $w }
+                    continue
+                }
+                if ($w -eq '--mode') { $skipNext = $true; continue }
+                if ($w -ne '' -and -not $w.StartsWith('-')) { $posCount++ }
+            }
+            if ($configSub -in 'get', 'set', 'unset' -and $posCount -eq 0) {
+                $keys = @(& tau completions candidates "config-$configSub" 2>$null)
+                return & $emit $keys 'ParameterValue'
+            }
+            if ($configSub -in 'get', 'set', 'unset') { return & $emit $configFlags 'ParameterName' }
+            return & $emit ($configSubs + $configFlags) 'ParameterName'
+        }
         'guide'  { return & $emit $guideFlags 'ParameterName' }
         'init'   { return & $emit $initFlags 'ParameterName' }
         'doctor' { return & $emit $doctorFlags 'ParameterName' }
         'setup'  { return & $emit $setupFlags 'ParameterName' }
-        'completions' { return & $emit $completionsArgs 'ParameterName' }
+        'completions' {
+            $cmplSub = ''
+            $seenCmpl = $false
+            foreach ($w in $context) {
+                if (-not $seenCmpl) {
+                    if ($w -eq 'completions') { $seenCmpl = $true }
+                    continue
+                }
+                if (-not $w.StartsWith('-')) { $cmplSub = $w; break }
+            }
+            if ($cmplSub -eq 'candidates') { return & $emit $candidateGroups 'ParameterValue' }
+            return & $emit $completionsArgs 'ParameterName'
+        }
         'bug'    { return & $emit $bugFlags 'ParameterName' }
         'version' { return & $emit $versionFlags 'ParameterName' }
         'upgrade' { return & $emit $upgradeFlags 'ParameterName' }

@@ -1,8 +1,10 @@
 tau explain - offline error + config-key + doctor-check + env-var
-catalog lookup (no API key needed)
++ client + topic + subcommand catalog lookup (no API key needed)
 
 Usage:
-  tau explain [<code|type|key|doctor.<check>|TAU_*>] [--json|--human]
+  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>] [--json|--human]
+  tau explain --list [--json|--human]
+  tau explain --search <text> [--json|--human]
 
 Arguments:
   <code|type|key>   Exit code (e.g. 106), error type (e.g. authfailed),
@@ -17,18 +19,50 @@ Arguments:
   TAU_<VAR>         A TAU_* environment variable (e.g. TAU_ENDPOINT,
                     TAU_YES, TAU_VERSION) — prints who consumes it and
                     what it does, from the generated docs/env.md catalog
+  client.<name>     A `tau setup --client` editor client (e.g.
+                    client.zed, client.claude-desktop) — prints setup
+                    prerequisites, config paths, and the restart +
+                    verify step. Bare names and --client aliases
+                    resolve too (`zed`, `code`, `claude`)
+  topic.<name>      A curated topic — `privacy` covers what tau
+                    stores locally, what leaves the machine, and how
+                    diagnostics redact secrets. Bare names resolve too
+                    (`tau explain privacy`)
+  subcommand.<name> A registered subcommand (e.g. subcommand.doctor,
+                    subcommand.setup) — prints the summary, a
+                    condensed usage line, runnable example
+                    invocations, and links to the related error type
+                    tags, config keys, and doctor checks. Bare names
+                    resolve too (`tau explain doctor`)
 
 Options:
       --json   Stable schema-checked JSON form (default;
                schema/tau-explain.schema.json)
       --human  Render as prose
+      --list   Print the topic index — every resolvable name
+               (error codes + types, config keys, doctor checks,
+               TAU_* env vars, client ids, topics, subcommands)
+               instead of full entries; takes no query
+      --search <text>
+               Print the topic index filtered to entries whose
+               name or body text (cause/hint, description,
+               fails-when/remediation, consumers/summary, prereqs)
+               matches every whitespace-separated term,
+               case-insensitively; takes no query
 
 Examples:
   tau explain
+  tau explain --list
+  tau explain --search proxy
+  tau explain --search "api key"
   tau explain 106
   tau explain authfailed
   tau explain timeout_ms
   tau explain keys.openai
   tau explain doctor.tls_ca
   tau explain TAU_ENDPOINT
+  tau explain client.zed
+  tau explain privacy
+  tau explain doctor
+  tau explain subcommand.setup
   tau explain --human 105

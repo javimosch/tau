@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Regenerate the `tau doctor` check table in docs/troubleshooting.md.
+"""Regenerate the `tau doctor` check docs from the CheckSpec catalog.
 
 The CheckSpec catalog in src/doctorcatalog.zig — the same registry
 `tau explain doctor.<check>` reads — is the single source of truth for the
 check ids the `tau doctor` report can emit, when each one warns or fails,
-and the remediation that resolves it. This script splices the rendered
-table between the GENERATED DOCTOR CHECKS markers in
-docs/troubleshooting.md so the doc cannot drift:
+and the remediation that resolves it. This script renders the catalog
+twice so neither doc can drift:
 
-    python3 scripts/gen-doctor-checks-doc.py            # rewrite the region
+  - splices the compact table between the GENERATED DOCTOR CHECKS
+    markers in docs/troubleshooting.md
+  - rewrites docs/doctor.md — the whole file is generated, one section
+    per check (symptom, cause, fix, `tau explain doctor.<id>` link)
+
+    python3 scripts/gen-doctor-checks-doc.py            # rewrite both docs
     python3 scripts/gen-doctor-checks-doc.py --check    # exit 1 if stale
 
 Static rows come from the `static_specs` array; the dynamic families are
@@ -17,8 +21,8 @@ clientName switch and doctor.zig's hyphen->underscore check-id rule) and
 src/llm/provider.zig (`probe_<provider>`/`probe_<provider>_auth` per
 registered provider). Stdlib only. Paths resolve relative to the script,
 so it can run from any cwd. The doctor-checks smoke group runs --check;
-zig build test separately asserts every catalog row appears verbatim in
-the doc.
+zig build test separately asserts every catalog row and doctor.md
+section appears verbatim.
 """
 
 import re
@@ -30,6 +34,7 @@ DOCTORCAT_ZIG = ROOT / "src" / "doctorcatalog.zig"
 SETUP_ZIG = ROOT / "src" / "setup.zig"
 PROVIDER_ZIG = ROOT / "src" / "llm" / "provider.zig"
 OUT_MD = ROOT / "docs" / "troubleshooting.md"
+DOCTOR_MD = ROOT / "docs" / "doctor.md"
 
 BEGIN = "<!-- BEGIN GENERATED DOCTOR CHECKS"
 END = "<!-- END GENERATED DOCTOR CHECKS -->"
@@ -188,21 +193,93 @@ def splice(doc_text, region):
     return doc_text[:begin] + region + doc_text[end + len(END):]
 
 
+# docs/doctor.md renders the same catalog one section per check. The
+# Cause/Fix bodies are the registry's fails_when/remediation verbatim —
+# doctorcatalog.zig's doc-mirror test pins the section shape below.
+def render_doctor_doc(rows):
+    """The whole generated docs/doctor.md."""
+    a = []
+    w = a.append
+    w("# `tau doctor` check catalog")
+    w("")
+    w("<!-- GENERATED FILE — do not edit by hand.")
+    w("     Source of truth: the CheckSpec catalog in src/doctorcatalog.zig —")
+    w("     the same registry `tau explain doctor.<check>` reads; the compact")
+    w("     form of this catalog is the generated check table in")
+    w("     docs/troubleshooting.md.")
+    w("     Regenerate:  python3 scripts/gen-doctor-checks-doc.py")
+    w("     Drift check: python3 scripts/gen-doctor-checks-doc.py --check")
+    w("     (the doctor-checks smoke group runs the drift check) -->")
+    w("")
+    w("`tau doctor` diagnoses a tau install end to end — config file health,")
+    w("credential resolution, network reachability, shell completions, and")
+    w("editor-client wiring — and prints one JSON report on stdout: exit 0")
+    w("when nothing failed, 1 otherwise. Each diagnostic lands as a named")
+    w("check row; under `--json` every row streams as a `check_event` (the")
+    w("stream contract is [doctor-json.md](doctor-json.md)).")
+    w("")
+    w("This page catalogs every check id the report can emit — the symptom")
+    w("(a non-`ok` row), what causes it, the remediation, and the")
+    w("`tau explain` query that prints the same entry offline:")
+    w("`tau explain doctor.<id>` (`--list` indexes every resolvable topic,")
+    w("`--search <text>` filters it full-text). `client_<name>` rows appear")
+    w("once per detected editor client; `probe_<provider>` and")
+    w("`probe_<provider>_auth` rows run only under `tau doctor --probe`.")
+    w("A `skip` status means the check's own gate — `--offline`, missing")
+    w("curl, no detected client, `--deep`/`--probe`/`--selftest` not passed —")
+    w("kept it from running, not that it passed or failed.")
+    w("")
+    w("Bare `tau doctor --fix` remediates every fixable check behind")
+    w("per-fix confirmation; `tau doctor --fix <check-id>` scopes the")
+    w("remediation to the single named check.")
+    w("")
+    w("## Checks")
+    w("")
+    for r in rows:
+        w(f"### `{r['name']}`")
+        w("")
+        w(f"- **Symptom:** the `{r['name']}` row reports a non-`ok` status "
+          "(`warn` or `fail`) in the `tau doctor` report — one `check_event` "
+          "line under `--json`.")
+        w(f"- **Cause:** {r['fails_when']}")
+        w(f"- **Fix:** {r['remediation']}")
+        w(f"- **Explain:** `tau explain doctor.{r['name']}`")
+        w("")
+    return "\n".join(a)
+
+
 def main():
     check = "--check" in sys.argv[1:]
+    rows = check_rows()
+    stale = []
+
     if not OUT_MD.is_file():
         fail(f"{OUT_MD} not found")
     doc = OUT_MD.read_text(encoding="utf-8")
-    want = splice(doc, render_region(check_rows()))
-    if want == doc:
-        return 0
-    if check:
-        print("gen-doctor-checks-doc: docs/troubleshooting.md is stale — "
-              "run scripts/gen-doctor-checks-doc.py", file=sys.stderr)
+    want = splice(doc, render_region(rows))
+    if want != doc:
+        if check:
+            stale.append("docs/troubleshooting.md")
+        else:
+            OUT_MD.write_text(want, encoding="utf-8")
+            print("gen-doctor-checks-doc: regenerated the check table in "
+                  "docs/troubleshooting.md")
+
+    want_doc = render_doctor_doc(rows)
+    if not DOCTOR_MD.is_file() or \
+            DOCTOR_MD.read_text(encoding="utf-8") != want_doc:
+        if check:
+            stale.append("docs/doctor.md")
+        else:
+            DOCTOR_MD.write_text(want_doc, encoding="utf-8")
+            print("gen-doctor-checks-doc: regenerated docs/doctor.md")
+
+    if stale:
+        print("gen-doctor-checks-doc: stale generated check docs: "
+              + ", ".join(stale)
+              + " — run scripts/gen-doctor-checks-doc.py",
+              file=sys.stderr)
         return 1
-    OUT_MD.write_text(want, encoding="utf-8")
-    print("gen-doctor-checks-doc: regenerated the check table in "
-          "docs/troubleshooting.md")
     return 0
 
 

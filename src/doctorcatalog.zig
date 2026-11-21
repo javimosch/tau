@@ -55,7 +55,7 @@ pub const static_specs = [_]CheckSpec{
     .{
         .name = "config_file",
         .fails_when = "~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional",
-        .remediation = "fix the JSON or delete the file — `tau config validate` pinpoints the error with line/column; `tau doctor --fix` moves a broken config to config.json.bak and writes a starter",
+        .remediation = "fix the JSON with `tau config edit` or pinpoint it with `tau config validate` (path:line:col plus the offending source line with a caret); `tau doctor --fix` moves a broken config to config.json.bak and writes a starter",
     },
     .{
         .name = "config_deprecated_keys",
@@ -141,7 +141,7 @@ pub const static_specs = [_]CheckSpec{
 
 /// The per-client guide filename under docs/clients/ — every file except
 /// Gemini CLI's is named after the `--client` name.
-fn guideFile(comptime k: setup.ClientKind) []const u8 {
+pub fn guideFile(comptime k: setup.ClientKind) []const u8 {
     const n = comptime setup.clientName(k);
     return if (comptime std.mem.eql(u8, n, "gemini")) "gemini-cli" else n;
 }
@@ -315,6 +315,22 @@ test "explain: check catalog rows mirror the docs/troubleshooting.md table verba
         const row = std.fmt.bufPrint(&buf, "| `{s}` | {s} | {s} |", .{ cs.name, esc_f.items, esc_r.items }) catch unreachable;
         if (std.mem.indexOf(u8, doc, row) == null) {
             std.debug.print("docs/troubleshooting.md missing check row '{s}'\n", .{row});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "explain: check catalog sections mirror docs/doctor.md verbatim" {
+    const gpa = testing.allocator;
+    const doc = try std.Io.Dir.cwd().readFileAlloc(testing.io, "docs/doctor.md", gpa, .unlimited);
+    defer gpa.free(doc);
+    for (check_catalog) |cs| {
+        // The generated per-check section — the same shape
+        // scripts/gen-doctor-checks-doc.py renders into docs/doctor.md.
+        const section = try std.fmt.allocPrint(gpa, "### `{s}`\n\n- **Symptom:** the `{s}` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.\n- **Cause:** {s}\n- **Fix:** {s}\n- **Explain:** `tau explain doctor.{s}`", .{ cs.name, cs.name, cs.fails_when, cs.remediation, cs.name });
+        defer gpa.free(section);
+        if (std.mem.indexOf(u8, doc, section) == null) {
+            std.debug.print("docs/doctor.md missing check section '{s}'\n", .{cs.name});
             return error.TestUnexpectedResult;
         }
     }

@@ -58,6 +58,8 @@ API key needed:
 
 ```sh
 tau explain              # every catalog entry (JSON)
+tau explain --list       # topic index: every resolvable name, no entry bodies
+tau explain --search x   # the index filtered to entries matching every term
 tau explain 106          # one entry by exit code
 tau explain AuthFailed   # one entry by `type` tag
 tau explain --json 106   # pin the schema-checked JSON form
@@ -77,9 +79,27 @@ Config keys resolve the same way from the generated
 description, and bare `tau explain` lists them under `config_keys`.
 `tau doctor` check ids resolve from the generated check table in
 [docs/troubleshooting.md](troubleshooting.md) (`doctor.<check>` or a
-bare id), and `TAU_*` environment variables resolve from the
-[docs/env.md](env.md) tables (`tau explain TAU_ENDPOINT`); the bare
-catalog lists them under `doctor_checks` and `env_vars`.
+bare id), `TAU_*` environment variables resolve from the
+[docs/env.md](env.md) tables (`tau explain TAU_ENDPOINT`), and editor
+clients resolve from the generated
+[docs/compatibility.md](compatibility.md) matrix (`tau explain
+client.zed`, a bare client name, or a `--client` alias like `code` or
+`claude`); the bare catalog lists them under `doctor_checks`, `env_vars`,
+and `clients`. Registered subcommands resolve too — `tau explain
+doctor` or `tau explain subcommand.doctor` prints the summary, a
+condensed usage line, runnable examples, and links to the related
+error type tags, config keys, and doctor checks. `tau explain --list`
+prints just the topic index —
+`{"topics":{"errors":[{code,type}, ...],"config_keys":[...],
+"doctor_checks":["doctor.<id>", ...],"env_vars":["TAU_*", ...],
+"clients":["client.<name>", ...],"topics":["topic.<name>", ...],
+"subcommands":["subcommand.<name>", ...]}}`
+— so every name a query accepts is enumerable without the entry
+bodies. `tau explain --search <text>` prints that same index filtered
+to the entries whose name or body text matches every
+whitespace-separated term, case-insensitively — e.g.
+`tau explain --search "api key"` narrows the whole catalog to what
+mentions both words.
 
 ## Silent exit paths
 

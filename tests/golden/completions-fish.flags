@@ -28,6 +28,7 @@
 --items
 --json
 --labels
+--list
 --load-agents-md
 --max-iterations
 --max-tokens
@@ -51,6 +52,7 @@
 --role
 --scan-agents
 --schema
+--search
 --selftest
 --sequential
 --session

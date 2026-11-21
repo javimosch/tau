@@ -456,8 +456,9 @@ CLI misuse. Every problem is listed at once — unknown keys, wrong value types,
 unknown `provider`/`mode` values, out-of-range numbers (`compact_threshold`
 outside 0–1, negative `temperature`, negative or overflowing integers), and
 `keys` entries that aren't strings or name an unknown provider. Syntax errors
-report a line and column. Key *values* are never echoed — `api_key`/`keys`
-contents stay secret.
+report the `line`/`column` and a `snippet` (the offending source line with a
+caret under the error column). Key *values* are never echoed —
+`api_key`/`keys` contents stay secret.
 
 Example failure output:
 
@@ -486,6 +487,7 @@ tau config get provider                 # "openai"
 tau config get api_key --raw            # secrets are redacted without --raw
 tau config unset keys.openai            # remove a key
 tau config set provider openai ./ci.json  # explicit path (like validate)
+tau config set mode text --dry-run      # preview the exact diff + backup path
 ```
 
 - **Schema-checked**: `set` only accepts keys from the table above (plus
@@ -497,6 +499,15 @@ tau config set provider openai ./ci.json  # explicit path (like validate)
 - **Atomic**: writes go to a temp file renamed over the original; existing
   permissions are kept, and a newly created file is `0600` (it may hold keys).
   `set` creates the file — and `~/.config/tau/` — when they don't exist.
+  Before an in-place rewrite the previous bytes are preserved at
+  `<path>.bak` — the same convention `tau doctor --fix` uses.
+- **Previewable**: `--dry-run` on `set`/`unset` changes nothing and prints
+  the exact write as a unified diff (`---`/`+++` git-style headers,
+  `/dev/null` for a new file) plus `action` (`create`/`modify`) and the
+  `backup_path`. Secret values anywhere in the file are masked inside the
+  diff (`diff_redacted:true` marks it); `--mode text` prints a one-line
+  summary followed by the diff. `get` never writes, so `--dry-run` there
+  is an argument error.
 - **git-config semantics**: `get`/`unset` of an absent key exit `1` with a
   `not_found` envelope; a missing or malformed file also exits `1`. CLI misuse
   (unknown key, bad value, stray args) exits `80`.
@@ -504,7 +515,8 @@ tau config set provider openai ./ci.json  # explicit path (like validate)
   suggests the nearest schema key (or `keys.<provider>` for a `key.x` dotted
   path), while `get`/`unset` name the closest key actually present in the
   file, catching typos written there. A malformed file reports the syntax
-  error's line and column, matching `config validate`.
+  error's `path:line:col` plus the offending source line with a caret,
+  matching `config validate`.
 - **Secrets**: `api_key` and `keys.*` values are masked (`***last4`) in all
   `set`/`get` output; `get --raw` prints the stored value verbatim.
 

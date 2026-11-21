@@ -14,6 +14,15 @@
 #   4. Rebuild the completion cache:
 #        rm -f ~/.zcompdump && compinit
 
+# Dynamic config-key candidates: the binary computes them at completion
+# time — `config-set` lists every key `tau config set` accepts;
+# `config-get`/`config-unset` list the keys present in the config file.
+_tau_config_keys() {
+    local -a keys
+    keys=(${(f)"$(command tau completions candidates "$1" 2>/dev/null)"})
+    (( ${#keys[@]} )) && compadd -a keys
+}
+
 _tau() {
     local curcontext="$curcontext" state line
     typeset -A opt_args
@@ -165,21 +174,23 @@ _tau() {
                                     ;;
                                 set)
                                     _arguments \
-                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '1: :_tau_config_keys config-set' \
                                         '2:value:' \
+                                        '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
                                 get)
                                     _arguments \
-                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '1: :_tau_config_keys config-get' \
                                         '--raw[print secret values unredacted]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
                                 unset)
                                     _arguments \
-                                        '1:key:(provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent_tokens goal_max_iterations goal_max_continues)' \
+                                        '1: :_tau_config_keys config-unset' \
+                                        '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
@@ -233,7 +244,8 @@ _tau() {
 
                 completions)
                     _arguments \
-                        '1: :(install)' \
+                        '1: :(install candidates)' \
+                        '2:group:(config-set config-get config-unset)' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
                         '--dry-run[preview the install; change nothing]' \
                         '--json[emit the stable schema-checked result object]'
@@ -265,6 +277,7 @@ _tau() {
                         '--out=[write the diagnostics bundle to a file]:file:_files' \
                         '--no-report[omit the diagnostics bundle]' \
                         '--attach-report=[use an existing report file as the bundle]:file:_files' \
+                        '--dry-run[preview the issue envelope and redactions; change nothing]' \
                         '--offline[skip network checks]' \
                         '--deep[run an authenticated probe (spends ~1 token)]' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
@@ -304,7 +317,11 @@ _tau() {
                     # config keys mirror the generated docs/config.md table;
                     # doctor.* ids mirror the CheckSpec catalog in
                     # src/doctorcatalog.zig; TAU_* names mirror the Spec
-                    # registry in src/envvars.zig.
+                    # registry in src/envvars.zig; client.* names mirror the
+                    # ClientKind tables in src/setup.zig; topic.* names mirror
+                    # the Spec registry in src/topiccatalog.zig; subcommand.*
+                    # names mirror the Spec registry in
+                    # src/subcommandcatalog.zig.
                     local -a err_codes=(
                         '1:not_found'
                         '80:invalid_argument'
@@ -383,10 +400,35 @@ _tau() {
                         'TAU_BIN:env var' 'TAU_TOOLS:env var'
                         'TAU_THINKING:env var' 'TAU_DEBUG:env var'
                     )
+                    local -a clients=(
+                        'client.zed:editor client' 'client.nvim:editor client'
+                        'client.emacs:editor client' 'client.vscode:editor client'
+                        'client.cursor:editor client' 'client.jetbrains:editor client'
+                        'client.windsurf:editor client' 'client.gemini:editor client'
+                        'client.claude-desktop:editor client' 'client.opencode:editor client'
+                        'client.cline:editor client' 'client.goose:editor client'
+                        'client.continue:editor client' 'client.roo-code:editor client'
+                        'client.kilo-code:editor client' 'client.amazonq:editor client'
+                        'client.codex:editor client'
+                    )
+                    local -a topics=(
+                        'topic.privacy:curated topic'
+                    )
+                    local -a subs=(
+                        'subcommand.acp:subcommand' 'subcommand.models:subcommand'
+                        'subcommand.version:subcommand' 'subcommand.upgrade:subcommand'
+                        'subcommand.doctor:subcommand' 'subcommand.bug:subcommand'
+                        'subcommand.guide:subcommand' 'subcommand.explain:subcommand'
+                        'subcommand.skills:subcommand' 'subcommand.init:subcommand'
+                        'subcommand.setup:subcommand' 'subcommand.completions:subcommand'
+                        'subcommand.fleet:subcommand' 'subcommand.config:subcommand'
+                    )
                     _arguments \
-                        '1: :_describe "error code/type, config key, doctor check, or TAU_* env var" err_codes cfg_keys checks env_vars' \
+                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, client, topic, or subcommand" err_codes cfg_keys checks env_vars clients topics subs' \
                         '--json[emit the stable schema-checked JSON form]' \
-                        '--human[render the entry as prose instead of JSON]'
+                        '--human[render the entry as prose instead of JSON]' \
+                        '--list[print the resolvable-topic index]' \
+                        '--search=[full-text search over the explain catalog]:text:'
                     ;;
             esac
             ;;

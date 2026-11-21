@@ -150,12 +150,17 @@ values into the file):
 ./zig-out/bin/tau init --stdout # preview without writing
 ```
 
+On success `tau init` also prints a getting-started checklist to stderr —
+`tau setup --client` to wire your editor, `tau doctor` to health-check the
+install, and `tau explain --list` to browse the offline topic catalog.
+
 Or run the whole onboarding in one shot — `tau setup` scaffolds the config,
 installs shell completions for the detected shell (`--shell bash|zsh|fish|pwsh|all`
 to override), can write ACP client config for your editor
 (`--client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all` — step-by-step guide in
 [docs/editors.md](docs/editors.md), all clients in [docs/acp.md](docs/acp.md),
-per-client setup guides in [docs/clients/](docs/clients/zed.md)),
+per-client setup guides in [docs/clients/](docs/clients/zed.md) — full catalog
+with per-OS config paths in [docs/clients.md](docs/clients.md)),
 and finishes with the `tau doctor` health report:
 
 ```bash
@@ -238,12 +243,12 @@ tau gives agents what they need:
 - **Agent context** — `--scan-agents`, `--load-agents-md`, `--auto-agents-md` for AGENTS.md awareness
 - **Skills autodiscovery** — `tau skills list|search|load` for 113+ skills from `~/.agents/skills/`
 - **Embedded guide** — `tau guide` prints the full operator manual as JSON (`--human` for markdown), so an agent can drive tau with no external docs ([cli-guide-spec](https://cli-specs.intrane.fr/))
-- **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, editor ACP client wiring (`client_<name>` rows flag missing or stale `tau acp serve` entries for detected Zed/VS Code/Cursor/JetBrains/Neovim installs, plus the mcacp bridge config for Windsurf/Gemini CLI/Claude Desktop), curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); secret-hygiene rows warn on plaintext credentials on disk (`plaintext_secrets` — `api_key`/`keys.*` config values and `env` blocks in client settings, reporting key names never values) and on client files readable by group/other (`client_permissions`); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling (stream contract + JSON Schema: [docs/doctor-json.md](docs/doctor-json.md)); `--fix` remediates common issues (missing config, loose config and client-file permissions, missing completions, missing/stale client wiring) behind per-fix confirmation (`--dry-run` previews every planned repair as `would_apply`, changing nothing), and `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network; an `update_available` check warns when a newer release exists (`tau version --check` is the standalone form; opt out via `TAU_NO_UPDATE_CHECK=1`)
+- **Setup diagnostics** — `tau doctor` validates the config file (+ permission bits), provider, API key resolution, shell completions, editor ACP client wiring (`client_<name>` rows flag missing or stale `tau acp serve` entries for detected Zed/VS Code/Cursor/JetBrains/Neovim installs, plus the mcacp bridge config for Windsurf/Gemini CLI/Claude Desktop), curl, and endpoint reachability as one JSON report (`--offline` for no-network, `--deep` for an authenticated probe); secret-hygiene rows warn on plaintext credentials on disk (`plaintext_secrets` — `api_key`/`keys.*` config values and `env` blocks in client settings, reporting key names never values) and on client files readable by group/other (`client_permissions`); `--json` streams the same diagnostics as NDJSON check events plus a `done:true` verdict for CI/support tooling (stream contract + JSON Schema: [docs/doctor-json.md](docs/doctor-json.md); every check row's cause + fix: [docs/doctor.md](docs/doctor.md)); `--fix` remediates common issues (missing config, loose config and client-file permissions, missing completions, missing/stale client wiring) behind per-fix confirmation (`--dry-run` previews every planned repair as `would_apply` — files, actions, and rollback — changing nothing) and `--fix <check-id>` scopes the remediation to one named check, while `--selftest` verifies the installed binary end-to-end against a built-in loopback stub provider — credential-free, no real network; an `update_available` check warns when a newer release exists (`tau version --check` is the standalone form; opt out via `TAU_NO_UPDATE_CHECK=1`)
 - **Update check** — `tau version --check` compares the running binary against the latest GitHub release and prints `update_available` + the release URL; non-blocking (always exits 0, short timeout) and opt-out via `TAU_NO_UPDATE_CHECK`. `tau version --json` prints the stable `{"name","version"}` object for scripts
 - **Self-update** — `tau upgrade` reuses that check, shows a pre-upgrade summary of the release notes since your version (the tag's `CHANGELOG.md`, overridable via `TAU_CHANGELOG_URL`), confirms on a TTY (or `--yes`/`TAU_YES=1` for automation), then downloads and runs the release's own fail-closed `install.sh` so upgrades get the same SHA256 verification as installs; `--dir` pins the destination (default: the running binary's directory) and `--dry-run` prints the plan + pending changes
 - **One-shot onboarding** — `tau setup` scaffolds the config (`init`), installs shell completions for the detected shell, configures editor ACP clients (`--client zed|nvim|emacs|vscode|cursor|jetbrains|windsurf|gemini|claude-desktop|opencode|cline|goose|continue|roo-code|kilo-code|amazonq|codex|all` — MCP clients are wired through the mcacp bridge), and embeds the `doctor` health report as one NDJSON transcript; `--yes`/`--non-interactive` (or `TAU_YES`/`TAU_NONINTERACTIVE`) mark the run unattended for scripts and CI, `--dry-run` previews every write step (`would_*` statuses + `"dry_run":true`) without touching the filesystem, `--import` merges your existing MCP server entries from the other supported clients into each wired MCP client (JSONC-safe splice — comments and current entries survive, nothing is overwritten; mutually exclusive with `--remove`), `--remove`/`--uninstall` cleanly reverses the client wiring (`--client` scopes the sweep), and `--detect` prints a read-only inventory of every supported client — config dir, detection status, and wiring state with settings paths (`--client` scopes it)
-- **Bug reports** — `tau bug` builds a pre-filled GitHub issue URL carrying the redacted `doctor --report` diagnostics bundle (`--open` launches the system browser, `--out` also writes the bundle to a file, `--no-report` omits diagnostics)
-- **Offline explain catalog** — `tau explain <code|type|key|doctor.<check>|TAU_*>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md)), a config key's type/constraints/description (from [docs/config.md](docs/config.md)), a doctor check's fails-when + remediation, or a `TAU_*` env var's consumers + summary (from [docs/env.md](docs/env.md))
+- **Bug reports** — `tau bug` builds a pre-filled GitHub issue URL carrying the redacted `doctor --report` diagnostics bundle (`--open` launches the system browser, `--out` also writes the bundle to a file, `--no-report` omits diagnostics, `--dry-run` previews the envelope + `redactions` count with no side effects)
+- **Offline explain catalog** — `tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>` prints an error's cause + remediation hint (same registry as [docs/errors.md](docs/errors.md)), a config key's type/constraints/description (from [docs/config.md](docs/config.md)), a doctor check's fails-when + remediation, a `TAU_*` env var's consumers + summary (from [docs/env.md](docs/env.md)), an editor client's prerequisites, config paths, and setup command (from [docs/compatibility.md](docs/compatibility.md); bare `--client` names and aliases like `code`/`claude` resolve too), a curated topic — `tau explain privacy` covers what tau stores locally, what leaves the machine, and how diagnostics redact secrets, or a registered subcommand — `tau explain doctor` prints the summary, condensed usage, runnable examples, and related error/config/doctor links; `--list` indexes every resolvable name and `--search <text>` filters that index full-text (every whitespace-separated term, case-insensitive)
 - **Sessions** — persistent conversation + goal state
 - **Semantic exit codes** — `0` success, `80` invalid arg, `82` missing field, `105` timeout, `106` auth failed, `110` internal
 - **Standard color policy** — `NO_COLOR`, `CLICOLOR=0`, and `TERM=dumb` keep output byte-clean; `CLICOLOR_FORCE` overrides. Only interactive prompts are styled (e.g. `tau upgrade`, `tau doctor --fix`); stdout JSON/NDJSON and error envelopes never carry escapes — see [docs/configuration.md](docs/configuration.md#color-policy)
@@ -383,6 +388,11 @@ tau --mode text "Explain this in simple terms"
 # Streaming (chat mode only)
 tau --stream "Count to 10 slowly"
 ```
+
+Runnable end-to-end recipes (file tools, sessions + goal mode, provider
+switching, `--schema` structured output) live in
+[**examples/**](examples/README.md) — each script runs as-is once an API key
+is exported.
 
 ---
 
@@ -570,13 +580,14 @@ checked-in JSON Schemas ([schema/](schema/)) that CI validates real binary
 output against — see [docs/stability.md](docs/stability.md).
 
 Edit the file programmatically (git-config style — comments preserved, values
-schema-checked, writes atomic):
+schema-checked, writes atomic, originals backed up to `<path>.bak`):
 
 ```bash
 tau config set provider openai           # creates the file if missing
 tau config set keys.openai sk-...        # per-provider API key
 tau config get provider                  # read a value (secrets redacted)
 tau config unset keys.openai             # remove a key
+tau config set mode text --dry-run       # preview the exact diff + backup path, change nothing
 tau config validate                      # offline schema check (CI/pre-commit)
 tau config schema                        # JSON Schema for editor autocomplete
 ```
@@ -629,7 +640,7 @@ per-shell install instructions — or let `tau completions install` (also part o
 
 ## 🔧 Troubleshooting
 
-Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**, or readable offline via `tau explain <code|type|key>` (e.g. `tau explain 106` or `tau explain timeout_ms`; `--json` pins the schema-checked JSON form, `--human` for prose, no argument to list all). Building automation on tau? **[docs/stability.md](docs/stability.md)** is the public stability and deprecation contract — which exit codes, `--json` schemas, config keys, env vars, and wire formats scripts may rely on, and how breaking changes are announced and phased out.
+Full error-message → fix FAQ: **[docs/troubleshooting.md](docs/troubleshooting.md)** — every `{"err":...}` envelope carries a `docs` link back to it. The stable exit-code catalog is generated at **[docs/errors.md](docs/errors.md)**, or readable offline via `tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>` (e.g. `tau explain 106`, `tau explain timeout_ms`, `tau explain client.zed`, `tau explain privacy`, or `tau explain doctor`; `--json` pins the schema-checked JSON form, `--human` for prose, no argument to list all, `--list` for the resolvable-topic index, `--search <text>` to filter it full-text). Building automation on tau? **[docs/stability.md](docs/stability.md)** is the public stability and deprecation contract — which exit codes, `--json` schemas, config keys, env vars, and wire formats scripts may rely on, and how breaking changes are announced and phased out.
 
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|

@@ -249,6 +249,7 @@ tau doctor --probe                     # Live-verify connectivity + credentials 
 tau doctor --selftest                  # Credential-free e2e check: self-spawn against a loopback stub
 tau doctor --provider openai           # Diagnose an override instead of the configured default
 tau doctor --model openai/gpt-4o-mini  # provider/id shorthand works too
+tau doctor --fix [<check-id>]        # Remediate fixable checks — all, or one named check (prompts per fix; --yes applies)
 tau doctor --report                  # Redacted Markdown bundle for bug reports
 tau doctor --json                    # NDJSON: {"check":{...},"done":false} per check, {"fix":{...}} under --fix, terminal {"ok":...,"done":true}
 # → {"ok":bool,"version":..,"build":{commit,target,build_date,zig},"checks":[{name,status:ok|warn|fail|skip,message,hint?}],"summary":{...}}
@@ -260,7 +261,10 @@ tau bug --title "x" --body "desc"    # Fill the issue title + description
 tau bug --open                       # Launch the URL ($BROWSER, else open/xdg-open)
 tau bug --out report.md              # Also write the bundle to a file
 tau bug --no-report                  # Omit diagnostics (mutex with --out)
+tau bug --dry-run                    # Preview the envelope + redactions; change nothing
 # → {"title","labels","url","body","report","url_truncated","out","opened","done":true}
+# --dry-run adds "dry_run":true + "redactions":<n> (mask count in the body)
+# and skips every side effect — no --out write, no browser launch.
 # Exit 0 always; over-long bundles fall back to a short URL body
 # (url_truncated:true) — full text stays in body/report.
 ```
@@ -295,7 +299,9 @@ tau config get provider                  # Read a FILE value (JSON mode default)
 tau config get api_key --mode text       # → "***last4" (secrets redacted; --raw prints raw)
 tau config unset keys.openai             # Remove a key
 tau config set mode text ./ci.json       # Optional trailing path
-# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename).
+tau config set mode text --dry-run       # Preview exact diff + .bak backup path; writes nothing
+# Edits are comment-preserving text splices (JSONC-safe, atomic temp+rename);
+# a real set|unset preserves the previous bytes at <path>.bak first.
 # Exit 0 ok; 1 = key/file not found or invalid file; 80 = bad key/value/args.
 ```
 
@@ -312,15 +318,22 @@ tau config edit ./ci.json              # Explicit path
 
 #### 20. Offline Explain Catalog
 ```bash
-tau explain                       # List the error + config-key + doctor-check + env-var catalog (JSON)
+tau explain                       # List the error + config-key + doctor-check + env-var + client + topic + subcommand catalog (JSON)
 tau explain 106                   # Error entry by exit code: cause + hint + docs
 tau explain AuthFailed            # Same, by wire `type` tag
 tau explain timeout_ms            # Config key: type + constraints + description
 tau explain keys.openai           # Same, a dotted keys.<provider> member path
 tau explain doctor.tls_ca         # Doctor check: fails-when + remediation
 tau explain TAU_ENDPOINT          # Env var: consumers + summary (from docs/env.md)
+tau explain client.zed            # Editor client: prereqs + paths + setup + verify (from docs/compatibility.md)
+tau explain code                  # Same, a bare --client name/alias (code → vscode, claude → claude-desktop)
+tau explain privacy               # Curated topic: local state, egress, and secret redaction (src/topiccatalog.zig)
+tau explain doctor                # Subcommand: summary + usage + examples + related links (src/subcommandcatalog.zig)
+tau explain subcommand.fleet      # Same, the canonical prefixed spelling
 tau explain --json 106            # Pin the schema-checked JSON form (default)
 tau explain --human 80            # Prose instead of JSON
+tau explain --list                # Topic index: every resolvable name, no entry bodies
+tau explain --search "api key"    # Index filtered to entries matching every term (case-insensitive)
 ```
 
 #### 21. Config Schema (`tau config schema`)
@@ -399,11 +412,16 @@ tau setup --detect --client zed # ...scoped to one client (writes nothing)
 tau completions install            # Install generated completions for $SHELL (+rc hook)
 tau completions install --shell zsh # Pick a shell: bash|zsh|fish|pwsh|all
 tau completions install --dry-run  # Preview (would_install/would_append); writes nothing
+tau completions candidates config-set    # Dynamic <key> candidates: every settable key
+tau completions candidates config-get    # ...or the keys present in the config file
 # The `tau setup` completions step as a standalone command — one stable
 # JSON result object (schema/tau-completions.schema.json):
 #   {"ok":bool,"status":"installed|would_install|skipped|failed",
 #    "shells":[{shell,status,path,rc,rc_status}], "version":"0.4.0","done":true}
 # Exit 0 on success/skip, 1 on install failure. --json is the contract spelling.
+# `candidates <group>` (config-set|config-get|config-unset) emits one
+# completion candidate per line — the shipped shell scripts call it at
+# completion time for `tau config get|set|unset <key>` positions.
 ```
 
 #### 18. Version & Build Metadata
@@ -505,10 +523,12 @@ tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundl
 | `src/configfile.zig` | `~/.config/tau/config.json` loader | Config file format changes |
 | `src/configedit.zig` | `tau config set|get|unset`/`config edit` JSONC splice editor | Config editing changes |
 | `src/doctor.zig` | `tau doctor` setup diagnostics | Adding/changing doctor checks |
+| `src/doctorcatalog.zig` | CheckSpec registry behind `tau explain doctor.<id>`; `scripts/gen-doctor-checks-doc.py` → the troubleshooting.md check table + `docs/doctor.md` (doctor-checks smoke group drift-checks both) | Adding/renaming a check id or rewording its fails-when/fix |
 | `schema/tau-doctor.schema.json` | `tau doctor --json` NDJSON event schema (+ `scripts/check-doctor-schema.py` validator, `scripts/gen-doctor-doc.py` → docs/doctor-json.md) | Changing doctor event shapes |
 | `src/init.zig` | `tau init` config scaffolding | Changing the starter config |
 | `src/setup.zig` | `tau setup` onboarding (init + completions + clients + doctor) | Setup steps, install paths, --client |
 | `docs/clients/*.md` | Per-MCP-client setup guides — `setup-verify` fenced snippets mirror `src/setup.zig` renderers (unit test) and `scripts/check-client-guides.py` diffs them against `tau setup --client` (client-guides smoke group) | Client wiring/snippet changes |
+| `src/clientcatalog.zig` | Client Spec registry behind `tau explain client.<id>` (+ prereqs/aliases/native per-OS paths); `scripts/gen-clients-doc.py` → `docs/clients.md` (clients-doc smoke group + CI drift-check, doc-mirror unit test pins sections verbatim) | Adding/renaming a client, its prereqs, or its native paths |
 | `src/bug.zig` | `tau bug` pre-filled GitHub issue (URL + report bundle) | `tau bug` flags/output, issue-URL shape |
 | `completions/` | Shell completion scripts (embedded via build.zig) | Adding flags/subcommands to completions |
 | `src/session.zig` | Session persistence | Session format changes |
@@ -709,11 +729,15 @@ Set appropriate context windows for compaction threshold:
 
 ## Troubleshooting
 
-`tau explain <code|type|key>` prints the offline catalog entry (cause + remediation
-hint) for any stable error — see docs/errors.md for the generated catalog — a
-config key's type/constraints/description from docs/config.md (`keys.<provider>`
-member paths included), a doctor check's fails-when + remediation via
-`doctor.<check>`, or a `TAU_*` env var's consumers + summary from docs/env.md.
+`tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>>` prints the
+offline catalog entry (cause + remediation hint) for any stable error — see
+docs/errors.md for the generated catalog — a config key's
+type/constraints/description from docs/config.md (`keys.<provider>` member
+paths included), a doctor check's fails-when + remediation via `doctor.<check>`
+(full per-check catalog: docs/doctor.md),
+a `TAU_*` env var's consumers + summary from docs/env.md, or an editor
+client's prerequisites + config paths + verify step from
+docs/compatibility.md (`client.<name>` or a bare `--client` name/alias).
 
 ### Auth Failed (exit code 106)
 - Check API key is correct

@@ -101,7 +101,8 @@ can't always resolve a bare `tau` from your interactive shell's PATH.
 
 ## Manual setup
 
-Paste the block for *your* plugin into `init.lua` (or a file it sources)
+Paste the block for *your* plugin into `~/.config/nvim/init.lua`
+(`%LOCALAPPDATA%\nvim\init.lua` on Windows, or a file either sources)
 yourself — you only need one of the two adapters:
 
 - **avante.nvim**: merge the `acp_providers.tau` entry into your existing

@@ -405,10 +405,15 @@ pub const deprecated_key_specs = blk: {
 
 /// Resolve a `tau explain <key>` query. Flat keys match exactly (config keys
 /// are case-sensitive); dotted queries only resolve `keys.<provider>` member
-/// paths. Deprecated spellings resolve to the canonical key's entry marked
-/// as renamed. Returns null when nothing matches.
+/// paths. The `config.` prefix is the namespaced spelling — same convention
+/// as `doctor.<id>`/`client.<name>` — so `config.provider` and
+/// `config.keys.openai` resolve like their bare forms. Deprecated spellings
+/// resolve to the canonical key's entry marked as renamed. Returns null when
+/// nothing matches.
 pub fn findKey(query: []const u8) ?KeySpec {
-    const q = std.mem.trim(u8, query, " \t");
+    var q = std.mem.trim(u8, query, " \t");
+    if (q.len == 0) return null;
+    if (std.mem.startsWith(u8, q, "config.")) q = q["config.".len..];
     if (q.len == 0) return null;
     if (std.mem.indexOfScalar(u8, q, '.') != null) {
         for (key_member_specs) |ks| {
@@ -664,6 +669,14 @@ test "explain: findKey resolves keys.<provider> member paths only" {
     // Keys are case-sensitive — a case typo resolves via did-you-mean instead.
     try testing.expect(findKey("Provider") == null);
     try testing.expect(findKey("") == null);
+    // The `config.` prefix is the namespaced spelling — same convention as
+    // `doctor.<id>`/`client.<name>` — resolving flat keys and member paths.
+    try testing.expectEqualStrings("provider", findKey("config.provider").?.name);
+    try testing.expectEqualStrings("keys.openai", findKey("config.keys.openai").?.name);
+    try testing.expectEqualStrings("compact_keep_recent", findKey("config.compact_keep_recent").?.name);
+    try testing.expect(findKey("config.") == null);
+    try testing.expect(findKey("config.bogus") == null);
+    try testing.expect(findKey("config.Provider") == null);
 }
 
 test "explain: formatKeyJson emits the config-key entry shape" {

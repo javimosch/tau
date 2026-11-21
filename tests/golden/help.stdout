@@ -95,6 +95,12 @@ Setup:
       --dry-run               Preview the install; change nothing
       --json                  Pin the stable schema-checked result object
                               (schema/tau-completions.schema.json)
+  tau completions candidates <group>
+                              Emit dynamic completion candidates (one
+                              per line) for the shell scripts:
+                              config-set lists every settable key;
+                              config-get|config-unset list the keys
+                              present in the config file
 
 Goal mode (in the prompt):
   /goal <objective>            Work autonomously until the objective is audited-complete
@@ -138,9 +144,9 @@ Diagnostics:
                               against a loopback stub provider and verify the
                               canned reply comes back (no real keys/network)
       --provider/--model/--api-key   Diagnose an override instead of the configured default
-      --fix                     Propose remediations for fixable checks (missing
-                              config, loose permissions, missing completions);
-                              prompts per fix on a TTY
+      --fix [<check>]           Propose remediations for fixable checks (missing
+                              config, loose permissions, missing completions) —
+                              or just the named check; prompts per fix on a TTY
       --yes                     Apply --fix remediations without prompting
       --dry-run                 Preview each --fix remediation as
                               "would_apply" (+ "dry_run":true on the
@@ -166,6 +172,9 @@ Diagnostics:
       --no-report             Omit the diagnostics bundle
       --attach-report <path>  Bundle an existing report file
                               (secret-redacted) instead of the live sweep
+      --dry-run               Preview the exact issue envelope — bundle
+                              contents + a "redactions" mask count — with
+                              no side effects (no --out write, no browser)
       --offline/--deep        Passed through to the diagnostic sweep
       --json                  Pin the stable schema-checked JSON form
                               (schema/tau-bug.schema.json)
@@ -181,8 +190,12 @@ Config:
                               (schema/tau-config-validate.schema.json)
   tau config set <key> <v> [path]  Schema-checked edit to the config FILE
                                  (keys are <field> or keys.<provider>; creates the file)
+      --dry-run                  Preview the exact write — unified diff
+                                 + .bak backup path — change nothing
   tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
   tau config unset <key> [path] Remove a key from the config file
+      --dry-run                  Preview the exact diff + backup path;
+                                 change nothing
   tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
                               VISUAL > EDITOR > vi/notepad); validates on save
   tau config schema             Print the config file's JSON Schema
@@ -223,14 +236,25 @@ Models:
 
 Explain catalog (offline — no API key needed):
   tau explain                   List the error + config-key + doctor-check
-                                + env-var catalog as JSON
-  tau explain <code|type|key>   Print an error's cause + remediation hint,
+                                + env-var + client + topic + subcommand
+                                catalog as JSON
+  tau explain <name>            Print an error's cause + remediation hint,
                                 a config key's type/constraints, a doctor
                                 check's fails-when + remediation
-                                (`tau explain doctor.<check>`), or a TAU_*
-                                env var's consumers + summary
+                                (`tau explain doctor.<check>`), a TAU_* env
+                                var's consumers + summary, a client's
+                                setup prereqs + config paths + verify step
+                                (`tau explain client.zed`), a curated
+                                topic (`tau explain privacy`), or a
+                                subcommand's usage + examples + related
+                                links (`tau explain doctor`)
       --json                    ...pin the schema-checked JSON form (default)
       --human                   ...as prose (e.g. `tau explain --human 106`)
+  tau explain --list            Topic index — every resolvable name
+                                (codes/types, keys, checks, TAU_*,
+                                clients, topics, subcommands)
+  tau explain --search <text>   Full-text search over the whole
+                                catalog — the filtered topic index
 
 Guide (embedded operator manual — read once, drive with no external docs):
   tau guide                     Print the full guide as JSON (agent-readable)

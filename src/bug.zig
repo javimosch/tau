@@ -18,7 +18,12 @@
 // --out). --attach-report <path> bundles an existing `tau doctor --report`
 // file instead of running the live sweep — the file is read at parse time
 // and secret-redacted before it can reach the body, URL, or --out file
-// (mutually exclusive with --no-report). Exit code is 0 on success — the
+// (mutually exclusive with --no-report). --dry-run previews the exact
+// envelope that would be filed — same sweep, same bundle, same URL — with
+// no side effects: no --out write, no browser launch. The preview object
+// gains "dry_run":true plus "redactions":<n>, the ***REDACTED*** mask
+// count in the composed body, so a caller can verify sanitization before
+// dropping the flag and filing for real. Exit code is 0 on success — the
 // diagnostics verdict lives inside the report, not in the exit status, so
 // `tau bug` works fine on a healthy install too (feature requests welcome).
 
@@ -139,7 +144,9 @@ fn openInBrowser(io: std.Io, gpa: std.mem.Allocator, env: *std.process.Environ.M
 /// field so the bundle is directly addressable without ungluing the body.
 /// `report_source` records the bundle's provenance: "live" for a fresh
 /// diagnostic sweep, "attached" for an --attach-report file, null under
-/// --no-report.
+/// --no-report. Under --dry-run two extra members appear — "dry_run":true
+/// and "redactions":`redactions`, the ***REDACTED*** mask count in the
+/// composed body — both absent on a normal run.
 fn formatBugJson(
     arena: std.mem.Allocator,
     title: []const u8,
@@ -151,6 +158,8 @@ fn formatBugJson(
     truncated: bool,
     out_path: ?[]const u8,
     opened: bool,
+    dry_run: bool,
+    redactions: usize,
 ) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "{\"title\":\"");
@@ -183,6 +192,11 @@ fn formatBugJson(
     } else try buf.appendSlice(arena, "null");
     try buf.appendSlice(arena, ",\"opened\":");
     try buf.appendSlice(arena, if (opened) "true" else "false");
+    if (dry_run) {
+        try buf.appendSlice(arena, ",\"dry_run\":true,\"redactions\":");
+        var nb: [24]u8 = undefined;
+        try buf.appendSlice(arena, std.fmt.bufPrint(&nb, "{d}", .{redactions}) catch unreachable);
+    }
     try buf.appendSlice(arena, ",\"done\":true}\n");
     return buf.toOwnedSlice(arena);
 }
@@ -232,14 +246,22 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
         truncated = true;
     }
 
+    // --dry-run: the envelope above is the complete preview — nothing is
+    // written and no browser is launched. `out` still reports the would-be
+    // path and `opened` stays false; "dry_run":true marks the difference.
     if (cfg.bug_out) |p| {
-        const data = report orelse body;
-        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = data });
+        if (!cfg.bug_dry_run) {
+            const data = report orelse body;
+            try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = p, .data = data });
+        }
     }
 
-    const opened = cfg.bug_open and openInBrowser(io, gpa, env, url);
+    const opened = cfg.bug_open and !cfg.bug_dry_run and openInBrowser(io, gpa, env, url);
 
-    term.out(try formatBugJson(arena, title, labels, url, body, report, report_source, truncated, cfg.bug_out, opened));
+    // The mask count lets a dry-run caller assert sanitization ran — it
+    // covers the whole composed body (description + bundle).
+    const redactions = std.mem.count(u8, body, debuglog.mask);
+    term.out(try formatBugJson(arena, title, labels, url, body, report, report_source, truncated, cfg.bug_out, opened, cfg.bug_dry_run, redactions));
     return 0;
 }
 
@@ -304,18 +326,33 @@ test "issueBody: description sits above the bundle; notes mark omission" {
 
 test "formatBugJson: all fields emitted, nulls for absent report/out" {
     const a = testing.allocator;
-    const got = try formatBugJson(a, "t", "bug", "u", "b", null, null, false, null, false);
+    const got = try formatBugJson(a, "t", "bug", "u", "b", null, null, false, null, false, false, 0);
     defer a.free(got);
     try testing.expect(std.mem.indexOf(u8, got, "\"report\":null") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"report_source\":null") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"out\":null") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"url_truncated\":false") != null);
     try testing.expect(std.mem.indexOf(u8, got, "\"opened\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"dry_run\"") == null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"redactions\"") == null);
     try testing.expect(std.mem.endsWith(u8, got, "\"done\":true}\n"));
 
-    const live = try formatBugJson(a, "t", "bug", "u", "b", "r", "live", false, null, false);
+    const live = try formatBugJson(a, "t", "bug", "u", "b", "r", "live", false, null, false, false, 0);
     defer a.free(live);
     try testing.expect(std.mem.indexOf(u8, live, "\"report_source\":\"live\"") != null);
+}
+
+test "formatBugJson: --dry-run appends dry_run:true and the redactions count" {
+    const a = testing.allocator;
+    const got = try formatBugJson(a, "t", "bug", "u", "b", "r", "live", false, "/tmp/o.md", false, true, 3);
+    defer a.free(got);
+    try testing.expect(std.mem.indexOf(u8, got, "\"dry_run\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "\"redactions\":3") != null);
+    // The preview members land after "opened" and before the done marker.
+    const di = std.mem.indexOf(u8, got, "\"dry_run\"").?;
+    const oi = std.mem.indexOf(u8, got, "\"opened\":false").?;
+    const fi = std.mem.indexOf(u8, got, "\"done\":true").?;
+    try testing.expect(oi < di and di < fi);
 }
 
 test "redactAttachedReport: secrets masked, trailing newline ensured" {
@@ -361,8 +398,25 @@ test "property: secrets anywhere in an attached report never reach the composed 
 
         const body = try issueBody(a, "desc", red, "note");
         const url = try buildIssueUrl(a, "t", body, "bug");
-        const out = try formatBugJson(a, "t", "bug", url, body, red, "attached", false, "/tmp/o.md", false);
+        const out = try formatBugJson(a, "t", "bug", url, body, red, "attached", false, "/tmp/o.md", false, false, 0);
         try testing.expect(std.mem.indexOf(u8, out, secret) == null);
         try testing.expect(std.mem.indexOf(u8, out, "\"report_source\":\"attached\"") != null);
     }
+}
+
+test "dry-run redactions count tracks the masks in the composed body" {
+    const a = testing.allocator;
+    const secrets = [_][]const u8{"sk-count-secret-1"};
+
+    const red = try redactAttachedReport(a, "k=sk-count-secret-1\nk=sk-count-secret-1\n", &secrets);
+    defer a.free(red);
+    const body = try issueBody(a, "desc", red, "note");
+    defer a.free(body);
+
+    const n = std.mem.count(u8, body, debuglog.mask);
+    try testing.expectEqual(@as(usize, 2), n);
+
+    const clean = try issueBody(a, "desc", "no secrets here", "note");
+    defer a.free(clean);
+    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, clean, debuglog.mask));
 }

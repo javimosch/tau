@@ -30,16 +30,16 @@ PowerShell.
 | `tau acp` | `start stop status serve` |
 | `tau fleet` | `run status list logs cancel` + fleet flags |
 | `tau skills` | `list search load` |
-| `tau config` | `show validate set get unset edit schema` + `--mode`, `--raw` (+ global flags for `show`, zsh) |
+| `tau config` | `show validate set get unset edit schema` + `--mode`, `--raw`, `--dry-run` (+ global flags for `show`, zsh); `get`/`set`/`unset` `<key>` positions ask the binary for dynamic candidates — `set` lists every settable key, `get`/`unset` list the keys present in your config file |
 | `tau init` | `--force`, `--stdout`, `--provider`, `--json` |
 | `tau doctor` | `--offline`, `--deep`, `--probe`, `--selftest`, `--fix`, `--yes`/`-y`, `--json`, `--report`, `--shell`, `--provider`, `--model`, `--api-key` |
 | `tau setup` | `--shell`, `--client`, `--offline`, `--deep`, `--provider`, `--model`, `--api-key`, `--yes`/`-y`, `--non-interactive`, `--dry-run`, `--remove`, `--uninstall`, `--import`, `--detect`, `--json` |
-| `tau completions` | `install` + `--shell`, `--dry-run`, `--json` |
-| `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--attach-report`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
+| `tau completions` | `install`, `candidates` (+ `config-set`, `config-get`, `config-unset` groups) + `--shell`, `--dry-run`, `--json` |
+| `tau bug` | `--title`, `--body`, `--labels`, `--open`, `--out`, `--no-report`, `--attach-report`, `--dry-run`, `--offline`, `--deep`, `--shell`, `--provider`, `--model`, `--api-key`, `--json` |
 | `tau guide` | `--human` |
 | `tau version` | `--verbose`, `--check`, `--json`, `--mode` |
 | `tau upgrade` | `--yes`/`-y`, `--dir`, `--dry-run`, `--json` |
-| `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + config keys (`timeout_ms`, `keys.<provider>`, …) + doctor checks (`doctor.tls_ca`, `doctor.client_zed`, …) + `TAU_*` env vars (`TAU_ENDPOINT`, …) + `--json`, `--human` |
+| `tau explain` | Stable exit codes (`1 80 82 105 106 110 111`) + config keys (`timeout_ms`, `keys.<provider>`, …) + doctor checks (`doctor.tls_ca`, `doctor.client_zed`, …) + `TAU_*` env vars (`TAU_ENDPOINT`, …) + editor clients (`client.zed`, `client.claude-desktop`, …) + curated topics (`topic.privacy`) + `--json`, `--human`, `--list`, `--search` |
 
 ---
 

@@ -180,6 +180,12 @@ const help_text =
     \\      --dry-run               Preview the install; change nothing
     \\      --json                  Pin the stable schema-checked result object
     \\                              (schema/tau-completions.schema.json)
+    \\  tau completions candidates <group>
+    \\                              Emit dynamic completion candidates (one
+    \\                              per line) for the shell scripts:
+    \\                              config-set lists every settable key;
+    \\                              config-get|config-unset list the keys
+    \\                              present in the config file
     \\
     \\Goal mode (in the prompt):
     \\  /goal <objective>            Work autonomously until the objective is audited-complete
@@ -223,9 +229,9 @@ const help_text =
     \\                              against a loopback stub provider and verify the
     \\                              canned reply comes back (no real keys/network)
     \\      --provider/--model/--api-key   Diagnose an override instead of the configured default
-    \\      --fix                     Propose remediations for fixable checks (missing
-    \\                              config, loose permissions, missing completions);
-    \\                              prompts per fix on a TTY
+    \\      --fix [<check>]           Propose remediations for fixable checks (missing
+    \\                              config, loose permissions, missing completions) —
+    \\                              or just the named check; prompts per fix on a TTY
     \\      --yes                     Apply --fix remediations without prompting
     \\      --dry-run                 Preview each --fix remediation as
     \\                              "would_apply" (+ "dry_run":true on the
@@ -251,6 +257,9 @@ const help_text =
     \\      --no-report             Omit the diagnostics bundle
     \\      --attach-report <path>  Bundle an existing report file
     \\                              (secret-redacted) instead of the live sweep
+    \\      --dry-run               Preview the exact issue envelope — bundle
+    \\                              contents + a "redactions" mask count — with
+    \\                              no side effects (no --out write, no browser)
     \\      --offline/--deep        Passed through to the diagnostic sweep
     \\      --json                  Pin the stable schema-checked JSON form
     \\                              (schema/tau-bug.schema.json)
@@ -266,8 +275,12 @@ const help_text =
     \\                              (schema/tau-config-validate.schema.json)
     \\  tau config set <key> <v> [path]  Schema-checked edit to the config FILE
     \\                                 (keys are <field> or keys.<provider>; creates the file)
+    \\      --dry-run                  Preview the exact write — unified diff
+    \\                                 + .bak backup path — change nothing
     \\  tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
     \\  tau config unset <key> [path] Remove a key from the config file
+    \\      --dry-run                  Preview the exact diff + backup path;
+    \\                                 change nothing
     \\  tau config edit [path]        Open the config in $EDITOR (TAU_EDITOR >
     \\                              VISUAL > EDITOR > vi/notepad); validates on save
     \\  tau config schema             Print the config file's JSON Schema
@@ -308,14 +321,25 @@ const help_text =
     \\
     \\Explain catalog (offline — no API key needed):
     \\  tau explain                   List the error + config-key + doctor-check
-    \\                                + env-var catalog as JSON
-    \\  tau explain <code|type|key>   Print an error's cause + remediation hint,
+    \\                                + env-var + client + topic + subcommand
+    \\                                catalog as JSON
+    \\  tau explain <name>            Print an error's cause + remediation hint,
     \\                                a config key's type/constraints, a doctor
     \\                                check's fails-when + remediation
-    \\                                (`tau explain doctor.<check>`), or a TAU_*
-    \\                                env var's consumers + summary
+    \\                                (`tau explain doctor.<check>`), a TAU_* env
+    \\                                var's consumers + summary, a client's
+    \\                                setup prereqs + config paths + verify step
+    \\                                (`tau explain client.zed`), a curated
+    \\                                topic (`tau explain privacy`), or a
+    \\                                subcommand's usage + examples + related
+    \\                                links (`tau explain doctor`)
     \\      --json                    ...pin the schema-checked JSON form (default)
     \\      --human                   ...as prose (e.g. `tau explain --human 106`)
+    \\  tau explain --list            Topic index — every resolvable name
+    \\                                (codes/types, keys, checks, TAU_*,
+    \\                                clients, topics, subcommands)
+    \\  tau explain --search <text>   Full-text search over the whole
+    \\                                catalog — the filtered topic index
     \\
     \\Guide (embedded operator manual — read once, drive with no external docs):
     \\  tau guide                     Print the full guide as JSON (agent-readable)
@@ -538,21 +562,21 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau fleet <run|status|list|logs|cancel>", .b = "multi-agent orchestration." },
     .{ .a = "tau init [--force] [--provider <name>]", .b = "write a commented starter ~/.config/tau/config.json seeded from detected env keys." },
     .{ .a = "tau setup [--shell <sh>] [--client <ed>] [--offline|--deep] [-y|--yes] [--non-interactive] [--dry-run] [--remove|--uninstall] [--import] [--detect]", .b = "one-shot onboarding: init + install shell completions + editor ACP client config + doctor health summary (NDJSON). --dry-run previews every write (would_* statuses) and changes nothing. --remove/--uninstall reverses per-client wiring instead. --import merges existing MCP server entries from the other supported clients into each wired MCP client. --detect is a read-only inventory of supported clients with config paths and wiring status. Unattended: TAU_YES/TAU_NONINTERACTIVE/TAU_SETUP_SHELL/TAU_SETUP_CLIENT env equivalents; never prompts, never reads stdin." },
-    .{ .a = "tau completions install [--shell <sh>] [--dry-run]", .b = "install the generated shell completions into your shell profile (detect $SHELL, or --shell bash|zsh|fish|pwsh|all) — the same machinery the setup completions step uses; --json pins the schema-checked result (schema/tau-completions.schema.json)." },
-    .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [--yes|--dry-run]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation (--dry-run previews the plan, applies nothing)." },
-    .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report] [--attach-report <path>]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report). --attach-report bundles an existing report file instead of running the live sweep." },
+    .{ .a = "tau completions install [--shell <sh>] [--dry-run]", .b = "install the generated shell completions into your shell profile (detect $SHELL, or --shell bash|zsh|fish|pwsh|all) — the same machinery the setup completions step uses; --json pins the schema-checked result (schema/tau-completions.schema.json). `candidates <group>` emits the dynamic completion candidates the scripts call at completion time." },
+    .{ .a = "tau doctor [--offline|--deep|--probe|--selftest] [--fix [<check>] [--yes|--dry-run]] [--json|--report] [--shell <sh>]", .b = "diagnose the setup chain (config, provider, key, completions, connectivity) — JSON report; --probe live-verifies every provider's connectivity and credentials; --selftest runs a credential-free end-to-end session against a loopback stub; --json streams NDJSON events; --report prints a Markdown bundle for bug reports; --fix remediates behind confirmation (bare = all fixable checks, --fix <check> scopes to one; --dry-run previews the plan — files, actions, rollback — applies nothing)." },
+    .{ .a = "tau bug [--title <t>] [--body <text>] [--open] [--out <path>] [--no-report] [--attach-report <path>] [--dry-run]", .b = "pre-filled GitHub issue URL carrying the redacted doctor diagnostics bundle (JSON: url + body + report). --attach-report bundles an existing report file instead of running the live sweep; --dry-run previews the same envelope with a redactions count and changes nothing." },
     .{ .a = "tau version [--verbose] [--check] [--json]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1), --json emits the stable {\"name\",\"version\"} object (schema/tau-version.schema.json)." },
     .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run] [--verify-signature]", .b = "self-update in place via the release's verified install.sh; shows the release notes since your version before the TTY prompt/install and in the report's changelog field, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
     .{ .a = "tau config show [--flags] [--json]", .b = "print the resolved effective config (file+env+flags merged; keys redacted). --json pins the stable JSON form (schema/tau-config-show.schema.json)." },
     .{ .a = "tau config validate [path] [--json]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit). --json pins the stable report (schema/tau-config-validate.schema.json)." },
-    .{ .a = "tau config set <key> <value> [path]", .b = "schema-checked edit to the config FILE (<field> or keys.<provider>); creates the file if missing." },
+    .{ .a = "tau config set <key> <value> [path] [--dry-run]", .b = "schema-checked edit to the config FILE (<field> or keys.<provider>); creates the file if missing; --dry-run previews the exact diff + .bak backup path." },
     .{ .a = "tau config get <key> [path] [--raw]", .b = "print a config file value; secrets are redacted unless --raw." },
-    .{ .a = "tau config unset <key> [path]", .b = "remove a key from the config file." },
+    .{ .a = "tau config unset <key> [path] [--dry-run]", .b = "remove a key from the config file; --dry-run previews the exact diff + .bak backup path." },
     .{ .a = "tau config edit [path]", .b = "open the config file in $EDITOR (TAU_EDITOR > VISUAL > EDITOR > vi/notepad), validate on save; seeds the init scaffold when missing." },
     .{ .a = "tau config schema", .b = "emit the JSON Schema (draft 2020-12) for the config file — also published at schema/tau-config.schema.json for editor autocomplete/validation." },
     .{ .a = "tau skills <list|search|load>", .b = "skill discovery from ~/.agents/skills." },
-    .{ .a = "tau explain [<code|type|key|doctor.<check>|TAU_*>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, a doctor check's fails-when + remediation, or a TAU_* env var's consumers + summary (JSON; --json pins the schema, --human for prose)." },
+    .{ .a = "tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>]", .b = "offline catalog lookup — error cause + remediation, a config key's type/constraints, a doctor check's fails-when + remediation, a TAU_* env var's consumers + summary, a client's setup prereqs + paths + verify step, a curated topic like `privacy`, or a subcommand's usage + examples + related errors/keys/checks (JSON; --json pins the schema, --human for prose, --list for the topic index, --search <text> to filter it)." },
     .{ .a = "tau guide [--human]", .b = "this guide — JSON, or --human for markdown." },
     .{ .a = "tau --help-json", .b = "machine-readable flag catalog." },
 };
@@ -577,7 +601,7 @@ const guide_gotchas = [_][]const u8{
 };
 const guide_see_also = [_][]const u8{
     "tau --help-json (machine-readable command/flag catalog)",
-    "tau explain <code|type|key|doctor.<check>|TAU_*> (offline error + config-key + doctor-check + env-var catalog — cause + remediation, key constraints, check fails-when, env consumers + summary)",
+    "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>> (offline error + config-key + doctor-check + env-var + client + topic + subcommand catalog — cause + remediation, key constraints, check fails-when, env consumers + summary, client prereqs + paths + verify, topic summary + see-also, subcommand usage + examples + related links; --list indexes every name, --search <text> filters it)",
     "tau --help (human help)",
     "tau <subcommand> --help (per-subcommand usage + runnable examples)",
     "README.md (ships with the source)",
@@ -893,6 +917,9 @@ pub fn main(init: std.process.Init) !void {
     const base_cfg: Config = configfile.load(io, arena, init.environ_map);
     // Warn if the config file exists but has invalid JSON (load degrades silently).
     if (base_cfg.config_warning) |w| printWarnJson(w);
+    // Human-readable companion to the warn envelope: path:line:col plus the
+    // offending source line with a caret under the error column.
+    if (base_cfg.config_parse_note) |n| writeErr(n);
     // Warn on unrecognized TAU_* env vars — a typo (TAU_ENDPONT) is otherwise
     // silently ignored by every consumer (src/envvars.zig registry).
     if (envvars.unknownVarWarning(arena, init.environ_map)) |w| printWarnJson(w);
@@ -958,6 +985,17 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(code);
         },
         .completions => {
+            if (std.mem.eql(u8, parsed.config.completions_sub orelse "", "candidates")) {
+                // Dynamic completion candidates — the shipped shell scripts
+                // call this at completion time (config key positions for
+                // `tau config get|set|unset`). Plain lines on stdout.
+                const cand = @import("candidates.zig");
+                const code = cand.run(io, arena, init.environ_map, parsed.config.completions_group orelse "") catch |err| {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "completions candidates failed", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                };
+                std.process.exit(code);
+            }
             const setup = @import("setup.zig");
             const code = setup.runCompletionsInstall(io, arena, parsed.config, init.environ_map) catch |err| {
                 printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "completions install failed", false);
@@ -1001,12 +1039,43 @@ pub fn main(init: std.process.Init) !void {
             // Offline catalog lookup — stable errors (src/errors.zig,
             // docs/errors.md), config keys (src/configschema.zig,
             // docs/config.md), doctor checks (src/doctorcatalog.zig —
-            // the docs/troubleshooting.md check table), and TAU_* env vars
-            // (src/envvars.zig — docs/env.md). Needs no provider or API key.
+            // the docs/troubleshooting.md check table), TAU_* env vars
+            // (src/envvars.zig — docs/env.md), supported clients
+            // (src/clientcatalog.zig — docs/compatibility.md),
+            // curated topics (src/topiccatalog.zig — e.g. privacy), and
+            // subcommands (src/subcommandcatalog.zig — usage + examples +
+            // related links). Needs no provider or API key.
             const xpl = @import("explain.zig");
+            if (parsed.config.explain_list) {
+                // --list: the topic index — every name resolve() accepts,
+                // without the full entry bodies the bare dump carries.
+                const idx = if (parsed.config.explain_human)
+                    xpl.formatIndexHuman(arena)
+                else
+                    xpl.formatIndexJson(arena);
+                writeOut(idx catch {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "failed to serialize topic index", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                });
+                return;
+            }
+            if (parsed.config.explain_search) |sq| {
+                // --search <text>: the same topic index --list emits,
+                // filtered to the entries whose searchable text matches
+                // every whitespace-separated term (case-insensitive).
+                const res = if (parsed.config.explain_human)
+                    xpl.formatSearchHuman(arena, sq)
+                else
+                    xpl.formatSearchJson(arena, sq);
+                writeOut(res catch {
+                    printErrorJson(@intFromEnum(ExitCode.internal_error), "internal_error", "failed to serialize search results", false);
+                    std.process.exit(@intFromEnum(ExitCode.internal_error));
+                });
+                return;
+            }
             if (parsed.config.explain_arg) |q| {
                 const entry = xpl.resolve(q) orelse {
-                    const msg = std.fmt.allocPrint(arena, "unknown error code, type, config key, doctor check, or env var: {s}{s} — run `tau explain` to list the catalog", .{ q, xpl.suggestQuery(arena, q) orelse "" }) catch "unknown error code, type, config key, doctor check, or env var";
+                    const msg = std.fmt.allocPrint(arena, "unknown error code, type, config key, doctor check, env var, client, topic, or subcommand: {s}{s} — run `tau explain --list` for the topic index", .{ q, xpl.suggestQuery(arena, q) orelse "" }) catch "unknown error code, type, config key, doctor check, env var, client, topic, or subcommand";
                     printErrorJson(@intFromEnum(ExitCode.generic_failure), "not_found", msg, false);
                     std.process.exit(@intFromEnum(ExitCode.generic_failure));
                 };
@@ -1153,6 +1222,7 @@ pub fn main(init: std.process.Init) !void {
                     },
                     .fail => |f| {
                         printErrorJson(f.code, f.type_name, f.message, false);
+                        if (f.note) |n| writeErr(n);
                         std.process.exit(f.code);
                     },
                 }
@@ -1168,6 +1238,7 @@ pub fn main(init: std.process.Init) !void {
                     parsed.config.edit_path,
                     init.environ_map,
                     parsed.config.config_raw,
+                    parsed.config.config_dry_run,
                     parsed.config.mode,
                 ) catch |err| {
                     printErrorJson(@intFromEnum(ExitCode.internal_error), @errorName(err), "config edit failed", false);
@@ -1180,6 +1251,7 @@ pub fn main(init: std.process.Init) !void {
                     },
                     .fail => |f| {
                         printErrorJson(f.code, f.type_name, f.message, false);
+                        if (f.note) |n| writeErr(n);
                         std.process.exit(f.code);
                     },
                 }
@@ -1307,6 +1379,7 @@ test {
     _ = @import("init.zig");
     _ = @import("configvalidate.zig");
     _ = @import("configedit.zig");
+    _ = @import("candidates.zig");
     _ = @import("setup.zig");
     _ = @import("version.zig");
     _ = @import("update.zig");
@@ -1315,6 +1388,7 @@ test {
     _ = @import("explain.zig");
     _ = @import("doctorcatalog.zig");
     _ = @import("envvars.zig");
+    _ = @import("topiccatalog.zig");
 }
 
 test "flag_specs appear in help_text" {

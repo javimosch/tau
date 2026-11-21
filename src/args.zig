@@ -116,7 +116,7 @@ const flag_pool = blk: {
 const acp_words = [_][]const u8{ "serve", "start", "stop", "status" };
 const skills_words = [_][]const u8{ "list", "search", "load" };
 const fleet_words = [_][]const u8{ "run", "status", "list", "logs", "cancel" };
-const completions_words = [_][]const u8{"install"};
+const completions_words = [_][]const u8{ "install", "candidates" };
 const config_words = [_][]const u8{ "show", "validate", "set", "get", "unset", "edit", "schema" };
 
 /// The top-level `tau <sub>` surface plus the arg words that make a mistyped
@@ -366,13 +366,15 @@ pub fn parse(
     }
 
     // `tau doctor [--provider P] [--model M] [--api-key K] [--offline] [--deep]
-    // [--probe] [--selftest] [--fix] [--yes|--dry-run] [--shell sh] [--json]
-    // [--report]` — setup diagnostics; a command, not a prompt. An unknown
-    // provider is carried into the report as a failed check instead of
-    // exiting 80. --fix proposes remediations, --yes applies them without
-    // prompting (non-interactive use), --dry-run previews each remediation as
-    // "would_apply" and changes nothing (mutually exclusive with --yes).
-    // --probe live-verifies connectivity and
+    // [--probe] [--selftest] [--fix [check-id]] [--yes|--dry-run] [--shell sh]
+    // [--json] [--report]` — setup diagnostics; a command, not a prompt. An
+    // unknown provider is carried into the report as a failed check instead
+    // of exiting 80. --fix proposes remediations (bare = every fixable check;
+    // `--fix <check-id>` scopes to one), --yes applies them without prompting
+    // (non-interactive use), --dry-run previews each remediation as
+    // "would_apply" — concrete files, actions, and rollback — and changes
+    // nothing (mutually exclusive with --yes). --probe live-verifies
+    // connectivity and
     // credentials for every provider in the registry (per-provider pass/fail
     // rows). --selftest runs a credential-free end-to-end session against a
     // loopback stub provider (self-spawned child; no real keys or network).
@@ -409,6 +411,13 @@ pub fn parse(
                 dcfg.doctor_selftest = true;
             } else if (eq(a, "--fix")) {
                 dcfg.doctor_fix = true;
+                // Optional scope: `--fix <check-id>` remediates one check
+                // instead of every fixable outcome. A flag token (or end of
+                // argv) means bare --fix — the whole plan.
+                if (j + 1 < argv.len and argv[j + 1].len > 0 and argv[j + 1][0] != '-') {
+                    j += 1;
+                    dcfg.doctor_fix_id = argv[j];
+                }
             } else if (eq(a, "--yes") or eq(a, "-y")) {
                 // --yes implies --fix (nothing else to approve).
                 dcfg.doctor_fix = true;
@@ -442,17 +451,20 @@ pub fn parse(
     }
 
     // `tau bug [--title T] [--body TEXT] [--labels CSV] [--open] [--out PATH]
-    // [--no-report] [--attach-report PATH] [--offline] [--deep] [--provider P]
-    // [--model M] [--api-key K] [--shell sh] [--json]` — build a pre-filled
-    // GitHub issue carrying the redacted `tau doctor --report` bundle; a
-    // command, not a prompt. The diagnostic sweep honors the same overrides
-    // as `tau doctor`, so an unknown provider rides into the report as a
-    // failed check (exit-80 only for malformed arguments). --out and
+    // [--no-report] [--attach-report PATH] [--dry-run] [--offline] [--deep]
+    // [--provider P] [--model M] [--api-key K] [--shell sh] [--json]` — build
+    // a pre-filled GitHub issue carrying the redacted `tau doctor --report`
+    // bundle; a command, not a prompt. The diagnostic sweep honors the same
+    // overrides as `tau doctor`, so an unknown provider rides into the report
+    // as a failed check (exit-80 only for malformed arguments). --out and
     // --no-report conflict: there is no bundle to write. --attach-report
     // reads an existing report file at parse time, secret-redacts it, and
     // bundles it in place of the live sweep — it conflicts with --no-report
-    // for the same reason. The stdout object is already JSON; --json is the
-    // stable-contract spelling that pins it (schema/tau-bug.schema.json).
+    // for the same reason. --dry-run composes with everything: it emits the
+    // same envelope plus "dry_run":true and a "redactions" mask count while
+    // skipping the side effects (no --out write, no browser launch). The
+    // stdout object is already JSON; --json is the stable-contract spelling
+    // that pins it (schema/tau-bug.schema.json).
     if (argv.len > 0 and eq(argv[0], "bug")) {
         if (wantsHelp(argv[1..])) return subHelp("bug", base);
         var bcfg: Config = base;
@@ -481,6 +493,8 @@ pub fn parse(
                 bcfg.bug_out = argv[j];
             } else if (eq(a, "--no-report")) {
                 bcfg.bug_no_report = true;
+            } else if (eq(a, "--dry-run")) {
+                bcfg.bug_dry_run = true;
             } else if (eq(a, "--attach-report")) {
                 j += 1;
                 if (j >= argv.len) return missing(arena, a);
@@ -537,13 +551,19 @@ pub fn parse(
         return .{ .action = .guide, .config = gcfg };
     }
 
-    // `tau explain [<code|type|key>] [--json|--human]` — offline catalog
-    // lookup (the error Spec registry behind docs/errors.md plus the
-    // config-key catalog behind docs/config.md). The output is JSON by
-    // default; --json is the stable-contract spelling that
+    // `tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>>]
+    // [--json|--human|--list|--search <text>]` — offline catalog lookup (the
+    // error Spec registry behind docs/errors.md plus the config-key,
+    // doctor-check, env-var, and client catalogs behind docs/config.md,
+    // docs/troubleshooting.md, docs/env.md, and docs/compatibility.md). The
+    // output is JSON by default; --json is the stable-contract spelling that
     // pins the schema-checked form (schema/tau-explain.schema.json), --human
-    // renders prose — the two are mutually exclusive. Command, not a prompt:
-    // `explain` is always consumed as the subcommand word.
+    // renders prose — the two are mutually exclusive. --list prints the
+    // topic index (every resolvable name) instead of full entries and takes
+    // no query. --search <text> prints the same index filtered to entries
+    // matching every whitespace-separated term and takes no positional
+    // query. Command, not a prompt: `explain` is always consumed as the
+    // subcommand word.
     if (argv.len > 0 and eq(argv[0], "explain")) {
         if (wantsHelp(argv[1..])) return subHelp("explain", base);
         var ecfg: Config = base;
@@ -557,12 +577,28 @@ pub fn parse(
                 if (ecfg.explain_human) return errResult(arena, "--json and --human are mutually exclusive", .{});
                 ecfg.cli_json = true;
                 ecfg.mode = .json;
+            } else if (eq(a, "--list")) {
+                ecfg.explain_list = true;
+            } else if (eq(a, "--search")) {
+                j += 1;
+                if (j >= argv.len) return missing(arena, a);
+                ecfg.explain_search = argv[j];
             } else if (a.len > 0 and a[0] != '-') {
                 if (ecfg.explain_arg != null) return errResult(arena, "unexpected extra argument: {s}", .{a});
                 ecfg.explain_arg = a;
             } else {
                 return errResult(arena, "unknown explain argument: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
             }
+        }
+        if (ecfg.explain_list and ecfg.explain_arg != null)
+            return errResult(arena, "--list takes no query argument", .{});
+        if (ecfg.explain_list and ecfg.explain_search != null)
+            return errResult(arena, "--list and --search are mutually exclusive", .{});
+        if (ecfg.explain_search != null and ecfg.explain_arg != null)
+            return errResult(arena, "--search takes no query argument", .{});
+        if (ecfg.explain_search) |sq| {
+            if (std.mem.trim(u8, sq, " \t").len == 0)
+                return errResult(arena, "--search requires a non-empty query", .{});
         }
         return .{ .action = .explain, .config = ecfg };
     }
@@ -740,12 +776,29 @@ pub fn parse(
     // its rc/profile hook. The install flags share setup_shell/setup_dry_run
     // — the fields the shared machinery in setup.zig consumes. Output is a
     // single stable JSON result object; --json is the contract spelling.
+    //
+    // `tau completions candidates <group>` — the internal surface the
+    // shipped scripts call at completion time: emits one candidate per
+    // line. `config-set` lists every settable key; `config-get` and
+    // `config-unset` list the keys present in the config file.
     if (argv.len > 0 and eq(argv[0], "completions")) {
         if (wantsHelp(argv[1..])) return subHelp("completions", base);
         var ccfg: Config = base;
-        if (argv.len < 2) return errResult(arena, "completions subcommand required: install", .{});
+        if (argv.len < 2) return errResult(arena, "completions subcommand required: install | candidates", .{});
+        if (eq(argv[1], "candidates")) {
+            const candmod = @import("candidates.zig");
+            ccfg.completions_sub = "candidates";
+            if (argv.len < 3)
+                return errResult(arena, "completions candidates requires a group: {s}", .{try candmod.groupNames(arena)});
+            if (!candmod.isGroup(argv[2]))
+                return errResult(arena, "invalid completions candidates group (want {s}): {s}{s}", .{ try candmod.groupNames(arena), argv[2], try suggest.hint(arena, argv[2], &candmod.groups) });
+            ccfg.completions_group = argv[2];
+            if (argv.len > 3)
+                return errResult(arena, "unknown completions candidates argument: {s}{s}", .{ argv[3], try argHint(arena, argv[3], &.{}) });
+            return .{ .action = .completions, .config = ccfg };
+        }
         if (!eq(argv[1], "install"))
-            return errResult(arena, "invalid completions subcommand (want install): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &completions_words) });
+            return errResult(arena, "invalid completions subcommand (want install | candidates): {s}{s}", .{ argv[1], try suggest.hint(arena, argv[1], &completions_words) });
         ccfg.completions_sub = argv[1];
         var j: usize = 2;
         while (j < argv.len) : (j += 1) {
@@ -951,9 +1004,9 @@ pub fn parse(
             return .{ .action = .config, .config = ecfg };
         }
         if (eq(argv[1], "set") or eq(argv[1], "get") or eq(argv[1], "unset")) {
-            // tau config set <key> <value> [path] [--mode text|json]
+            // tau config set <key> <value> [path] [--dry-run] [--mode text|json]
             // tau config get <key> [path] [--raw] [--mode text|json]
-            // tau config unset <key> [path] [--mode text|json]
+            // tau config unset <key> [path] [--dry-run] [--mode text|json]
             var ecfg: Config = base;
             ecfg.config_sub = argv[1];
             const need_val = eq(argv[1], "set");
@@ -973,6 +1026,8 @@ pub fn parse(
                     }
                 } else if (eq(a, "--raw")) {
                     ecfg.config_raw = true;
+                } else if (eq(a, "--dry-run")) {
+                    ecfg.config_dry_run = true;
                 } else if (a.len > 0 and a[0] != '-') {
                     pos_count += 1;
                     if (pos_count == 1) {
@@ -996,6 +1051,9 @@ pub fn parse(
             }
             if (ecfg.config_raw and !eq(argv[1], "get")) {
                 return errResult(arena, "--raw only applies to config get", .{});
+            }
+            if (ecfg.config_dry_run and eq(argv[1], "get")) {
+                return errResult(arena, "--dry-run only applies to config set and unset", .{});
             }
             return .{ .action = .config, .config = ecfg };
         }
@@ -1783,6 +1841,71 @@ test "parse: explain subcommand" {
     const extra = try parseArgv(a, &.{ "tau", "explain", "80", "106" }, .{});
     try std.testing.expectEqual(Action.err, extra.action);
     try std.testing.expectEqualStrings("unexpected extra argument: 106", extra.err_msg.?);
+
+    // --list is the topic index — no query, combinable with --json/--human.
+    const list = try parseArgv(a, &.{ "tau", "explain", "--list" }, .{});
+    try std.testing.expectEqual(Action.explain, list.action);
+    try std.testing.expect(list.config.explain_list);
+    try std.testing.expect(list.config.explain_arg == null);
+
+    const list_human = try parseArgv(a, &.{ "tau", "explain", "--list", "--human" }, .{});
+    try std.testing.expectEqual(Action.explain, list_human.action);
+    try std.testing.expect(list_human.config.explain_list);
+    try std.testing.expect(list_human.config.explain_human);
+
+    const list_json = try parseArgv(a, &.{ "tau", "explain", "--json", "--list" }, .{});
+    try std.testing.expectEqual(Action.explain, list_json.action);
+    try std.testing.expect(list_json.config.explain_list);
+    try std.testing.expect(!list_json.config.explain_human);
+
+    const list_query = try parseArgv(a, &.{ "tau", "explain", "--list", "106" }, .{});
+    try std.testing.expectEqual(Action.err, list_query.action);
+    try std.testing.expectEqualStrings("--list takes no query argument", list_query.err_msg.?);
+
+    const query_list = try parseArgv(a, &.{ "tau", "explain", "106", "--list" }, .{});
+    try std.testing.expectEqual(Action.err, query_list.action);
+    try std.testing.expectEqualStrings("--list takes no query argument", query_list.err_msg.?);
+
+    // --search <text> consumes its own argument — no positional query,
+    // combinable with --json/--human, mutex with --list either order.
+    const search = try parseArgv(a, &.{ "tau", "explain", "--search", "timeout" }, .{});
+    try std.testing.expectEqual(Action.explain, search.action);
+    try std.testing.expectEqualStrings("timeout", search.config.explain_search.?);
+    try std.testing.expect(search.config.explain_arg == null);
+    try std.testing.expect(!search.config.explain_list);
+
+    const search_multi = try parseArgv(a, &.{ "tau", "explain", "--search", "api key", "--json" }, .{});
+    try std.testing.expectEqual(Action.explain, search_multi.action);
+    try std.testing.expectEqualStrings("api key", search_multi.config.explain_search.?);
+    try std.testing.expect(search_multi.config.cli_json);
+
+    const search_human = try parseArgv(a, &.{ "tau", "explain", "--human", "--search", "proxy" }, .{});
+    try std.testing.expectEqualStrings("proxy", search_human.config.explain_search.?);
+    try std.testing.expect(search_human.config.explain_human);
+
+    const search_missing = try parseArgv(a, &.{ "tau", "explain", "--search" }, .{});
+    try std.testing.expectEqual(Action.err, search_missing.action);
+    try std.testing.expectEqualStrings("missing value for --search", search_missing.err_msg.?);
+
+    const search_blank = try parseArgv(a, &.{ "tau", "explain", "--search", "  " }, .{});
+    try std.testing.expectEqual(Action.err, search_blank.action);
+    try std.testing.expectEqualStrings("--search requires a non-empty query", search_blank.err_msg.?);
+
+    const search_query = try parseArgv(a, &.{ "tau", "explain", "--search", "x", "106" }, .{});
+    try std.testing.expectEqual(Action.err, search_query.action);
+    try std.testing.expectEqualStrings("--search takes no query argument", search_query.err_msg.?);
+
+    const query_search = try parseArgv(a, &.{ "tau", "explain", "106", "--search", "x" }, .{});
+    try std.testing.expectEqual(Action.err, query_search.action);
+    try std.testing.expectEqualStrings("--search takes no query argument", query_search.err_msg.?);
+
+    const search_list = try parseArgv(a, &.{ "tau", "explain", "--search", "x", "--list" }, .{});
+    try std.testing.expectEqual(Action.err, search_list.action);
+    try std.testing.expectEqualStrings("--list and --search are mutually exclusive", search_list.err_msg.?);
+
+    const list_search = try parseArgv(a, &.{ "tau", "explain", "--list", "--search", "x" }, .{});
+    try std.testing.expectEqual(Action.err, list_search.action);
+    try std.testing.expectEqualStrings("--list and --search are mutually exclusive", list_search.err_msg.?);
 }
 
 test "parse: skills subcommand validation" {
@@ -2033,6 +2156,31 @@ test "parse: completions install flags + validation" {
     try std.testing.expectEqualStrings("completions", h2.config.help_sub.?);
 }
 
+test "parse: completions candidates validates its group" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Each config group lands on completions_group; the subcommand selector
+    // is "candidates".
+    for ([_][]const u8{ "config-set", "config-get", "config-unset" }) |g| {
+        const p = try parseArgv(a, &.{ "tau", "completions", "candidates", g }, .{});
+        try std.testing.expectEqual(Action.completions, p.action);
+        try std.testing.expectEqualStrings("candidates", p.config.completions_sub.?);
+        try std.testing.expectEqualStrings(g, p.config.completions_group.?);
+    }
+
+    // Missing group, invalid group, and trailing args are invalid arguments.
+    const none = try parseArgv(a, &.{ "tau", "completions", "candidates" }, .{});
+    try std.testing.expectEqual(Action.err, none.action);
+    const bogus = try parseArgv(a, &.{ "tau", "completions", "candidates", "bogus" }, .{});
+    try std.testing.expectEqual(Action.err, bogus.action);
+    const extra = try parseArgv(a, &.{ "tau", "completions", "candidates", "config-set", "extra" }, .{});
+    try std.testing.expectEqual(Action.err, extra.action);
+    const flag = try parseArgv(a, &.{ "tau", "completions", "candidates", "config-set", "--json" }, .{});
+    try std.testing.expectEqual(Action.err, flag.action);
+}
+
 test "parse: TAU_SETUP_IMPORT env enables setup --import" {
     var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer ar.deinit();
@@ -2203,6 +2351,37 @@ test "parse: config set|get|unset capture key, value, path, --raw" {
     try std.testing.expectEqual(Action.err, raw_on_set.action);
 }
 
+test "parse: config set|unset accept --dry-run; config get rejects it" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const s = try parseArgv(a, &.{ "tau", "config", "set", "provider", "openai", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.config, s.action);
+    try std.testing.expectEqualStrings("set", s.config.config_sub.?);
+    try std.testing.expect(s.config.config_dry_run);
+    try std.testing.expect(!s.config.config_raw);
+
+    const u = try parseArgv(a, &.{ "tau", "config", "unset", "mode", "--dry-run" }, .{});
+    try std.testing.expectEqualStrings("unset", u.config.config_sub.?);
+    try std.testing.expect(u.config.config_dry_run);
+
+    // --dry-run composes with --mode and the path positional.
+    const m = try parseArgv(a, &.{ "tau", "config", "set", "k", "v", "f.json", "--dry-run", "--mode", "text" }, .{});
+    try std.testing.expect(m.config.config_dry_run);
+    try std.testing.expectEqualStrings("f.json", m.config.edit_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, m.config.mode);
+
+    // get never writes — --dry-run there is an argument error like --raw on
+    // set.
+    const g = try parseArgv(a, &.{ "tau", "config", "get", "k", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.err, g.action);
+    try std.testing.expectEqualStrings("--dry-run only applies to config set and unset", g.err_msg.?);
+
+    const bare = try parseArgv(a, &.{ "tau", "config", "set", "k", "v" }, .{});
+    try std.testing.expect(!bare.config.config_dry_run);
+}
+
 test "parse: config show rejects positional prompt arguments" {
     var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer ar.deinit();
@@ -2349,9 +2528,44 @@ test "parse: doctor selects the doctor action with defaults" {
     try std.testing.expect(!p.config.doctor_selftest);
     try std.testing.expect(!p.config.doctor_json);
     try std.testing.expect(!p.config.doctor_report);
+    try std.testing.expect(!p.config.doctor_fix);
+    try std.testing.expect(p.config.doctor_fix_id == null);
     try std.testing.expect(p.config.doctor_bad_provider == null);
     // Default provider resolved like a normal run.
     try std.testing.expectEqualStrings(provider_mod.providers[0].name, p.config.provider);
+}
+
+test "parse: doctor --fix takes an optional check-id scope" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    // Bare --fix scopes to nothing — every fixable check.
+    const bare = try parseArgv(a, &.{ "tau", "doctor", "--fix" }, .{});
+    try std.testing.expect(bare.config.doctor_fix);
+    try std.testing.expect(bare.config.doctor_fix_id == null);
+
+    // --fix <check-id> scopes the plan to one check.
+    const scoped = try parseArgv(a, &.{ "tau", "doctor", "--fix", "config_permissions", "--yes" }, .{});
+    try std.testing.expect(scoped.config.doctor_fix);
+    try std.testing.expect(scoped.config.doctor_yes);
+    try std.testing.expectEqualStrings("config_permissions", scoped.config.doctor_fix_id.?);
+
+    // A flag token after --fix is not a check id — bare --fix + --yes.
+    const flag_next = try parseArgv(a, &.{ "tau", "doctor", "--fix", "--yes" }, .{});
+    try std.testing.expect(flag_next.config.doctor_fix);
+    try std.testing.expect(flag_next.config.doctor_yes);
+    try std.testing.expect(flag_next.config.doctor_fix_id == null);
+
+    // --yes then --fix <id>: the scope still lands.
+    const yes_first = try parseArgv(a, &.{ "tau", "doctor", "--yes", "--fix", "shell_completions" }, .{});
+    try std.testing.expect(yes_first.config.doctor_yes);
+    try std.testing.expectEqualStrings("shell_completions", yes_first.config.doctor_fix_id.?);
+
+    // Value-flags still parse after a scoped --fix.
+    const mixed = try parseArgv(a, &.{ "tau", "doctor", "--fix", "shell_completions", "--shell", "zsh" }, .{});
+    try std.testing.expectEqualStrings("shell_completions", mixed.config.doctor_fix_id.?);
+    try std.testing.expectEqualStrings("zsh", mixed.config.setup_shell.?);
 }
 
 test "parse: doctor accepts --offline/--deep and provider/model/api-key overrides" {
@@ -2515,6 +2729,7 @@ test "parse: bug selects the bug action with defaults" {
     try std.testing.expect(p.config.bug_out == null);
     try std.testing.expect(!p.config.bug_no_report);
     try std.testing.expect(p.config.bug_attach_report == null);
+    try std.testing.expect(!p.config.bug_dry_run);
     try std.testing.expect(!p.config.doctor_offline);
     try std.testing.expect(!p.config.doctor_deep);
 }
@@ -2542,6 +2757,23 @@ test "parse: bug accepts title/body/labels/open/out/no-report + doctor overrides
     try std.testing.expect(p.config.doctor_deep);
     try std.testing.expectEqualStrings("openai", p.config.provider);
     try std.testing.expectEqualStrings("sk-x", p.config.api_key.?);
+}
+
+test "parse: bug --dry-run composes with the side-effect flags" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const p = try parseArgv(a, &.{ "tau", "bug", "--dry-run" }, .{});
+    try std.testing.expectEqual(Action.bug, p.action);
+    try std.testing.expect(p.config.bug_dry_run);
+
+    // No mutex: --open/--out under --dry-run are previewed, not performed.
+    const full = try parseArgv(a, &.{ "tau", "bug", "--dry-run", "--open", "--out", "/tmp/r.md" }, .{});
+    try std.testing.expectEqual(Action.bug, full.action);
+    try std.testing.expect(full.config.bug_dry_run);
+    try std.testing.expect(full.config.bug_open);
+    try std.testing.expectEqualStrings("/tmp/r.md", full.config.bug_out.?);
 }
 
 test "parse: bug --out + --no-report is mutually exclusive; bad args exit 80" {

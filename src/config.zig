@@ -194,12 +194,21 @@ pub const Config = struct {
     /// setup_shell/setup_dry_run — the same fields the shared install
     /// machinery in setup.zig already consumes.
     completions_sub: ?[]const u8 = null,
+    /// `tau completions candidates <group>` — the candidate set to emit
+    /// (config-set | config-get | config-unset).
+    completions_group: ?[]const u8 = null,
 
     // --- Error catalog (`tau explain`) ---
     /// `tau explain <code|type>` query. Null means list the whole catalog.
     explain_arg: ?[]const u8 = null,
     /// `tau explain --human` → prose rendering instead of JSON.
     explain_human: bool = false,
+    /// `tau explain --list` → the topic index (names only) instead of a
+    /// single entry or the full-entry catalog dump.
+    explain_list: bool = false,
+    /// `tau explain --search <text>` → full-text filter over the whole
+    /// catalog; emits the filtered index, not entry bodies.
+    explain_search: ?[]const u8 = null,
 
     // --- Context compaction ---
     /// Model context window in tokens; 256k when unknown. Used for the compaction threshold.
@@ -218,6 +227,11 @@ pub const Config = struct {
     /// Set by configfile.load() when the config file exists but has invalid JSON.
     /// main.zig emits a warning and continues with defaults.
     config_warning: ?[]const u8 = null,
+    /// Set by configfile.load() alongside config_warning when a JSON syntax
+    /// error was located: a multi-line "note:" block (path:line:col + the
+    /// offending source line with a caret) that main.zig prints on stderr
+    /// right after the warn envelope.
+    config_parse_note: ?[]const u8 = null,
     /// Set by configfile.load() to the path of the config file that was read
     /// (set even when the JSON is invalid — config_warning covers that case).
     config_path: ?[]const u8 = null,
@@ -235,6 +249,9 @@ pub const Config = struct {
     /// permissions, missing completions). Each fix needs confirmation unless
     /// --yes is passed or stdin is a TTY (interactive prompt).
     doctor_fix: bool = false,
+    /// `tau doctor --fix <check-id>` — scope remediation to a single check
+    /// instead of every fixable outcome (null = all fixable checks).
+    doctor_fix_id: ?[]const u8 = null,
     /// `tau doctor --yes` — apply --fix remediations without prompting.
     doctor_yes: bool = false,
     /// `tau doctor --dry-run` — preview every planned --fix remediation as a
@@ -317,6 +334,10 @@ pub const Config = struct {
     edit_path: ?[]const u8 = null,
     /// `tau config get --raw` — print secret values unredacted.
     config_raw: bool = false,
+    /// `tau config set|unset --dry-run` — preview the exact write the real
+    /// run would perform (unified diff + `.bak` backup path) without
+    /// touching the file. Rejected on `get` (it never writes).
+    config_dry_run: bool = false,
 
     // --- Bug report (src/bug.zig) ---
     /// `tau bug --title <t>` — pre-filled issue title (default "Bug report").
@@ -339,6 +360,12 @@ pub const Config = struct {
     /// the live diagnostic sweep (read at parse time; secret-redacted before
     /// embedding).
     bug_attach_report: ?[]const u8 = null,
+    /// `tau bug --dry-run` — emit the exact same issue envelope (bundle,
+    /// URL, redactions) as a preview without any side effects: no --out
+    /// file is written and --open does not launch a browser. The output
+    /// gains "dry_run":true plus a "redactions" mask count so the caller
+    /// can assert sanitization ran before filing for real.
+    bug_dry_run: bool = false,
 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` and

@@ -86,12 +86,12 @@ added; existing fields keep their names, types, and meaning):
 |---------|-------|----------------------|
 | chat result (non-streaming) | `{"version","model","content","done":true}` | this file |
 | chat streaming | NDJSON `{"chunk":..,"done":false}` and `{"reasoning":..,"done":false}` (`--thinking`) intermediates, terminal `done:true` line | this file |
-| `tau doctor` report | single-object `{"ok","version","build","checks","summary"}` | [docs/doctor-json.md](doctor-json.md) |
-| `tau doctor --json` | NDJSON check/fix events + terminal `{"ok",...,"done":true}` verdict | [docs/doctor-json.md](doctor-json.md) + [schema/tau-doctor.schema.json](../schema/tau-doctor.schema.json) |
+| `tau doctor` report | single-object `{"ok","version","build","checks","summary"}` | [docs/doctor-json.md](doctor-json.md) + [docs/doctor.md](doctor.md) |
+| `tau doctor --json` | NDJSON check/fix events + terminal `{"ok",...,"done":true}` verdict | [docs/doctor-json.md](doctor-json.md) + [schema/tau-doctor.schema.json](../schema/tau-doctor.schema.json) + [docs/doctor.md](doctor.md) |
 | `tau config schema` | JSON Schema (draft 2020-12) | [schema/tau-config.schema.json](../schema/tau-config.schema.json) + [docs/config.md](config.md) |
 | `tau config show [--json]` | resolved effective config, secrets masked | [schema/tau-config-show.schema.json](../schema/tau-config-show.schema.json) + [docs/configuration.md](configuration.md) |
-| `tau config validate [--json]` | `{"path","ok","errors":[{key,message}]}` on stdout; exit 0/1/80 | [schema/tau-config-validate.schema.json](../schema/tau-config-validate.schema.json) |
-| `tau explain [--json]` | `{code,type,recoverable,cause,hint,docs}` error entry, `{key,type,constraints,description,docs}` config-key entry (`<key>` or `keys.<provider>`), `{check,fails_when,remediation,docs}` doctor-check entry (`doctor.<check>` or bare check id), `{env,section,consumers,summary,docs}` env-var entry (`TAU_<VAR>`), or `{"errors":[…],"config_keys":[…],"doctor_checks":[…],"env_vars":[…]}` catalog | [schema/tau-explain.schema.json](../schema/tau-explain.schema.json) + [docs/errors.md](errors.md) + [docs/config.md](config.md) + [docs/troubleshooting.md](troubleshooting.md) + [docs/env.md](env.md) |
+| `tau config validate [--json]` | `{"path","ok","errors":[{key,message}]}` on stdout (positioned findings add `line`/`column`; syntax errors also add `snippet`); exit 0/1/80 | [schema/tau-config-validate.schema.json](../schema/tau-config-validate.schema.json) |
+| `tau explain [--json]` | `{code,type,recoverable,cause,hint,docs}` error entry, `{key,type,constraints,description,docs}` config-key entry (`<key>`, `config.<key>`, or `keys.<provider>`), `{check,fails_when,remediation,docs}` doctor-check entry (`doctor.<check>` or bare check id), `{env,section,consumers,summary,docs}` env-var entry (`TAU_<VAR>`), `{client,transport,wiring,prereqs,setup,config_dir,settings_path,snippet_path,bridge_path?,verify,doctor_check,docs}` client entry (`client.<name>` or a bare `--client` name/alias), `{topic,summary,details,see_also,docs}` topic entry (`topic.<name>` or a bare topic name — e.g. `privacy`), `{subcommand,summary,usage,examples,errors,config_keys,doctor_checks,docs}` subcommand entry (`subcommand.<name>` or a bare subcommand name — e.g. `doctor`), `{"errors":[…],"config_keys":[…],"doctor_checks":[…],"env_vars":[…],"clients":[…],"topics":[…],"subcommands":[…]}` catalog (no query), or `{"topics":{"errors":[{code,type},…],"config_keys":[…],"doctor_checks":[…],"env_vars":[…],"clients":[…],"topics":[…],"subcommands":[…]}}` topic index (`--list`), or `{"query":"…","topics":{…}}` filtered index (`--search <text>`) | [schema/tau-explain.schema.json](../schema/tau-explain.schema.json) + [docs/errors.md](errors.md) + [docs/config.md](config.md) + [docs/troubleshooting.md](troubleshooting.md) + [docs/env.md](env.md) + [docs/compatibility.md](compatibility.md) + [docs/doctor.md](doctor.md) |
 | `--help-json` | `{"version","name","description","flags","goal_commands","output_modes","defaults","exit_codes"}` | this file |
 | `tau models` | `{"providers":[{name,default_model,...}]}` | this file |
 | `tau skills list` / `search` | `{"skills":[{name,description}]}` | this file |
@@ -99,7 +99,7 @@ added; existing fields keep their names, types, and meaning):
 | `tau init [--json]` | `{"config_path","provider","created","overwritten","detected_env_keys"}` result object (`--stdout` prints the JSONC scaffold instead and is mutex with `--json`) | [schema/tau-init.schema.json](../schema/tau-init.schema.json) |
 | `tau setup [--json]` | one NDJSON object per step + terminal `{"step":"setup",...,"done":true}` verdict (`"dry_run":true` under `--dry-run`, `"yes"`/`"non_interactive"` markers); `--remove`/`--uninstall` emits the `remove_clients` step + verdict (`"remove":true`) instead; `--detect` emits the `detect_clients` inventory + verdict (`"detect":true`) instead | [schema/tau-setup.schema.json](../schema/tau-setup.schema.json) |
 | `tau completions install [--json]` | single `{"ok","status","shells":[...],"version","done":true}` result object (the setup completions step payload standalone); exit 0 on success/skip, 1 on install failure | [schema/tau-completions.schema.json](../schema/tau-completions.schema.json) |
-| `tau bug [--json]` | `{"title","labels","url","body","report","report_source","url_truncated","out","opened","done":true}`; always exit 0 | [schema/tau-bug.schema.json](../schema/tau-bug.schema.json) |
+| `tau bug [--json]` | `{"title","labels","url","body","report","report_source","url_truncated","out","opened","done":true}`; always exit 0; `--dry-run` adds `"dry_run":true` + `"redactions":<n>` and performs no writes/browser launch | [schema/tau-bug.schema.json](../schema/tau-bug.schema.json) |
 | `tau upgrade [--json]` | `{"name","version","checked","status","detail",...}` report object; `"hint"` appears on failed reports with actionable remediation; `changelog` entries appear when the release notes fetch succeeds; POSIX-only (exit 111 elsewhere) | [schema/tau-upgrade.schema.json](../schema/tau-upgrade.schema.json) |
 | `tau fleet` | manifests + status as pretty-printed JSON on stdout | this file |
 
@@ -144,7 +144,11 @@ These cross-cutting conventions are part of the contract:
   defaults** (full chain in [docs/configuration.md](configuration.md),
   including the `api_key` resolution order).
 - `tau config set|get|unset|validate|schema` are the supported way to
-  edit and verify the file programmatically.
+  edit and verify the file programmatically. `set`/`unset` preserve the
+  previous file at `<path>.bak` before rewriting, and `--dry-run`
+  previews the exact write as a `{"dry_run":true,"action","backup_path","diff"}`
+  payload (the diff is a git-style unified diff; `diff_redacted:true`
+  marks secret values masked for display).
 
 ### Environment variables
 
@@ -262,9 +266,10 @@ Special rules:
 - `scripts/check-explain-coverage.py` gates that every catalog row in
   [docs/errors.md](errors.md), [docs/config.md](config.md), the
   generated check table in [docs/troubleshooting.md](troubleshooting.md),
-  and [docs/env.md](env.md) resolves to a real `tau explain` entry — the
-  docs an agent reaches via the envelope's `explain`/`catalog` footer can
-  never outrun the lookup.
+  [docs/env.md](env.md), and the client matrix in
+  [docs/compatibility.md](compatibility.md) resolves to a real
+  `tau explain` entry — the docs an agent reaches via the envelope's
+  `explain`/`catalog` footer can never outrun the lookup.
 - `schema/tau-config.schema.json` is byte-compared against
   `tau config schema` output in CI; `schema/tau-doctor.schema.json` is
   validated against real NDJSON streams by

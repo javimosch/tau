@@ -16,14 +16,18 @@ const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const jsonmod = @import("json.zig");
 const suggest = @import("suggest.zig");
+const udiff = @import("udiff.zig");
 
 pub const Sub = enum { set, get, unset };
 
 /// Caller-facing failure: rendered as an {"err"} envelope on stderr, exit code.
+/// `note` is an optional human-readable block (e.g. the source snippet for a
+/// JSON syntax error) printed on stderr right after the envelope.
 pub const Fail = struct {
     code: u8,
     type_name: []const u8,
     message: []const u8,
+    note: ?[]const u8 = null,
 };
 
 /// Outcome of a set/get/unset: stdout payload on success, or an envelope to
@@ -715,13 +719,21 @@ fn coerceValue(arena: std.mem.Allocator, kp: KeyPath, raw: []const u8) !Coerced 
 /// A file that passed both the structural scan and a strict JSON parse.
 const ParsedDoc = struct { bytes: []const u8, obj: Obj };
 
+/// An unreadable-or-unparsable config file as a caller-facing failure: the
+/// full {"err"} message plus, for syntax errors, the stderr "note:" block
+/// carrying the offending source line with a caret.
+const InvalidDoc = struct {
+    message: []const u8,
+    note: ?[]const u8 = null,
+};
+
 /// Read + structurally scan the config file. `.missing` means the file does
 /// not exist; `.blank` carries a file with only whitespace/comments (set keeps
 /// them and appends a fresh object).
 const Doc = union(enum) {
     missing,
     blank: []const u8,
-    invalid: []const u8, // reason for the {"err"} message
+    invalid: InvalidDoc,
     parsed: ParsedDoc,
 };
 
@@ -769,28 +781,35 @@ fn notSetHint(arena: std.mem.Allocator, parsed: ?ParsedDoc, kp: KeyPath) ![]cons
     return "";
 }
 
-/// Reason string for an unparsable config file — carries the syntax error's
-/// line/column when one is known (same diagnostics `config validate` uses).
-fn invalidJsonReason(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
-    if (configfile.jsonErrorPos(arena, bytes)) |pos| {
-        return std.fmt.allocPrint(arena, "invalid JSON at line {d}, column {d} — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`", .{ pos.line, pos.col });
+/// The invalid-JSON failure for a config file: an {"err"} message naming
+/// path:line:col plus the stderr "note:" block (source line + caret) when
+/// the syntax error can be located (same diagnostics `config validate`
+/// uses). Falls back to a position-less message — callers only reach here on
+/// a strict parse failure, so a missing position means the error had no
+/// diagnostics.
+fn invalidJsonDoc(arena: std.mem.Allocator, path: []const u8, bytes: []const u8) !InvalidDoc {
+    if (configfile.jsonErrorDiag(arena, bytes)) |d| {
+        return .{
+            .message = try std.fmt.allocPrint(arena, "config file {s}:{d}:{d}: invalid JSON — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)", .{ path, d.line, d.col }),
+            .note = try configfile.formatNote(arena, path, d),
+        };
     }
-    return "invalid JSON — fix the syntax (see `tau config validate`), delete the file, or regenerate with `tau init`";
+    return .{ .message = try std.fmt.allocPrint(arena, "config file {s}: invalid JSON — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)", .{path}) };
 }
 
 fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
     const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch |err| {
         switch (err) {
             error.FileNotFound => return .missing,
-            error.AccessDenied => return .{ .invalid = "permission denied" },
-            error.IsDir => return .{ .invalid = "path is a directory" },
+            error.AccessDenied => return .{ .invalid = .{ .message = try std.fmt.allocPrint(arena, "config file {s}: permission denied", .{path}) } },
+            error.IsDir => return .{ .invalid = .{ .message = try std.fmt.allocPrint(arena, "config file {s}: path is a directory", .{path}) } },
             else => return err,
         }
     };
     if (skipTrivia(bytes, 0) == bytes.len) return .{ .blank = bytes };
     const obj = scanDoc(arena, bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.InvalidJson => return .{ .invalid = try invalidJsonReason(arena, bytes) },
+        error.InvalidJson => return .{ .invalid = try invalidJsonDoc(arena, path, bytes) },
     };
     // The scanner is structural only — confirm the document also parses as
     // strict JSON (comments stripped) so we never splice into a file that
@@ -798,7 +817,7 @@ fn readDoc(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Doc {
     const stripped = configfile.stripComments(arena, bytes) catch bytes;
     _ = std.json.parseFromSliceLeaky(std.json.Value, arena, stripped, .{}) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
-        return .{ .invalid = try invalidJsonReason(arena, bytes) };
+        return .{ .invalid = try invalidJsonDoc(arena, path, bytes) };
     };
     return .{ .parsed = .{ .bytes = bytes, .obj = obj } };
 }
@@ -821,6 +840,23 @@ pub fn writeAtomic(io: std.Io, arena: std.mem.Allocator, path: []const u8, conte
 
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = content, .flags = .{ .permissions = perms } });
     try std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), path, io);
+}
+
+/// Preserve `bytes` at `<path>.bak` before an in-place rewrite — the same
+/// convention `tau doctor --fix` (restore_config → config.json.bak) and the
+/// `tau setup` writers use, so the `--dry-run` `backup_path` preview is
+/// truthful. The backup keeps the source file's permissions (the config may
+/// hold API keys); a failure aborts the write rather than proceeding
+/// unprotected.
+fn writeBackup(io: std.Io, arena: std.mem.Allocator, path: []const u8, bytes: []const u8) !void {
+    const perms: std.Io.File.Permissions = if (std.Io.Dir.cwd().statFile(io, path, .{})) |st|
+        st.permissions
+    else |_| if (builtin.os.tag == .windows)
+        .default_file
+    else
+        .fromMode(0o600);
+    const bak = try std.fmt.allocPrint(arena, "{s}.bak", .{path});
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = bak, .data = bytes, .flags = .{ .permissions = perms } });
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +917,8 @@ fn appendValueText(arena: std.mem.Allocator, buf: *std.ArrayList(u8), v: std.jso
 
 /// Run `tau config <set|get|unset>`. Never emits output itself — returns the
 /// stdout payload or the error envelope fields for main.zig to print.
+/// `dry` (set/unset only) previews the exact write — unified diff plus the
+/// `.bak` backup path — without touching the filesystem.
 pub fn run(
     io: std.Io,
     arena: std.mem.Allocator,
@@ -890,6 +928,7 @@ pub fn run(
     path_opt: ?[]const u8,
     env: *std.process.Environ.Map,
     raw: bool,
+    dry: bool,
     mode: cfgmod.OutputMode,
 ) !Outcome {
     const path = path_opt orelse (configfile.path(arena, env) orelse {
@@ -910,7 +949,7 @@ pub fn run(
             const parsed = switch (doc) {
                 .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
                 .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
-                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .invalid => |iv| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = iv.message, .note = iv.note } },
                 .parsed => |p| p,
             };
             const slice = try lookupValue(arena, parsed, kp) orelse {
@@ -927,7 +966,7 @@ pub fn run(
                 .fail => |f| return .{ .fail = f },
             };
             const src: []const u8 = switch (doc) {
-                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .invalid => |iv| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = iv.message, .note = iv.note } },
                 .missing => "{}\n",
                 // Blank (whitespace/comments only): append an empty object so
                 // the existing comment header survives.
@@ -947,6 +986,16 @@ pub fn run(
                 }
                 return err;
             };
+            const old_bytes: ?[]const u8 = switch (doc) {
+                .missing => null,
+                .blank => |b| b,
+                .parsed => |p| p.bytes,
+                .invalid => unreachable,
+            };
+            if (dry) {
+                return .{ .ok = try renderDry(arena, path, .set, key, token, redact, created, old_bytes, new_bytes, mode) };
+            }
+            if (old_bytes) |old| try writeBackup(io, arena, path, old);
             if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
                 std.Io.Dir.cwd().createDirPath(io, path[0..idx]) catch {};
             }
@@ -957,7 +1006,7 @@ pub fn run(
             const parsed = switch (doc) {
                 .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
                 .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
-                .invalid => |why| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "config file {s}: {s}", .{ path, why }) } },
+                .invalid => |iv| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = iv.message, .note = iv.note } },
                 .parsed => |p| p,
             };
             const new_bytes = (applyUnset(arena, parsed, kp) catch |err| {
@@ -968,6 +1017,10 @@ pub fn run(
             }) orelse {
                 return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, parsed, kp) }) } };
             };
+            if (dry) {
+                return .{ .ok = try renderDry(arena, path, .unset, key, null, false, false, parsed.bytes, new_bytes, mode) };
+            }
+            try writeBackup(io, arena, path, parsed.bytes);
             try writeAtomic(io, arena, path, new_bytes);
             return .{ .ok = try renderUnset(arena, path, key, mode) };
         },
@@ -1125,6 +1178,125 @@ fn renderUnset(arena: std.mem.Allocator, path: []const u8, key: []const u8, mode
     try b.appendSlice(arena, ",\"key\":");
     try appendJsonStr(arena, &b, key);
     try b.appendSlice(arena, ",\"removed\":true}\n");
+    return b.toOwnedSlice(arena);
+}
+
+// ---------------------------------------------------------------------------
+// `--dry-run` preview — the exact write rendered as a unified diff plus the
+// `.bak` path a real run preserves the original at
+// ---------------------------------------------------------------------------
+
+/// One display splice: replace `bytes[s..e]` with `r` when producing the
+/// redacted copy of a document for the dry-run diff.
+const RedactEdit = struct { s: usize, e: usize, r: []const u8 };
+
+/// Copy of `bytes` with every secret-bearing member value — `api_key` and
+/// each string inside `keys` — swapped for its `redactApiKey` form. The diff
+/// covers whole-file context lines, so secrets must be masked no matter
+/// which member the edit targets (an unrelated `config set provider` hunk
+/// could otherwise leak a stored `keys.openai`). The result is display-only,
+/// never written.
+fn redactDoc(arena: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    var edits: std.ArrayList(RedactEdit) = .empty;
+    const obj = scanDoc(arena, bytes) catch return bytes;
+    for (obj.members) |m| {
+        if (std.mem.eql(u8, m.key, "api_key") and m.value_start < bytes.len and bytes[m.value_start] == '"') {
+            const raw = jsonmod.unescapeAlloc(arena, bytes[m.value_start + 1 .. m.value_end - 1]) catch bytes[m.value_start + 1 .. m.value_end - 1];
+            try edits.append(arena, .{ .s = m.value_start, .e = m.value_end, .r = try quoteString(arena, cfgmod.redactApiKey(arena, raw)) });
+        } else if (std.mem.eql(u8, m.key, "keys") and m.value_start < bytes.len and bytes[m.value_start] == '{') {
+            const inner = scanObj(arena, bytes, m.value_start) catch continue;
+            for (inner.members) |im| {
+                if (im.value_start < bytes.len and bytes[im.value_start] == '"') {
+                    const raw = jsonmod.unescapeAlloc(arena, bytes[im.value_start + 1 .. im.value_end - 1]) catch bytes[im.value_start + 1 .. im.value_end - 1];
+                    try edits.append(arena, .{ .s = im.value_start, .e = im.value_end, .r = try quoteString(arena, cfgmod.redactApiKey(arena, raw)) });
+                }
+            }
+        }
+    }
+    // Edits were collected in document order — apply last-to-first so the
+    // earlier (lower) offsets stay valid across splices.
+    var out = bytes;
+    var i = edits.items.len;
+    while (i > 0) {
+        i -= 1;
+        out = try splice(arena, out, edits.items[i].s, edits.items[i].e, edits.items[i].r);
+    }
+    return out;
+}
+
+/// `config set|unset --dry-run` stdout payload. JSON mode mirrors the real
+/// run's envelope plus the preview members (`"action"`, `"diff"`,
+/// `"backup_path"` for in-place rewrites — the same vocabulary `tau setup
+/// --dry-run` uses in its `files` array); text mode is a human summary
+/// followed by the diff. `diff_redacted` marks a diff whose secret values
+/// were masked — informative but not byte-applicable with `git apply`.
+fn renderDry(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    sub: Sub,
+    key: []const u8,
+    token: ?[]const u8,
+    redact: bool,
+    created: bool,
+    old: ?[]const u8,
+    new: []const u8,
+    mode: cfgmod.OutputMode,
+) ![]u8 {
+    const disp_old: ?[]const u8 = if (old) |o| try redactDoc(arena, o) else null;
+    const disp_new = try redactDoc(arena, new);
+    const masked = (old != null and !std.mem.eql(u8, disp_old.?, old.?)) or !std.mem.eql(u8, disp_new, new);
+    const diff = try udiff.unified(arena, path, disp_old, disp_new);
+    const backup = if (old != null) try std.fmt.allocPrint(arena, "{s}.bak", .{path}) else null;
+
+    var b: std.ArrayList(u8) = .empty;
+    if (mode == .text) {
+        try b.appendSlice(arena, path);
+        try b.appendSlice(arena, switch (sub) {
+            .set => ": would set \"",
+            .unset => ": would remove \"",
+            .get => ": would read \"",
+        });
+        try b.appendSlice(arena, key);
+        try b.append(arena, '"');
+        if (sub == .set) {
+            const val = std.json.parseFromSliceLeaky(std.json.Value, arena, token.?, .{}) catch std.json.Value{ .string = token.? };
+            try b.appendSlice(arena, " = ");
+            try appendValueText(arena, &b, val, redact);
+        }
+        try b.appendSlice(arena, " (dry run — nothing written)\n");
+        if (backup) |bp| {
+            try b.appendSlice(arena, "backup: ");
+            try b.appendSlice(arena, bp);
+            try b.append(arena, '\n');
+        }
+        if (masked) try b.appendSlice(arena, "note: secrets are masked in the diff below\n");
+        try b.appendSlice(arena, diff);
+        return b.toOwnedSlice(arena);
+    }
+    try b.appendSlice(arena, "{\"ok\":true,\"dry_run\":true,\"path\":");
+    try appendJsonStr(arena, &b, path);
+    try b.appendSlice(arena, ",\"key\":");
+    try appendJsonStr(arena, &b, key);
+    if (sub == .set) {
+        const val = std.json.parseFromSliceLeaky(std.json.Value, arena, token.?, .{}) catch std.json.Value{ .string = token.? };
+        try b.appendSlice(arena, ",\"value\":");
+        try appendValueJson(arena, &b, val, redact);
+        try b.appendSlice(arena, ",\"created\":");
+        try b.appendSlice(arena, if (created) "true" else "false");
+        if (redact) try b.appendSlice(arena, ",\"redacted\":true");
+    } else {
+        try b.appendSlice(arena, ",\"removed\":true");
+    }
+    try b.appendSlice(arena, ",\"action\":");
+    try appendJsonStr(arena, &b, if (old == null) "create" else "modify");
+    if (backup) |bp| {
+        try b.appendSlice(arena, ",\"backup_path\":");
+        try appendJsonStr(arena, &b, bp);
+    }
+    try b.appendSlice(arena, ",\"diff\":");
+    try appendJsonStr(arena, &b, diff);
+    if (masked) try b.appendSlice(arena, ",\"diff_redacted\":true");
+    try b.appendSlice(arena, "}\n");
     return b.toOwnedSlice(arena);
 }
 
@@ -1605,7 +1777,11 @@ const EditHome = struct {
     }
 
     fn sub(self: *EditHome, arena: std.mem.Allocator, s: Sub, key: []const u8, value: ?[]const u8, raw: bool) !Outcome {
-        return run(testing.io, arena, s, key, value, null, &self.env, raw, .json);
+        return run(testing.io, arena, s, key, value, null, &self.env, raw, false, .json);
+    }
+
+    fn subDry(self: *EditHome, arena: std.mem.Allocator, s: Sub, key: []const u8, value: ?[]const u8) !Outcome {
+        return run(testing.io, arena, s, key, value, null, &self.env, false, true, .json);
     }
 
     fn deinit(self: *EditHome) void {
@@ -2011,7 +2187,7 @@ test "run: set/get/unset surface did-you-mean hints and line/column" {
     try testing.expect(std.mem.indexOf(u8, unset_typo.message, "did you mean \"proivder\"?") != null);
 }
 
-test "run: malformed config file reports line/column in the invalid_config error" {
+test "run: malformed config file reports path:line:col plus a snippet note" {
     var ar = testArena();
     defer ar.deinit();
     const arena = ar.allocator();
@@ -2025,11 +2201,20 @@ test "run: malformed config file reports line/column in the invalid_config error
     const f = try failMessage(try th.sub(arena, .get, "provider", null, false));
     try testing.expectEqual(@as(u8, 1), f.code);
     try testing.expectEqualStrings("invalid_config", f.type_name);
-    try testing.expect(std.mem.indexOf(u8, f.message, "invalid JSON at line 3, column") != null);
+    try testing.expect(std.mem.indexOf(u8, f.message, ":3:3: invalid JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, f.message, "tau config edit") != null);
+    try testing.expect(std.mem.indexOf(u8, f.message, "tau explain config.<key>") != null);
+    // The stderr note carries the offending source line with a caret.
+    const note = f.note.?;
+    try testing.expect(std.mem.indexOf(u8, note, "note: ") != null);
+    try testing.expect(std.mem.indexOf(u8, note, ":3:3\n") != null);
+    try testing.expect(std.mem.indexOf(u8, note, "  bad\n") != null);
+    try testing.expect(std.mem.indexOf(u8, note, "^") != null);
 
     // set refuses to touch the broken file with the same positioned error.
     const fs = try failMessage(try th.sub(arena, .set, "mode", "text", false));
-    try testing.expect(std.mem.indexOf(u8, fs.message, "invalid JSON at line 3, column") != null);
+    try testing.expect(std.mem.indexOf(u8, fs.message, ":3:3: invalid JSON") != null);
+    try testing.expect(fs.note != null);
 }
 
 test "migrateRenamedKeys: renames in place, preserving comments and order" {
@@ -2116,4 +2301,138 @@ test "parseKeyPath: config set rejects a deprecated spelling with the canonical 
     // get/unset (non-strict) still accept the path — manual migration needs it.
     const g = parseKeyPath(arena, "compact_keep_recent", false);
     try testing.expect(g == .ok);
+}
+
+// ---------------------------------------------------------------------------
+// --dry-run previews + .bak backups (task #465)
+// ---------------------------------------------------------------------------
+
+fn bakPath(arena: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(arena, "{s}.bak", .{path});
+}
+
+test "run --dry-run: set on a missing file previews a create, writes nothing" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+
+    const out = try expectOk(try th.subDry(arena, .set, "provider", "openai"));
+    try testing.expect(std.mem.indexOf(u8, out, "\"dry_run\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"action\":\"create\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"created\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "--- /dev/null") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "+  \\\"provider\\\": \\\"openai\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "backup_path") == null);
+
+    // Nothing was written — no config, no .bak.
+    try testing.expect(th.readConfig(arena) == null);
+    const bak = std.Io.Dir.cwd().readFileAlloc(testing.io, try bakPath(arena, cfg_path), arena, .unlimited) catch null;
+    try testing.expect(bak == null);
+}
+
+test "run --dry-run: modify previews the exact diff + backup path, file untouched" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    const before = "{\n  // keep me\n  \"provider\": \"xiaomi\"\n}\n";
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data = before });
+
+    const out = try expectOk(try th.subDry(arena, .set, "provider", "openai"));
+    try testing.expect(std.mem.indexOf(u8, out, "\"action\":\"modify\"") != null);
+    const bak = try bakPath(arena, cfg_path);
+    try testing.expect(std.mem.indexOf(u8, out, bak) != null);
+    try testing.expect(std.mem.indexOf(u8, out, "-  \\\"provider\\\": \\\"xiaomi\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "+  \\\"provider\\\": \\\"openai\\\"") != null);
+    // The comment survives inside the diff context.
+    try testing.expect(std.mem.indexOf(u8, out, "// keep me") != null);
+    // Secret-free docs render a byte-exact diff — no masking marker.
+    try testing.expect(std.mem.indexOf(u8, out, "diff_redacted") == null);
+
+    try testing.expectEqualStrings(before, th.readConfig(arena).?);
+    try testing.expect((std.Io.Dir.cwd().readFileAlloc(testing.io, bak, arena, .unlimited) catch null) == null);
+
+    // unset previews the removal the same way.
+    const out2 = try expectOk(try th.subDry(arena, .unset, "provider", null));
+    try testing.expect(std.mem.indexOf(u8, out2, "\"removed\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, out2, "\"action\":\"modify\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out2, "-  \\\"provider\\\": \\\"xiaomi\\\"") != null);
+    try testing.expectEqualStrings(before, th.readConfig(arena).?);
+}
+
+test "run --dry-run: stored and incoming secrets are masked in the diff" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data =
+        \\{
+        \\  "provider": "xiaomi",
+        \\  "keys": { "openai": "sk-stored-secret-aaaa" }
+        \\}
+        \\
+    });
+
+    // Setting an UNRELATED key still masks the neighbouring stored secret in
+    // the diff's context lines.
+    const out = try expectOk(try th.subDry(arena, .set, "mode", "text"));
+    try testing.expect(std.mem.indexOf(u8, out, "sk-stored-secret-aaaa") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "***aaaa") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"diff_redacted\":true") != null);
+    try testing.expectEqualStrings(
+        \\{
+        \\  "provider": "xiaomi",
+        \\  "keys": { "openai": "sk-stored-secret-aaaa" }
+        \\}
+        \\
+    , th.readConfig(arena).?);
+
+    // Setting a secret itself: the preview echoes the redacted value and the
+    // diff never carries the raw key.
+    const out2 = try expectOk(try th.subDry(arena, .set, "keys.deepseek", "sk-new-secret-bbbb"));
+    try testing.expect(std.mem.indexOf(u8, out2, "sk-new-secret-bbbb") == null);
+    try testing.expect(std.mem.indexOf(u8, out2, "sk-stored-secret-aaaa") == null);
+    try testing.expect(std.mem.indexOf(u8, out2, "\"redacted\":true") != null);
+
+    // Removing a secret masks the `-` side of the diff too.
+    const out3 = try expectOk(try th.subDry(arena, .unset, "keys.openai", null));
+    try testing.expect(std.mem.indexOf(u8, out3, "sk-stored-secret-aaaa") == null);
+    try testing.expect(std.mem.indexOf(u8, out3, "\"diff_redacted\":true") != null);
+}
+
+test "run: a real set|unset on an existing file preserves it at <path>.bak" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+
+    // Create: nothing to preserve — no .bak.
+    _ = try expectOk(try th.sub(arena, .set, "provider", "openai", false));
+    const bak = try bakPath(arena, cfg_path);
+    try testing.expect((std.Io.Dir.cwd().readFileAlloc(testing.io, bak, arena, .unlimited) catch null) == null);
+
+    // Modify: .bak holds the pre-write bytes verbatim.
+    const before = th.readConfig(arena).?;
+    _ = try expectOk(try th.sub(arena, .set, "provider", "deepseek", false));
+    try testing.expectEqualStrings(before, try std.Io.Dir.cwd().readFileAlloc(testing.io, bak, arena, .unlimited));
+
+    // unset refreshes .bak again with its own pre-write bytes.
+    const before2 = th.readConfig(arena).?;
+    _ = try expectOk(try th.sub(arena, .unset, "provider", null, false));
+    try testing.expectEqualStrings(before2, try std.Io.Dir.cwd().readFileAlloc(testing.io, bak, arena, .unlimited));
 }

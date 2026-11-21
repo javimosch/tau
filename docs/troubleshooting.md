@@ -70,7 +70,7 @@ Some emitters override `type` with the underlying Zig error name (e.g.
 [docs/errors.md](errors.md) is a **generated** mirror of this catalog (with
 per-code causes and the silent-exit paths) rendered from the registry in
 `src/errors.zig` — CI fails if it drifts. The same registry is readable
-offline from the CLI: `tau explain <code|type|key>` prints one entry's cause,
+offline from the CLI: `tau explain <code|type|key|…>` prints one entry's cause,
 hint, and docs link (JSON by default — `--json` pins the schema-checked
 form, `--human` renders prose), and bare `tau explain` lists the whole
 catalog. A config key works the same way: `tau explain timeout_ms` prints
@@ -82,10 +82,32 @@ remediation that resolves it — the same rows as the generated check table
 below (bare `tls_ca` also works; `api_key` stays the config key — prefix it
 `doctor.api_key` for the check). `TAU_*` environment variables resolve by
 exact name too: `tau explain TAU_ENDPOINT` prints the variable's consumers
-and summary from the generated [env.md](env.md) tables. A mistyped code,
-`type`, key, check id, or env var exits 1 with a `not_found` envelope whose
-message suggests the nearest catalog entry — `did you mean "tau explain
-<code|type|key|doctor.<check>|TAU_*>"?` — when the query is within two
+and summary from the generated [env.md](env.md) tables. Editor clients
+resolve by `client.<name>` or a bare `--client` name/alias:
+`tau explain client.zed` prints the client's prerequisites, config paths,
+setup command, and restart verification from the generated
+[compatibility.md](compatibility.md) matrix (the underscore spellings —
+`client_zed` — keep resolving to the doctor check). `tau explain --list`
+prints the topic index — every resolvable name grouped as
+`{"topics":{"errors":[{code,type}, …],"config_keys":[…],
+"doctor_checks":["doctor.<id>", …],"env_vars":["TAU_*", …],
+"clients":["client.<name>", …],"topics":["topic.<name>", …],
+"subcommands":["subcommand.<name>", …]}}` — without
+the entry bodies. Curated topics round out the catalog:
+`tau explain privacy` (also `topic.privacy`) prints what tau stores
+locally, what leaves the machine, and how the diagnostics surfaces redact
+secrets — with `tau bug`/`tau doctor --report` cross-links. Registered
+subcommands resolve by `subcommand.<name>` or a bare name:
+`tau explain doctor` prints the subcommand's summary, condensed usage
+line, runnable examples, and links to its related error type tags,
+config keys, and doctor checks.
+`tau explain --search <text>` prints the same index filtered to the
+entries whose name or body text matches every whitespace-separated term,
+case-insensitively (`tau explain --search "api key"`). A mistyped
+code, `type`, key, check id, env var, client name, topic, or subcommand
+exits 1 with a
+`not_found` envelope whose message suggests the nearest catalog entry —
+`did you mean "tau explain <code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>"?` — when the query is within two
 case-insensitive edits of one.
 
 Non-fatal problems use a separate `{"warn":{"message":"..."}}` envelope and the
@@ -163,7 +185,9 @@ stdout; exit 0 when nothing failed, 1 otherwise. `--json` streams one
 NDJSON `{"check":{...}}` event per check plus a terminal `done:true` verdict
 for CI/support tooling; `--offline` skips every check that would touch the
 network. Every row's meaning and remediation is also readable offline via
-`tau explain doctor.<check>` (e.g. `tau explain doctor.tls_ca`). Rows:
+`tau explain doctor.<check>` (e.g. `tau explain doctor.tls_ca`), and
+cataloged one section per check — symptom, cause, fix — in
+[docs/doctor.md](doctor.md). Rows:
 
 <!-- BEGIN GENERATED DOCTOR CHECKS — do not edit between the markers.
      Source of truth: the CheckSpec catalog in src/doctorcatalog.zig —
@@ -174,7 +198,7 @@ network. Every row's meaning and remediation is also readable offline via
 
 | Check | Fails or warns when | Remediate |
 |-------|---------------------|-----------|
-| `config_file` | ~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional | fix the JSON or delete the file — `tau config validate` pinpoints the error with line/column; `tau doctor --fix` moves a broken config to config.json.bak and writes a starter |
+| `config_file` | ~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional | fix the JSON with `tau config edit` or pinpoint it with `tau config validate` (path:line:col plus the offending source line with a caret); `tau doctor --fix` moves a broken config to config.json.bak and writes a starter |
 | `config_deprecated_keys` | the config file still uses a deprecated or renamed key spelling (e.g. compact_keep_recent) — old spellings still load with a warn envelope during the deprecation window but are scheduled for removal (skipped when there is no config file or it doesn't parse) | run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name |
 | `config_permissions` | the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys) | run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself |
 | `plaintext_secrets` | credentials sit on disk as plaintext — api_key/keys.* values in the config file, or `env` blocks inside client settings files (warn only; reports key names and counts, never values) | move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable |
@@ -439,17 +463,26 @@ goal, and nothing to continue — give it a prompt or resume a goal session.
 
 ## Warnings (run continues)
 
-### `{"warn":{"message":"config file has invalid JSON at line <L>, column <C> and was ignored: <path> — fix the JSON syntax or delete the file"}}`
+### `{"warn":{"message":"config file has invalid JSON at <path>:<L>:<C> and was ignored — fix it with `tau config edit`, delete the file, or regenerate with `tau init` (`tau explain config.<key>` documents every key)"}}`
 
 `~/.config/tau/config.json` exists but doesn't parse. tau falls back to
 defaults — flags and env vars still work. The message names the syntax
-error's line and column (the same position `tau config validate` reports —
-line numbers are exact even in a commented JSONC file; a block comment on the
-same line before the error can shift the column). Fix the syntax or delete
-the file, or run `tau doctor --fix` — it moves the broken file to
-`config.json.bak` and scaffolds a fresh one. The file is JSONC: `//` and
-`/* */` comments are allowed (the `tau init` scaffold is commented), but
-trailing commas are not.
+error's `path:line:col` (the same position `tau config validate` reports,
+exact even in a commented JSONC file), and a `note:` block follows on stderr
+showing the offending source line with a caret under the error column:
+
+```text
+note: /home/agent/.config/tau/config.json:3:3
+  3 |   bad
+    |   ^
+```
+
+Fix the syntax with `tau config edit` (it opens the file in your editor and
+revalidates on save), delete the file, or run `tau doctor --fix` — it moves
+the broken file to `config.json.bak` and scaffolds a fresh one. `tau config
+validate` pinpoints the same position; `tau explain config.<key>` documents
+every valid key. The file is JSONC: `//` and `/* */` comments are allowed
+(the `tau init` scaffold is commented), but trailing commas are not.
 
 ### `failed to save session <name>: <err>` (stderr, non-fatal)
 
@@ -512,7 +545,8 @@ any of them.
 | `tau setup --detect [--client <name>]` | Read-only client inventory: every supported client's config dir, detection status, and wiring state (`not_detected`/`manual_only`/`missing_file`/`unreadable`/`unparseable`/`no_entry`/`stale`/`ok`) with settings paths — writes nothing; `--client` scopes the sweep |
 | `tau setup --client <mcp-client> --import [--dry-run]` | Merge your existing MCP server entries from the other supported clients' settings files (windsurf/gemini/claude-desktop/opencode/cline) into the wired MCP client — the mcacp entry and your servers are spliced in (comments and current entries survive, nothing overwritten). Client entries report `imported`/`import_skipped`; `TAU_SETUP_IMPORT=1` is the env equivalent; mutually exclusive with `--remove` |
 | `tau config validate [path]` | Offline config-file validation (`{"ok","errors":[…]}` on stdout, exit 1 on failure) — CI/pre-commit gate |
-| `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics) |
+| `tau bug` | Pre-filled GitHub issue URL carrying that same redacted bundle (`--open` launches the browser, `--out <path>` writes the bundle to a file, `--no-report` omits diagnostics, `--dry-run` previews the exact envelope — bundle + a `redactions` mask count — with no side effects) |
+| `tau explain privacy` | What tau stores locally, what leaves the machine, and how the debug log, report bundle, and `tau bug` issue redact secrets |
 | `tau --help-json` | Machine-readable flag catalog |
 | `tau <sub> --help` | Per-subcommand usage + runnable examples (`tau fleet --help`, `tau doctor --help`, …) |
 | `tau guide` / `tau guide --human` | Embedded operator manual (JSON / markdown) |
@@ -533,4 +567,7 @@ and `--body` fill in the title and description, `--out <path>` also writes
 the bundle to a file for manual attaching). To file an issue around a report
 you captured earlier — e.g. at crash time — `tau bug --attach-report
 <path>` bundles that file instead of re-running the diagnostic sweep; the
-file is secret-redacted before it reaches the issue body or URL.
+file is secret-redacted before it reaches the issue body or URL. Run
+`tau bug --dry-run` first to preview the exact envelope — the same bundle
+plus a `redactions` count of the `***REDACTED***` masks applied — without
+writing any file or opening a browser, then drop the flag to file for real.

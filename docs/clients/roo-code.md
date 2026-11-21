@@ -117,9 +117,11 @@ Paste the two verified blocks above into place yourself:
 
 - Roo Code's MCP settings file lives at
   `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json`
-  (`~/Library/Application Support/Code/User/globalStorage/…` on macOS,
-  `%APPDATA%\Code\User\globalStorage\…` on Windows; swap `Code` for
-  `Cursor`/`VSCodium` under a Code fork). Roo Code also reads a
+  — `~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json`
+  on macOS,
+  `%APPDATA%\Code\User\globalStorage\rooveterinaryinc.roo-cline\settings\mcp_settings.json`
+  on Windows; swap `Code` for `Cursor`/`VSCodium` under a Code fork. Roo
+  Code also reads a
   project-scoped `.roo/mcp.json` — prefer the global file for tau so every
   workspace gets it. If the file already has a `"mcpServers"` object, add
   only the inner `"mcacp"` entry to it. (Roo Code's own UI can open the

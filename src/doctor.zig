@@ -15,10 +15,12 @@
 // permission bits (0700 dir / 0600 file), install shell completions, wire
 // `tau acp serve` into detected editor clients (a fresh settings file, or a
 // paste-ready snippet when the file can't be touched), and restrict client
-// settings files to 0600 (they can embed API keys in env blocks). Fixes
-// apply per-confirmation: --yes approves all, a TTY stdin gets a y/N prompt,
-// non-interactive runs report them as skipped. --dry-run previews the plan
-// instead: every fix reports "would_apply" with the repair it would run, the
+// settings files to 0600 (they can embed API keys in env blocks). Bare
+// `--fix` plans every fixable outcome; `--fix <check-id>` scopes the plan to
+// one named check. Fixes apply per-confirmation: --yes approves all, a TTY
+// stdin gets a y/N prompt, non-interactive runs report them as skipped.
+// --dry-run previews the plan instead: every fix reports "would_apply" with
+// the repair it would run — concrete files, actions, and rollback — the
 // report/verdict carries "dry_run":true, and nothing is ever written or
 // prompted (mutually exclusive with --yes). The emitted report reflects the
 // post-fix state when anything was applied.
@@ -52,6 +54,8 @@ const configedit = @import("configedit.zig");
 const initmod = @import("init.zig");
 const setup = @import("setup.zig");
 const debuglog = @import("debuglog.zig");
+const errors = @import("errors.zig");
+const suggest = @import("suggest.zig");
 const update = @import("update.zig");
 const version_mod = @import("version.zig");
 const version = version_mod.version;
@@ -387,15 +391,15 @@ fn configBodyCheck(arena: std.mem.Allocator, path: []const u8, bytes: []const u8
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, bytes) catch bytes, .{
         .ignore_unknown_fields = true,
     }) catch {
-        const msg = if (configfile.jsonErrorPos(arena, bytes)) |pos|
-            std.fmt.allocPrint(arena, "config file has invalid JSON at line {d}, column {d} and was ignored: {s}", .{ pos.line, pos.col, path }) catch "config file has invalid JSON"
+        const msg = if (configfile.jsonErrorDiag(arena, bytes)) |d|
+            std.fmt.allocPrint(arena, "config file has invalid JSON at {s}:{d}:{d} and was ignored", .{ path, d.line, d.col }) catch "config file has invalid JSON"
         else
             std.fmt.allocPrint(arena, "config file has invalid JSON and was ignored: {s}", .{path}) catch "config file has invalid JSON";
         return .{
             .name = "config_file",
             .status = .fail,
             .message = msg,
-            .hint = "fix the JSON syntax, delete the file, or run 'tau doctor --fix' to move it aside and scaffold a fresh one",
+            .hint = "fix the JSON with `tau config edit` or pinpoint it with `tau config validate`, delete the file, or run 'tau doctor --fix' to move it aside and scaffold a fresh one",
             .fix = .restore_config,
         };
     };
@@ -763,7 +767,7 @@ fn clientCheckName(arena: std.mem.Allocator, k: setup.ClientKind) []const u8 {
 
 /// The per-client FixKind, or null for the snippet-only clients (nvim's Lua,
 /// Emacs's elisp, Goose/Continue's YAML, Codex's TOML — manual only).
-fn clientFixKind(k: setup.ClientKind) ?FixKind {
+pub fn clientFixKind(k: setup.ClientKind) ?FixKind {
     return switch (k) {
         .zed => .wire_client_zed,
         .vscode => .wire_client_vscode,
@@ -1813,6 +1817,38 @@ fn planFixes(arena: std.mem.Allocator, checks: []const Check) ![]PlannedFix {
     return list.toOwnedSlice(arena);
 }
 
+/// What `--fix <check-id>` resolves to against the collected checks.
+const FixScope = union(enum) {
+    /// The named check plans one remediation — a one-element plan.
+    plan: PlannedFix,
+    /// The named check exists but has no remediation to run.
+    no_fix: Check,
+    /// No collected check carries this name — an invalid-argument error.
+    unknown: void,
+};
+
+/// Resolve a `--fix <check-id>` scope. The check's own fix kind becomes the
+/// whole plan (dedup isn't needed for a single remediation), and the outcome
+/// stays attributed to the check the caller named.
+fn scopeFix(id: []const u8, checks: []const Check) FixScope {
+    for (checks) |c| {
+        if (std.mem.eql(u8, c.name, id)) {
+            if (c.fix) |k| return .{ .plan = .{ .kind = k, .check = c.name, .description = fixDescription(k) } };
+            return .{ .no_fix = c };
+        }
+    }
+    return .unknown;
+}
+
+/// Collected check names — the did-you-mean candidate pool for a mistyped
+/// `--fix <check-id>` (covers dynamic probe_*/client_* rows, not just the
+/// static catalog).
+fn checkNames(arena: std.mem.Allocator, checks: []const Check) ![]const []const u8 {
+    const names = try arena.alloc([]const u8, checks.len);
+    for (checks, 0..) |c, i| names[i] = c.name;
+    return names;
+}
+
 /// Write the init scaffold to the config path, creating ~/.config/tau when
 /// missing. Returns the path written. Never run when a config already exists
 /// — callers only reach this for missing/restored configs.
@@ -1959,8 +1995,9 @@ fn anyApplied(outcomes: []const FixOutcome) bool {
 /// {"fix":{...},"done":false} event per remediation (--fix), and a terminal
 /// {"ok":...,"summary":{...},"done":true} verdict line; --report prints a
 /// redacted Markdown bundle instead (mutually exclusive with --json, enforced
-/// at parse time). With cfg.doctor_fix, plan remediations first; each fix
-/// applies only when confirmed (--yes, or a y/yes answer on a TTY prompt).
+/// at parse time). With cfg.doctor_fix, plan remediations first —
+/// cfg.doctor_fix_id scopes the plan to one named check; each fix applies
+/// only when confirmed (--yes, or a y/yes answer on a TTY prompt).
 /// --dry-run short-circuits the confirmation entirely — every planned fix
 /// reports "would_apply" with the repair it would run, the report/verdict
 /// carries "dry_run":true, and no fix is applied. The report carries a
@@ -1986,8 +2023,43 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocator, cfg: Co
     }
 
     const checks = try collectChecks(io, gpa, arena, cfg, env);
-    const planned = try planFixes(arena, checks);
+    var planned: []PlannedFix = &.{};
     var outcomes: std.ArrayList(FixOutcome) = .empty;
+    if (cfg.doctor_fix_id) |id| {
+        // --fix <check-id>: remediate only the named check. An unknown id is
+        // a usage error (invalid_argument, exit 80 — same as a bad flag);
+        // a check with nothing to remediate reports a skipped outcome rather
+        // than silently producing an empty fixes array.
+        switch (scopeFix(id, checks)) {
+            .plan => |pf| {
+                planned = try arena.alloc(PlannedFix, 1);
+                planned[0] = pf;
+            },
+            .no_fix => |c| {
+                const o: FixOutcome = .{
+                    .id = c.name,
+                    .check = c.name,
+                    .status = .skipped,
+                    .detail = if (c.status == .ok)
+                        "check is ok — nothing to remediate"
+                    else
+                        std.fmt.allocPrint(arena, "check '{s}' has no automatic remediation — follow its hint", .{c.name}) catch "no automatic remediation",
+                };
+                try outcomes.append(arena, o);
+                if (cfg.doctor_json) {
+                    term.out(try formatFixEvent(arena, o));
+                    term.out("\n");
+                }
+            },
+            .unknown => {
+                const hint = try suggest.hint(arena, id, try checkNames(arena, checks));
+                errors.printErr(arena, errors.invalid_argument, try std.fmt.allocPrint(arena, "unknown doctor check: {s}{s}", .{ id, hint }), .{ .hint = "run `tau explain --list` for resolvable check ids" });
+                return 80;
+            },
+        }
+    } else {
+        planned = try planFixes(arena, checks);
+    }
     if (planned.len > 0) {
         const interactive = !cfg.doctor_yes and !cfg.doctor_dry_run and (std.Io.File.stdin().isTty(io) catch false);
         const styled = interactive and term.colorEnabled(io, env, std.Io.File.stderr());
@@ -2088,12 +2160,13 @@ test "configBodyCheck: invalid JSON fails with the path, position and a fix hint
     const c = configBodyCheck(arena.allocator(), "/tmp/x/config.json", "{ not json ");
     try testing.expectEqual(CheckStatus.fail, c.status);
     try testing.expect(std.mem.indexOf(u8, c.message, "/tmp/x/config.json") != null);
-    try testing.expect(std.mem.indexOf(u8, c.message, "at line 1, column") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, ":1:") != null);
     try testing.expect(c.hint != null);
+    try testing.expect(std.mem.indexOf(u8, c.hint.?, "tau config edit") != null);
 
     // Later-line errors report their own line number.
     const c2 = configBodyCheck(arena.allocator(), "/tmp/x/config.json", "{\n  \"a\": 1,\n  bad\n}");
-    try testing.expect(std.mem.indexOf(u8, c2.message, "at line 3, column") != null);
+    try testing.expect(std.mem.indexOf(u8, c2.message, ":3:") != null);
 }
 
 test "configBodyCheck: unknown provider key warns, valid file is ok" {
@@ -2668,6 +2741,56 @@ test "planFixes: collects fixable checks in order and dedupes kinds" {
     try testing.expectEqual(FixKind.install_completions, plan[2].kind);
     try testing.expectEqualStrings("config_file", plan[0].check);
     try testing.expect(std.mem.indexOf(u8, plan[1].description, "0700") != null);
+}
+
+test "scopeFix: named check yields a one-fix plan, no-fix and unknown resolve cleanly" {
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .fail, .message = "invalid JSON", .fix = .restore_config },
+        .{ .name = "config_permissions", .status = .warn, .message = "loose", .fix = .chmod_config },
+        .{ .name = "api_key", .status = .fail, .message = "no key" },
+        // Shares chmod_config with config_permissions — the scoped plan still
+        // attributes the remediation to the check the caller named.
+        .{ .name = "other_perms", .status = .warn, .message = "loose too", .fix = .chmod_config },
+    };
+
+    switch (scopeFix("config_file", &checks)) {
+        .plan => |pf| {
+            try testing.expectEqual(FixKind.restore_config, pf.kind);
+            try testing.expectEqualStrings("config_file", pf.check);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A check sharing a fix kind plans by its own name, not the first planner.
+    switch (scopeFix("other_perms", &checks)) {
+        .plan => |pf| {
+            try testing.expectEqual(FixKind.chmod_config, pf.kind);
+            try testing.expectEqualStrings("other_perms", pf.check);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    switch (scopeFix("api_key", &checks)) {
+        .no_fix => |c| try testing.expectEqualStrings("api_key", c.name),
+        else => return error.TestUnexpectedResult,
+    }
+
+    try testing.expectEqual(FixScope.unknown, scopeFix("confg_file", &checks));
+}
+
+test "checkNames: every collected check is a did-you-mean candidate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const checks = [_]Check{
+        .{ .name = "config_file", .status = .ok, .message = "parsed" },
+        .{ .name = "shell_completions", .status = .ok, .message = "installed" },
+    };
+    const names = try checkNames(a, &checks);
+    try testing.expectEqual(@as(usize, 2), names.len);
+    // A typo resolves to the closest collected check name.
+    try testing.expect(std.mem.indexOf(u8, try suggest.hint(a, "confg_file", names), "config_file") != null);
 }
 
 test "formatReportJson: emits the fixes array when provided" {

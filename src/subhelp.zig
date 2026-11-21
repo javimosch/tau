@@ -61,6 +61,9 @@ const bug_help =
     \\                         Bundle an existing `tau doctor --report` file
     \\                         (secret-redacted) instead of running the live
     \\                         sweep — mutually exclusive with --no-report
+    \\      --dry-run          Preview the exact issue envelope — bundle
+    \\                         contents plus a "redactions" mask count —
+    \\                         without writing --out or opening a browser
     \\      --offline/--deep   Passed through to the diagnostic sweep
     \\      --provider <name>  Diagnose an override provider
     \\      --model <id>       Diagnose an override model
@@ -75,6 +78,7 @@ const bug_help =
     \\  tau bug --title "crash on startup" --open
     \\  tau bug --no-report --labels bug,crash
     \\  tau bug --out report.md
+    \\  tau bug --dry-run
     \\
 ;
 
@@ -98,6 +102,8 @@ const config_help =
     \\      --json             Stable schema-checked JSON (show, validate)
     \\      --mode text|json   Output mode
     \\      --raw              (get only) Print the value unredacted
+    \\      --dry-run          (set|unset) Preview the exact write — unified
+    \\                         diff + .bak backup path — change nothing
     \\
     \\Examples:
     \\  tau config show
@@ -105,6 +111,7 @@ const config_help =
     \\  tau config validate
     \\  tau config set provider openai
     \\  tau config set keys.openai sk-your-key
+    \\  tau config set mode text --dry-run
     \\  tau config get provider
     \\  tau config unset model
     \\  tau config edit
@@ -128,8 +135,9 @@ const doctor_help =
     \\                         every provider (~1 token per keyed provider)
     \\      --selftest         Credential-free end-to-end check against a
     \\                         loopback stub provider (no keys, no network)
-    \\      --fix              Propose remediations for fixable checks;
-    \\                         prompts per fix on a TTY
+    \\      --fix [<check>]    Propose remediations — every fixable check,
+    \\                         or just the named check; prompts per fix on
+    \\                         a TTY (see `tau explain doctor.<check>`)
     \\  -y, --yes              Apply --fix remediations without prompting
     \\      --dry-run          Preview each --fix remediation as
     \\                         "would_apply"; changes nothing (mutex with
@@ -147,6 +155,7 @@ const doctor_help =
     \\  tau doctor --selftest
     \\  tau doctor --fix --dry-run
     \\  tau doctor --fix --yes
+    \\  tau doctor --fix shell_completions --yes
     \\  tau doctor --probe
     \\  tau doctor --report
     \\
@@ -154,10 +163,12 @@ const doctor_help =
 
 const explain_help =
     \\tau explain - offline error + config-key + doctor-check + env-var
-    \\catalog lookup (no API key needed)
+    \\+ client + topic + subcommand catalog lookup (no API key needed)
     \\
     \\Usage:
-    \\  tau explain [<code|type|key|doctor.<check>|TAU_*>] [--json|--human]
+    \\  tau explain [<code|type|key|doctor.<check>|TAU_*|client.<name>|topic.<name>|subcommand.<name>>] [--json|--human]
+    \\  tau explain --list [--json|--human]
+    \\  tau explain --search <text> [--json|--human]
     \\
     \\Arguments:
     \\  <code|type|key>   Exit code (e.g. 106), error type (e.g. authfailed),
@@ -172,20 +183,52 @@ const explain_help =
     \\  TAU_<VAR>         A TAU_* environment variable (e.g. TAU_ENDPOINT,
     \\                    TAU_YES, TAU_VERSION) — prints who consumes it and
     \\                    what it does, from the generated docs/env.md catalog
+    \\  client.<name>     A `tau setup --client` editor client (e.g.
+    \\                    client.zed, client.claude-desktop) — prints setup
+    \\                    prerequisites, config paths, and the restart +
+    \\                    verify step. Bare names and --client aliases
+    \\                    resolve too (`zed`, `code`, `claude`)
+    \\  topic.<name>      A curated topic — `privacy` covers what tau
+    \\                    stores locally, what leaves the machine, and how
+    \\                    diagnostics redact secrets. Bare names resolve too
+    \\                    (`tau explain privacy`)
+    \\  subcommand.<name> A registered subcommand (e.g. subcommand.doctor,
+    \\                    subcommand.setup) — prints the summary, a
+    \\                    condensed usage line, runnable example
+    \\                    invocations, and links to the related error type
+    \\                    tags, config keys, and doctor checks. Bare names
+    \\                    resolve too (`tau explain doctor`)
     \\
     \\Options:
     \\      --json   Stable schema-checked JSON form (default;
     \\               schema/tau-explain.schema.json)
     \\      --human  Render as prose
+    \\      --list   Print the topic index — every resolvable name
+    \\               (error codes + types, config keys, doctor checks,
+    \\               TAU_* env vars, client ids, topics, subcommands)
+    \\               instead of full entries; takes no query
+    \\      --search <text>
+    \\               Print the topic index filtered to entries whose
+    \\               name or body text (cause/hint, description,
+    \\               fails-when/remediation, consumers/summary, prereqs)
+    \\               matches every whitespace-separated term,
+    \\               case-insensitively; takes no query
     \\
     \\Examples:
     \\  tau explain
+    \\  tau explain --list
+    \\  tau explain --search proxy
+    \\  tau explain --search "api key"
     \\  tau explain 106
     \\  tau explain authfailed
     \\  tau explain timeout_ms
     \\  tau explain keys.openai
     \\  tau explain doctor.tls_ca
     \\  tau explain TAU_ENDPOINT
+    \\  tau explain client.zed
+    \\  tau explain privacy
+    \\  tau explain doctor
+    \\  tau explain subcommand.setup
     \\  tau explain --human 105
     \\
 ;
@@ -257,6 +300,10 @@ const init_help =
     \\      --provider <name>  Scaffold for a specific provider
     \\      --json             Pin the stable schema-checked result object
     \\                         (schema/tau-init.schema.json)
+    \\
+    \\On success a getting-started checklist (next steps: `tau setup --client`,
+    \\`tau doctor`, `tau explain --list`) is printed to stderr; stdout stays a
+    \\pure JSON result object or the JSONC scaffold under --stdout.
     \\
     \\Examples:
     \\  tau init
@@ -348,6 +395,7 @@ const completions_help =
     \\
     \\Usage:
     \\  tau completions install [--shell <name>] [--dry-run] [--json]
+    \\  tau completions candidates <group>
     \\
     \\Commands:
     \\  install          Write the completion script for the detected
@@ -357,6 +405,12 @@ const completions_help =
     \\                   step. Idempotent: re-runs report
     \\                   "already_installed"/"present" and never
     \\                   duplicate the rc hook.
+    \\  candidates       Emit dynamic completion candidates (one per
+    \\                   line) for a group — the shipped scripts call
+    \\                   this at completion time: config-set lists
+    \\                   every key `tau config set` accepts;
+    \\                   config-get|config-unset list the keys present
+    \\                   in the config file
     \\
     \\Options:
     \\      --shell <name>  Shell to install for:
@@ -376,6 +430,7 @@ const completions_help =
     \\  tau completions install
     \\  tau completions install --shell zsh
     \\  tau completions install --shell all --dry-run
+    \\  tau completions candidates config-set
     \\
 ;
 

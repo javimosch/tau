@@ -72,6 +72,7 @@ ALL_TEST_GROUPS=(
   "config-schema:test_group_config_schema"
   "init:test_group_init"
   "setup:test_group_setup"
+  "setup-failure:test_group_setup_failure"
   "client-examples:test_group_client_examples"
   "client-guides:test_group_client_guides"
   "doc-snippets:test_group_doc_snippets"
@@ -103,6 +104,7 @@ ALL_TEST_GROUPS=(
   "doctor-checks:test_group_doctor_checks"
   "cli-schemas:test_group_cli_schemas"
   "compat-doc:test_group_compat_doc"
+  "clients-doc:test_group_clients_doc"
   "stability-doc:test_group_stability_doc"
   "changelog:test_group_changelog"
   "versioned-schemas:test_group_versioned_schemas"
@@ -1014,7 +1016,8 @@ test_group_config_validate() {
   printf '{"provider": "openai",\n' > "$tmpdir/broken.json"
   out=$("$BIN" config validate "$tmpdir/broken.json"); rc=$?
   ok "config validate broken JSON -> exit 1" "$rc" 1
-  contains "syntax error reports position" "$out" 'invalid JSON at line'
+  contains "syntax error reports position" "$out" '"line":2'
+  contains "syntax error carries a snippet" "$out" '"snippet":"'
 
   # Non-object top level.
   printf '["provider","openai"]' > "$tmpdir/arr.json"
@@ -1217,7 +1220,67 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config set mode text 2>&1); rc=$?
   ok "set on broken JSON -> exit 1" "$rc" 1
   contains "broken JSON reported" "$out" 'invalid JSON'
-  contains "broken JSON reports position" "$out" 'at line 2, column'
+  contains "broken JSON reports position" "$out" 'config.json:2:'
+  contains "broken JSON shows the source snippet" "$out" 'note: '
+  contains "broken JSON snippet has a caret" "$out" '^'
+
+  # --dry-run: previews the exact write (diff + .bak path), changes nothing.
+  printf '{\n  "provider": "openai",\n  "keys": { "openai": "sk-dry-secret-zz" }\n}\n' > "$cfg"
+  rm -f "$cfg.bak"
+  out=$(HOME="$mock_home" "$BIN" config set mode text --dry-run); rc=$?
+  ok "config set --dry-run -> exit 0" "$rc" 0
+  contains "dry-run reports dry_run marker" "$out" '"dry_run":true'
+  contains "dry-run reports modify action" "$out" '"action":"modify"'
+  contains "dry-run reports backup path" "$out" '"backup_path":"'"$cfg"'.bak"'
+  contains "dry-run diff adds the new member" "$out" '+  \"mode\": \"text\"'
+  contains "dry-run diff carries context" "$out" '\"provider\": \"openai\"'
+  if printf '%s' "$out" | grep -q 'sk-dry-secret-zz'; then
+    ok "dry-run diff leaks stored secret" 1 0
+  else
+    ok "dry-run diff masks stored secret" 0 0
+  fi
+  contains "dry-run marks masked diff" "$out" '"diff_redacted":true'
+  contains "config file untouched by dry-run" "$(cat "$cfg")" 'sk-dry-secret-zz'
+  if [ -f "$cfg.bak" ]; then ok "dry-run left no .bak" 1 0; else ok "dry-run left no .bak" 0 0; fi
+
+  # unset --dry-run: same preview, removal direction.
+  out=$(HOME="$mock_home" "$BIN" config unset keys.openai --dry-run); rc=$?
+  ok "config unset --dry-run -> exit 0" "$rc" 0
+  contains "unset preview reports removed" "$out" '"removed":true'
+  lacks "unset preview masks removed secret" "$out" 'sk-dry-secret-zz'
+  contains "unset preview keeps the file intact" "$(cat "$cfg")" 'sk-dry-secret-zz'
+
+  # create preview: missing file -> /dev/null diff, no backup_path.
+  local dry_home; dry_home="$(mktemp -d)"; register_temp_dir "$dry_home"
+  out=$(HOME="$dry_home" "$BIN" config set provider openai --dry-run); rc=$?
+  ok "set --dry-run on missing file -> exit 0" "$rc" 0
+  contains "create action reported" "$out" '"action":"create"'
+  contains "create diff reads /dev/null" "$out" '--- /dev/null'
+  lacks "create has no backup path" "$out" 'backup_path'
+  if [ -f "$dry_home/.config/tau/config.json" ]; then ok "dry-run created nothing" 1 0; else ok "dry-run created nothing" 0 0; fi
+
+  # get rejects --dry-run at parse time (it never writes).
+  HOME="$mock_home" "$BIN" config get provider --dry-run >/dev/null 2>&1
+  ok "get --dry-run -> exit 80" "$?" 80
+
+  # Real writes preserve the original at <path>.bak (the advertised backup).
+  printf '{\n  "provider": "openai"\n}\n' > "$cfg"
+  rm -f "$cfg.bak"
+  HOME="$mock_home" "$BIN" config set mode text >/dev/null 2>&1
+  if [ -f "$cfg.bak" ]; then
+    contains "bak preserves pre-write bytes" "$(cat "$cfg.bak")" '"provider": "openai"'
+  else
+    ok "set wrote a .bak backup" 1 0
+  fi
+  HOME="$mock_home" "$BIN" config unset mode >/dev/null 2>&1
+  contains "unset refreshed .bak" "$(cat "$cfg.bak")" '"mode": "text"'
+
+  # --mode text renders a human summary + the diff.
+  out=$(HOME="$mock_home" "$BIN" config set mode json --dry-run --mode text); rc=$?
+  ok "set --dry-run --mode text -> exit 0" "$rc" 0
+  contains "text preview names the action" "$out" 'would set "mode"'
+  contains "text preview shows backup" "$out" 'backup: '
+  contains "text preview shows the diff" "$out" '@@ -'
 }
 
 # Group: `tau config edit` — interactive $EDITOR edit, schema-checked on save.
@@ -1334,7 +1397,7 @@ test_group_doctor() {
   ok "malformed config exit 1" "$doc_badcfg_rc" 1
   contains "config_file fails" "$doc_badcfg_out" '"name":"config_file","status":"fail"'
   contains "config_file message names path" "$doc_badcfg_out" '.config/tau/config.json'
-  contains "config_file message has line/column" "$doc_badcfg_out" 'at line 1, column'
+  contains "config_file message has line/column" "$doc_badcfg_out" 'config.json:1:'
   contains "api_key check still ran" "$doc_badcfg_out" '"name":"api_key"'
   contains "endpoint check still ran" "$doc_badcfg_out" '"name":"endpoint_reachable"'
 
@@ -1479,6 +1542,45 @@ test_group_doctor() {
   contains "-y implies --fix" "$doc_fix_short_out" '"fixes":['
   "$BIN" doctor --shell tcsh >/dev/null 2>&1; ok "doctor --shell tcsh -> exit 80" "$?" 80
   "$BIN" doctor --fix --shell >/dev/null 2>&1; ok "doctor --shell missing value -> exit 80" "$?" 80
+
+  # 14c. --fix <check-id>: scoped remediation — the named check's fix is the
+  #     only plan entry, other fixable outcomes are untouched. An unknown id
+  #     is an exit-80 usage error with a did-you-mean; a check without a
+  #     remediation reports a skipped outcome instead of an empty fixes list.
+  rm -rf "$mock_home/.local" "$mock_home/.config"
+  capture doc_scope_bad env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix confg_file
+  ok "--fix <unknown check> -> exit 80" "$doc_scope_bad_rc" 80
+  contains "unknown check error names the id" "$doc_scope_bad_err" 'unknown doctor check: confg_file'
+  contains "unknown check error suggests nearest" "$doc_scope_bad_err" 'did you mean \"config_file\"'
+  contains "unknown check hint points at explain --list" "$doc_scope_bad_err" 'tau explain --list'
+  capture doc_scope_skip env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix config_file
+  contains "scoped --fix previews only the named fix" "$doc_scope_skip_out" '"id":"scaffold_config","check":"config_file","status":"skipped"'
+  contains "scoped --fix omits other planned fixes" "$doc_scope_skip_out" '"fixes":[{"id":"scaffold_config"'
+  if [ ! -f "$mock_config/config.json" ]; then
+    ok "scoped --fix unconfirmed wrote nothing" 0 0
+  else
+    ok "scoped --fix unconfirmed wrote nothing" 1 0
+  fi
+  capture doc_scope_nofix env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix api_key
+  contains "no-remediation check reports skipped" "$doc_scope_nofix_out" '"id":"api_key","check":"api_key","status":"skipped"'
+  contains "no-remediation detail explains" "$doc_scope_nofix_out" 'no automatic remediation'
+  capture doc_scope_apply env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix shell_completions --yes
+  ok "scoped --fix --yes exits 0" "$doc_scope_apply_rc" 0
+  contains "scoped apply ran the named fix" "$doc_scope_apply_out" '"id":"install_completions","check":"shell_completions","status":"applied"'
+  contains "scoped apply ran no other fix" "$doc_scope_apply_out" '"detail":"installed completions for bash"}]'
+  if [ -f "$mock_home/.local/share/bash-completion/completions/tau" ] && [ ! -f "$mock_config/config.json" ]; then
+    ok "scoped apply touched only completions" 0 0
+  else
+    ok "scoped apply touched only completions" 1 0
+  fi
+  # Restore the post-#14 state (scaffolded config + installed completions)
+  # that the secret-hygiene section below builds on.
+  env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-fix HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline --fix --yes >/dev/null 2>&1 || true
 
   # 14b. Secret-hygiene checks: plaintext credentials in the config file and
   #     env blocks inside client settings warn (never fail), key material is
@@ -2140,7 +2242,46 @@ test_group_bug() {
   capture bug_attach_missing "$BIN" bug --attach-report "$mock_home/nope.md"
   ok "unreadable attach -> exit 80" "$bug_attach_missing_rc" 80
   contains "unreadable attach names the file" "$bug_attach_missing_err" 'cannot read report file'
+
+  # 11. --dry-run: the same envelope the real run would emit plus
+  #     "dry_run":true and a "redactions" mask count — but no side effects:
+  #     --out writes nothing and --open launches nothing.
+  printf '# captured report\nkey=sk-dry-secret-42\nagain sk-dry-secret-42\n' > "$mock_home/captured.md"
+  printf '#!/bin/sh\nprintf "%%s" "$1" > "%s/dry-opened"\n' "$stub_dir" > "$stub_dir/dry-browser"
+  chmod +x "$stub_dir/dry-browser"
+  capture bug_dry env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    BROWSER="$stub_dir/dry-browser" OPENAI_API_KEY=sk-dry-secret-42 HOME="$mock_home" \
+    "$BIN" bug --attach-report "$mock_home/captured.md" --dry-run --out "$mock_home/dry-bundle.md" --open
+  ok "bug --dry-run exits 0" "$bug_dry_rc" 0
+  contains "dry_run marker present" "$bug_dry_out" '"dry_run":true'
+  contains "redactions counted" "$bug_dry_out" '"redactions":2'
+  contains "out path still reported" "$bug_dry_out" '"out":"'
+  contains "not opened under --dry-run" "$bug_dry_out" '"opened":false'
+  contains "attached secret is masked" "$bug_dry_out" '***REDACTED***'
+  if printf '%s' "$bug_dry_out" | grep -qF 'sk-dry-secret-42'; then
+    ok "dry-run secret never in output" 1 0
+  else
+    ok "dry-run secret never in output" 0 0
+  fi
+  if [ -f "$mock_home/dry-bundle.md" ]; then
+    ok "--dry-run wrote no --out file" 1 0
+  else
+    ok "--dry-run wrote no --out file" 0 0
+  fi
+  if [ -f "$stub_dir/dry-opened" ]; then
+    ok "--dry-run launched no browser" 1 0
+  else
+    ok "--dry-run launched no browser" 0 0
+  fi
   rm -f "$mock_home/captured.md"
+
+  # --no-report --dry-run: report stays null, zero masks.
+  capture bug_dry_norep env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY \
+    HOME="$mock_home" "$BIN" bug --offline --no-report --dry-run
+  ok "no-report --dry-run exits 0" "$bug_dry_norep_rc" 0
+  contains "report stays null" "$bug_dry_norep_out" '"report":null'
+  contains "zero redactions" "$bug_dry_norep_out" '"redactions":0'
+  contains "dry_run marker on no-report" "$bug_dry_norep_out" '"dry_run":true'
 }
 
 # Group: `tau config schema` — emits the config file's JSON Schema (draft
@@ -2268,6 +2409,15 @@ test_group_init() {
   else
     ok "init existing -> already_exists envelope" 1 0
   fi
+
+  # Getting-started checklist: every successful init prints the three next-step
+  # pointers on stderr while stdout stays a pure JSON result object.
+  contains "init prints getting-started checklist to stderr" "$init_write_err" "Next steps:"
+  contains "checklist points at tau setup --client" "$init_write_err" "tau setup --client"
+  contains "checklist points at tau doctor" "$init_write_err" "tau doctor"
+  contains "checklist points at tau explain --list" "$init_write_err" "tau explain --list"
+  lacks "init stdout stays a pure JSON result" "$init_write_out" "Next steps:"
+  lacks "failed init prints no checklist" "$init_again_err" "Next steps:"
 
   # --force overwrites and reports it.
   capture init_force env HOME="$mock_home" "$BIN" init --force
@@ -2841,6 +2991,178 @@ test_group_setup() {
   ok "round-trip remove exits 0" "$s39_rc" 0
   cmp -s "$mock_home32/before.json" "$mock_home32/.codeium/windsurf/mcp_config.json"
   ok "user file restored byte-for-byte" "$?" 0
+}
+
+# Group: `tau setup --client` failure paths — the binary-facing byte-fidelity
+# contract. A failed or declined client write must leave every pre-existing
+# config byte-identical: settings files setup refuses to splice, files whose
+# write fails partway through setup, and the shared mcacp bridge config. New
+# files (fresh settings, paste-ready snippets under ~/.config/tau/snippets/)
+# are allowed; existing user bytes are not.
+test_group_setup_failure() {
+  local h ob orig_bashrc
+
+  note "setup --client failure paths leave existing configs byte-identical"
+
+  # ── --client rejected at parse time: nothing in HOME is created ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  capture sf_bad env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client bogus
+  ok "setup --client bogus exits 80" "$sf_bad_rc" 80
+  contains "bad client names the accepted values" "$sf_bad_err" 'invalid --client'
+  [ -z "$(find "$h" -mindepth 1 -print -quit)" ]; ok "rejected --client created nothing under HOME" "$?" 0
+
+  # ── Every JSONC-backed client seeded with a file setup must not touch ────
+  # Mix of unparseable documents, valid docs without a tau entry, and an
+  # empty file — plus the shared mcacp bridge config and tau's own
+  # config.json. After `setup --client all`, all go "manual" and every
+  # seeded byte survives verbatim.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  ob="$(mktemp -d)"; register_temp_dir "$ob"
+  mkdir -p "$h/.config/zed" "$h/.config/Code/User" "$h/.config/Cursor/User" \
+    "$h/.jetbrains" "$h/.codeium/windsurf" "$h/.gemini" "$h/.config/Claude" \
+    "$h/.config/opencode" \
+    "$h/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings" \
+    "$h/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings" \
+    "$h/.config/kilo" "$h/.aws/amazonq" "$h/.config/mcacp" "$h/.config/tau"
+  printf '{\n  // user comment\n  "theme": "dark"\n}\n'        > "$h/.config/zed/settings.json"
+  printf '{"editor.fontSize": 14}\n'                           > "$h/.config/Code/User/settings.json"
+  printf '{ not json\n'                                        > "$h/.config/Cursor/User/settings.json"
+  printf '{"agent_servers": {}}\n'                             > "$h/.jetbrains/acp.json"
+  printf '{"mcpServers":{"mine":{"command":"m","args":["x"]}}}\n' > "$h/.codeium/windsurf/mcp_config.json"
+  printf '{ nope\n'                                            > "$h/.gemini/settings.json"
+  printf '{"mcpServers":{}}\n'                                 > "$h/.config/Claude/claude_desktop_config.json"
+  printf '{"mcp":{}}\n'                                        > "$h/.config/opencode/opencode.json"
+  : > "$h/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+  printf 'broken{{\n'                                          > "$h/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"
+  printf '{"mcp":{}}\n'                                        > "$h/.config/kilo/kilo.jsonc"
+  printf '{"mcpServers":{}}\n'                                 > "$h/.aws/amazonq/mcp.json"
+  printf '{"agent_servers":{"mine":{"command":"m"}}}\n'        > "$h/.config/mcacp/mcacp.json"
+  printf '{\n  // sentinel comment\n  "provider": "xiaomi",\n  "model": "mimo-v2.5"\n}\n' > "$h/.config/tau/config.json"
+  orig_bashrc="$ob/.bashrc"
+  printf '# user rc\nexport EDITOR=vim\n' > "$h/.bashrc"
+  cp "$h/.bashrc" "$orig_bashrc"
+  # Snapshot every seeded file for the post-run byte compare. .bashrc is
+  # excluded — setup appends the rc hook by design, checked separately below.
+  (cd "$h" && find . -type f ! -name .bashrc -print | while read -r f; do
+    mkdir -p "$ob/$(dirname "$f")"; cp "$f" "$ob/$f"
+  done)
+
+  capture sf_all env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client all --yes
+  ok "setup --client all on unwritable-content corpus exits 0" "$sf_all_rc" 0
+  contains "clients step reports manual across the board" "$sf_all_out" '"step":"clients","status":"manual"'
+  contains "zed went manual, not installed" "$sf_all_out" '"client":"zed","path":'
+  # The real assertion: every file that existed before the run is unchanged.
+  local sf_drift
+  sf_drift="$(cd "$ob" && find . -type f -print | while read -r f; do
+    cmp -s "$f" "$h/$f" || echo "$f"
+  done)"
+  if [ -z "$sf_drift" ]; then
+    ok "all 14 pre-existing files byte-identical after setup --client all" 0 0
+  else
+    ok "all 14 pre-existing files byte-identical after setup --client all (drift:$sf_drift)" 1 0
+  fi
+  # The seeded .bashrc was appended to, never rewritten: its original bytes
+  # are a strict prefix of the post-run file.
+  local rc_size
+  rc_size=$(wc -c < "$orig_bashrc")
+  head -c "$rc_size" "$h/.bashrc" | cmp -s - "$orig_bashrc"
+  ok "seeded .bashrc kept its original bytes as a prefix" "$?" 0
+  # Snippets landed under tau's own dir — setup acted, this wasn't vacuous.
+  [ -f "$h/.config/tau/snippets/zed.jsonc" ]; ok "paste-ready zed snippet was written" "$?" 0
+  [ -f "$h/.config/tau/snippets/mcacp.jsonc" ]; ok "paste-ready mcacp snippet was written" "$?" 0
+
+  # ── --import on an unparseable settings file: no splice, no write ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.codeium/windsurf"
+  printf '{ not json\n' > "$h/.codeium/windsurf/mcp_config.json"
+  cp "$h/.codeium/windsurf/mcp_config.json" "$h/before.json"
+  capture sf_imp env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "--import on unparseable file exits 0 (manual)" "$sf_imp_rc" 0
+  contains "windsurf reports manual, not failed" "$sf_imp_out" '"status":"manual"'
+  cmp -s "$h/before.json" "$h/.codeium/windsurf/mcp_config.json"
+  ok "--import left the unparseable file byte-identical" "$?" 0
+
+  # ── --import where the splice succeeds but the write is denied ────
+  # The strongest partial-write pin: a valid file is parsed, a new body is
+  # computed, then writeFile fails (read-only file). The original bytes must
+  # be exactly where the user left them — not truncated, not half-spliced.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.codeium/windsurf"
+  printf '{\n  // keep me\n  "mcpServers": {\n    "mine": { "command": "mine" }\n  }\n}\n' \
+    > "$h/.codeium/windsurf/mcp_config.json"
+  cp "$h/.codeium/windsurf/mcp_config.json" "$h/before.json"
+  chmod 0444 "$h/.codeium/windsurf/mcp_config.json"
+  capture sf_ro env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --import --yes
+  ok "--import on a read-only file exits 1" "$sf_ro_rc" 1
+  contains "windsurf entry reports failed" "$sf_ro_out" '"status":"failed"'
+  contains "failure names the write target" "$sf_ro_out" 'could not write'
+  contains "clients step reports failed" "$sf_ro_out" '"step":"clients","status":"failed"'
+  cmp -s "$h/before.json" "$h/.codeium/windsurf/mcp_config.json"
+  ok "denied --import write left the file byte-identical" "$?" 0
+
+  # ── Fresh-file write denied: no partial/empty file left behind ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/zed"
+  chmod 0555 "$h/.config/zed"
+  capture sf_deny env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes
+  ok "setup --client zed into unwritable dir exits 1" "$sf_deny_rc" 1
+  contains "zed entry reports failed" "$sf_deny_out" '"status":"failed"'
+  [ ! -e "$h/.config/zed/settings.json" ]; ok "no partial settings.json left behind" "$?" 0
+  [ -z "$(ls -A "$h/.config/zed")" ]; ok "unwritable dir left completely empty" "$?" 0
+  chmod 0755 "$h/.config/zed"
+
+  # ── Settings path is a directory: manual outcome, directory untouched ────
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/Cursor/User/settings.json"
+  capture sf_dir env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client cursor --yes
+  ok "dir-in-place settings path exits 0 (manual)" "$sf_dir_rc" 0
+  contains "cursor reports manual" "$sf_dir_out" '"status":"manual"'
+  contains "reason names the unreadable file" "$sf_dir_out" 'could not read the existing settings file'
+  [ -d "$h/.config/Cursor/User/settings.json" ]; ok "directory still in place" "$?" 0
+  [ -z "$(ls -A "$h/.config/Cursor/User/settings.json")" ]; ok "directory left empty" "$?" 0
+
+  # ── Fallback snippet write fails: the real settings file is still safe ────
+  # An unparseable zed file normally gets a paste-ready snippet — block the
+  # snippets dir itself (a regular file in its place) so the fallback write
+  # fails too. Neither file may change.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/zed" "$h/.config/tau"
+  printf '{ broken\n' > "$h/.config/zed/settings.json"
+  printf 'not a dir\n' > "$h/.config/tau/snippets"
+  cp "$h/.config/zed/settings.json" "$h/before-settings.json"
+  cp "$h/.config/tau/snippets" "$h/before-snippets"
+  capture sf_snip env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client zed --yes
+  ok "blocked snippet path exits 1" "$sf_snip_rc" 1
+  contains "zed entry reports failed" "$sf_snip_out" '"status":"failed"'
+  cmp -s "$h/before-settings.json" "$h/.config/zed/settings.json"
+  ok "settings file byte-identical when even the snippet write failed" "$?" 0
+  cmp -s "$h/before-snippets" "$h/.config/tau/snippets"
+  ok "the file blocking the snippets dir is itself untouched" "$?" 0
+
+  # ── Bridge-side existing config: client installs, bridge stays intact ────
+  # windsurf's settings file is absent (setup writes it fresh — fine), but
+  # the shared mcacp.json is an existing file setup must not rewrite.
+  h="$(mktemp -d)"; register_temp_dir "$h"
+  mkdir -p "$h/.config/mcacp"
+  printf '{"agent_servers":{"mine":{"command":"m"}}}\n' > "$h/.config/mcacp/mcacp.json"
+  cp "$h/.config/mcacp/mcacp.json" "$h/before-mcacp.json"
+  capture sf_bridge env -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY -u PIZIG_API_KEY \
+    HOME="$h" SHELL=/bin/bash XIAOMI_API_KEY=smoke-key "$BIN" setup --offline --client windsurf --yes
+  ok "bridge-conflict run exits 0 (manual)" "$sf_bridge_rc" 0
+  contains "bridge reports manual" "$sf_bridge_out" '"bridge_status":"manual"'
+  cmp -s "$h/before-mcacp.json" "$h/.config/mcacp/mcacp.json"
+  ok "existing mcacp.json byte-identical" "$?" 0
+  # And the fresh windsurf file that did get written is complete, not partial.
+  [ -f "$h/.codeium/windsurf/mcp_config.json" ]; ok "fresh windsurf file written" "$?" 0
+  grep -q '"mcpServers"' "$h/.codeium/windsurf/mcp_config.json"; ok "fresh windsurf file carries the servers section" "$?" 0
+  grep -q '"mcacp"' "$h/.codeium/windsurf/mcp_config.json"; ok "fresh windsurf file carries the mcacp entry" "$?" 0
 }
 
 # Group: runnable client-config examples under examples/clients/ —
@@ -4519,6 +4841,51 @@ test_group_golden_maintenance() {
   golden_check ex-env-unknown      1 "$BIN" explain TAU_ZZZ
   golden_check ex-env-dym          1 "$BIN" explain TAU_ENDPONT
 
+  # Client lookups — mirror rows of the generated docs/compatibility.md
+  # matrix (namespaced, bare, alias, bridge, snippet, --human).
+  golden_check ex-client           0 "$BIN" explain client.zed
+  golden_check ex-client-bare      0 "$BIN" explain zed
+  golden_check ex-client-alias     0 "$BIN" explain client.claude
+  golden_check ex-client-snippet   0 "$BIN" explain client.goose
+  golden_check ex-client-human     0 "$BIN" explain --human client.nvim
+  golden_check ex-client-check-id  0 "$BIN" explain client_zed
+  golden_check ex-client-unknown   1 "$BIN" explain client.bogus
+  golden_check ex-dym-client       1 "$BIN" explain client.zde
+
+  # ── curated topics (src/topiccatalog.zig) — bare and `topic.<name>` ──
+  golden_check ex-topic            0 "$BIN" explain privacy
+  golden_check ex-topic-prefixed   0 "$BIN" explain topic.privacy
+  golden_check ex-topic-human      0 "$BIN" explain --human privacy
+  golden_check ex-topic-unknown    1 "$BIN" explain topic.bogus
+  golden_check ex-dym-topic        1 "$BIN" explain privavy
+
+  # ── registered subcommands (src/subcommandcatalog.zig) — bare,
+  # `subcommand.<name>`, --human, unknown, typo ──
+  golden_check ex-cmd              0 "$BIN" explain doctor
+  golden_check ex-cmd-prefixed     0 "$BIN" explain subcommand.fleet
+  golden_check ex-cmd-human        0 "$BIN" explain --human setup
+  golden_check ex-cmd-unknown      1 "$BIN" explain subcommand.bogus
+  golden_check ex-dym-cmd          1 "$BIN" explain doktor
+  golden_check ex-dym-cmd-prefixed 1 "$BIN" explain subcommand.flet
+
+  # --list — the topic index: every resolvable name, no entry bodies.
+  golden_check ex-list             0 "$BIN" explain --list
+  golden_check ex-list-json        0 "$BIN" explain --json --list
+  golden_check ex-list-human       0 "$BIN" explain --human --list
+  golden_check ex-list-query      80 "$BIN" explain --list 106
+
+  # --search — the index filtered full-text: single + multi-term hits,
+  # --human prose, the no-match shape, and the arg-validation envelopes.
+  golden_check ex-search           0 "$BIN" explain --search timeout
+  golden_check ex-search-multi     0 "$BIN" explain --search "api key"
+  golden_check ex-search-sub       0 "$BIN" explain --search self-update
+  golden_check ex-search-human     0 "$BIN" explain --human --search proxy_env
+  golden_check ex-search-none      0 "$BIN" explain --search zzzyyqq
+  golden_check ex-search-missing  80 "$BIN" explain --search
+  golden_check ex-search-blank    80 "$BIN" explain --search " "
+  golden_check ex-search-query    80 "$BIN" explain --search x 106
+  golden_check ex-search-list     80 "$BIN" explain --search x --list
+
   # ── tau version --check — file:// release stubs, no network ──
   local stubs="$_GOLDEN_HOME/rel"
   mkdir -p "$stubs"
@@ -4555,6 +4922,7 @@ EOF
   golden_check   bug-json-no-report     0 "$BIN" bug --json --offline --no-report
   golden_check   bug-no-report-custom   0 "$BIN" bug --offline --no-report \
     --title "crash on --deep" --labels "bug,triage" --body "it broke"
+  golden_check   bug-dry-run            0 "$BIN" bug --offline --no-report --dry-run
 
   # ── tau upgrade — offline stubs; install dest pinned under <HOME> ──
   golden_check   ug-bad-flag        80 "$BIN" upgrade --bogus
@@ -5327,6 +5695,17 @@ test_group_cli_schemas() {
     ok "cli-schemas: bug --json validates" 1 0
   fi
 
+  # --dry-run adds the two preview members; the same schema still validates.
+  out=$("${scrub[@]}" "$BIN" bug --json --offline --no-report --dry-run); rc=$?
+  ok "cli-schemas: bug --json --dry-run exit 0" "$rc" 0
+  contains "cli-schemas: bug --dry-run marker" "$out" '"dry_run":true'
+  contains "cli-schemas: bug --dry-run redactions" "$out" '"redactions":0'
+  if printf '%s' "$out" | python3 "$check" --schema "$bug_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: bug --json --dry-run validates" 0 0
+  else
+    ok "cli-schemas: bug --json --dry-run validates" 1 0
+  fi
+
   # ── tau setup --json ───────────────────────────────────────────────────
   # NDJSON stream: per-step events + done:true verdict, validated per line.
   local setup_home="$SMOKE_TEMP/setup-home"
@@ -5491,6 +5870,78 @@ test_group_compat_doc() {
     python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/compatibility.md.bak" "$doc"
   else
     skip_test "compat-doc: --check detects a stale doc" "docs/compatibility.md missing"
+  fi
+}
+
+# Group: generated docs/clients.md drift check
+# docs/clients.md is rendered by scripts/gen-clients-doc.py from the
+# ClientKind tables in src/setup.zig + the client catalog in
+# src/clientcatalog.zig (the same registry `tau explain client.<id>`
+# reads) + doctor check/fix ids in src/doctor.zig; --check regenerates in
+# memory and fails on drift. Fully offline.
+test_group_clients_doc() {
+  note "generated docs/clients.md drift check"
+
+  local doc="$ROOT/docs/clients.md"
+  local gen="$ROOT/scripts/gen-clients-doc.py"
+
+  if [ -f "$doc" ]; then
+    ok "clients-doc: docs/clients.md exists" 0 0
+    contains "clients-doc: catalog declares itself generated" "$(cat "$doc")" "GENERATED FILE"
+  else
+    ok "clients-doc: docs/clients.md exists" 1 0
+    contains "clients-doc: catalog declares itself generated" "" "GENERATED FILE"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_test "clients-doc: --check passes (no drift)" "python3 not on PATH"
+    skip_test "clients-doc: sections match the live catalog" "python3 not on PATH"
+    skip_test "clients-doc: --check detects a stale doc" "python3 not on PATH"
+    return 0
+  fi
+
+  if python3 "$gen" --check >/dev/null 2>&1; then
+    ok "clients-doc: --check passes (no drift)" 0 0
+  else
+    ok "clients-doc: --check passes (no drift)" 1 0
+  fi
+
+  # The generated sections must match the live `tau explain` catalog
+  # exactly — one ### `name` per client, same order, each closing on its
+  # `tau explain client.<name>` link, and every linked guide exists.
+  "$BIN" explain --json > "$SMOKE_TEMP/clients-catalog.json" 2>/dev/null
+  if python3 - "$doc" "$SMOKE_TEMP/clients-catalog.json" <<'PYEOF'
+import json, os, re, sys
+doc_path = sys.argv[1]
+doc = open(doc_path).read()
+doc_ids = re.findall(r"^### `([^`]+)`$", doc, re.M)
+live = [e["client"] for e in json.load(open(sys.argv[2]))["clients"]]
+links = re.findall(r"^- \*\*Explain:\*\* `tau explain client\.([^`]+)`$", doc, re.M)
+guides = re.findall(r"\[docs/clients/([^]]+)\]\(clients/([^)]+)\)", doc)
+missing = [t for t, l in guides if t != l or not os.path.exists(
+    os.path.join(os.path.dirname(doc_path), "clients", l))]
+sys.exit(0 if doc_ids == live and links == live and not missing else 1)
+PYEOF
+  then
+    ok "clients-doc: sections match the live catalog" 0 0
+  else
+    ok "clients-doc: sections match the live catalog" 1 0
+  fi
+
+  # Prove the drift check isn't vacuous: append junk, expect failure, restore.
+  if [ -f "$doc" ]; then
+    cp "$doc" "$SMOKE_TEMP/clients.md.bak"
+    printf '\n<!-- stale -->\n' >> "$doc"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "clients-doc: --check detects a stale doc" 0 1
+    else
+      ok "clients-doc: --check detects a stale doc" 0 0
+    fi
+    cp "$SMOKE_TEMP/clients.md.bak" "$doc"
+    # Leave the tree clean even if a later check fails.
+    python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/clients.md.bak" "$doc"
+  else
+    skip_test "clients-doc: --check detects a stale doc" "docs/clients.md missing"
   fi
 }
 
@@ -5760,7 +6211,7 @@ test_group_explain() {
   capture r6 "$BIN" explain bogus
   ok "explain: unknown name exits 1" "$r6_rc" 1
   contains "explain: unknown name emits not_found" "$r6_err" '"type":"not_found"'
-  contains "explain: message points at the catalog" "$r6_err" 'run `tau explain` to list the catalog'
+  contains "explain: message points at the topic index" "$r6_err" 'run `tau explain --list` for the topic index'
 
   # Exit 0 is success — never an error.
   capture r7 "$BIN" explain 0
@@ -5795,6 +6246,15 @@ test_group_explain() {
   contains "explain: dotted entry names the member path" "$k3_out" '"key":"keys.openai"'
   contains "explain: dotted entry is a non-empty string" "$k3_out" '"constraints":"non-empty"'
 
+  # The `config.` prefix is the namespaced spelling — same convention as
+  # `doctor.<id>` — so parse-failure hints can cite `tau explain config.<key>`.
+  capture k3c "$BIN" explain config.provider
+  ok "explain: config.<key> exits 0" "$k3c_rc" 0
+  contains "explain: config.<key> resolves the key" "$k3c_out" '"key":"provider"'
+  capture k3d "$BIN" explain config.keys.openai
+  ok "explain: config.<member> exits 0" "$k3d_rc" 0
+  contains "explain: config.<member> resolves" "$k3d_out" '"key":"keys.openai"'
+
   capture k3b "$BIN" explain --human stream
   ok "explain: --human key exits 0" "$k3b_rc" 0
   contains "explain: --human prints key+type" "$k3b_out" 'config key  stream (boolean)'
@@ -5821,7 +6281,7 @@ test_group_explain() {
   capture k7 "$BIN" explain agent.timeout
   ok "explain: unknown dotted path exits 1" "$k7_rc" 1
   contains "explain: unknown dotted path emits not_found" "$k7_err" '"type":"not_found"'
-  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, or env var'
+  contains "explain: message now names all catalogs" "$k7_err" 'unknown error code, type, config key, doctor check, env var, client, topic, or subcommand'
   lacks "explain: unknown name gets no suggestion" "$r6_err" 'did you mean'
   lacks "explain: code 0 gets no suggestion" "$r7_err" 'did you mean'
 
@@ -5916,6 +6376,150 @@ test_group_explain() {
   contains "explain: unknown env var emits not_found" "$e6_err" '"type":"not_found"'
   lacks "explain: unknown env var gets no suggestion" "$e6_err" 'did you mean'
 
+  # Client lookups — mirror rows of the generated docs/compatibility.md
+  # matrix: `client.<name>` is the namespaced spelling, bare names and
+  # --client aliases resolve too.
+  capture c1 "$BIN" explain client.zed
+  ok "explain: client entry exits 0" "$c1_rc" 0
+  contains "explain: client entry carries name" "$c1_out" '"client":"zed"'
+  contains "explain: client entry carries transport" "$c1_out" '"transport":"acp"'
+  contains "explain: client entry carries wiring" "$c1_out" '"wiring":"direct"'
+  contains "explain: client entry carries prereqs" "$c1_out" '"prereqs":"tau installed and configured'
+  contains "explain: client entry carries setup command" "$c1_out" '"setup":"tau setup --client zed --yes"'
+  contains "explain: client entry carries settings path" "$c1_out" '"settings_path":"~/.config/zed/settings.json"'
+  contains "explain: client entry carries verify step" "$c1_out" '"verify":"open the Agent Panel'
+  contains "explain: client entry names its doctor check" "$c1_out" '"doctor_check":"client_zed"'
+  contains "explain: client entry links its guide" "$c1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/clients/zed.md"'
+  lacks "explain: direct client has no bridge path" "$c1_out" 'bridge_path'
+
+  capture c2 "$BIN" explain zed
+  ok "explain: bare client name exits 0" "$c2_rc" 0
+  contains "explain: bare name resolves the client" "$c2_out" '"client":"zed"'
+
+  capture c3 "$BIN" explain client.claude
+  ok "explain: client alias exits 0" "$c3_rc" 0
+  contains "explain: alias resolves canonical name" "$c3_out" '"client":"claude-desktop"'
+  contains "explain: bridge client tagged mcacp" "$c3_out" '"transport":"mcacp"'
+  contains "explain: bridge client carries bridge_path" "$c3_out" '"bridge_path":"~/.config/mcacp/mcacp.json"'
+  contains "explain: bridge prereqs name npx + mcacp" "$c3_out" 'npx'
+
+  capture c4 "$BIN" explain client.goose
+  ok "explain: snippet client exits 0" "$c4_rc" 0
+  contains "explain: snippet client tagged" "$c4_out" '"wiring":"snippet"'
+  contains "explain: snippet settings path is the merge target" "$c4_out" '"settings_path":"~/.config/goose/config.yaml"'
+
+  capture c5 "$BIN" explain --human client.nvim
+  ok "explain: --human client exits 0" "$c5_rc" 0
+  contains "explain: --human prints client tag" "$c5_out" 'client  nvim (acp · snippet)'
+  contains "explain: --human prints prereqs" "$c5_out" 'prereqs:'
+  contains "explain: --human prints merge target" "$c5_out" 'init.lua'
+  contains "explain: --human prints verify" "$c5_out" 'verify:'
+  contains "explain: --human points at the doctor check" "$c5_out" 'tau explain doctor.client_nvim'
+
+  # The underscore check id keeps its earlier registry — `client_zed` is
+  # the doctor check, `client.zed` is the client entry.
+  capture c6 "$BIN" explain client_zed
+  ok "explain: underscored id exits 0" "$c6_rc" 0
+  contains "explain: underscored id is the check" "$c6_out" '"check":"client_zed"'
+
+  # The no-query catalog carries the fifth slice — one entry per client.
+  contains "explain: catalog lists clients" "$r3_out" '"clients":['
+  contains "explain: catalog includes a direct client" "$r3_out" '"client":"zed"'
+  contains "explain: catalog includes a bridge client" "$r3_out" '"client":"claude-desktop"'
+  contains "explain: catalog includes a snippet client" "$r3_out" '"client":"nvim"'
+
+  # Client-name typos get the same did-you-mean — namespaced and bare.
+  capture c7 _env_no_tau "$BIN" explain zedd
+  ok "explain: client typo exits 1" "$c7_rc" 1
+  contains "explain: client typo suggests zed" "$c7_err" 'did you mean \"tau explain zed\"?'
+  capture c8 _env_no_tau "$BIN" explain client.zde
+  ok "explain: prefixed client typo exits 1" "$c8_rc" 1
+  contains "explain: prefixed typo suggests client.zed" "$c8_err" 'did you mean \"tau explain client.zed\"?'
+  capture c9 _env_no_tau "$BIN" explain client.bogus
+  ok "explain: unknown client exits 1" "$c9_rc" 1
+  contains "explain: unknown client emits not_found" "$c9_err" '"type":"not_found"'
+  lacks "explain: unknown client gets no suggestion" "$c9_err" 'did you mean'
+
+  # Curated topics — the hand-written src/topiccatalog.zig registry.
+  # `tau explain privacy` covers diagnostics collection, secret
+  # redaction, and the `tau bug` diagnostics/crash-report bundle;
+  # `topic.<name>` is the namespaced spelling, bare resolves too.
+  capture t1 "$BIN" explain privacy
+  ok "explain: topic entry exits 0" "$t1_rc" 0
+  contains "explain: topic entry carries name" "$t1_out" '"topic":"privacy"'
+  contains "explain: topic entry carries summary" "$t1_out" '"summary":"what tau stores locally'
+  contains "explain: topic entry details diagnostics" "$t1_out" 'tau doctor --report'
+  contains "explain: topic entry details redaction" "$t1_out" '***REDACTED***'
+  contains "explain: topic entry details debug log" "$t1_out" 'debug/<timestamp>.log'
+  contains "explain: topic cross-links tau bug" "$t1_out" '"see_also":["tau bug"'
+  contains "explain: topic anchors troubleshooting" "$t1_out" 'troubleshooting.md#diagnostic-toolkit'
+
+  capture t2 "$BIN" explain topic.privacy
+  ok "explain: prefixed topic exits 0" "$t2_rc" 0
+  contains "explain: prefixed topic resolves" "$t2_out" '"topic":"privacy"'
+
+  capture t3 "$BIN" explain --human privacy
+  ok "explain: --human topic exits 0" "$t3_rc" 0
+  contains "explain: --human prints topic tag" "$t3_out" 'topic  privacy'
+  contains "explain: --human prints details" "$t3_out" 'details:'
+  contains "explain: --human cross-links tau bug" "$t3_out" 'see also: tau bug'
+
+  # The no-query catalog carries the sixth slice.
+  contains "explain: catalog lists topics" "$r3_out" '"topics":['
+  contains "explain: catalog includes privacy" "$r3_out" '"topic":"privacy"'
+
+  # Topic typos get the same did-you-mean — namespaced and bare.
+  capture t4 "$BIN" explain privavy
+  ok "explain: topic typo exits 1" "$t4_rc" 1
+  contains "explain: topic typo suggests privacy" "$t4_err" 'did you mean \"tau explain privacy\"?'
+  capture t5 "$BIN" explain topic.privavy
+  ok "explain: prefixed topic typo exits 1" "$t5_rc" 1
+  contains "explain: prefixed typo suggests topic.privacy" "$t5_err" 'did you mean \"tau explain topic.privacy\"?'
+  capture t6 "$BIN" explain topic.bogus
+  ok "explain: unknown topic exits 1" "$t6_rc" 1
+  contains "explain: unknown topic emits not_found" "$t6_err" '"type":"not_found"'
+
+  # Registered subcommands — the src/subcommandcatalog.zig registry,
+  # pinned against the args.zig command surface by the Zig tests.
+  # `subcommand.<name>` is the namespaced spelling, bare resolves too.
+  capture u1 "$BIN" explain doctor
+  ok "explain: subcommand entry exits 0" "$u1_rc" 0
+  contains "explain: subcommand entry carries name" "$u1_out" '"subcommand":"doctor"'
+  contains "explain: subcommand entry carries summary" "$u1_out" '"summary":"Validate your setup'
+  contains "explain: subcommand entry carries usage" "$u1_out" '"usage":"tau doctor'
+  contains "explain: subcommand entry carries examples" "$u1_out" '"examples":["tau doctor'
+  contains "explain: subcommand links its checks" "$u1_out" '"doctor_checks":["doctor.config_file"'
+  contains "explain: subcommand entry carries docs" "$u1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/doctor.md"'
+
+  capture u2 "$BIN" explain subcommand.fleet
+  ok "explain: prefixed subcommand exits 0" "$u2_rc" 0
+  contains "explain: prefixed subcommand resolves" "$u2_out" '"subcommand":"fleet"'
+  contains "explain: fleet entry carries usage" "$u2_out" '"usage":"tau fleet'
+
+  capture u3 "$BIN" explain --human doctor
+  ok "explain: --human subcommand exits 0" "$u3_rc" 0
+  contains "explain: --human prints subcommand tag" "$u3_out" 'subcommand  doctor'
+  contains "explain: --human prints usage" "$u3_out" 'usage:'
+  contains "explain: --human prints examples" "$u3_out" 'examples:     tau doctor'
+  contains "explain: --human links checks" "$u3_out" 'doctor checks:'
+
+  # The no-query catalog carries the seventh slice.
+  contains "explain: catalog lists subcommands" "$r3_out" '"subcommands":['
+  contains "explain: catalog includes a subcommand" "$r3_out" '"subcommand":"doctor"'
+  contains "explain: catalog includes a second subcommand" "$r3_out" '"subcommand":"fleet"'
+
+  # Subcommand typos get the same did-you-mean — bare and prefixed.
+  capture u4 "$BIN" explain doktor
+  ok "explain: subcommand typo exits 1" "$u4_rc" 1
+  contains "explain: subcommand typo suggests doctor" "$u4_err" 'did you mean \"tau explain doctor\"?'
+  capture u5 "$BIN" explain subcommand.flet
+  ok "explain: prefixed subcommand typo exits 1" "$u5_rc" 1
+  contains "explain: prefixed typo suggests subcommand.fleet" "$u5_err" 'did you mean \"tau explain subcommand.fleet\"?'
+  capture u6 "$BIN" explain subcommand.bogus
+  ok "explain: unknown subcommand exits 1" "$u6_rc" 1
+  contains "explain: unknown subcommand emits not_found" "$u6_err" '"type":"not_found"'
+  lacks "explain: unknown subcommand gets no suggestion" "$u6_err" 'did you mean'
+
   # Bad flags route through the standard invalid_argument envelope.
   capture r8 "$BIN" explain --nope
   ok "explain: bad flag exits 80" "$r8_rc" 80
@@ -5938,6 +6542,124 @@ test_group_explain() {
   capture r12 "$BIN" explain --human --json 80
   ok "explain: --human --json exits 80" "$r12_rc" 80
   contains "explain: reverse-order mutex" "$r12_err" '--json and --human are mutually exclusive'
+
+  # --list is the topic index — every resolvable name, no entry bodies.
+  capture li1 "$BIN" explain --list
+  ok "explain: --list exits 0" "$li1_rc" 0
+  contains "explain: --list emits the topics object" "$li1_out" '"topics":{'
+  contains "explain: --list lists error topics" "$li1_out" '"errors":['
+  contains "explain: --list error topic carries code+type" "$li1_out" '{"code":106,"type":"AuthFailed"}'
+  contains "explain: --list lists config keys" "$li1_out" '"config_keys":['
+  contains "explain: --list includes a flat key" "$li1_out" '"timeout_ms"'
+  contains "explain: --list includes a member path" "$li1_out" '"keys.openai"'
+  contains "explain: --list lists doctor checks" "$li1_out" '"doctor_checks":['
+  contains "explain: --list check ids are namespaced" "$li1_out" '"doctor.tls_ca"'
+  contains "explain: --list lists env vars" "$li1_out" '"env_vars":['
+  contains "explain: --list includes an env var" "$li1_out" '"TAU_ENDPOINT"'
+  contains "explain: --list lists clients" "$li1_out" '"clients":['
+  contains "explain: --list client ids are namespaced" "$li1_out" '"client.zed"'
+  contains "explain: --list lists topics" "$li1_out" '"topics":['
+  contains "explain: --list topic names are namespaced" "$li1_out" '"topic.privacy"'
+  contains "explain: --list lists subcommands" "$li1_out" '"subcommands":['
+  contains "explain: --list subcommand names are namespaced" "$li1_out" '"subcommand.doctor"'
+  lacks "explain: --list carries no entry bodies" "$li1_out" '"remediation"'
+
+  capture li2 "$BIN" explain --human --list
+  ok "explain: --human --list exits 0" "$li2_rc" 0
+  contains "explain: --human --list prints error section" "$li2_out" 'error codes:'
+  contains "explain: --human --list prints check section" "$li2_out" 'doctor checks:'
+  contains "explain: --human --list prints client section" "$li2_out" 'clients:'
+  contains "explain: --human --list names a client" "$li2_out" 'client.zed'
+  contains "explain: --human --list prints topics section" "$li2_out" 'topics:'
+  contains "explain: --human --list names a topic" "$li2_out" 'topic.privacy'
+  contains "explain: --human --list prints subcommands section" "$li2_out" 'subcommands:'
+  contains "explain: --human --list names a subcommand" "$li2_out" 'subcommand.doctor'
+
+  # --list is mutex with a query in either order.
+  capture li3 "$BIN" explain --list 106
+  ok "explain: --list + query exits 80" "$li3_rc" 80
+  contains "explain: --list mutex names the flag" "$li3_err" '--list takes no query argument'
+  capture li4 "$BIN" explain 106 --list
+  ok "explain: query + --list exits 80" "$li4_rc" 80
+  contains "explain: reverse mutex names the flag" "$li4_err" '--list takes no query argument'
+
+  # --search <text> prints the same topic index filtered to entries whose
+  # name or body text matches every whitespace-separated term,
+  # case-insensitively — the filtered index still lists only resolvable
+  # names, never entry bodies.
+  capture s1 _env_no_tau "$BIN" explain --search timeout
+  ok "explain: --search exits 0" "$s1_rc" 0
+  contains "explain: --search echoes the query" "$s1_out" '"query":"timeout"'
+  contains "explain: --search emits the topics object" "$s1_out" '"topics":{'
+  contains "explain: --search hits the error type" "$s1_out" '{"code":105,"type":"Timeout"}'
+  contains "explain: --search hits the config key" "$s1_out" '"timeout_ms"'
+  contains "explain: --search hits the timeout check" "$s1_out" '"doctor.endpoint_reachable"'
+  lacks "explain: --search prunes non-matches" "$s1_out" '"client.zed"'
+  lacks "explain: --search carries no entry bodies" "$s1_out" '"remediation"'
+
+  # Multi-term queries AND across name + body text: "api key" hits the
+  # config key, the doctor check, and the env var that all carry both
+  # words.
+  capture s2 _env_no_tau "$BIN" explain --search "api key"
+  ok "explain: --search multi-term exits 0" "$s2_rc" 0
+  contains "explain: --search multi-term hits the key" "$s2_out" '"api_key"'
+  contains "explain: --search multi-term hits the check" "$s2_out" '"doctor.api_key"'
+  contains "explain: --search multi-term hits the env var" "$s2_out" '"TAU_API_KEY"'
+
+  # --client aliases match by resolution, not substring — `amazon-q` and
+  # `codex-cli` aren't substrings of the canonical client names.
+  capture s3 _env_no_tau "$BIN" explain --search amazon-q
+  ok "explain: --search alias exits 0" "$s3_rc" 0
+  contains "explain: --search resolves the client alias" "$s3_out" '"client.amazonq"'
+  capture s3b _env_no_tau "$BIN" explain --search codex-cli
+  contains "explain: --search resolves codex-cli" "$s3b_out" '"client.codex"'
+
+  # Body-text hits beyond names — "redact" lives in the privacy topic's
+  # summary/details, not its name.
+  capture s4 _env_no_tau "$BIN" explain --search redact
+  contains "explain: --search body-text hits the topic" "$s4_out" '"topic.privacy"'
+
+  # Subcommand names and body text are searchable too — "self-update"
+  # lives in the upgrade subcommand's summary.
+  capture s4b _env_no_tau "$BIN" explain --search self-update
+  ok "explain: --search subcommand exits 0" "$s4b_rc" 0
+  contains "explain: --search hits the upgrade subcommand" "$s4b_out" '"subcommand.upgrade"'
+  contains "explain: --search timeout hits a subcommand" "$s1_out" '"subcommand.doctor"'
+
+  # Nothing matches: empty arrays, exit 0 — a valid result, not an error.
+  capture s5 _env_no_tau "$BIN" explain --search zzzyyqq
+  ok "explain: --search no-match exits 0" "$s5_rc" 0
+  contains "explain: --search no-match keeps the shape" "$s5_out" '"topics":{'
+  contains "explain: --search no-match empties errors" "$s5_out" '"errors":[]'
+  contains "explain: --search no-match empties clients" "$s5_out" '"clients":[]'
+
+  # --human renders the filtered index as prose — matching sections only,
+  # and a pointer at --list when nothing matched.
+  capture s6 _env_no_tau "$BIN" explain --human --search proxy_env
+  ok "explain: --human --search exits 0" "$s6_rc" 0
+  contains "explain: --human --search prints the header" "$s6_out" 'explain topics matching "proxy_env"'
+  contains "explain: --human --search lists the check" "$s6_out" 'doctor.proxy_env'
+  lacks "explain: --human --search omits empty sections" "$s6_out" 'clients:'
+  capture s7 _env_no_tau "$BIN" explain --human --search zzzyyqq
+  contains "explain: --human --search no-match note" "$s7_out" 'no explain topics match "zzzyyqq"'
+
+  # Argument validation: --search needs a non-empty value, takes no
+  # positional query, and is mutex with --list — all exit 80.
+  capture s8 _env_no_tau "$BIN" explain --search
+  ok "explain: --search without a value exits 80" "$s8_rc" 80
+  contains "explain: missing value names the flag" "$s8_err" 'missing value for --search'
+  capture s9 _env_no_tau "$BIN" explain --search "  "
+  ok "explain: --search blank value exits 80" "$s9_rc" 80
+  contains "explain: blank value names the rule" "$s9_err" '--search requires a non-empty query'
+  capture s10 _env_no_tau "$BIN" explain --search x 106
+  ok "explain: --search + query exits 80" "$s10_rc" 80
+  contains "explain: --search mutex names the flag" "$s10_err" '--search takes no query argument'
+  capture s11 _env_no_tau "$BIN" explain --list --search x
+  ok "explain: --list + --search exits 80" "$s11_rc" 80
+  contains "explain: list/search mutex" "$s11_err" '--list and --search are mutually exclusive'
+  capture s12 _env_no_tau "$BIN" explain --serach x
+  ok "explain: --search typo exits 80" "$s12_rc" 80
+  contains "explain: --search typo suggests the flag" "$s12_err" 'did you mean \"--search\"?'
 
   # Both --json surfaces validate against the checked-in schema.
   local ex_schema="$ROOT/schema/tau-explain.schema.json"
@@ -5991,6 +6713,86 @@ test_group_explain() {
       ok "explain: env entry validates against schema" 0 0
     else
       ok "explain: env entry validates against schema" 1 0
+    fi
+    # Client entries (direct + bridge) validate against the same schema.
+    if printf '%s' "$c1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: client entry validates against schema" 0 0
+    else
+      ok "explain: client entry validates against schema" 1 0
+    fi
+    if printf '%s' "$c3_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: bridge client entry validates against schema" 0 0
+    else
+      ok "explain: bridge client entry validates against schema" 1 0
+    fi
+    # A topic entry validates against the same schema.
+    if printf '%s' "$t1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: topic entry validates against schema" 0 0
+    else
+      ok "explain: topic entry validates against schema" 1 0
+    fi
+    # A subcommand entry validates against the same schema.
+    if printf '%s' "$u1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: subcommand entry validates against schema" 0 0
+    else
+      ok "explain: subcommand entry validates against schema" 1 0
+    fi
+    # The --list topic index validates against the same schema.
+    if printf '%s' "$li1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: --list index validates against schema" 0 0
+    else
+      ok "explain: --list index validates against schema" 1 0
+    fi
+    # The --search filtered index validates against the same schema.
+    if printf '%s' "$s1_out" | python3 "$ROOT/scripts/check-cli-schema.py" --schema "$ex_schema" - >/dev/null 2>&1; then
+      ok "explain: --search result validates against schema" 0 0
+    else
+      ok "explain: --search result validates against schema" 1 0
+    fi
+    # Every name a --search result lists resolves — the filtered index is
+    # still a list of valid queries.
+    local s1_json
+    s1_json="$(mktemp)"; register_temp_file "$s1_json"
+    printf '%s' "$s1_out" > "$s1_json"
+    if python3 - "$BIN" "$s1_json" <<'PYEOF' >/dev/null 2>&1
+import json, subprocess, sys
+bin_path, idx_path = sys.argv[1], sys.argv[2]
+topics = json.load(open(idx_path))["topics"]
+queries = [str(e["code"]) for e in topics["errors"]]
+queries += [e["type"] for e in topics["errors"]]
+for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics", "subcommands"):
+    queries += topics[group]
+bad = [q for q in queries
+       if subprocess.run([bin_path, "explain", q],
+                         capture_output=True).returncode != 0]
+sys.exit(1 if bad else 0)
+PYEOF
+    then
+      ok "explain: every --search-listed topic resolves" 0 0
+    else
+      ok "explain: every --search-listed topic resolves" 1 0
+    fi
+    # Every indexed topic resolves — the index is a list of valid queries.
+    local li_json
+    li_json="$(mktemp)"; register_temp_file "$li_json"
+    printf '%s' "$li1_out" > "$li_json"
+    if python3 - "$BIN" "$li_json" <<'PYEOF' >/dev/null 2>&1
+import json, subprocess, sys
+bin_path, idx_path = sys.argv[1], sys.argv[2]
+topics = json.load(open(idx_path))["topics"]
+queries = [str(e["code"]) for e in topics["errors"]]
+queries += [e["type"] for e in topics["errors"]]
+for group in ("config_keys", "doctor_checks", "env_vars", "clients", "topics", "subcommands"):
+    queries += topics[group]
+bad = [q for q in queries
+       if subprocess.run([bin_path, "explain", q],
+                         capture_output=True).returncode != 0]
+sys.exit(1 if bad else 0)
+PYEOF
+    then
+      ok "explain: every indexed topic resolves" 0 0
+    else
+      ok "explain: every indexed topic resolves" 1 0
     fi
   else
     skip_test "explain: schema validation" "python3 not on PATH"
@@ -6088,17 +6890,35 @@ PYEOF
   else
     ok "explain-coverage: checker detects an unresolvable env var" 0 0
   fi
+
+  # And a compatibility.md client row with no matching ClientKind — spliced
+  # inside the ## Supported editor clients section the checker scopes to.
+  cp "$ROOT/docs/compatibility.md" "$stage/compatibility.md"
+  python3 - "$stage/compatibility.md" <<'PYEOF'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+t = t.replace("| `zed` |", "| `bogusclient` | `bogusclient` | `~/.bogus` | — | — | — | `~/.bogus` | — |\n| `zed` |", 1)
+open(p, "w").write(t)
+PYEOF
+  if python3 "$check" --tau "$BIN" --compat-doc "$stage/compatibility.md" >/dev/null 2>&1; then
+    ok "explain-coverage: checker detects an unresolvable client" 0 1
+  else
+    ok "explain-coverage: checker detects an unresolvable client" 0 0
+  fi
 }
 
-# Group: generated `tau doctor` check table in docs/troubleshooting.md —
-# the GENERATED DOCTOR CHECKS region is spliced by
-# scripts/gen-doctor-checks-doc.py from the CheckSpec catalog in
-# src/doctorcatalog.zig (the same registry `tau explain doctor.<check>`
-# reads); --check fails on drift. Fully offline.
+# Group: generated `tau doctor` check docs — the GENERATED DOCTOR CHECKS
+# table in docs/troubleshooting.md and the per-check catalog
+# docs/doctor.md are rendered by scripts/gen-doctor-checks-doc.py from the
+# CheckSpec catalog in src/doctorcatalog.zig (the same registry
+# `tau explain doctor.<check>` reads); --check fails on drift. Fully
+# offline.
 test_group_doctor_checks() {
   note "generated doctor check table drift check"
 
   local doc="$ROOT/docs/troubleshooting.md"
+  local cat="$ROOT/docs/doctor.md"
   local gen="$ROOT/scripts/gen-doctor-checks-doc.py"
 
   if grep -q "GENERATED DOCTOR CHECKS" "$doc" 2>/dev/null; then
@@ -6107,10 +6927,20 @@ test_group_doctor_checks() {
     ok "doctor-checks: troubleshooting.md carries the generated region" 1 0
   fi
 
+  if [ -f "$cat" ]; then
+    ok "doctor-checks: docs/doctor.md exists" 0 0
+    contains "doctor-checks: catalog declares itself generated" "$(cat "$cat")" "GENERATED FILE"
+  else
+    ok "doctor-checks: docs/doctor.md exists" 1 0
+    contains "doctor-checks: catalog declares itself generated" "" "GENERATED FILE"
+  fi
+
   if ! command -v python3 >/dev/null 2>&1; then
     skip_test "doctor-checks: --check passes (no drift)" "python3 not on PATH"
     skip_test "doctor-checks: --check detects a stale doc" "python3 not on PATH"
     skip_test "doctor-checks: rows match the live catalog" "python3 not on PATH"
+    skip_test "doctor-checks: catalog sections match the live catalog" "python3 not on PATH"
+    skip_test "doctor-checks: --check detects a stale catalog" "python3 not on PATH"
     return 0
   fi
 
@@ -6137,6 +6967,26 @@ PYEOF
     ok "doctor-checks: rows match the live catalog" 1 0
   fi
 
+  # Same for docs/doctor.md — one ### `id` section per live catalog entry,
+  # in catalog order, each closing on its `tau explain doctor.<id>` link.
+  if [ -f "$cat" ]; then
+    if python3 - "$cat" "$SMOKE_TEMP/explain-catalog.json" <<'PYEOF'
+import json, re, sys
+doc = open(sys.argv[1]).read()
+doc_ids = re.findall(r"^### `([^`]+)`$", doc, re.M)
+live = [e["check"] for e in json.load(open(sys.argv[2]))["doctor_checks"]]
+links = re.findall(r"^- \*\*Explain:\*\* `tau explain doctor\.([^`]+)`$", doc, re.M)
+sys.exit(0 if doc_ids == live and links == live else 1)
+PYEOF
+    then
+      ok "doctor-checks: catalog sections match the live catalog" 0 0
+    else
+      ok "doctor-checks: catalog sections match the live catalog" 1 0
+    fi
+  else
+    skip_test "doctor-checks: catalog sections match the live catalog" "docs/doctor.md missing"
+  fi
+
   # Prove the drift check isn't vacuous: splice a bogus row inside the
   # marked region, expect failure, restore.
   cp "$doc" "$SMOKE_TEMP/troubleshooting.md.bak"
@@ -6153,8 +7003,26 @@ PYEOF
     ok "doctor-checks: --check detects a stale doc" 0 0
   fi
   cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
+
+  # Same vacuity proof for the catalog page: append junk, expect --check
+  # to flag it, restore.
+  if [ -f "$cat" ]; then
+    cp "$cat" "$SMOKE_TEMP/doctor.md.bak"
+    printf '\n<!-- stale -->\n' >> "$cat"
+    if python3 "$gen" --check >/dev/null 2>&1; then
+      ok "doctor-checks: --check detects a stale catalog" 0 1
+    else
+      ok "doctor-checks: --check detects a stale catalog" 0 0
+    fi
+    cp "$SMOKE_TEMP/doctor.md.bak" "$cat"
+  else
+    skip_test "doctor-checks: --check detects a stale catalog" "docs/doctor.md missing"
+  fi
   # Leave the tree clean even if a later check fails.
-  python3 "$gen" --check >/dev/null 2>&1 || cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
+  python3 "$gen" --check >/dev/null 2>&1 || {
+    cp "$SMOKE_TEMP/troubleshooting.md.bak" "$doc"
+    [ ! -f "$SMOKE_TEMP/doctor.md.bak" ] || cp "$SMOKE_TEMP/doctor.md.bak" "$cat"
+  }
 }
 
 # Group: --bench regression guard
@@ -6594,7 +7462,7 @@ test_group_completions() {
 
     missing=""
     for word in acp fleet skills models guide \
-                completions install \
+                completions install candidates \
                 xiaomi openai deepseek opencode-go text json \
                 author critic coordinator none \
                 bash ls read write edit grep find calculator; do
@@ -6664,6 +7532,58 @@ test_group_completions() {
   capture cif env -u HOME "$BIN" completions install --shell bash
   ok "completions install with no HOME exits 1" "$cif_rc" 1
   contains "missing HOME reports failed" "$cif_out" '"status":"failed"'
+
+  # ── tau completions candidates ────────────────────────────────────────
+  # Dynamic key completion for `tau config get|set|unset <key>` positions:
+  # the shipped scripts call the binary at completion time. config-set
+  # lists every settable key; config-get/config-unset list the keys
+  # present in the config file.
+  capture cset "$BIN" completions candidates config-set
+  ok "candidates config-set exits 0" "$cset_rc" 0
+  contains "config-set lists provider" "$cset_out" "provider"
+  contains "config-set lists mode" "$cset_out" "mode"
+  contains "config-set lists a keys.<provider> entry" "$cset_out" "keys.openai"
+  lacks "config-set omits the non-settable \$schema member" "$cset_out" '$schema'
+
+  # config-get/config-unset reflect the live file: seeded members (and the
+  # keys.<provider> entries inside `keys`) complete, unset keys do not.
+  local chome5 chome6
+  chome5="$(mktemp -d)"; register_temp_dir "$chome5"
+  mkdir -p "$chome5/.config/tau"
+  printf '{\n  // starter\n  "provider": "openai",\n  "keys": {"openai": "sk-x"},\n  "mode": "text"\n}\n' > "$chome5/.config/tau/config.json"
+  capture cget env HOME="$chome5" "$BIN" completions candidates config-get
+  ok "candidates config-get exits 0" "$cget_rc" 0
+  contains "config-get lists a file key" "$cget_out" "provider"
+  contains "config-get lists a keys.<provider> member" "$cget_out" "keys.openai"
+  lacks "config-get omits unset keys" "$cget_out" "timeout_ms"
+  capture cun env HOME="$chome5" "$BIN" completions candidates config-unset
+  ok "candidates config-unset exits 0" "$cun_rc" 0
+  contains "config-unset mirrors config-get" "$cun_out" "keys.openai"
+
+  # No config file -> empty candidate list, still exit 0.
+  chome6="$(mktemp -d)"; register_temp_dir "$chome6"
+  capture cempty env HOME="$chome6" "$BIN" completions candidates config-get
+  ok "config-get with no config file exits 0" "$cempty_rc" 0
+  if [ -z "$cempty_out" ]; then
+    ok "config-get emits nothing without a config file" 0 0
+  else
+    ok "config-get emits nothing without a config file" 1 0
+  fi
+
+  # Missing/invalid group and trailing args are invalid-argument envelopes.
+  capture cmiss "$BIN" completions candidates
+  ok "candidates with no group exits 80" "$cmiss_rc" 80
+  contains "no-group error names the groups" "$cmiss_err" "config-set | config-get | config-unset"
+  capture cbad "$BIN" completions candidates bogus
+  ok "candidates bogus group exits 80" "$cbad_rc" 80
+  capture cextra "$BIN" completions candidates config-set extra
+  ok "candidates extra arg exits 80" "$cextra_rc" 80
+
+  # Every shipped script calls the binary for the dynamic candidates.
+  for f in $files; do
+    grep -Fq "completions candidates" "$ROOT/$f"
+    ok "$f calls completions candidates" "$?" 0
+  done
 }
 
 # Group: release surface — install.sh installer + release workflow drift guards.

@@ -13,8 +13,9 @@ Options:
                          every provider (~1 token per keyed provider)
       --selftest         Credential-free end-to-end check against a
                          loopback stub provider (no keys, no network)
-      --fix              Propose remediations for fixable checks;
-                         prompts per fix on a TTY
+      --fix [<check>]    Propose remediations — every fixable check,
+                         or just the named check; prompts per fix on
+                         a TTY (see `tau explain doctor.<check>`)
   -y, --yes              Apply --fix remediations without prompting
       --dry-run          Preview each --fix remediation as
                          "would_apply"; changes nothing (mutex with
@@ -32,5 +33,6 @@ Examples:
   tau doctor --selftest
   tau doctor --fix --dry-run
   tau doctor --fix --yes
+  tau doctor --fix shell_completions --yes
   tau doctor --probe
   tau doctor --report

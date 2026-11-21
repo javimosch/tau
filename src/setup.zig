@@ -568,7 +568,7 @@ pub fn clientSettingsPath(arena: std.mem.Allocator, home: []const u8, k: ClientK
 
 /// The directory that exists once the editor has been installed/run — used
 /// for the no-flag detection report (detection alone never writes).
-fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 {
+pub fn clientConfigDir(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 {
     return switch (k) {
         .zed => std.fmt.allocPrint(arena, "{s}/.config/zed", .{home}),
         .vscode => std.fmt.allocPrint(arena, "{s}/.config/Code", .{home}),
@@ -614,7 +614,7 @@ fn clientSectionKey(k: ClientKind) []const u8 {
 
 /// The in-editor action that finishes the integration — surfaced in the step
 /// output so the transcript itself tells the user where to click.
-fn clientNextStep(k: ClientKind) []const u8 {
+pub fn clientNextStep(k: ClientKind) []const u8 {
     return switch (k) {
         .zed => "open the Agent Panel, click +, and pick tau",
         .vscode => "install the ACP Client extension, run 'ACP: Connect to Agent', pick tau",
@@ -644,7 +644,7 @@ pub fn mcacpConfigPath(arena: std.mem.Allocator, home: []const u8) ![]u8 {
 
 /// Where a paste-ready snippet goes when setup can't (or must not) edit the
 /// real settings file: ~/.config/tau/snippets/.
-fn snippetPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 {
+pub fn snippetPath(arena: std.mem.Allocator, home: []const u8, k: ClientKind) ![]u8 {
     const ext: []const u8 = switch (k) {
         .nvim => "lua",
         .emacs => "el",

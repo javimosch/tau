@@ -18,12 +18,15 @@ const suggest = @import("suggest.zig");
 /// tied to one (`"provider"`, `"keys.openai"`); null for file-level problems
 /// (unreadable file, invalid JSON, non-object top level). `line`/`column`
 /// carry the member's position in the file for the findings that have one —
-/// currently deprecated-spelling reports (1-based, exact in the raw file).
+/// syntax errors and deprecated-spelling reports (1-based, exact in the raw
+/// file). `snippet` is the offending source line with a caret under the error
+/// column — set only for JSON syntax errors.
 pub const Issue = struct {
     key: ?[]const u8 = null,
     line: ?usize = null,
     column: ?usize = null,
     message: []const u8,
+    snippet: ?[]const u8 = null,
 };
 
 pub const Report = struct {
@@ -246,7 +249,20 @@ pub fn validate(io: std.Io, arena: std.mem.Allocator, path: []const u8) !Report 
     scanner.enableDiagnostics(&diag);
     const value = std.json.parseFromTokenSourceLeaky(std.json.Value, arena, &scanner, .{}) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
-        try addIssue(arena, &issues, null, "invalid JSON at line {d}, column {d}: {s} — fix the syntax or regenerate with `tau init`", .{ diag.getLine(), diag.getColumn(), @errorName(err) });
+        // Positions map exactly onto the raw file — stripComments pads block
+        // comments with spaces — so the caret snippet points at the real
+        // column even inside a commented JSONC scaffold.
+        const d: configfile.JsonDiag = .{
+            .line = diag.getLine(),
+            .col = diag.getColumn(),
+            .source = configfile.sourceLineAt(bytes_raw, diag.getLine()),
+        };
+        try issues.append(arena, .{
+            .line = d.line,
+            .column = d.col,
+            .message = try std.fmt.allocPrint(arena, "invalid JSON ({s}) — fix with `tau config edit` or regenerate with `tau init`; `tau explain config.<key>` documents every key", .{@errorName(err)}),
+            .snippet = try configfile.formatSnippet(arena, d),
+        });
         return .{ .path = path, .issues = issues.items };
     };
 
@@ -330,6 +346,10 @@ pub fn formatJson(arena: std.mem.Allocator, report: Report) ![]u8 {
         if (iss.column) |c| try b.appendSlice(arena, try std.fmt.allocPrint(arena, ",\"column\":{d}", .{c}));
         try b.appendSlice(arena, ",\"message\":");
         try appendJsonStr(arena, &b, iss.message);
+        if (iss.snippet) |s| {
+            try b.appendSlice(arena, ",\"snippet\":");
+            try appendJsonStr(arena, &b, s);
+        }
         try b.append(arena, '}');
     }
     try b.appendSlice(arena, "]}\n");
@@ -358,6 +378,8 @@ pub fn formatText(arena: std.mem.Allocator, report: Report) ![]u8 {
         try b.appendSlice(arena, ": ");
         try b.appendSlice(arena, iss.message);
         try b.append(arena, '\n');
+        // The caret snippet under the issue line (JSON syntax errors only).
+        if (iss.snippet) |s| try b.appendSlice(arena, s);
     }
     return b.toOwnedSlice(arena);
 }
@@ -442,7 +464,7 @@ test "validate: missing file reports file not found" {
     try testing.expect(std.mem.indexOf(u8, rep.issues[0].message, "file not found") != null);
 }
 
-test "validate: malformed JSON reports line and column" {
+test "validate: malformed JSON reports line, column, and a source snippet" {
     var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_inst.deinit();
     const arena = arena_inst.allocator();
@@ -452,7 +474,25 @@ test "validate: malformed JSON reports line and column" {
 
     const rep = try validate(testing.io, arena, tc.path);
     try testing.expect(!rep.ok());
-    try testing.expect(std.mem.indexOf(u8, rep.issues[0].message, "invalid JSON at line 3") != null);
+    const iss = rep.issues[0];
+    try testing.expectEqual(@as(usize, 3), iss.line.?);
+    try testing.expect(iss.column != null);
+    try testing.expect(std.mem.indexOf(u8, iss.message, "invalid JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, iss.message, "tau config edit") != null);
+    try testing.expect(std.mem.indexOf(u8, iss.message, "tau explain config.<key>") != null);
+    const snip = iss.snippet.?;
+    try testing.expect(std.mem.indexOf(u8, snip, "  bad\n") != null);
+    try testing.expect(std.mem.indexOf(u8, snip, "^") != null);
+
+    // Both renderings carry the position: text as path:line:col + caret
+    // block, JSON as line/column/snippet fields.
+    const t = try formatText(arena, rep);
+    try testing.expect(std.mem.indexOf(u8, t, ":3:3: error: invalid JSON") != null);
+    try testing.expect(std.mem.indexOf(u8, t, "  bad\n") != null);
+    const j = try formatJson(arena, rep);
+    try testing.expect(std.mem.indexOf(u8, j, "\"line\":3") != null);
+    try testing.expect(std.mem.indexOf(u8, j, "\"column\":3") != null);
+    try testing.expect(std.mem.indexOf(u8, j, "\"snippet\":\"") != null);
 }
 
 test "validate: non-object top level is an error" {

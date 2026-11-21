@@ -67,6 +67,88 @@ function __tau_at_files
     end
 end
 
+# True while `tau config get|set|unset` is on the line and the cursor is at
+# the <key> position — the first positional after the sub-subcommand.
+function __tau_config_key_pos
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    # The in-progress word is -opc's last element when non-empty; it is the
+    # candidate being completed, not a finished positional.
+    if test -n (commandline -ct | string collect)
+        set -e tokens[-1]
+    end
+    set -l seen_config 0
+    set -l csub ''
+    set -l pos 0
+    set -l skip 0
+    for t in $tokens
+        if test $skip -eq 1
+            set skip 0
+            continue
+        end
+        if test $seen_config -eq 0
+            test "$t" = config; and set seen_config 1
+            continue
+        end
+        if test -z "$csub"
+            string match -q -- '-*' $t; or set csub $t
+            continue
+        end
+        switch $t
+            case --mode
+                set skip 1
+            case '-*' ''
+            case '*'
+                set pos (math $pos + 1)
+        end
+    end
+    contains -- $csub get set unset; and test $pos -eq 0
+end
+
+# Echo the candidates group for the config sub-subcommand on the line
+# (get|set|unset -> config-get|config-set|config-unset), nothing otherwise.
+function __tau_config_key_group
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    set -l seen 0
+    for t in $tokens
+        if test $seen -eq 0
+            test "$t" = config; and set seen 1
+            continue
+        end
+        switch $t
+            case get set unset
+                echo "config-$t"
+                return 0
+        end
+    end
+    return 1
+end
+
+# True while `tau completions candidates` is on the line and the <group>
+# position is being completed.
+function __tau_completions_needs_group
+    set -l tokens (commandline -opc)
+    set -e tokens[1]
+    if test -n (commandline -ct | string collect)
+        set -e tokens[-1]
+    end
+    set -l seen_cmpl 0
+    set -l seen_cand 0
+    for t in $tokens
+        if test $seen_cmpl -eq 0
+            test "$t" = completions; and set seen_cmpl 1
+            continue
+        end
+        if test $seen_cand -eq 0
+            test "$t" = candidates; and set seen_cand 1
+            continue
+        end
+        test -n "$t"; and return 1
+    end
+    test $seen_cand -eq 1
+end
+
 # ── Completion entries ──────────────────────────────────────────────────────
 
 # Prompts are free text; file paths are offered only via -F options and the
@@ -179,6 +261,12 @@ complete -c tau -n $config -f -a schema -d 'print the config file JSON Schema (d
 complete -c tau -n $config -f -l mode -x -a 'text json' -d 'output mode'
 complete -c tau -n $config -f -l json -d 'stable JSON output (show|validate)'
 complete -c tau -n $config -f -l raw -d 'print secret values unredacted (config get)'
+complete -c tau -n $config -f -l dry-run -d 'preview the exact diff + .bak backup path (config set|unset)'
+
+# Dynamic key candidates — the binary enumerates settable keys
+# (`config set`) or the keys present in the config file
+# (`config get|unset`) at completion time.
+complete -c tau -n '__tau_config_key_pos' -f -a '(tau completions candidates (__tau_config_key_group) 2>/dev/null)'
 
 # ── tau init / tau doctor / tau setup ───────────────────────────────────────
 set -l init '__tau_using_subcommand init'
@@ -223,6 +311,8 @@ complete -c tau -n $setup -f -l json -d 'emit the stable schema-checked NDJSON s
 # ── tau completions ───────────────────────────────────────────────────────
 set -l cmpl '__tau_using_subcommand completions'
 complete -c tau -n $cmpl -f -a install -d 'install generated completions into your shell profile'
+complete -c tau -n $cmpl -f -a candidates -d 'emit dynamic completion candidates for a group'
+complete -c tau -n '__tau_completions_needs_group' -f -a 'config-set config-get config-unset' -d 'candidate group'
 complete -c tau -n $cmpl -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
 complete -c tau -n $cmpl -f -l dry-run -d 'preview the install; change nothing'
 complete -c tau -n $cmpl -f -l json -d 'emit the stable schema-checked result object'
@@ -235,6 +325,7 @@ complete -c tau -n $bug -f -l open -d 'open the issue URL in the system browser'
 complete -c tau -n $bug -f -l out -r -d 'write the diagnostics bundle to a file'
 complete -c tau -n $bug -f -l no-report -d 'omit the diagnostics bundle'
 complete -c tau -n $bug -f -l attach-report -r -d 'use an existing report file as the bundle'
+complete -c tau -n $bug -f -l dry-run -d 'preview the issue envelope and redactions; change nothing'
 complete -c tau -n $bug -f -l offline -d 'skip network checks'
 complete -c tau -n $bug -f -l deep -d 'run an authenticated probe (spends ~1 token)'
 complete -c tau -n $bug -f -l shell -x -a 'bash zsh fish pwsh all' -d 'completions shell (default: detect $SHELL)'
@@ -259,9 +350,13 @@ complete -c tau -n $upgrade -f -l json -d 'emit the stable schema-checked report
 set -l explain '__tau_using_subcommand explain'
 # Codes mirror src/errors.zig; config keys mirror docs/config.md;
 # doctor.* ids mirror the CheckSpec catalog in src/doctorcatalog.zig;
-# TAU_* names mirror the Spec registry in src/envvars.zig.
-complete -c tau -n $explain -f -a '1 80 82 105 106 110 111 $schema provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent compact_keep_recent_tokens goal_max_iterations goal_max_continues keys.xiaomi keys.openai keys.deepseek keys.opencode-go doctor.config_deprecated_keys doctor.config_file doctor.config_permissions doctor.plaintext_secrets doctor.shell_completions doctor.provider_resolution doctor.api_key doctor.curl doctor.proxy_env doctor.tls_ca doctor.endpoint_reachable doctor.auth_probe doctor.client_wiring doctor.client_permissions doctor.provider_probes doctor.update_available doctor.selftest doctor.client_zed doctor.client_nvim doctor.client_emacs doctor.client_vscode doctor.client_cursor doctor.client_jetbrains doctor.client_windsurf doctor.client_gemini doctor.client_claude_desktop doctor.client_opencode doctor.client_cline doctor.client_goose doctor.client_continue doctor.client_roo_code doctor.client_kilo_code doctor.client_amazonq doctor.client_codex doctor.probe_xiaomi doctor.probe_xiaomi_auth doctor.probe_openai doctor.probe_openai_auth doctor.probe_deepseek doctor.probe_deepseek_auth doctor.probe_opencode-go doctor.probe_opencode-go_auth TAU_API_KEY TAU_ENDPOINT TAU_DEBUG_LOG TAU_EDITOR TAU_YES TAU_NONINTERACTIVE TAU_SETUP_SHELL TAU_SETUP_CLIENT TAU_SETUP_IMPORT TAU_NO_UPDATE_CHECK TAU_UPDATE_URL TAU_INSTALL_URL TAU_CHANGELOG_URL TAU_INSTALL_DIR TAU_VERIFY_SIGSTORE TAU_VERSION TAU_BASE_URL TAU_OS TAU_ARCH TAU_SKIP_CHECKSUM TAU_BIN TAU_TOOLS TAU_THINKING TAU_DEBUG' -d 'error code/type, config key, doctor check, or TAU_* env var'
+# TAU_* names mirror the Spec registry in src/envvars.zig; client.*
+# names mirror the ClientKind tables in src/setup.zig; subcommand.*
+# names mirror the Spec registry in src/subcommandcatalog.zig.
+complete -c tau -n $explain -f -a '1 80 82 105 106 110 111 $schema provider model api_key keys mode stream thinking debug temperature max_tokens timeout_ms context_window auto_compact compact_threshold compact_keep_recent compact_keep_recent_tokens goal_max_iterations goal_max_continues keys.xiaomi keys.openai keys.deepseek keys.opencode-go doctor.config_deprecated_keys doctor.config_file doctor.config_permissions doctor.plaintext_secrets doctor.shell_completions doctor.provider_resolution doctor.api_key doctor.curl doctor.proxy_env doctor.tls_ca doctor.endpoint_reachable doctor.auth_probe doctor.client_wiring doctor.client_permissions doctor.provider_probes doctor.update_available doctor.selftest doctor.client_zed doctor.client_nvim doctor.client_emacs doctor.client_vscode doctor.client_cursor doctor.client_jetbrains doctor.client_windsurf doctor.client_gemini doctor.client_claude_desktop doctor.client_opencode doctor.client_cline doctor.client_goose doctor.client_continue doctor.client_roo_code doctor.client_kilo_code doctor.client_amazonq doctor.client_codex doctor.probe_xiaomi doctor.probe_xiaomi_auth doctor.probe_openai doctor.probe_openai_auth doctor.probe_deepseek doctor.probe_deepseek_auth doctor.probe_opencode-go doctor.probe_opencode-go_auth TAU_API_KEY TAU_ENDPOINT TAU_DEBUG_LOG TAU_EDITOR TAU_YES TAU_NONINTERACTIVE TAU_SETUP_SHELL TAU_SETUP_CLIENT TAU_SETUP_IMPORT TAU_NO_UPDATE_CHECK TAU_UPDATE_URL TAU_INSTALL_URL TAU_CHANGELOG_URL TAU_INSTALL_DIR TAU_VERIFY_SIGSTORE TAU_VERSION TAU_BASE_URL TAU_OS TAU_ARCH TAU_SKIP_CHECKSUM TAU_BIN TAU_TOOLS TAU_THINKING TAU_DEBUG client.zed client.nvim client.emacs client.vscode client.cursor client.jetbrains client.windsurf client.gemini client.claude-desktop client.opencode client.cline client.goose client.continue client.roo-code client.kilo-code client.amazonq client.codex topic.privacy subcommand.acp subcommand.models subcommand.version subcommand.upgrade subcommand.doctor subcommand.bug subcommand.guide subcommand.explain subcommand.skills subcommand.init subcommand.setup subcommand.completions subcommand.fleet subcommand.config' -d 'error code/type, config key, doctor check, TAU_* env var, client, topic, or subcommand'
 complete -c tau -n $explain -f -l json -d 'emit the stable schema-checked JSON form'
 complete -c tau -n $explain -f -l human -d 'render the entry as prose instead of JSON'
+complete -c tau -n $explain -f -l list -d 'print the resolvable-topic index'
+complete -c tau -n $explain -f -l search -x -d 'full-text search over the explain catalog'
 
 # `tau models` takes no further arguments.

@@ -116,10 +116,12 @@ Paste the two verified blocks above into place yourself:
 
 - Cline's MCP settings file lives at
   `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
-  (`~/Library/Application Support/Code/User/globalStorage/…` on macOS,
-  `%APPDATA%\Code\User\globalStorage\…` on Windows; swap `Code` for
-  `Cursor`/`VSCodium` under a Code fork). If the file already has a
-  `"mcpServers"` object, add only the inner `"mcacp"` entry to it.
+  — `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
+  on macOS,
+  `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
+  on Windows; swap `Code` for `Cursor`/`VSCodium` under a Code fork. If
+  the file already has a `"mcpServers"` object, add only the inner
+  `"mcacp"` entry to it.
 - The bridge config goes at `~/.config/mcacp/mcacp.json` — replace
   `"command": "tau"` with the absolute path to your tau binary
   (`command -v tau`) unless `tau` is on the PATH the bridge's spawn
