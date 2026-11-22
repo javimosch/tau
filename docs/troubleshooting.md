@@ -60,7 +60,7 @@ more specific hint.
 | `82` | `missing_required_field` | the message names the missing input — supply it and retry | this page |
 | `105` | `Timeout` | raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT) | this page |
 | `106` | `AuthFailed` | provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY | [providers.md](providers.md) |
-| `110` | `internal_error` | re-run with --debug to write a diagnostic log, then file a bug report | this page |
+| `110` | `internal_error` | run `tau bug` to file a report with the redacted diagnostics bundle | this page |
 | `111` | `unimplemented` | not supported on this platform — the message names the workaround | this page |
 
 Some emitters override `type` with the underlying Zig error name (e.g.
@@ -352,6 +352,11 @@ The `curl` request exceeded `--timeout-ms` (default **120000** ms = 2 min).
 ---
 
 ## Internal errors (exit 110)
+
+Every internal-failure envelope carries a `bug` member: a ready-to-run,
+pre-filled `tau bug --title "<type>: <message>"` command. Running it files a
+report with the redacted `tau doctor --report` diagnostics bundle attached —
+agents can exec `err.bug` verbatim.
 
 ### `{"err":{"code":110,"type":"HTTPRequestFailed","message":"request failed",...}}`
 

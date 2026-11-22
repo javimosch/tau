@@ -5,6 +5,7 @@ const configschema = @import("configschema.zig");
 const jsonmod = @import("json.zig");
 const term = @import("term.zig");
 
+const errors = @import("errors.zig");
 const errors_doc_url = @import("version.zig").errors_doc_url;
 
 /// One environment API key detected on this machine: the provider whose
@@ -166,13 +167,22 @@ fn appendJsonStr(arena: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u
 
 // Minimal-envelope emitter for `tau init` — predates the catalog envelope and
 // stays intentionally small, but still carries the explain/catalog footer so
-// every failure points at the offline catalog.
+// every failure points at the offline catalog. Internal failures (110) also
+// carry the pre-filled `bug` member, matching the catalog envelope.
 fn printErr(arena: std.mem.Allocator, code: u8, err_type: []const u8, message: []const u8) void {
     const me = jsonmod.escapeAlloc(arena, message) catch {
-        term.err("{\"err\":{\"code\":110,\"type\":\"internal_error\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n");
+        term.err("{\"err\":{\"code\":110,\"type\":\"internal_error\",\"bug\":\"tau bug\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n");
         return;
     };
-    const j = std.fmt.allocPrint(arena, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ code, err_type, me, code, errors_doc_url }) catch return;
+    var bug_field: []const u8 = "";
+    if (code == 110) {
+        if (errors.bugCommand(arena, err_type, message)) |cmd| {
+            if (jsonmod.escapeAlloc(arena, cmd)) |ce| {
+                bug_field = std.fmt.allocPrint(arena, ",\"bug\":\"{s}\"", .{ce}) catch "";
+            } else |_| {}
+        }
+    }
+    const j = std.fmt.allocPrint(arena, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\"{s},\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ code, err_type, me, bug_field, code, errors_doc_url }) catch return;
     term.err(j);
 }
 

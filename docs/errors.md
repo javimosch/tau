@@ -30,6 +30,7 @@ stdout):
 | `hint` | Canned remediation for the error class; dynamic failures override it with a more specific fix. |
 | `docs` | Guide link for that error class (see the table below). |
 | `debug_log` | Present only when `--debug` opened a diagnostic log — attach it to bug reports. |
+| `bug` | Present only on internal-failure envelopes — a ready-to-run, pre-filled `tau bug --title "<type>: <message>"` command; running it files a report carrying the redacted diagnostics bundle. Agents can exec it verbatim. |
 | `explain` | Ready-to-run `tau explain <code>` command — prints this entry's cause and fix offline. Always the penultimate field; agents can exec it verbatim. |
 | `catalog` | Link back to this catalog. Always the last field — `explain`/`catalog` together form the envelope footer. |
 
@@ -42,7 +43,7 @@ stdout):
 | `82` | `missing_required_field` | `false` | a required input is missing (e.g. `tau fleet run` without --goal, `tau skills load` without a name) | the message names the missing input — supply it and retry | [troubleshooting.md](https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md) |
 | `105` | `Timeout` | `false` | an HTTP request to the provider endpoint exceeded --timeout-ms | raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT) | [troubleshooting.md](https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md) |
 | `106` | `AuthFailed` | `false` | the provider rejected the API key, or no key was found anywhere in the resolution chain | provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY | [providers.md](https://github.com/javimosch/tau/blob/master/docs/providers.md) |
-| `110` | `internal_error` | `false` | an HTTP failure, JSON parse error, tool crash, or the --max-iterations cap was hit | re-run with --debug to write a diagnostic log, then file a bug report | [troubleshooting.md](https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md) |
+| `110` | `internal_error` | `false` | an HTTP failure, JSON parse error, tool crash, or the --max-iterations cap was hit | run `tau bug` to file a report with the redacted diagnostics bundle | [troubleshooting.md](https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md) |
 | `111` | `unimplemented` | `false` | the operation is not supported on this platform (e.g. `tau acp` daemon commands are POSIX-only) | not supported on this platform — the message names the workaround | [troubleshooting.md](https://github.com/javimosch/tau/blob/master/docs/troubleshooting.md) |
 
 Exit codes outside this table still produce a well-formed envelope: they

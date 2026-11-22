@@ -3592,6 +3592,14 @@ test_group_dry_run() {
     ok "envelope 110 missing hint/docs" 1 0
     [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 110: $err_110_err"
   fi
+  # Internal failures carry a pre-filled `tau bug` command — running it files
+  # a report with the redacted diagnostics bundle (agent-exec'able verbatim).
+  if printf '%s' "$err_110_err" | python3 -c 'import sys,json; e=json.load(sys.stdin)["err"]; b=e.get("bug",""); assert b.startswith("tau bug --title \"") and e["type"] in b; assert list(e).index("bug") < list(e).index("explain")' 2>/dev/null; then
+    ok "envelope 110 carries pre-filled tau bug member" 0 0
+  else
+    ok "envelope 110 missing pre-filled tau bug member" 1 0
+    [ "$SMOKE_DEBUG" = "1" ] && diag "envelope 110: $err_110_err"
+  fi
 
   # Error envelope for auth failure (exit 106): docs links the per-provider
   # credential guide, not the generic troubleshooting page. Keyless env +
