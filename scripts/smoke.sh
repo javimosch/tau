@@ -86,6 +86,7 @@ ALL_TEST_GROUPS=(
   "invalid-numeric:test_group_invalid_numeric"
   "fleet-flags:test_group_fleet_flags"
   "completions:test_group_completions"
+  "completions-live:test_group_completions_live"
   "debug:test_group_debug"
   "version:test_group_version"
   "release:test_group_release"
@@ -7533,6 +7534,46 @@ test_group_completions() {
     grep -Fq "completions candidates" "$ROOT/$f"
     ok "$f calls completions candidates" "$?" 0
   done
+}
+
+# Group: live completions — the shipped scripts are sourced inside real
+# bash/zsh/fish/pwsh sessions and must return candidates. Driven by
+# scripts/check-completions-live.sh; shells not installed are skipped (the
+# dedicated `completions` job in ci.yml installs all four and requires them).
+test_group_completions_live() {
+  note "completions-live: real shell sessions source + complete"
+
+  local cl_out cl_rc
+  capture cl "$ROOT/scripts/check-completions-live.sh" "$BIN"
+  ok "completions-live driver exits 0" "$cl_rc" 0
+  contains "bash script sources cleanly" "$cl_out" "PASS bash: sources cleanly"
+  contains "bash returns flag candidates" "$cl_out" "PASS bash: flag candidates"
+  contains "bash returns dynamic candidates" "$cl_out" "PASS bash: dynamic config-key candidates"
+
+  if command -v zsh >/dev/null 2>&1; then
+    contains "zsh registers _tau via compinit" "$cl_out" "PASS zsh: sources cleanly"
+    contains "zsh returns flag candidates" "$cl_out" "PASS zsh: flag candidates"
+    contains "zsh returns subcommand candidates" "$cl_out" "PASS zsh: subcommand candidates"
+    contains "zsh returns dynamic candidates" "$cl_out" "PASS zsh: dynamic config-key candidates"
+  else
+    contains "zsh leg skipped" "$cl_out" "SKIP zsh: not installed"
+  fi
+
+  if command -v fish >/dev/null 2>&1; then
+    contains "fish script sources cleanly" "$cl_out" "PASS fish: sources cleanly"
+    contains "fish returns flag candidates" "$cl_out" "PASS fish: flag candidates"
+    contains "fish returns dynamic candidates" "$cl_out" "PASS fish: dynamic config-key candidates"
+  else
+    contains "fish leg skipped" "$cl_out" "SKIP fish: not installed"
+  fi
+
+  if command -v pwsh >/dev/null 2>&1; then
+    contains "pwsh script sources cleanly" "$cl_out" "PASS pwsh: sources cleanly"
+    contains "pwsh returns flag candidates" "$cl_out" "PASS pwsh: flag candidates"
+    contains "pwsh returns dynamic candidates" "$cl_out" "PASS pwsh: dynamic config-key candidates"
+  else
+    contains "pwsh leg skipped" "$cl_out" "SKIP pwsh: not installed"
+  fi
 }
 
 # Group: release surface — install.sh installer + release workflow drift guards.

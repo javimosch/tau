@@ -247,6 +247,49 @@ jobs:
         shell: bash
         run: ./scripts/smoke-features.sh --offline
 
+  completions:
+    # Live shell-completion verification: the shipped scripts are sourced
+    # inside real bash/zsh/fish/pwsh sessions and must actually return
+    # candidates — flag lists, subcommand lists, and the dynamic
+    # `completions candidates` config-key lookups. The smoke
+    # `completions-live` group runs the same driver opportunistically
+    # (skipping missing shells); this job installs all four shells so every
+    # leg is required, catching real sourcing errors and empty-candidate
+    # regressions the file-content checks cannot see.
+    name: completions (live shells)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.16.0
+        shell: bash
+        run: |
+          curl -fsSL "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$HOME/zig"
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$HOME/zig" --strip-components=1
+          "$HOME/zig/zig" version
+
+      - name: Build
+        shell: bash
+        run: '"$HOME/zig/zig" build'
+
+      - name: Install shells
+        # bash and pwsh ship in the ubuntu-latest image; zsh and fish come
+        # from the distro archive.
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+          bash --version | head -1
+          zsh --version
+          fish --version
+          pwsh --version
+
+      - name: Live completion checks
+        shell: bash
+        run: ./scripts/check-completions-live.sh --require-all "$PWD/zig-out/bin/tau"
+
   first-run:
     # Clean-environment first-run e2e: builds tau, stages it as a local
     # release tree (srv/latest/download/<asset> + SHA256SUMS.txt — the exact
