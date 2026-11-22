@@ -42,13 +42,9 @@ pub const Report = struct {
 const file_fields = @typeInfo(configfile.FileConfig).@"struct".fields;
 
 /// All valid top-level config key names — the candidate list for did-you-mean
-/// suggestions on misspelled keys.
-const field_names: []const []const u8 = blk: {
-    var names: [file_fields.len][]const u8 = undefined;
-    for (file_fields, 0..) |f, i| names[i] = f.name;
-    const frozen = names;
-    break :blk &frozen;
-};
+/// suggestions on misspelled keys (shared with the config_unknown_keys
+/// doctor check).
+const field_names = configfile.field_names;
 
 /// Expected JSON value kind for a FileConfig field type.
 const Kind = enum { string, boolean, integer, number, any_json };

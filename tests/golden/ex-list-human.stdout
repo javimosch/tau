@@ -37,6 +37,7 @@ config keys:
 doctor checks:
   doctor.config_file
   doctor.config_deprecated_keys
+  doctor.config_unknown_keys
   doctor.config_permissions
   doctor.plaintext_secrets
   doctor.shell_completions

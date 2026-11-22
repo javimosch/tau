@@ -2049,6 +2049,26 @@ PYEOF
     ok "deprecated key renamed in the file" 1 0
   fi
   rm -f "$mock_config/config.json"
+
+  # 18. config_unknown_keys: silently ignored config keys (typos, stale
+  #     keys, misspelled keys.<provider> names) and unrecognized TAU_* env
+  #     vars warn with per-finding did-you-mean suggestions. Warn keeps
+  #     exit 0; not auto-fixable.
+  mkdir -p "$mock_config"
+  printf '{\n  "provider":"openai",\n  "provdier":"x",\n  "keys": { "opanai": "sk-y" }\n}\n' > "$mock_config/config.json"
+  capture doc_unk env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_ENDPONT=http://x TAU_API_KEY=sk-unk HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline
+  ok "unknown keys warn keeps exit 0" "$doc_unk_rc" 0
+  contains "config_unknown_keys warns" "$doc_unk_out" '"name":"config_unknown_keys","status":"warn"'
+  contains "key typo suggests canonical" "$doc_unk_out" 'provdier\" — did you mean \"provider\"'
+  contains "provider typo suggests keys path" "$doc_unk_out" 'keys.opanai\" — did you mean \"keys.openai\"'
+  contains "env typo suggests TAU_ name" "$doc_unk_out" 'TAU_ENDPONT\" — did you mean \"TAU_ENDPOINT\"'
+  contains "hint names config validate" "$doc_unk_out" 'config validate'
+  rm -f "$mock_config/config.json"
+
+  capture doc_unk_ok env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy -u CURL_CA_BUNDLE -u SSL_CERT_FILE -u SSL_CERT_DIR -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY \
+    TAU_API_KEY=sk-unk HOME="$mock_home" SHELL=/bin/bash "$BIN" doctor --offline
+  contains "clean surface reports ok" "$doc_unk_ok_out" '"name":"config_unknown_keys","status":"ok"'
 }
 
 # Group: tau bug — pre-filled GitHub issue carrying the redacted doctor bundle

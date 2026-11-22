@@ -27,6 +27,18 @@ pub const FileConfig = struct {
     goal_max_continues: ?u32 = null,
 };
 
+/// All valid top-level config key names — derived from FileConfig so the
+/// list can't drift from the loader's schema. The did-you-mean candidate
+/// pool for misspelled keys (`tau config validate`, doctor's
+/// `config_unknown_keys`).
+pub const field_names: []const []const u8 = blk: {
+    const fields = @typeInfo(FileConfig).@"struct".fields;
+    var names: [fields.len][]const u8 = undefined;
+    for (fields, 0..) |f, i| names[i] = f.name;
+    const frozen = names;
+    break :blk &frozen;
+};
+
 /// One deprecated config-key spelling and the canonical key that replaced it.
 /// Config-key renames follow the deprecation policy in docs/stability.md:
 /// during the overlap window the old spelling still loads (the canonical key

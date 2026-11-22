@@ -50,6 +50,7 @@ const configedit = @import("configedit.zig");
 const initmod = @import("init.zig");
 const setup = @import("setup.zig");
 const debuglog = @import("debuglog.zig");
+const envvars = @import("envvars.zig");
 const errors = @import("errors.zig");
 const suggest = @import("suggest.zig");
 const update = @import("update.zig");
@@ -472,6 +473,124 @@ fn checkConfigDeprecatedKeys(io: std.Io, arena: std.mem.Allocator, env: *std.pro
         .hint = "deprecated spellings still load during the deprecation window — run 'tau doctor --fix' to migrate, or 'tau config validate' for the exact lines",
         .fix = .migrate_config_keys,
     };
+}
+
+/// Check 1c: the silently-ignored config surface — unknown top-level keys,
+/// `keys.<provider>` members that aren't registered providers, and TAU_*
+/// environment variables tau doesn't recognize. All three are dropped
+/// without notice by the loader/env scan, so a typo reads exactly like a
+/// valid-but-unused name; the row warns with a did-you-mean suggestion per
+/// finding. Warn-only and not auto-fixable — deleting a key the user meant
+/// is destructive; the hint names `tau config validate` (exact line/col
+/// for file keys) and `tau config unset`. Deprecation spellings are left
+/// to config_deprecated_keys and a missing/unparseable file to config_file.
+fn checkConfigUnknownKeys(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map) Check {
+    var key_findings: std.ArrayList(u8) = .empty;
+    var n_keys: usize = 0;
+    var seen: std.ArrayList([]const u8) = .empty; // dup members report once
+
+    if (configfile.path(arena, env)) |p| {
+        if (std.Io.Dir.cwd().readFileAlloc(io, p, arena, .unlimited)) |bytes| {
+            if (configedit.scanDoc(arena, bytes)) |doc| {
+                for (doc.members) |m| {
+                    var known = false;
+                    for (configfile.field_names) |f| {
+                        if (std.mem.eql(u8, m.key, f)) {
+                            known = true;
+                            break;
+                        }
+                    }
+                    if (known) {
+                        // `keys` members name providers — a misspelled one
+                        // silently never resolves for auth.
+                        if (std.mem.eql(u8, m.key, "keys") and m.value_start < m.value_end and bytes[m.value_start] == '{') {
+                            if (configedit.scanObj(arena, bytes, m.value_start)) |kobj| {
+                                for (kobj.members) |km| {
+                                    if (cfgmod.findProvider(km.key) != null) continue;
+                                    const kpath = std.fmt.allocPrint(arena, "keys.{s}", .{km.key}) catch km.key;
+                                    if (dupSeen(arena, &seen, kpath)) continue;
+                                    n_keys += 1;
+                                    if (key_findings.items.len > 0) key_findings.appendSlice(arena, ", ") catch {};
+                                    appendFinding(arena, &key_findings, "keys", km.key, providerSuggest(arena, km.key));
+                                }
+                            } else |_| {}
+                        }
+                        continue;
+                    }
+                    // "$schema" is editor metadata `tau init` writes, not a
+                    // tau key; deprecated spellings still load and already
+                    // warn — config_deprecated_keys reports them.
+                    if (std.mem.eql(u8, m.key, "$schema") or configfile.renamedKey(m.key) != null) continue;
+                    if (dupSeen(arena, &seen, m.key)) continue;
+                    n_keys += 1;
+                    if (key_findings.items.len > 0) key_findings.appendSlice(arena, ", ") catch {};
+                    appendFinding(arena, &key_findings, "", m.key, suggest.suggest(arena, m.key, configfile.field_names));
+                }
+            } else |_| {}
+        } else |_| {}
+    }
+
+    var env_findings: std.ArrayList(u8) = .empty;
+    var n_env: usize = 0;
+    for (envvars.unknownVars(arena, env)) |v| {
+        n_env += 1;
+        if (env_findings.items.len > 0) env_findings.appendSlice(arena, ", ") catch {};
+        appendFinding(arena, &env_findings, "", v.name, v.suggestion);
+    }
+
+    if (n_keys == 0 and n_env == 0) {
+        return .{ .name = "config_unknown_keys", .status = .ok, .message = "no unknown config keys or unrecognized TAU_* variables" };
+    }
+    var msg: std.ArrayList(u8) = .empty;
+    if (n_keys > 0) {
+        tryFmt(&msg, arena, "{d} unknown config key{s} (silently ignored): {s}", .{ n_keys, if (n_keys == 1) "" else "s", key_findings.items });
+    }
+    if (n_env > 0) {
+        if (msg.items.len > 0) msg.appendSlice(arena, "; ") catch {};
+        tryFmt(&msg, arena, "{d} unrecognized TAU_* variable{s} (ignored): {s}", .{ n_env, if (n_env == 1) "" else "s", env_findings.items });
+    }
+    return .{
+        .name = "config_unknown_keys",
+        .status = .warn,
+        .message = msg.toOwnedSlice(arena) catch "unknown config keys or TAU_* variables present",
+        .hint = "fix the spelling or remove the entry — 'tau config validate' prints the exact line/column for file keys and 'tau config unset <key>' removes one; recognized TAU_* variables are documented at https://github.com/javimosch/tau/blob/master/docs/env.md",
+    };
+}
+
+/// True when `name` was already reported; records it otherwise. Guards the
+/// findings list against duplicate members (a repeated key appears twice in
+/// scanDoc's member list but should count once).
+fn dupSeen(arena: std.mem.Allocator, seen: *std.ArrayList([]const u8), name: []const u8) bool {
+    for (seen.items) |s| {
+        if (std.mem.eql(u8, s, name)) return true;
+    }
+    seen.append(arena, name) catch {};
+    return false;
+}
+
+/// Nearest registered provider name within two edits, or null.
+fn providerSuggest(arena: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    var pnames: std.ArrayList([]const u8) = .empty;
+    for (cfgmod.providers) |p| pnames.append(arena, p.name) catch return null;
+    return suggest.suggest(arena, name, pnames.items);
+}
+
+/// Append `"<prefix.>name"` plus an optional ` — did you mean "<prefix.>sug"?`
+/// to the findings list. `prefix` carries "keys" for keys.<provider> members
+/// so the suggestion renders as the full member path.
+fn appendFinding(arena: std.mem.Allocator, list: *std.ArrayList(u8), prefix: []const u8, name: []const u8, sug: ?[]const u8) void {
+    const shown = if (prefix.len > 0)
+        std.fmt.allocPrint(arena, "{s}.{s}", .{ prefix, name }) catch name
+    else
+        name;
+    list.appendSlice(arena, std.fmt.allocPrint(arena, "\"{s}\"", .{shown}) catch return) catch {};
+    if (sug) |s| {
+        const full = if (prefix.len > 0)
+            std.fmt.allocPrint(arena, "{s}.{s}", .{ prefix, s }) catch s
+        else
+            s;
+        list.appendSlice(arena, std.fmt.allocPrint(arena, " — did you mean \"{s}\"?", .{full}) catch return) catch {};
+    }
 }
 
 /// Check 2 (POSIX only): ~/.config/tau dir and config.json permission bits.
@@ -1685,6 +1804,7 @@ pub fn collectChecks(io: std.Io, gpa: std.mem.Allocator, arena: std.mem.Allocato
     var checks: std.ArrayList(Check) = .empty;
     try addCheck(arena, &checks, checkConfigFile(io, arena, env), cfg);
     try addCheck(arena, &checks, checkConfigDeprecatedKeys(io, arena, env), cfg);
+    try addCheck(arena, &checks, checkConfigUnknownKeys(io, arena, env), cfg);
     try addCheck(arena, &checks, checkConfigPermissions(io, arena, env), cfg);
     try addCheck(arena, &checks, checkPlaintextSecrets(io, arena, env), cfg);
     try addCheck(arena, &checks, checkProvider(arena, cfg), cfg);
@@ -2473,6 +2593,74 @@ test "checkConfigFile: unreadable file fails with a permissions hint" {
     try testing.expectEqual(CheckStatus.fail, c.status);
     try testing.expect(std.mem.indexOf(u8, c.message, "cannot read config file") != null);
     try testing.expect(std.mem.indexOf(u8, c.hint.?, "permissions") != null);
+}
+
+test "checkConfigUnknownKeys: clean config and env are ok" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    const c_missing = checkConfigUnknownKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_missing.status);
+    try testing.expectEqualStrings("config_unknown_keys", c_missing.name);
+
+    try home.writeConfig(a, "{ \"$schema\": \"https://x/s.json\", \"provider\": \"openai\", \"keys\": { \"openai\": \"sk-x\" } }");
+    const c_ok = checkConfigUnknownKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.ok, c_ok.status);
+}
+
+test "checkConfigUnknownKeys: typos warn with did-you-mean, stale keys without" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    try home.writeConfig(a,
+        \\{ "provider": "openai", "provdier": "x", "stale_key": true, "keys": { "openai": "k", "opanai": "k2" } }
+    );
+
+    const c = checkConfigUnknownKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "3 unknown config keys") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "\"provdier\" — did you mean \"provider\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "\"stale_key\"") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "\"keys.opanai\" — did you mean \"keys.openai\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, c.hint.?, "config validate") != null);
+}
+
+test "checkConfigUnknownKeys: deprecated spellings and dup members don't double-report" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    // compact_keep_recent is a renamed spelling — config_deprecated_keys owns
+    // it; "zzz" duplicated reports once.
+    try home.writeConfig(a, "{ \"compact_keep_recent\": 5, \"zzz\": 1, \"zzz\": 2 }");
+    const c = checkConfigUnknownKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "1 unknown config key") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "compact_keep_recent") == null);
+}
+
+test "checkConfigUnknownKeys: unrecognized TAU_* vars warn with suggestions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home = try TestHome.init(a);
+    defer home.deinit();
+    try home.env.put("TAU_ENDPONT", "http://x");
+    try home.env.put("TAU_YES", "1"); // recognized — not reported
+
+    const c = checkConfigUnknownKeys(testing.io, a, &home.env);
+    try testing.expectEqual(CheckStatus.warn, c.status);
+    try testing.expect(std.mem.indexOf(u8, c.message, "1 unrecognized TAU_* variable (ignored): \"TAU_ENDPONT\" — did you mean \"TAU_ENDPOINT\"?") != null);
+    try testing.expect(std.mem.indexOf(u8, c.message, "TAU_YES") == null);
 }
 
 test "checkEndpoint: refused connection fails with an actionable hint" {
