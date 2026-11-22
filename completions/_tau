@@ -343,7 +343,7 @@ _tau() {
                         'keys.deepseek:config key' 'keys.opencode-go:config key'
                     )
                     local -a checks=(
-                        'doctor.config_deprecated_keys:doctor check' 'doctor.config_file:doctor check'
+                        'doctor.config_deprecated_keys:doctor check' 'doctor.config_unknown_keys:doctor check' 'doctor.config_file:doctor check'
                         'doctor.config_permissions:doctor check'
                         'doctor.plaintext_secrets:doctor check'
                         'doctor.shell_completions:doctor check'

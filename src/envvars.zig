@@ -134,6 +134,34 @@ pub fn formatEnvHuman(a: std.mem.Allocator, s: Spec) ![]u8 {
     return std.fmt.allocPrint(a, "env var  {s} ({s})\n  consumers: {s}\n  summary:   {s}\n  docs:      {s}\n", .{ s.name, @tagName(s.section), s.consumers, s.summary, env_doc_url });
 }
 
+/// One `TAU_*` environment variable tau does not recognize, plus the
+/// nearest recognized name when it is within two case-insensitive edits.
+/// `suggestion` is null for names too far from everything.
+pub const UnknownVar = struct {
+    name: []const u8,
+    suggestion: ?[]const u8,
+};
+
+/// The unrecognized `TAU_*` variables in `env`, sorted by name for
+/// deterministic output. Shared by the startup warning
+/// (unknownVarWarning) and the `config_unknown_keys` doctor check so both
+/// surfaces agree on the same names and suggestions. Empty when every
+/// TAU_* name is recognized (or none is set).
+pub fn unknownVars(arena: std.mem.Allocator, env: *const std.process.Environ.Map) []const UnknownVar {
+    var unknown: std.ArrayList(UnknownVar) = .empty;
+    for (env.keys()) |k| {
+        if (!std.mem.startsWith(u8, k, "TAU_")) continue;
+        if (findSpec(k) != null) continue;
+        unknown.append(arena, .{ .name = k, .suggestion = suggestName(arena, k) }) catch return &.{};
+    }
+    std.mem.sort(UnknownVar, unknown.items, {}, struct {
+        fn lt(_: void, a: UnknownVar, b: UnknownVar) bool {
+            return std.mem.order(u8, a.name, b.name) == .lt;
+        }
+    }.lt);
+    return unknown.items;
+}
+
 /// Build the startup warning for `TAU_*` environment variables tau does
 /// not recognize — misspelled names are silently ignored otherwise, which
 /// is exactly the failure mode this surfaces. Scans the process
@@ -143,26 +171,17 @@ pub fn formatEnvHuman(a: std.mem.Allocator, s: Spec) ![]u8 {
 /// ` — did you mean "<name>"?` hint. Returns null when every TAU_* name
 /// is recognized (or none is set). Caller owns the returned slice.
 pub fn unknownVarWarning(arena: std.mem.Allocator, env: *const std.process.Environ.Map) ?[]u8 {
-    var unknown: std.ArrayList([]const u8) = .empty;
-    for (env.keys()) |k| {
-        if (!std.mem.startsWith(u8, k, "TAU_")) continue;
-        if (findSpec(k) == null) unknown.append(arena, k) catch return null;
-    }
-    if (unknown.items.len == 0) return null;
-    std.mem.sort([]const u8, unknown.items, {}, struct {
-        fn lt(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
-        }
-    }.lt);
+    const unknown = unknownVars(arena, env);
+    if (unknown.len == 0) return null;
     var list: std.ArrayList(u8) = .empty;
-    for (unknown.items) |k| {
+    for (unknown) |v| {
         if (list.items.len > 0) list.appendSlice(arena, ", ") catch return null;
-        list.appendSlice(arena, std.fmt.allocPrint(arena, "\"{s}\"", .{k}) catch return null) catch return null;
-        if (suggestName(arena, k)) |s| {
+        list.appendSlice(arena, std.fmt.allocPrint(arena, "\"{s}\"", .{v.name}) catch return null) catch return null;
+        if (v.suggestion) |s| {
             list.appendSlice(arena, std.fmt.allocPrint(arena, " — did you mean \"{s}\"?", .{s}) catch return null) catch return null;
         }
     }
-    return std.fmt.allocPrint(arena, "environment has unrecognized TAU_* variable{s} (ignored): {s} — the recognized set is documented at {s}", .{ if (unknown.items.len > 1) "s" else "", list.items, env_doc_url }) catch null;
+    return std.fmt.allocPrint(arena, "environment has unrecognized TAU_* variable{s} (ignored): {s} — the recognized set is documented at {s}", .{ if (unknown.len > 1) "s" else "", list.items, env_doc_url }) catch null;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +208,23 @@ test "findSpec: every registry name resolves, unknown names do not" {
 
 test "names list stays parallel to specs" {
     for (specs, 0..) |s, i| try testing.expectEqualStrings(s.name, names[i]);
+}
+
+test "unknownVars: sorted names with per-name suggestions" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const arena = ar.allocator();
+    var env = try envWith(arena, &.{
+        .{ "TAU_ZZZ_NOPE", "1" },
+        .{ "TAU_ENDPONT", "x" },
+        .{ "TAU_API_KEY", "k" }, // recognized — filtered out
+    });
+    const unknown = unknownVars(arena, &env);
+    try testing.expectEqual(@as(usize, 2), unknown.len);
+    try testing.expectEqualStrings("TAU_ENDPONT", unknown[0].name); // sorted
+    try testing.expectEqualStrings("TAU_ZZZ_NOPE", unknown[1].name);
+    try testing.expectEqualStrings("TAU_ENDPOINT", unknown[0].suggestion.?);
+    try testing.expect(unknown[1].suggestion == null);
 }
 
 test "unknownVarWarning: clean env stays silent" {

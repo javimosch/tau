@@ -63,6 +63,11 @@ pub const static_specs = [_]CheckSpec{
         .remediation = "run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name",
     },
     .{
+        .name = "config_unknown_keys",
+        .fails_when = "the config file has top-level keys tau ignores (typos or stale keys), keys.<provider> members naming unregistered providers, or the environment has TAU_* variables tau doesn't recognize — warn only, with a did-you-mean suggestion per finding (a missing/unparseable file is config_file's row)",
+        .remediation = "fix the spelling or remove the entry — `tau config validate` prints the exact line/column for file keys and `tau config unset <key>` removes one; the recognized TAU_* set is documented in docs/env.md; not auto-fixable",
+    },
+    .{
         .name = "config_permissions",
         .fails_when = "the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys)",
         .remediation = "run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself",

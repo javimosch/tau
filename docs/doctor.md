@@ -47,6 +47,13 @@ remediation to the single named check.
 - **Fix:** run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name
 - **Explain:** `tau explain doctor.config_deprecated_keys`
 
+### `config_unknown_keys`
+
+- **Symptom:** the `config_unknown_keys` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
+- **Cause:** the config file has top-level keys tau ignores (typos or stale keys), keys.<provider> members naming unregistered providers, or the environment has TAU_* variables tau doesn't recognize — warn only, with a did-you-mean suggestion per finding (a missing/unparseable file is config_file's row)
+- **Fix:** fix the spelling or remove the entry — `tau config validate` prints the exact line/column for file keys and `tau config unset <key>` removes one; the recognized TAU_* set is documented in docs/env.md; not auto-fixable
+- **Explain:** `tau explain doctor.config_unknown_keys`
+
 ### `config_permissions`
 
 - **Symptom:** the `config_permissions` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.

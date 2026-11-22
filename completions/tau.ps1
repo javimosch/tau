@@ -44,7 +44,7 @@ $TauArgumentCompleter = {
         'context_window', 'auto_compact', 'compact_threshold',
         'compact_keep_recent', 'compact_keep_recent_tokens', 'goal_max_iterations', 'goal_max_continues',
         'keys.xiaomi', 'keys.openai', 'keys.deepseek', 'keys.opencode-go',
-        'doctor.config_deprecated_keys', 'doctor.config_file', 'doctor.config_permissions',
+        'doctor.config_deprecated_keys', 'doctor.config_unknown_keys', 'doctor.config_file', 'doctor.config_permissions',
         'doctor.plaintext_secrets', 'doctor.shell_completions',
         'doctor.provider_resolution', 'doctor.api_key', 'doctor.curl',
         'doctor.proxy_env', 'doctor.tls_ca', 'doctor.endpoint_reachable',
