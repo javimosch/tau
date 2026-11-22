@@ -57,6 +57,7 @@
 --sequential
 --session
 --shell
+--show-origin
 --stdout
 --stream
 --system-prompt

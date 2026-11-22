@@ -484,6 +484,7 @@ tau config set keys.openai sk-...       # per-provider API key
 tau config set keys '{"openai":"sk-"}'  # ...or the whole map as a JSON object
 tau config get provider                 # "openai"
 tau config get api_key --raw            # secrets are redacted without --raw
+tau config get provider --show-origin   # where the value came from + file line
 tau config unset keys.openai            # remove a key
 tau config set provider openai ./ci.json  # explicit path (like validate)
 tau config set mode text --dry-run      # preview the exact diff + backup path
@@ -509,7 +510,16 @@ tau config set mode text --dry-run      # preview the exact diff + backup path
   is an argument error.
 - **git-config semantics**: `get`/`unset` of an absent key exit `1` with a
   `not_found` envelope; a missing or malformed file also exits `1`. CLI misuse
-  (unknown key, bad value, stray args) exits `80`.
+  (unknown key, bad value, stray args) exits `80`. `get --show-origin`
+  changes the absent-key story: instead of `not_found` it reports the
+  *effective* value a run would see plus its source layer —
+  `{"source":"file","file":…,"line":N}` for an in-file member (the member's
+  own line, including `keys.<provider>` entries), `{"source":"env","var":…}`
+  when an environment variable supplies it (`TAU_ENDPOINT`, provider key
+  vars, `TAU_API_KEY`), `{"source":"provider","provider":…}` for
+  provider-registry defaults (model/endpoint/context_window/builtin key),
+  or `{"source":"default"}` for the compiled fallback. `--show-origin` is
+  `get`-only — `set`/`unset` reject it like `--raw`.
 - **Did-you-mean**: a misspelled key earns a `did you mean "…"?` hint — `set`
   suggests the nearest schema key (or `keys.<provider>` for a `key.x` dotted
   path), while `get`/`unset` name the closest key actually present in the

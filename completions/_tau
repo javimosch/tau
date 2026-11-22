@@ -184,6 +184,7 @@ _tau() {
                                     _arguments \
                                         '1: :_tau_config_keys config-get' \
                                         '--raw[print secret values unredacted]' \
+                                        '--show-origin[report where the value came from (file+line, env, provider, default)]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;

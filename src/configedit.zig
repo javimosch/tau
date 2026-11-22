@@ -918,7 +918,9 @@ fn appendValueText(arena: std.mem.Allocator, buf: *std.ArrayList(u8), v: std.jso
 /// Run `tau config <set|get|unset>`. Never emits output itself — returns the
 /// stdout payload or the error envelope fields for main.zig to print.
 /// `dry` (set/unset only) previews the exact write — unified diff plus the
-/// `.bak` backup path — without touching the filesystem.
+/// `.bak` backup path — without touching the filesystem. `show_origin` (get
+/// only) annotates where the value came from — file path + line, the env var
+/// supplying it, a provider-registry default, or the compiled default.
 pub fn run(
     io: std.Io,
     arena: std.mem.Allocator,
@@ -928,6 +930,7 @@ pub fn run(
     path_opt: ?[]const u8,
     env: *std.process.Environ.Map,
     raw: bool,
+    show_origin: bool,
     dry: bool,
     mode: cfgmod.OutputMode,
 ) !Outcome {
@@ -946,19 +949,43 @@ pub fn run(
 
     switch (sub) {
         .get => {
-            const parsed = switch (doc) {
-                .missing => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
-                .blank => return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } },
+            const parsed_opt: ?ParsedDoc = switch (doc) {
+                // --show-origin answers where the effective value comes
+                // from even when the file can't (env var, provider table,
+                // or compiled default) — fall through to the resolver.
+                .missing => if (!show_origin)
+                    return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } }
+                else
+                    null,
+                .blank => if (!show_origin)
+                    return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, null, kp) }) } }
+                else
+                    null,
                 .invalid => |iv| return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = iv.message, .note = iv.note } },
                 .parsed => |p| p,
             };
-            const slice = try lookupValue(arena, parsed, kp) orelse {
-                return .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, parsed, kp) }) } };
+            if (parsed_opt) |parsed| {
+                if (try lookupMember(arena, parsed, kp)) |m| {
+                    const slice = parsed.bytes[m.value_start..m.value_end];
+                    const val = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, slice) catch slice, .{}) catch {
+                        return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "value of \"{s}\" in {s} is not valid JSON", .{ key, path }) } };
+                    };
+                    const origin: ?Origin = if (show_origin) .{
+                        .source = .file,
+                        .line = configfile.offsetPos(parsed.bytes, m.key_start).line,
+                    } else null;
+                    return .{ .ok = try renderGet(arena, path, key, val, redact, mode, true, origin) };
+                }
+            }
+            if (show_origin) {
+                if (try effectiveFallback(arena, kp, parsed_opt, env)) |fb| {
+                    return .{ .ok = try renderGet(arena, path, key, fb.value, redact, mode, false, fb.origin) };
+                }
+            }
+            return switch (doc) {
+                .missing => .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "config file not found: {s} — run `tau init` or `tau config set` to create one", .{path}) } },
+                else => .{ .fail = .{ .code = 1, .type_name = "not_found", .message = try std.fmt.allocPrint(arena, "key \"{s}\" is not set in {s}{s}", .{ key, path, try notSetHint(arena, parsed_opt, kp) }) } },
             };
-            const val = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, slice) catch slice, .{}) catch {
-                return .{ .fail = .{ .code = 1, .type_name = "invalid_config", .message = try std.fmt.allocPrint(arena, "value of \"{s}\" in {s} is not valid JSON", .{ key, path }) } };
-            };
-            return .{ .ok = try renderGet(arena, path, key, val, redact, mode) };
         },
         .set => {
             const token = switch (try coerceValue(arena, kp, value_opt.?)) {
@@ -1046,6 +1073,177 @@ fn lookupValue(arena: std.mem.Allocator, parsed: anytype, kp: KeyPath) !?[]const
     }
 }
 
+/// Member `name` inside the file's top-level "keys" object, or null.
+fn keysMember(arena: std.mem.Allocator, parsed: ParsedDoc, name: []const u8) !?Member {
+    const i = findMember(parsed.obj, "keys") orelse return null;
+    const m = parsed.obj.members[i];
+    if (parsed.bytes[m.value_start] != '{') return null;
+    const inner = try scanObj(arena, parsed.bytes, m.value_start);
+    const j = findMember(inner, name) orelse return null;
+    return inner.members[j];
+}
+
+/// Locate the Member `kp` addresses (top-level, or inside "keys" for
+/// keys.<name>) so `config get --show-origin` can read both the value span
+/// and the member's position in the file.
+fn lookupMember(arena: std.mem.Allocator, parsed: ParsedDoc, kp: KeyPath) !?Member {
+    switch (kp) {
+        .field => |name| {
+            const i = findMember(parsed.obj, name) orelse return null;
+            return parsed.obj.members[i];
+        },
+        .keys_entry => |pname| return keysMember(arena, parsed, pname),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `config get --show-origin` — where an effective value comes from
+// ---------------------------------------------------------------------------
+
+/// The layer that supplied a `config get` value:
+///   "file"     — a member of the config file (origin.line is the member's
+///                1-based line in `path`)
+///   "env"      — an environment variable (origin.var_name names it)
+///   "provider" — a provider-registry default (model, endpoint, context
+///                window, or a provider's builtin API key)
+///   "default"  — the compiled-in fallback
+const Origin = struct {
+    const Source = enum { file, env, provider, default };
+    source: Source,
+    line: usize = 0,
+    var_name: ?[]const u8 = null,
+    provider: ?[]const u8 = null,
+};
+
+/// The value a run would see plus the layer supplying it — used when the
+/// requested member is absent from the file (or no readable file exists).
+const EffectiveValue = struct { value: std.json.Value, origin: Origin };
+
+/// Provider name the file selects, else the compiled default — the context
+/// api_key/model/endpoint/context_window origins resolve against.
+fn fileProviderName(arena: std.mem.Allocator, parsed: ?ParsedDoc) []const u8 {
+    if (parsed) |p| {
+        if (findMember(p.obj, "provider")) |i| {
+            const m = p.obj.members[i];
+            const slice = p.bytes[m.value_start..m.value_end];
+            if (std.json.parseFromSliceLeaky(std.json.Value, arena, slice, .{})) |v| {
+                if (v == .string) return v.string;
+            } else |_| {}
+        }
+    }
+    return (cfgmod.Config{}).provider;
+}
+
+/// First non-empty variable in `names` supplies an env origin.
+fn envValue(env: *std.process.Environ.Map, names: []const []const u8) ?EffectiveValue {
+    for (names) |n| {
+        if (env.get(n)) |v| {
+            if (v.len > 0) return .{ .value = .{ .string = v }, .origin = .{ .source = .env, .var_name = n } };
+        }
+    }
+    return null;
+}
+
+/// String member `m`'s decoded value as a file-sourced EffectiveValue.
+fn fileMemberValue(arena: std.mem.Allocator, parsed: ParsedDoc, m: Member) ?EffectiveValue {
+    const slice = parsed.bytes[m.value_start..m.value_end];
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena, configfile.stripComments(arena, slice) catch slice, .{}) catch return null;
+    return .{
+        .value = v,
+        .origin = .{ .source = .file, .line = configfile.offsetPos(parsed.bytes, m.key_start).line },
+    };
+}
+
+/// Compiled fallback for a known FileConfig field — mirrors the Config
+/// defaults a run would use when the file sets nothing.
+fn defaultValueFor(name: []const u8) ?std.json.Value {
+    const eq = std.mem.eql;
+    if (eq(u8, name, "mode")) return .{ .string = "json" };
+    if (eq(u8, name, "stream")) return .{ .bool = true };
+    if (eq(u8, name, "thinking")) return .{ .bool = false };
+    if (eq(u8, name, "debug")) return .{ .bool = false };
+    if (eq(u8, name, "temperature")) return .{ .float = (cfgmod.Config{}).temperature };
+    if (eq(u8, name, "max_tokens")) return .null;
+    if (eq(u8, name, "timeout_ms")) return .{ .integer = (cfgmod.Config{}).timeout_ms };
+    if (eq(u8, name, "auto_compact")) return .{ .bool = (cfgmod.Config{}).auto_compact };
+    if (eq(u8, name, "compact_threshold")) return .{ .float = (cfgmod.Config{}).compact_threshold };
+    if (eq(u8, name, "compact_keep_recent_tokens")) return .{ .integer = (cfgmod.Config{}).compact_keep_recent_tokens };
+    if (eq(u8, name, "goal_max_iterations")) return .{ .integer = (cfgmod.Config{}).goal_max_iterations };
+    if (eq(u8, name, "goal_max_continues")) return .{ .integer = (cfgmod.Config{}).goal_max_continues };
+    return null;
+}
+
+/// Effective value + origin for a `config get` key that isn't set in the
+/// file: env vars, provider-registry defaults, and compiled fallbacks still
+/// supply the value a run would see. `parsed` is null when the file is
+/// missing or has no members. Returns null for keys with no effective story
+/// (unknown key names, keys.<unregistered provider>).
+fn effectiveFallback(arena: std.mem.Allocator, kp: KeyPath, parsed: ?ParsedDoc, env: *std.process.Environ.Map) !?EffectiveValue {
+    const prov_name = fileProviderName(arena, parsed);
+    const prov = cfgmod.findProvider(prov_name);
+    switch (kp) {
+        .field => |name| {
+            if (std.mem.eql(u8, name, "api_key")) {
+                // Mirror resolveApiKeyInfo precedence once the file's
+                // api_key member is known absent: keys[<provider>] >
+                // provider env > TAU_API_KEY > provider builtin.
+                if (parsed) |p| {
+                    if (try keysMember(arena, p, prov_name)) |m| {
+                        if (fileMemberValue(arena, p, m)) |fb| return fb;
+                    }
+                }
+                if (prov) |pr| {
+                    if (envValue(env, pr.env_keys)) |fb| return fb;
+                }
+                if (envValue(env, &.{"TAU_API_KEY"})) |fb| return fb;
+                if (prov) |pr| {
+                    if (pr.builtin_key) |bk| {
+                        if (bk.len > 0) return .{ .value = .{ .string = bk }, .origin = .{ .source = .provider, .provider = pr.name } };
+                    }
+                }
+                return .{ .value = .null, .origin = .{ .source = .default } };
+            }
+            if (std.mem.eql(u8, name, "endpoint")) {
+                if (envValue(env, &.{"TAU_ENDPOINT"})) |fb| return fb;
+                if (prov) |pr| return .{ .value = .{ .string = pr.endpoint }, .origin = .{ .source = .provider, .provider = pr.name } };
+                return .{ .value = .null, .origin = .{ .source = .default } };
+            }
+            if (std.mem.eql(u8, name, "provider")) {
+                return .{ .value = .{ .string = prov_name }, .origin = .{ .source = .default } };
+            }
+            if (std.mem.eql(u8, name, "model")) {
+                if (prov) |pr| return .{ .value = .{ .string = pr.default_model }, .origin = .{ .source = .provider, .provider = pr.name } };
+                return .{ .value = .null, .origin = .{ .source = .default } };
+            }
+            if (std.mem.eql(u8, name, "context_window")) {
+                if (prov) |pr| return .{ .value = .{ .integer = pr.context_window }, .origin = .{ .source = .provider, .provider = pr.name } };
+                return .{ .value = .null, .origin = .{ .source = .default } };
+            }
+            if (defaultValueFor(name)) |v| {
+                return .{ .value = v, .origin = .{ .source = .default } };
+            }
+            return null;
+        },
+        .keys_entry => |pname| {
+            // The per-provider key a run would resolve for `pname`, mirroring
+            // resolveApiKeyInfo: provider env > file api_key > TAU_API_KEY >
+            // provider builtin. Unknown providers have no effective story.
+            const p = cfgmod.findProvider(pname) orelse return null;
+            if (envValue(env, p.env_keys)) |fb| return fb;
+            if (parsed) |pd| {
+                if (findMember(pd.obj, "api_key")) |i| {
+                    if (fileMemberValue(arena, pd, pd.obj.members[i])) |fb| return fb;
+                }
+            }
+            if (envValue(env, &.{"TAU_API_KEY"})) |fb| return fb;
+            if (p.builtin_key) |bk| {
+                if (bk.len > 0) return .{ .value = .{ .string = bk }, .origin = .{ .source = .provider, .provider = p.name } };
+            }
+            return .{ .value = .null, .origin = .{ .source = .default } };
+        },
+    }
+}
+
 fn applySet(arena: std.mem.Allocator, bytes: []const u8, obj: Obj, kp: KeyPath, token: []const u8) ![]u8 {
     switch (kp) {
         .field => |name| {
@@ -1121,20 +1319,55 @@ fn applyUnset(arena: std.mem.Allocator, parsed: anytype, kp: KeyPath) !?[]const 
 // Output envelopes
 // ---------------------------------------------------------------------------
 
-fn renderGet(arena: std.mem.Allocator, path: []const u8, key: []const u8, val: std.json.Value, redact: bool, mode: cfgmod.OutputMode) ![]u8 {
+fn renderGet(arena: std.mem.Allocator, path: []const u8, key: []const u8, val: std.json.Value, redact: bool, mode: cfgmod.OutputMode, set: bool, origin: ?Origin) ![]u8 {
     var b: std.ArrayList(u8) = .empty;
     if (mode == .text) {
         try appendValueText(arena, &b, val, redact);
         try b.append(arena, '\n');
+        if (origin) |o| {
+            // Human-facing annotation on its own line so the bare value
+            // stays first for consumers reading head -1.
+            try b.appendSlice(arena, "origin: ");
+            switch (o.source) {
+                .file => try b.appendSlice(arena, try std.fmt.allocPrint(arena, "file {s}:{d}", .{ path, o.line })),
+                .env => try b.appendSlice(arena, try std.fmt.allocPrint(arena, "env {s}", .{o.var_name orelse "?"})),
+                .provider => try b.appendSlice(arena, try std.fmt.allocPrint(arena, "provider ({s})", .{o.provider orelse "?"})),
+                .default => try b.appendSlice(arena, "default"),
+            }
+            try b.append(arena, '\n');
+        }
         return b.toOwnedSlice(arena);
     }
     try b.appendSlice(arena, "{\"path\":");
     try appendJsonStr(arena, &b, path);
     try b.appendSlice(arena, ",\"key\":");
     try appendJsonStr(arena, &b, key);
-    try b.appendSlice(arena, ",\"set\":true,\"value\":");
+    try b.appendSlice(arena, if (set) ",\"set\":true,\"value\":" else ",\"set\":false,\"value\":");
     try appendValueJson(arena, &b, val, redact);
     if (redact) try b.appendSlice(arena, ",\"redacted\":true");
+    if (origin) |o| {
+        try b.appendSlice(arena, ",\"origin\":{\"source\":");
+        try appendJsonStr(arena, &b, @tagName(o.source));
+        switch (o.source) {
+            .file => {
+                try b.appendSlice(arena, ",\"file\":");
+                try appendJsonStr(arena, &b, path);
+                const ln = try std.fmt.allocPrint(arena, ",\"line\":{d}", .{o.line});
+                defer arena.free(ln);
+                try b.appendSlice(arena, ln);
+            },
+            .env => {
+                try b.appendSlice(arena, ",\"var\":");
+                try appendJsonStr(arena, &b, o.var_name orelse "?");
+            },
+            .provider => {
+                try b.appendSlice(arena, ",\"provider\":");
+                try appendJsonStr(arena, &b, o.provider orelse "?");
+            },
+            .default => {},
+        }
+        try b.append(arena, '}');
+    }
     try b.appendSlice(arena, "}\n");
     return b.toOwnedSlice(arena);
 }
@@ -1777,11 +2010,15 @@ const EditHome = struct {
     }
 
     fn sub(self: *EditHome, arena: std.mem.Allocator, s: Sub, key: []const u8, value: ?[]const u8, raw: bool) !Outcome {
-        return run(testing.io, arena, s, key, value, null, &self.env, raw, false, .json);
+        return run(testing.io, arena, s, key, value, null, &self.env, raw, false, false, .json);
+    }
+
+    fn subOrigin(self: *EditHome, arena: std.mem.Allocator, key: []const u8) !Outcome {
+        return run(testing.io, arena, .get, key, null, null, &self.env, false, true, false, .json);
     }
 
     fn subDry(self: *EditHome, arena: std.mem.Allocator, s: Sub, key: []const u8, value: ?[]const u8) !Outcome {
-        return run(testing.io, arena, s, key, value, null, &self.env, false, true, .json);
+        return run(testing.io, arena, s, key, value, null, &self.env, false, false, true, .json);
     }
 
     fn deinit(self: *EditHome) void {
@@ -2185,6 +2422,114 @@ test "run: set/get/unset surface did-you-mean hints and line/column" {
     // unset mirrors get.
     const unset_typo = try failMessage(try th.sub(arena, .unset, "provider", null, false));
     try testing.expect(std.mem.indexOf(u8, unset_typo.message, "did you mean \"proivder\"?") != null);
+}
+
+test "run: get --show-origin attributes the file layer with member lines" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data =
+        \\{
+        \\  "provider": "deepseek",
+        \\  "mode": "text",
+        \\  "keys": { "deepseek": "sk-file-deep99" }
+        \\}
+    });
+
+    // Top-level member → file origin at the member's line.
+    const provider_out = try expectOk(try th.subOrigin(arena, "provider"));
+    try testing.expect(std.mem.indexOf(u8, provider_out, "\"set\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, provider_out, "\"origin\":{\"source\":\"file\"") != null);
+    try testing.expect(std.mem.indexOf(u8, provider_out, "\"line\":2") != null);
+
+    // keys.<p> member → the entry's own line inside the keys object.
+    const keys_out = try expectOk(try th.subOrigin(arena, "keys.deepseek"));
+    try testing.expect(std.mem.indexOf(u8, keys_out, "\"line\":4") != null);
+    try testing.expect(std.mem.indexOf(u8, keys_out, "\"redacted\":true") != null);
+
+    // api_key absent but the file's keys[<provider>] member supplies the
+    // effective key — file origin at that member's line (precedence 2).
+    const api_key_out = try expectOk(try th.subOrigin(arena, "api_key"));
+    try testing.expect(std.mem.indexOf(u8, api_key_out, "\"set\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, api_key_out, "\"source\":\"file\"") != null);
+    try testing.expect(std.mem.indexOf(u8, api_key_out, "\"line\":4") != null);
+
+    // Without the flag nothing is annotated — same report as before.
+    const plain = try expectOk(try th.sub(arena, .get, "provider", null, false));
+    try testing.expect(std.mem.indexOf(u8, plain, "origin") == null);
+}
+
+test "run: get --show-origin attributes env, provider, and default layers" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+    const cfg_path = try th.configPath(arena);
+    try std.Io.Dir.cwd().createDirPath(testing.io, try std.fmt.allocPrint(arena, "{s}/.config/tau", .{th.home}));
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = cfg_path, .data = "{\"provider\":\"deepseek\"}\n" });
+
+    // Provider-registry defaults name the provider that supplies them.
+    const model_out = try expectOk(try th.subOrigin(arena, "model"));
+    try testing.expect(std.mem.indexOf(u8, model_out, "\"set\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, model_out, "\"value\":\"deepseek-chat\"") != null);
+    try testing.expect(std.mem.indexOf(u8, model_out, "\"source\":\"provider\",\"provider\":\"deepseek\"") != null);
+
+    // Compiled defaults.
+    const timeout_out = try expectOk(try th.subOrigin(arena, "timeout_ms"));
+    try testing.expect(std.mem.indexOf(u8, timeout_out, "\"value\":120000") != null);
+    try testing.expect(std.mem.indexOf(u8, timeout_out, "\"source\":\"default\"") != null);
+
+    // A provider env var beats the generic TAU_API_KEY fallback.
+    try th.env.put("TAU_API_KEY", "sk-tau-7777");
+    try th.env.put("OPENAI_API_KEY", "sk-env-9999");
+    const openai_out = try expectOk(try th.subOrigin(arena, "keys.openai"));
+    try testing.expect(std.mem.indexOf(u8, openai_out, "\"source\":\"env\",\"var\":\"OPENAI_API_KEY\"") != null);
+    try testing.expect(std.mem.indexOf(u8, openai_out, "\"redacted\":true") != null);
+
+    // TAU_API_KEY supplies providers without their own env entry.
+    const deepseek_out = try expectOk(try th.subOrigin(arena, "keys.deepseek"));
+    try testing.expect(std.mem.indexOf(u8, deepseek_out, "\"var\":\"TAU_API_KEY\"") != null);
+
+    // TAU_ENDPOINT env beats the provider table's endpoint.
+    try th.env.put("TAU_ENDPOINT", "http://127.0.0.1:1/v1");
+    const endpoint_out = try expectOk(try th.subOrigin(arena, "endpoint"));
+    try testing.expect(std.mem.indexOf(u8, endpoint_out, "\"source\":\"env\",\"var\":\"TAU_ENDPOINT\"") != null);
+
+    // Unknown keys and unregistered providers keep the not_found contract.
+    const bogus = try th.subOrigin(arena, "bogus");
+    try testing.expect(bogus == .fail);
+    const unreg = try th.subOrigin(arena, "keys.notaprovider");
+    try testing.expect(unreg == .fail);
+}
+
+test "run: get --show-origin works with no config file" {
+    var ar = testArena();
+    defer ar.deinit();
+    const arena = ar.allocator();
+
+    var th = try EditHome.init(arena);
+    defer th.deinit();
+
+    // No file at all: env vars and compiled defaults still report.
+    try th.env.put("OPENAI_API_KEY", "sk-env-9999");
+    const key_out = try expectOk(try th.subOrigin(arena, "keys.openai"));
+    try testing.expect(std.mem.indexOf(u8, key_out, "\"set\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, key_out, "\"source\":\"env\",\"var\":\"OPENAI_API_KEY\"") != null);
+
+    const mode_out = try expectOk(try th.subOrigin(arena, "mode"));
+    try testing.expect(std.mem.indexOf(u8, mode_out, "\"value\":\"json\"") != null);
+    try testing.expect(std.mem.indexOf(u8, mode_out, "\"source\":\"default\"") != null);
+
+    // An unanswerable key still reports the missing file.
+    const bogus = try th.subOrigin(arena, "bogus");
+    try testing.expect(bogus == .fail);
 }
 
 test "run: malformed config file reports path:line:col plus a snippet note" {

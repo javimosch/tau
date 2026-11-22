@@ -297,6 +297,7 @@ tau config set provider openai           # Schema-checked write (creates file, 0
 tau config set keys.openai sk-...        # Per-provider key via keys.<provider>
 tau config get provider                  # Read a FILE value (JSON mode default)
 tau config get api_key --mode text       # → "***last4" (secrets redacted; --raw prints raw)
+tau config get provider --show-origin    # → origin: file+line | env:<VAR> | provider | default
 tau config unset keys.openai             # Remove a key
 tau config set mode text ./ci.json       # Optional trailing path
 tau config set mode text --dry-run       # Preview exact diff + .bak backup path; writes nothing

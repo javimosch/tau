@@ -1017,6 +1017,8 @@ pub fn parse(
                     }
                 } else if (eq(a, "--raw")) {
                     ecfg.config_raw = true;
+                } else if (eq(a, "--show-origin")) {
+                    ecfg.config_show_origin = true;
                 } else if (eq(a, "--dry-run")) {
                     ecfg.config_dry_run = true;
                 } else if (a.len > 0 and a[0] != '-') {
@@ -1042,6 +1044,9 @@ pub fn parse(
             }
             if (ecfg.config_raw and !eq(argv[1], "get")) {
                 return errResult(arena, "--raw only applies to config get", .{});
+            }
+            if (ecfg.config_show_origin and !eq(argv[1], "get")) {
+                return errResult(arena, "--show-origin only applies to config get", .{});
             }
             if (ecfg.config_dry_run and eq(argv[1], "get")) {
                 return errResult(arena, "--dry-run only applies to config set and unset", .{});
@@ -2371,6 +2376,34 @@ test "parse: config set|unset accept --dry-run; config get rejects it" {
 
     const bare = try parseArgv(a, &.{ "tau", "config", "set", "k", "v" }, .{});
     try std.testing.expect(!bare.config.config_dry_run);
+}
+
+test "parse: config get accepts --show-origin; set/unset reject it" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+
+    const g = try parseArgv(a, &.{ "tau", "config", "get", "provider", "--show-origin" }, .{});
+    try std.testing.expectEqual(Action.config, g.action);
+    try std.testing.expectEqualStrings("get", g.config.config_sub.?);
+    try std.testing.expect(g.config.config_show_origin);
+
+    // Composes with --raw, --mode, and the path positional.
+    const m = try parseArgv(a, &.{ "tau", "config", "get", "keys.openai", "f.json", "--raw", "--show-origin", "--mode", "text" }, .{});
+    try std.testing.expect(m.config.config_show_origin);
+    try std.testing.expect(m.config.config_raw);
+    try std.testing.expectEqualStrings("f.json", m.config.edit_path.?);
+    try std.testing.expectEqual(cfgmod.OutputMode.text, m.config.mode);
+
+    // Write subcommands don't report origins — same scoping as --raw.
+    const s = try parseArgv(a, &.{ "tau", "config", "set", "k", "v", "--show-origin" }, .{});
+    try std.testing.expectEqual(Action.err, s.action);
+    try std.testing.expectEqualStrings("--show-origin only applies to config get", s.err_msg.?);
+    const u = try parseArgv(a, &.{ "tau", "config", "unset", "k", "--show-origin" }, .{});
+    try std.testing.expectEqual(Action.err, u.action);
+
+    const bare = try parseArgv(a, &.{ "tau", "config", "get", "k" }, .{});
+    try std.testing.expect(!bare.config.config_show_origin);
 }
 
 test "parse: config show rejects positional prompt arguments" {

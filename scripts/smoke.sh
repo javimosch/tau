@@ -1167,6 +1167,28 @@ test_group_config_edit() {
   out=$(HOME="$mock_home" "$BIN" config validate)
   contains "file still validates after edits" "$out" '"ok":true'
 
+  # get --show-origin attributes the value's source layer: file + line for
+  # in-file members, env var / provider table / compiled default otherwise.
+  out=$(HOME="$mock_home" "$BIN" config get provider --show-origin); rc=$?
+  ok "get --show-origin -> exit 0" "$rc" 0
+  contains "origin reports file source" "$out" '"origin":{"source":"file"'
+  contains "origin carries the member line" "$out" '"line":2'
+  out=$(HOME="$mock_home" "$BIN" config get provider --show-origin --mode text)
+  contains "text mode annotates origin" "$out" 'origin: file '
+  out=$(HOME="$mock_home" "$BIN" config get model --show-origin)
+  contains "unset key reports set:false" "$out" '"set":false'
+  contains "origin names provider layer" "$out" '"source":"provider","provider":"openai"'
+  out=$(HOME="$mock_home" "$BIN" config get timeout_ms --show-origin)
+  contains "origin names compiled default" "$out" '"value":120000,"origin":{"source":"default"}'
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY TAU_API_KEY=sk-tau-7777 HOME="$mock_home" "$BIN" config get keys.openai --show-origin)
+  contains "env-sourced key names the var" "$out" '"source":"env","var":"TAU_API_KEY"'
+  contains "env key value stays redacted" "$out" '"redacted":true'
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY HOME="$mock_home" "$BIN" config get api_key --show-origin)
+  contains "keyless api_key falls to default" "$out" '"source":"default"'
+  HOME="$mock_home" "$BIN" config get model >/dev/null 2>&1; ok "unset key without flag still not_found" "$?" 1
+  "$BIN" config set mode text --show-origin >/dev/null 2>&1;   ok "--show-origin on set -> exit 80" "$?" 80
+  "$BIN" config unset mode --show-origin >/dev/null 2>&1;     ok "--show-origin on unset -> exit 80" "$?" 80
+
   # Edits preserve comments (JSONC): write a commented file and set into it.
   printf '{\n  // user note\n  "provider": "deepseek"\n}\n' > "$cfg"
   HOME="$mock_home" "$BIN" config set mode text >/dev/null
