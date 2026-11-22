@@ -72,7 +72,7 @@ pub const internal_error = Spec{
     .code = 110,
     .type_name = "internal_error",
     .cause = "an HTTP failure, JSON parse error, tool crash, or the --max-iterations cap was hit",
-    .hint = "re-run with --debug to write a diagnostic log, then file a bug report",
+    .hint = "run `tau bug` to file a report with the redacted diagnostics bundle",
 };
 pub const unimplemented = Spec{
     .code = 111,
@@ -115,13 +115,65 @@ pub const Opts = struct {
     docs: ?[]const u8 = null,
 };
 
+/// True for envelopes that represent an unexpected internal failure — the
+/// stable internal_error class plus any uncataloged code specFor() mapped
+/// onto it. Those envelopes carry the `bug` member: a ready-to-run,
+/// pre-filled `tau bug` command.
+fn isInternal(spec: Spec) bool {
+    return spec.code == internal_error.code or
+        std.mem.eql(u8, spec.type_name, internal_error.type_name);
+}
+
+/// Cap on the message fragment folded into the `bug` title — keeps the
+/// envelope a single readable line.
+const bug_title_msg_max = 72;
+
+/// Build the ready-to-run `tau bug` command embedded in internal-failure
+/// envelopes: `tau bug --title "<type>: <message>"`. The title is made safe
+/// for a double-quoted shell argument — `"` `\` `$` backticks `'` and
+/// control/whitespace bytes collapse into single spaces — so an agent can
+/// exec it verbatim. `tau bug` attaches the redacted `tau doctor --report`
+/// diagnostics bundle on its own; the pre-fill carries the failure title.
+/// Caller owns the returned slice; null on OOM.
+pub fn bugCommand(a: std.mem.Allocator, type_name: []const u8, message: []const u8) ?[]u8 {
+    var msg: std.ArrayList(u8) = .empty;
+    defer msg.deinit(a);
+    var pending_space = false;
+    var n: usize = 0;
+    for (message) |ch| {
+        if (n >= bug_title_msg_max) break;
+        const bad = ch <= 0x20 or ch == 0x7f or ch == '"' or ch == '\\' or
+            ch == '$' or ch == '`' or ch == '\'';
+        if (bad) {
+            if (msg.items.len > 0) pending_space = true;
+            continue;
+        }
+        if (pending_space) {
+            msg.append(a, ' ') catch return null;
+            pending_space = false;
+        }
+        msg.append(a, ch) catch return null;
+        n += 1;
+    }
+    var frag = msg.items;
+    // The byte cap may have cut a multi-byte UTF-8 sequence — drop the
+    // trailing partial sequence so the envelope stays valid JSON UTF-8.
+    while (frag.len > 0 and !std.unicode.utf8ValidateSlice(frag))
+        frag = frag[0 .. frag.len - 1];
+    if (frag.len == 0)
+        return std.fmt.allocPrint(a, "tau bug --title \"{s}\"", .{type_name}) catch null;
+    return std.fmt.allocPrint(a, "tau bug --title \"{s}: {s}\"", .{ type_name, frag }) catch null;
+}
+
 /// Serialize the canonical envelope:
-/// {"err":{"code":N,"type":"T","message":"M","recoverable":B,"hint":"H","docs":"U"[,"debug_log":"P"],"explain":"tau explain N","catalog":"U"}}
-/// debug_log is spliced in only when --debug opened a diagnostic log. The
-/// trailing `explain`/`catalog` fields are the envelope footer — a stable,
-/// machine-actionable pointer (an agent can exec err.explain verbatim) that
-/// keeps the envelope single-line per the stderr contract. Caller owns the
-/// returned slice.
+/// {"err":{"code":N,"type":"T","message":"M","recoverable":B,"hint":"H","docs":"U"[,"debug_log":"P"][,"bug":"tau bug ..."],"explain":"tau explain N","catalog":"U"}}
+/// debug_log is spliced in only when --debug opened a diagnostic log; bug is
+/// spliced in only on unexpected internal failures (isInternal) — a
+/// ready-to-run `tau bug` command that files a report carrying the redacted
+/// diagnostics bundle. The trailing `explain`/`catalog` fields are the
+/// envelope footer — a stable, machine-actionable pointer (an agent can
+/// exec err.explain verbatim) that keeps the envelope single-line per the
+/// stderr contract. Caller owns the returned slice.
 pub fn format(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opts) ![]u8 {
     const te = try json.escapeAlloc(a, opts.type_name orelse spec.type_name);
     defer a.free(te);
@@ -134,7 +186,18 @@ pub fn format(a: std.mem.Allocator, spec: Spec, message: []const u8, opts: Opts)
     // When --debug opened a diagnostic log, link it so bug reports can attach it.
     const suf = debuglog.envelopeSuffix(a) orelse "";
     defer if (suf.len > 0) a.free(suf);
-    return std.fmt.allocPrint(a, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"{s},\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ spec.code, te, me, opts.recoverable orelse spec.recoverable, he, de, suf, spec.code, errors_doc_url });
+    var bug_field: []const u8 = "";
+    defer if (bug_field.len > 0) a.free(bug_field);
+    if (isInternal(spec)) {
+        if (bugCommand(a, opts.type_name orelse spec.type_name, message)) |cmd| {
+            defer a.free(cmd);
+            if (json.escapeAlloc(a, cmd)) |ce| {
+                defer a.free(ce);
+                bug_field = std.fmt.allocPrint(a, ",\"bug\":\"{s}\"", .{ce}) catch "";
+            } else |_| {}
+        }
+    }
+    return std.fmt.allocPrint(a, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"{s}\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"{s}{s},\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ spec.code, te, me, opts.recoverable orelse spec.recoverable, he, de, suf, bug_field, spec.code, errors_doc_url });
 }
 
 /// Print the envelope to stderr. Best-effort: on OOM a stack-formatted
@@ -259,11 +322,14 @@ pub fn formatEntryHuman(a: std.mem.Allocator, spec: Spec) ![]u8 {
 }
 
 /// OOM path: spec fields and doc_url are comptime-trusted literals (no
-/// escaping needed), formatted into a stack buffer.
+/// escaping needed), formatted into a stack buffer. Internal failures still
+/// get a `bug` pointer — the bare command, since no allocation is available
+/// to pre-fill the title.
 fn emitFallback(write: *const fn ([]const u8) void, spec: Spec) void {
     var buf: [1024]u8 = undefined;
-    const j = std.fmt.bufPrint(&buf, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"internal error\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\",\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.hint, spec.docs, spec.code, errors_doc_url }) catch
-        "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"internal error\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n";
+    const bug_frag: []const u8 = if (isInternal(spec)) ",\"bug\":\"tau bug\"" else "";
+    const j = std.fmt.bufPrint(&buf, "{{\"err\":{{\"code\":{d},\"type\":\"{s}\",\"message\":\"internal error\",\"recoverable\":{},\"hint\":\"{s}\",\"docs\":\"{s}\"{s},\"explain\":\"tau explain {d}\",\"catalog\":\"{s}\"}}}}\n", .{ spec.code, spec.type_name, spec.recoverable, spec.hint, spec.docs, bug_frag, spec.code, errors_doc_url }) catch
+        "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"internal error\",\"recoverable\":false,\"hint\":\"run `tau bug` to file a report with the redacted diagnostics bundle\",\"docs\":\"" ++ doc_url ++ "\",\"bug\":\"tau bug\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n";
     write(j);
 }
 
@@ -281,7 +347,7 @@ const golden = [_][]const u8{
     "{\"err\":{\"code\":82,\"type\":\"missing_required_field\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"the message names the missing input — supply it and retry\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 82\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
     "{\"err\":{\"code\":105,\"type\":\"Timeout\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"raise --timeout-ms (default 120000) or check the endpoint/network (TAU_ENDPOINT)\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 105\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
     "{\"err\":{\"code\":106,\"type\":\"AuthFailed\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"provide an API key via --api-key, the provider env var, config.json, or TAU_API_KEY\",\"docs\":\"" ++ providers_doc_url ++ "\",\"explain\":\"tau explain 106\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
-    "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"re-run with --debug to write a diagnostic log, then file a bug report\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+    "{\"err\":{\"code\":110,\"type\":\"internal_error\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"run `tau bug` to file a report with the redacted diagnostics bundle\",\"docs\":\"" ++ doc_url ++ "\",\"bug\":\"tau bug --title \\\"internal_error: <msg>\\\"\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
     "{\"err\":{\"code\":111,\"type\":\"unimplemented\",\"message\":\"<msg>\",\"recoverable\":false,\"hint\":\"not supported on this platform — the message names the workaround\",\"docs\":\"" ++ doc_url ++ "\",\"explain\":\"tau explain 111\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
 };
 
@@ -311,7 +377,7 @@ test "format honors type/hint/recoverable/docs overrides" {
     });
     defer gpa.free(got);
     try testing.expectEqualStrings(
-        "{\"err\":{\"code\":110,\"type\":\"HTTPRequestFailed\",\"message\":\"boom\",\"recoverable\":true,\"hint\":\"check TAU_ENDPOINT\",\"docs\":\"https://example.com/fix\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
+        "{\"err\":{\"code\":110,\"type\":\"HTTPRequestFailed\",\"message\":\"boom\",\"recoverable\":true,\"hint\":\"check TAU_ENDPOINT\",\"docs\":\"https://example.com/fix\",\"bug\":\"tau bug --title \\\"HTTPRequestFailed: boom\\\"\",\"explain\":\"tau explain 110\",\"catalog\":\"" ++ errors_doc_url ++ "\"}}\n",
         got,
     );
 }
@@ -340,6 +406,72 @@ test "specFor preserves unknown codes with a generic spec" {
         try testing.expectEqual(spec.code, specFor(spec.code).code);
         try testing.expectEqualStrings(spec.type_name, specFor(spec.code).type_name);
     }
+}
+
+test "internal failure envelopes carry the pre-filled tau bug member" {
+    const gpa = testing.allocator;
+    const got = try format(gpa, internal_error, "request failed", .{});
+    defer gpa.free(got);
+    // The member is a ready-to-run command — JSON-escaped — placed before
+    // the explain/catalog footer.
+    const bi = std.mem.indexOf(u8, got, "\"bug\":\"tau bug --title \\\"internal_error: request failed\\\"\"").?;
+    const ei = std.mem.indexOf(u8, got, "\"explain\":").?;
+    try testing.expect(bi < ei);
+
+    // Uncataloged codes resolve through specFor onto the internal spec —
+    // they are unexpected internal failures too.
+    const other = try format(gpa, specFor(42), "weird", .{});
+    defer gpa.free(other);
+    try testing.expect(std.mem.indexOf(u8, other, "\"bug\":\"tau bug --title \\\"internal_error: weird\\\"\"") != null);
+    try testing.expect(std.mem.indexOf(u8, other, "\"code\":42") != null);
+
+    // The type_name override names the real fault in the pre-filled title.
+    const named = try format(gpa, internal_error, "request failed", .{ .type_name = "HTTPRequestFailed" });
+    defer gpa.free(named);
+    try testing.expect(std.mem.indexOf(u8, named, "\"bug\":\"tau bug --title \\\"HTTPRequestFailed: request failed\\\"\"") != null);
+}
+
+test "non-internal envelopes carry no bug member" {
+    const gpa = testing.allocator;
+    for (specs) |spec| {
+        if (isInternal(spec)) continue;
+        const got = try format(gpa, spec, "x", .{});
+        defer gpa.free(got);
+        try testing.expect(std.mem.indexOf(u8, got, "\"bug\":") == null);
+    }
+}
+
+test "bugCommand strips shell-active bytes and collapses whitespace" {
+    const gpa = testing.allocator;
+    const got = bugCommand(gpa, "internal_error", "  bad \"flag\" $HOME `x` \\ can't\nnext  ").?;
+    defer gpa.free(got);
+    try testing.expectEqualStrings("tau bug --title \"internal_error: bad flag HOME x can t next\"", got);
+}
+
+test "bugCommand caps the message fragment and keeps valid UTF-8" {
+    const gpa = testing.allocator;
+    const long = "x" ** 200;
+    const got = bugCommand(gpa, "internal_error", long).?;
+    defer gpa.free(got);
+    try testing.expect(got.len < 120);
+    try testing.expect(std.unicode.utf8ValidateSlice(got));
+
+    // A multi-byte sequence straddling the cap is dropped, not halved.
+    var tail: std.ArrayList(u8) = .empty;
+    defer tail.deinit(gpa);
+    try tail.appendNTimes(gpa, 'y', bug_title_msg_max - 1);
+    try tail.appendSlice(gpa, "é"); // 2 bytes — second lands past the cap
+    const cut = bugCommand(gpa, "t", tail.items).?;
+    defer gpa.free(cut);
+    try testing.expect(std.unicode.utf8ValidateSlice(cut));
+    try testing.expect(std.mem.endsWith(u8, cut, "y\""));
+}
+
+test "bugCommand falls back to the bare type when the message cleans to nothing" {
+    const gpa = testing.allocator;
+    const got = bugCommand(gpa, "internal_error", "  $`\\\n  ").?;
+    defer gpa.free(got);
+    try testing.expectEqualStrings("tau bug --title \"internal_error\"", got);
 }
 
 test "no debug_log field when no diagnostic log is open" {

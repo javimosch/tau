@@ -124,6 +124,7 @@ def render(entries, order):
     a("| `hint` | Canned remediation for the error class; dynamic failures override it with a more specific fix. |")
     a("| `docs` | Guide link for that error class (see the table below). |")
     a("| `debug_log` | Present only when `--debug` opened a diagnostic log — attach it to bug reports. |")
+    a("| `bug` | Present only on internal-failure envelopes — a ready-to-run, pre-filled `tau bug --title \"<type>: <message>\"` command; running it files a report carrying the redacted diagnostics bundle. Agents can exec it verbatim. |")
     a("| `explain` | Ready-to-run `tau explain <code>` command — prints this entry's cause and fix offline. Always the penultimate field; agents can exec it verbatim. |")
     a("| `catalog` | Link back to this catalog. Always the last field — `explain`/`catalog` together form the envelope footer. |")
     a("")

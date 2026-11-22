@@ -52,7 +52,8 @@ stdout):
   class. New codes may be added; exit `0` always means success.
 - The envelope field set (`code`, `type`, `message`, `recoverable`,
   `hint`, `docs`, `explain`, `catalog`) is stable; emitters may append
-  fields (e.g. `debug_log`). Treat objects as unordered — the only
+  fields (e.g. `debug_log`, or `bug` on internal failures — a ready-to-run,
+  pre-filled `tau bug` command). Treat objects as unordered — the only
   ordering guarantee is the documented footer convention: `explain`
   penultimate, `catalog` last.
 - `message` and `hint` are informational text: they may be reworded to
