@@ -330,6 +330,11 @@ pub const Config = struct {
     edit_path: ?[]const u8 = null,
     /// `tau config get --raw` — print secret values unredacted.
     config_raw: bool = false,
+    /// `tau config get --show-origin` — annotate the value's origin: which
+    /// file and line it came from, which env var supplies it, or the
+    /// built-in default/provider-table source when the key is unset.
+    /// Rejected on `set`/`unset` (they write, they don't report origin).
+    config_show_origin: bool = false,
     /// `tau config set|unset --dry-run` — preview the exact write the real
     /// run would perform (unified diff + `.bak` backup path) without
     /// touching the file. Rejected on `get` (it never writes).

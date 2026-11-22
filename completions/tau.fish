@@ -261,6 +261,7 @@ complete -c tau -n $config -f -a schema -d 'print the config file JSON Schema (d
 complete -c tau -n $config -f -l mode -x -a 'text json' -d 'output mode'
 complete -c tau -n $config -f -l json -d 'stable JSON output (show|validate)'
 complete -c tau -n $config -f -l raw -d 'print secret values unredacted (config get)'
+complete -c tau -n $config -f -l show-origin -d 'report where the value came from (config get)'
 complete -c tau -n $config -f -l dry-run -d 'preview the exact diff + .bak backup path (config set|unset)'
 
 # Dynamic key candidates — the binary enumerates settable keys

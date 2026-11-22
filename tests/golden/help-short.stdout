@@ -189,6 +189,9 @@ Config:
       --dry-run                  Preview the exact write — unified diff
                                  + .bak backup path — change nothing
   tau config get <key> [path]   Print a config file value (secrets redacted; --raw)
+      --show-origin              Report where the value came from:
+                                 file path + line, env var, provider
+                                 default, or the compiled default
   tau config unset <key> [path] Remove a key from the config file
       --dry-run                  Preview the exact diff + backup path;
                                  change nothing
