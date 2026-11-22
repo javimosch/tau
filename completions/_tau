@@ -87,7 +87,7 @@ _tau() {
                 'explain:offline error-catalog lookup (cause + remediation)'
             )
             _alternative \
-                'commands:subcommand:_describe subcommand commands' \
+                'commands:subcommand: _describe subcommand commands' \
                 'files:file path (for @file inclusion):_files'
             ;;
 
@@ -128,7 +128,7 @@ _tau() {
                                 'cancel:cancel a running fleet by ID'
                             )
                             # Flags are valid before the sub-subcommand too.
-                            _arguments '1: :_describe "fleet subcommand" fleet_cmds' $fleet_flags
+                            _arguments '1: : _describe "fleet subcommand" fleet_cmds' $fleet_flags
                             ;;
                         fleet_opts)
                             _arguments $fleet_flags
@@ -142,7 +142,7 @@ _tau() {
                         'search:search skills by keyword'
                         'load:load a skill into the system context by name'
                     )
-                    _arguments '1: :_describe skill_subcommand skill_cmds'
+                    _arguments '1: : _describe skill_subcommand skill_cmds'
                     ;;
 
                 config)
@@ -174,7 +174,7 @@ _tau() {
                                     ;;
                                 set)
                                     _arguments \
-                                        '1: :_tau_config_keys config-set' \
+                                        '1: : _tau_config_keys config-set' \
                                         '2:value:' \
                                         '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
@@ -182,14 +182,14 @@ _tau() {
                                     ;;
                                 get)
                                     _arguments \
-                                        '1: :_tau_config_keys config-get' \
+                                        '1: : _tau_config_keys config-get' \
                                         '--raw[print secret values unredacted]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
                                 unset)
                                     _arguments \
-                                        '1: :_tau_config_keys config-unset' \
+                                        '1: : _tau_config_keys config-unset' \
                                         '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
@@ -422,8 +422,14 @@ _tau() {
                         'subcommand.setup:subcommand' 'subcommand.completions:subcommand'
                         'subcommand.fleet:subcommand' 'subcommand.config:subcommand'
                     )
+                    # _describe takes a single match array — combine the
+                    # catalog slices so every resolvable name completes.
+                    local -a explain_entries=(
+                        $err_codes $cfg_keys $checks $env_vars
+                        $clients $topics $subs
+                    )
                     _arguments \
-                        '1: :_describe "error code/type, config key, doctor check, TAU_* env var, client, topic, or subcommand" err_codes cfg_keys checks env_vars clients topics subs' \
+                        '1: : _describe "error code/type, config key, doctor check, TAU_* env var, client, topic, or subcommand" explain_entries' \
                         '--json[emit the stable schema-checked JSON form]' \
                         '--human[render the entry as prose instead of JSON]' \
                         '--list[print the resolvable-topic index]' \
