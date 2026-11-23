@@ -180,6 +180,10 @@ Config:
                               (config file + env + CLI flags merged; API keys redacted)
       --json                    Explicit opt-in to the stable JSON form
                               (schema/tau-config-show.schema.json)
+      --show-origin             Add an "origins" member attributing each
+                              key to the layer that supplied it:
+                              CLI flag, env var, file path + line,
+                              provider default, or compiled default
   tau config validate [path]    Validate a config file — JSON report on stdout,
                               exit 1 with every problem listed (CI/pre-commit)
       --json                    Explicit opt-in to the stable JSON report
@@ -192,6 +196,7 @@ Config:
       --show-origin              Report where the value came from:
                                  file path + line, env var, provider
                                  default, or the compiled default
+                                 (also on `config show`)
   tau config unset <key> [path] Remove a key from the config file
       --dry-run                  Preview the exact diff + backup path;
                                  change nothing

@@ -102,14 +102,16 @@ const config_help =
     \\      --json             Stable schema-checked JSON (show, validate)
     \\      --mode text|json   Output mode
     \\      --raw              (get only) Print the value unredacted
-    \\      --show-origin      (get only) Report where the value came from:
-    \\                         file path + line, env var, provider, default
+    \\      --show-origin      (get|show) Report where the value came from:
+    \\                         CLI flag, env var, file path + line,
+    \\                         provider, default
     \\      --dry-run          (set|unset) Preview the exact write — unified
     \\                         diff + .bak backup path — change nothing
     \\
     \\Examples:
     \\  tau config show
     \\  tau config show --provider openai
+    \\  tau config show --show-origin
     \\  tau config validate
     \\  tau config set provider openai
     \\  tau config set keys.openai sk-your-key
