@@ -584,6 +584,17 @@ driver runs standalone:
 ./scripts/e2e-first-run.sh ./zig-out/bin/tau   # local first-run e2e (offline)
 ```
 
+The `upgrade-rollback` smoke group runs a sibling e2e on every POSIX leg:
+`scripts/e2e-upgrade-rollback.sh` builds a mocked next-release binary
+(scratch source copy with only `src/version.zig` bumped), stages both
+versions as a `file://` release tree, then drives `install.sh` +
+`tau upgrade --yes` end to end — version transition, config
+byte-preservation, and a green `tau doctor` after upgrade and rollback:
+
+```bash
+./scripts/e2e-upgrade-rollback.sh ./zig-out/bin/tau  # local upgrade/rollback e2e (offline)
+```
+
 #### Zig 0.16 Gotchas
 
 1. **`orelse try` requires a block** — wrap in `blk: { ... break :blk ... }`

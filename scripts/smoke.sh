@@ -97,6 +97,7 @@ ALL_TEST_GROUPS=(
   "golden-help:test_group_golden_help"
   "update:test_group_update"
   "upgrade:test_group_upgrade"
+  "upgrade-rollback:test_group_upgrade_rollback"
   "errors-doc:test_group_errors_doc"
   "error-coverage:test_group_error_coverage"
   "config-doc:test_group_config_doc"
@@ -608,6 +609,55 @@ EOF
 
   # 9. Help advertises the subcommand.
   "$BIN" --help 2>&1 | grep -q 'tau upgrade' && ok "--help mentions tau upgrade" 0 0 || ok "--help mentions tau upgrade" 1 0
+}
+
+# Group: mocked-release `tau upgrade`/rollback e2e. The driver stages a
+# file:// release server holding REAL tau binaries at two versions — the
+# binary under test as the "current" release and a scratch zig build with
+# only version.zig bumped as the "next" release — then drives install.sh and
+# `tau upgrade --yes` end to end: version transition, config
+# byte-preservation, and a green `doctor` after both upgrade and rollback.
+test_group_upgrade_rollback() {
+  local drv="$ROOT/scripts/e2e-upgrade-rollback.sh"
+  local out rc
+
+  note "upgrade-rollback: e2e driver surface"
+
+  [ -f "$drv" ];  ok "e2e-upgrade-rollback.sh exists" "$?" 0
+  [ -x "$drv" ];  ok "e2e-upgrade-rollback.sh is executable" "$?" 0
+  bash -n "$drv" 2>/dev/null; ok "e2e-upgrade-rollback.sh passes bash -n" "$?" 0
+  contains "driver builds a mocked next-release binary" "$(cat "$drv")" 'zig build'
+  contains "driver bumps the version constant" "$(cat "$drv")" 'src/version.zig'
+  contains "driver derives the current version" "$(cat "$drv")" 'OLDVER="${OLDVER#tau }"'
+  contains "driver stages versioned release trees" "$(cat "$drv")" 'SHA256SUMS.txt'
+  contains "driver installs via the real installer" "$(cat "$drv")" 'install.sh" --version'
+  contains "driver drives tau upgrade --yes" "$(cat "$drv")" 'upgrade --yes'
+  contains "driver asserts the upgrade report" "$(cat "$drv")" '"status":"upgraded"'
+  contains "driver asserts config byte-preservation" "$(cat "$drv")" 'cmp -s'
+  contains "driver asserts green doctor after upgrade" "$(cat "$drv")" 'doctor --offline --selftest'
+
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      skip_test "e2e-upgrade-rollback end-to-end" "tau upgrade is POSIX-only (exit 111 on Windows)"
+      return
+      ;;
+  esac
+
+  if [ -x "$BIN" ] && command -v zig >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+    out=$("$drv" "$BIN" "$SMOKE_TEMP/ug-rollback" 2>&1); rc=$?
+    ok "e2e-upgrade-rollback.sh exit" "$rc" 0
+    contains "e2e reports mocked payload built" "$out" "built mocked v99.9.9 payload"
+    contains "e2e installed current release" "$out" "via install.sh (checksum verified)"
+    contains "e2e reported status:upgraded" "$out" "reported status:upgraded"
+    contains "e2e verified version transition" "$out" "-> 99.9.9 verified"
+    contains "e2e config intact after upgrade" "$out" "byte-identical after upgrade"
+    contains "e2e post-upgrade doctor green" "$out" "post-upgrade doctor green"
+    contains "e2e verified rollback" "$out" "rollback 99.9.9 ->"
+    contains "e2e post-rollback doctor green" "$out" "post-rollback doctor green"
+    contains "e2e-upgrade-rollback reports PASS" "$out" "e2e-upgrade-rollback: PASS"
+  else
+    skip_test "e2e-upgrade-rollback end-to-end" "needs zig+curl+tar and a built tau binary"
+  fi
 }
 
 # guide — the embedded operator manual (cli-guide-spec). JSON default, --human markdown, no runtime fetch.
