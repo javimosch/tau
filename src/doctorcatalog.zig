@@ -9,7 +9,9 @@
 //! docs/troubleshooting.md (scripts/gen-doctor-checks-doc.py splices it
 //! between the GENERATED DOCTOR CHECKS markers; the doc-mirror test below
 //! pins the rows verbatim). Keep fails_when/remediation free of `{`, `}`, and
-//! `|` so the Python parser and the markdown table stay well-formed.
+//! `|` so the Python parser and the markdown table stay well-formed;
+//! `related` holds bare sibling check ids — the `doctor.<id>` spelling is
+//! applied at render time, and a test below pins every one resolvable.
 
 const std = @import("std");
 const json = @import("json.zig");
@@ -23,13 +25,21 @@ pub const doctor_doc_url = version.troubleshooting_doc_url ++ "#setup--config-pr
 
 /// One row of the generated check table (and one `tau explain doctor.<id>`
 /// entry): the report's check `name`, the condition that makes it warn or
-/// fail, and the remediation that resolves it.
+/// fail, the remediation that resolves it, and the sibling checks worth
+/// reading next.
 pub const CheckSpec = struct {
     name: []const u8,
     fails_when: []const u8,
     remediation: []const u8,
+    /// Related check ids — emitted in the `doctor.<id>` spelling so every
+    /// one is itself a resolvable `tau explain` query.
+    related: []const []const u8 = &.{},
     docs: []const u8 = doctor_doc_url,
 };
+
+/// Related ids shared by the per-client wiring rows — the aggregate row
+/// and the file-hygiene checks that also read client settings files.
+pub const client_related = [_][]const u8{ "client_wiring", "client_permissions", "plaintext_secrets" };
 
 /// Shared spec text for the per-client wiring rows (`client_<name>` — one
 /// per ClientKind, only emitted when that client's settings dir exists).
@@ -56,86 +66,103 @@ pub const static_specs = [_]CheckSpec{
         .name = "config_file",
         .fails_when = "~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional",
         .remediation = "fix the JSON with `tau config edit` or pinpoint it with `tau config validate` (path:line:col plus the offending source line with a caret); `tau doctor --fix` moves a broken config to config.json.bak and writes a starter",
+        .related = &.{ "config_deprecated_keys", "config_permissions", "plaintext_secrets", "provider_resolution" },
     },
     .{
         .name = "config_deprecated_keys",
         .fails_when = "the config file still uses a deprecated or renamed key spelling (e.g. compact_keep_recent) — old spellings still load with a warn envelope during the deprecation window but are scheduled for removal (skipped when there is no config file or it doesn't parse)",
         .remediation = "run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name",
+        .related = &.{ "config_file", "config_permissions" },
     },
     .{
         .name = "config_permissions",
         .fails_when = "the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys)",
         .remediation = "run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself",
+        .related = &.{ "config_file", "plaintext_secrets", "client_permissions" },
     },
     .{
         .name = "plaintext_secrets",
         .fails_when = "credentials sit on disk as plaintext — api_key/keys.* values in the config file, or `env` blocks inside client settings files (warn only; reports key names and counts, never values)",
         .remediation = "move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable",
+        .related = &.{ "config_permissions", "client_permissions", "api_key" },
     },
     .{
         .name = "shell_completions",
         .fails_when = "completion scripts are missing or stale for the detected shells",
         .remediation = "run `tau doctor --fix` or `tau setup --yes` to (re)install them",
+        .related = &.{ "update_available", "client_wiring" },
     },
     .{
         .name = "provider_resolution",
         .fails_when = "the configured or --provider provider isn't registered",
         .remediation = "pick a registered provider — `tau models` lists them; `tau config set provider <name>` persists it",
+        .related = &.{ "config_file", "api_key", "endpoint_reachable" },
     },
     .{
         .name = "api_key",
         .fails_when = "no API key resolves at any level of the precedence chain",
         .remediation = "pass --api-key, set the provider env var or TAU_API_KEY, or add api_key/keys.<provider> to config.json — `tau init` scaffolds a starter",
+        .related = &.{ "provider_resolution", "auth_probe", "plaintext_secrets" },
     },
     .{
         .name = "curl",
         .fails_when = "curl is missing or `curl --version` fails — every LLM request goes through curl",
         .remediation = "install curl via your package manager and re-run `tau doctor`",
+        .related = &.{ "endpoint_reachable", "auth_probe", "update_available" },
     },
     .{
         .name = "proxy_env",
         .fails_when = "a *_proxy/*_PROXY variable looks wrong for the resolved endpoint — unparseable URL, credentials embedded in the URL (always redacted in output), HTTP_PROXY alone for an HTTPS endpoint (silent no-op), or NO_PROXY covering the endpoint host (warn only; runs under --offline)",
         .remediation = "export HTTPS_PROXY for https:// endpoints, drop credentials from the proxy URL, and make sure NO_PROXY doesn't cover the provider host — see \"Behind a corporate proxy\" below",
+        .related = &.{ "tls_ca", "endpoint_reachable", "curl" },
     },
     .{
         .name = "tls_ca",
         .fails_when = "CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline)",
         .remediation = "set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path",
+        .related = &.{ "proxy_env", "endpoint_reachable", "curl" },
     },
     .{
         .name = "endpoint_reachable",
         .fails_when = "the provider endpoint doesn't answer within the probe timeout (skipped under --offline or without curl)",
         .remediation = "check the network, DNS, and the proxy_env/tls_ca rows — TAU_ENDPOINT overrides the endpoint",
+        .related = &.{ "proxy_env", "tls_ca", "curl", "auth_probe" },
     },
     .{
         .name = "auth_probe",
         .fails_when = "a one-token authenticated completion fails — the resolved key is rejected (--deep only; skipped under --offline, without curl, or with no key resolved)",
         .remediation = "re-issue or rotate the key — the check names which source it resolved from (env var, config, or TAU_API_KEY)",
+        .related = &.{ "api_key", "endpoint_reachable", "curl" },
     },
     .{
         .name = "client_wiring",
         .fails_when = "placeholder row — HOME is unset or no editor config dir was detected, so no per-client rows ran",
         .remediation = "install the editor you want wired, then run `tau setup --client <name>`",
+        .related = &.{ "client_permissions", "plaintext_secrets" },
     },
     .{
         .name = "client_permissions",
         .fails_when = "a detected client settings file (or the mcacp bridge config) grants group/other access — `env` blocks inside it can hold API keys (POSIX only)",
         .remediation = "run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself",
+        .related = &.{ "client_wiring", "plaintext_secrets", "config_permissions" },
     },
     .{
         .name = "provider_probes",
         .fails_when = "placeholder row for the opt-in sweep — skipped unless --probe is passed",
         .remediation = "run `tau doctor --probe` to live-verify connectivity and credentials for every registered provider",
+        .related = &.{ "endpoint_reachable", "auth_probe", "curl" },
     },
     .{
         .name = "update_available",
         .fails_when = "a newer release exists upstream (warn only; skipped under --offline, TAU_NO_UPDATE_CHECK=1, or without curl)",
         .remediation = "run `tau upgrade` — TAU_NO_UPDATE_CHECK=1 silences the row",
+        .related = &.{ "curl", "shell_completions" },
     },
     .{
         .name = "selftest",
         .fails_when = "the credential-free end-to-end run against a loopback stub provider fails (--selftest only) — the installed binary can't complete a session",
         .remediation = "re-run `tau doctor --selftest --debug` and attach the redacted log to `tau bug`",
+        .related = &.{ "curl", "provider_resolution" },
     },
 };
 
@@ -168,15 +195,23 @@ pub const check_catalog = blk: {
             .name = "client_" ++ underscored(disp),
             .fails_when = client_fails_when,
             .remediation = std.fmt.comptimePrint(client_remediation_tmpl, .{ disp, guideFile(k) }),
+            .related = &client_related,
         };
         n += 1;
     }
     for (cfgmod.providers) |p| {
-        c[n] = .{ .name = "probe_" ++ p.name, .fails_when = probe_fails_when, .remediation = probe_remediation };
+        const pair = "probe_" ++ p.name ++ "_auth";
+        c[n] = .{
+            .name = "probe_" ++ p.name,
+            .fails_when = probe_fails_when,
+            .remediation = probe_remediation,
+            .related = &.{ pair, "endpoint_reachable", "curl" },
+        };
         c[n + 1] = .{
-            .name = "probe_" ++ p.name ++ "_auth",
+            .name = pair,
             .fails_when = probe_auth_fails_when,
             .remediation = std.fmt.comptimePrint(probe_auth_remediation_tmpl, .{p.name}),
+            .related = &.{ "probe_" ++ p.name, "auth_probe", "api_key" },
         };
         n += 2;
     }
@@ -200,7 +235,7 @@ pub fn findCheck(query: []const u8) ?CheckSpec {
 
 /// Serialize one check entry for `tau explain` (no trailing newline — the
 /// caller owns framing):
-/// {"check":"N","fails_when":"F","remediation":"R","docs":"U"}
+/// {"check":"N","fails_when":"F","remediation":"R","related":["doctor.<id>", ...],"docs":"U"}
 /// Caller owns the returned slice.
 pub fn formatCheckJson(a: std.mem.Allocator, cs: CheckSpec) ![]u8 {
     const ne = try json.escapeAlloc(a, cs.name);
@@ -211,14 +246,33 @@ pub fn formatCheckJson(a: std.mem.Allocator, cs: CheckSpec) ![]u8 {
     defer a.free(re);
     const de = try json.escapeAlloc(a, cs.docs);
     defer a.free(de);
-    return std.fmt.allocPrint(a, "{{\"check\":\"{s}\",\"fails_when\":\"{s}\",\"remediation\":\"{s}\",\"docs\":\"{s}\"}}", .{ ne, fe, re, de });
+    var rel: std.ArrayList(u8) = .empty;
+    defer rel.deinit(a);
+    for (cs.related, 0..) |r, i| {
+        if (i > 0) try rel.append(a, ',');
+        const rid = try json.escapeAlloc(a, r);
+        defer a.free(rid);
+        try rel.appendSlice(a, "\"doctor.");
+        try rel.appendSlice(a, rid);
+        try rel.appendSlice(a, "\"");
+    }
+    return std.fmt.allocPrint(a, "{{\"check\":\"{s}\",\"fails_when\":\"{s}\",\"remediation\":\"{s}\",\"related\":[{s}],\"docs\":\"{s}\"}}", .{ ne, fe, re, rel.items, de });
 }
 
 /// Human-readable `tau explain --human doctor.<check>` rendering — drawn
 /// from the same CheckSpec so the prose and JSON forms can never drift
 /// apart.
 pub fn formatCheckHuman(a: std.mem.Allocator, cs: CheckSpec) ![]u8 {
-    return std.fmt.allocPrint(a, "doctor check  {s}\n  fails when: {s}\n  fix:        {s}\n  docs:       {s}\n", .{ cs.name, cs.fails_when, cs.remediation, cs.docs });
+    if (cs.related.len == 0)
+        return std.fmt.allocPrint(a, "doctor check  {s}\n  fails when: {s}\n  fix:        {s}\n  docs:       {s}\n", .{ cs.name, cs.fails_when, cs.remediation, cs.docs });
+    var rel: std.ArrayList(u8) = .empty;
+    defer rel.deinit(a);
+    for (cs.related, 0..) |r, i| {
+        if (i > 0) try rel.appendSlice(a, ", ");
+        try rel.appendSlice(a, "doctor.");
+        try rel.appendSlice(a, r);
+    }
+    return std.fmt.allocPrint(a, "doctor check  {s}\n  fails when: {s}\n  fix:        {s}\n  related:    {s}\n  docs:       {s}\n", .{ cs.name, cs.fails_when, cs.remediation, rel.items, cs.docs });
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +280,21 @@ pub fn formatCheckHuman(a: std.mem.Allocator, cs: CheckSpec) ![]u8 {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+/// The Related-cell text the doctor.md generator renders for one spec:
+/// backticked `doctor.<id>` spellings joined with ", ", or "none".
+fn relatedText(a: std.mem.Allocator, cs: CheckSpec) ![]u8 {
+    if (cs.related.len == 0) return a.dupe(u8, "none");
+    var rel: std.ArrayList(u8) = .empty;
+    defer rel.deinit(a);
+    for (cs.related, 0..) |r, i| {
+        if (i > 0) try rel.appendSlice(a, ", ");
+        try rel.appendSlice(a, "`doctor.");
+        try rel.appendSlice(a, r);
+        try rel.appendSlice(a, "`");
+    }
+    return rel.toOwnedSlice(a);
+}
 
 test "findCheck: bare ids and the doctor. prefix resolve" {
     const bare = findCheck("tls_ca").?;
@@ -327,7 +396,9 @@ test "explain: check catalog sections mirror docs/doctor.md verbatim" {
     for (check_catalog) |cs| {
         // The generated per-check section — the same shape
         // scripts/gen-doctor-checks-doc.py renders into docs/doctor.md.
-        const section = try std.fmt.allocPrint(gpa, "### `{s}`\n\n- **Symptom:** the `{s}` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.\n- **Cause:** {s}\n- **Fix:** {s}\n- **Explain:** `tau explain doctor.{s}`", .{ cs.name, cs.name, cs.fails_when, cs.remediation, cs.name });
+        const related = try relatedText(gpa, cs);
+        defer gpa.free(related);
+        const section = try std.fmt.allocPrint(gpa, "### `{s}`\n\n- **Symptom:** the `{s}` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.\n- **Cause:** {s}\n- **Fix:** {s}\n- **Related:** {s}\n- **Explain:** `tau explain doctor.{s}`", .{ cs.name, cs.name, cs.fails_when, cs.remediation, related, cs.name });
         defer gpa.free(section);
         if (std.mem.indexOf(u8, doc, section) == null) {
             std.debug.print("docs/doctor.md missing check section '{s}'\n", .{cs.name});
@@ -369,4 +440,52 @@ test "explain: formatCheckHuman renders fails-when, fix, and docs" {
     try testing.expect(std.mem.indexOf(u8, got, "fails when:") != null);
     try testing.expect(std.mem.indexOf(u8, got, "fix:") != null);
     try testing.expect(std.mem.indexOf(u8, got, cs.remediation) != null);
+    try testing.expect(std.mem.indexOf(u8, got, "related:    doctor.curl, doctor.shell_completions") != null);
+}
+
+test "explain: every related id resolves in the catalog" {
+    for (check_catalog) |cs| {
+        for (cs.related) |r| {
+            // A check never names itself.
+            if (std.mem.eql(u8, r, cs.name)) {
+                std.debug.print("check '{s}' lists itself as related\n", .{cs.name});
+                return error.TestUnexpectedResult;
+            }
+            var buf: [96]u8 = undefined;
+            const q = std.fmt.bufPrint(&buf, "doctor.{s}", .{r}) catch unreachable;
+            if (findCheck(q) == null) {
+                std.debug.print("check '{s}' names unresolvable related id '{s}'\n", .{ cs.name, r });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+test "every check id doctor.zig emits resolves in the catalog" {
+    // Drift check against the registry: every `name = "<id>"` literal in
+    // doctor.zig's check functions must resolve via findCheck — a new row
+    // that reaches the report without a CheckSpec is caught here. Test
+    // fixtures live below the Tests marker and are sliced off; format
+    // templates (probe_{s}) are covered by the dynamic-family tests.
+    const src = @embedFile("doctor.zig");
+    const end = std.mem.indexOf(u8, src, "// Tests") orelse src.len;
+    const needle = "name = \"";
+    var scanned: usize = 0;
+    var it = std.mem.splitScalar(u8, src[0..end], '\n');
+    while (it.next()) |line| {
+        var idx: usize = 0;
+        while (std.mem.indexOfPos(u8, line, idx, needle)) |pos| {
+            const start = pos + needle.len;
+            const stop = std.mem.indexOfScalarPos(u8, line, start, '"') orelse break;
+            const id = line[start..stop];
+            idx = stop + 1;
+            if (std.mem.indexOfScalar(u8, id, '{') != null) continue; // format template
+            if (findCheck(id) == null) {
+                std.debug.print("doctor.zig emits unresolvable check id '{s}':{s}\n", .{ id, line });
+                return error.TestUnexpectedResult;
+            }
+            scanned += 1;
+        }
+    }
+    try testing.expect(scanned >= static_specs.len);
 }

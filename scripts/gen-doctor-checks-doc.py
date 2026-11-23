@@ -10,7 +10,8 @@ twice so neither doc can drift:
   - splices the compact table between the GENERATED DOCTOR CHECKS
     markers in docs/troubleshooting.md
   - rewrites docs/doctor.md — the whole file is generated, one section
-    per check (symptom, cause, fix, `tau explain doctor.<id>` link)
+    per check (symptom, cause, fix, related checks, `tau explain
+    doctor.<id>` link)
 
     python3 scripts/gen-doctor-checks-doc.py            # rewrite both docs
     python3 scripts/gen-doctor-checks-doc.py --check    # exit 1 if stale
@@ -78,14 +79,26 @@ def parse_static_specs(src):
     entry = re.compile(
         r"\.\{\s*\.name\s*=\s*" + STRING + r","
         r"\s*\.fails_when\s*=\s*" + STRING + r","
-        r"\s*\.remediation\s*=\s*" + STRING)
+        r"\s*\.remediation\s*=\s*" + STRING +
+        r"(?:\s*,\s*\.related\s*=\s*&\.\{([^}]*)\})?")
     rows = [{"name": zig_unescape(m.group(1)),
              "fails_when": zig_unescape(m.group(2)),
-             "remediation": zig_unescape(m.group(3))}
+             "remediation": zig_unescape(m.group(3)),
+             "related": [zig_unescape(r)
+                        for r in re.findall(STRING, m.group(4) or "")]}
             for m in entry.finditer(m.group(1))]
     if not rows:
         fail("static_specs parsed empty in src/doctorcatalog.zig")
     return rows
+
+
+def parse_str_list(src, name):
+    """`pub const <name> = [_][]const u8{ "a", "b" };` -> [str]."""
+    m = re.search(r"pub const %s = \[_\]\[\]const u8\{(.*?)\};"
+                  % re.escape(name), src, re.S)
+    if not m:
+        fail(f"could not find `pub const {name}` in src/doctorcatalog.zig")
+    return [zig_unescape(s) for s in re.findall(STRING, m.group(1))]
 
 
 def parse_const(src, name):
@@ -143,6 +156,7 @@ def check_rows():
 
     client_fw = parse_const(dc, "client_fails_when")
     client_rem = parse_const(dc, "client_remediation_tmpl")
+    client_rel = parse_str_list(dc, "client_related")
     probe_fw = parse_const(dc, "probe_fails_when")
     probe_rem = parse_const(dc, "probe_remediation")
     pa_fw = parse_const(dc, "probe_auth_fails_when")
@@ -154,14 +168,18 @@ def check_rows():
             "fails_when": client_fw,
             "remediation": client_rem.replace("{s}", display, 1)
                                      .replace("{s}", guide_file(display), 1),
+            "related": client_rel,
         })
     for pname in parse_providers(PROVIDER_ZIG.read_text(encoding="utf-8")):
         rows.append({"name": "probe_" + pname,
                      "fails_when": probe_fw,
-                     "remediation": probe_rem})
+                     "remediation": probe_rem,
+                     "related": ["probe_" + pname + "_auth",
+                                 "endpoint_reachable", "curl"]})
         rows.append({"name": "probe_" + pname + "_auth",
                      "fails_when": pa_fw,
-                     "remediation": pa_rem.replace("{s}", pname)})
+                     "remediation": pa_rem.replace("{s}", pname),
+                     "related": ["probe_" + pname, "auth_probe", "api_key"]})
     return rows
 
 
@@ -243,6 +261,8 @@ def render_doctor_doc(rows):
           "line under `--json`.")
         w(f"- **Cause:** {r['fails_when']}")
         w(f"- **Fix:** {r['remediation']}")
+        related = ", ".join(f"`doctor.{x}`" for x in r["related"]) or "none"
+        w(f"- **Related:** {related}")
         w(f"- **Explain:** `tau explain doctor.{r['name']}`")
         w("")
     return "\n".join(a)

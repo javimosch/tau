@@ -24,7 +24,7 @@
 //!
 //! Error entries render as {code,type,recoverable,cause,hint,docs}; key
 //! entries as {key,type,constraints,description,docs}; check entries as
-//! {check,fails_when,remediation,docs}; env entries as
+//! {check,fails_when,remediation,related,docs}; env entries as
 //! {env,section,consumers,summary,docs}; client entries as
 //! {client,transport,wiring,prereqs,setup,config_dir,settings_path,
 //! snippet_path,bridge_path?,verify,doctor_check,docs}; topic entries as
@@ -192,7 +192,7 @@ pub fn suggestQuery(a: std.mem.Allocator, query: []const u8) ?[]const u8 {
 /// caller owns framing). Error entries keep the pinned
 /// {code,type,recoverable,cause,hint,docs} shape; key entries are
 /// {key,type,constraints,description,docs}; check entries are
-/// {check,fails_when,remediation,docs}; env entries are
+/// {check,fails_when,remediation,related,docs}; env entries are
 /// {env,section,consumers,summary,docs}; client entries are the
 /// src/clientcatalog.zig Spec shape; topic entries are the
 /// src/topiccatalog.zig Spec shape; subcommand entries are the
@@ -506,8 +506,8 @@ fn allTermsHit(hay: []const u8, terms: []const []const u8) bool {
 /// --list renders, filtered to the entries whose searchable text matches
 /// every whitespace-separated term (case-insensitive). Searched text: an
 /// error's code + type + cause + hint, a config key's name + type +
-/// constraints + description, a check's id + fails_when + remediation, an
-/// env var's name + consumers + summary, a client's name + transport +
+/// constraints + description, a check's id + fails_when + remediation +
+/// related ids, an env var's name + consumers + summary, a client's name + transport +
 /// wiring + prereqs + verify + doctor check (plus `--client` alias
 /// resolution — `roo` and `amazon-q` reach their clients by name), a
 /// topic's name + summary + details + see_also, and a subcommand's name +
@@ -531,7 +531,8 @@ pub fn searchCatalog(a: std.mem.Allocator, query: []const u8) !TopicLists {
             if (allTermsHit(hay, terms)) try keys.append(a, ks);
         }
         for (doctorcat.check_catalog) |cs| {
-            const hay = try searchHaystack(a, &.{ cs.name, try std.fmt.allocPrint(a, "doctor.{s}", .{cs.name}), cs.fails_when, cs.remediation });
+            const rel = try std.mem.join(a, " ", cs.related);
+            const hay = try searchHaystack(a, &.{ cs.name, try std.fmt.allocPrint(a, "doctor.{s}", .{cs.name}), cs.fails_when, cs.remediation, rel });
             if (allTermsHit(hay, terms)) try checks.append(a, cs);
         }
         for (envvars.specs) |s| {
