@@ -409,6 +409,7 @@ diagnostic; it makes no network calls and never requires an API key.
 tau config show                       # effective config right now
 tau config show --provider openai     # preview overrides without running
 tau config show --json                # explicit opt-in to the stable JSON form
+tau config show --show-origin         # + an "origins" map naming each key's layer
 ```
 
 The output is always JSON; `--json` pins the stable contract explicitly for
@@ -426,6 +427,21 @@ each configured per-provider key, also masked. `endpoint_source` says whether
 the endpoint came from the provider table or `env:TAU_ENDPOINT`, and
 `config_file` reports the probed path, whether a file was found, and any parse
 warning.
+
+`--show-origin` adds an `origins` member attributing *every* key to the layer
+that supplied its effective value — the same source names
+`config get --show-origin` reports, plus a `"cli"` layer for flag overrides:
+`{"source":"cli","flag":"--no-stream"}` (the spelling as typed; the last flag
+wins), `{"source":"env","var":"TAU_ENDPOINT"}`,
+`{"source":"file","file":…,"line":N}` (the member's own line — a key fed by a
+deprecated spelling reports the deprecated member's line),
+`{"source":"provider","provider":…}` (provider-registry defaults for
+model/endpoint/context_window and builtin keys), or
+`{"source":"default"}`. The `keys` entry nests a `members` map with each
+per-provider key's own line. `api_key`'s origin mirrors `api_key.source`, so
+the two can never disagree: `--api-key` reports cli, `keys[<provider>]`
+reports that member's file line, env vars name their variable, and `builtin`
+reports the provider.
 
 Subcommand discipline matches `tau fleet`/`tau skills`: bare `tau config` and
 unknown subcommands exit `80`; `tau config show` takes no prompt and rejects
@@ -518,8 +534,9 @@ tau config set mode text --dry-run      # preview the exact diff + backup path
   when an environment variable supplies it (`TAU_ENDPOINT`, provider key
   vars, `TAU_API_KEY`), `{"source":"provider","provider":…}` for
   provider-registry defaults (model/endpoint/context_window/builtin key),
-  or `{"source":"default"}` for the compiled fallback. `--show-origin` is
-  `get`-only — `set`/`unset` reject it like `--raw`.
+  or `{"source":"default"}` for the compiled fallback. `--show-origin` also
+  works on `config show` (see "Inspecting the resolved config") —
+  `set`/`unset` reject it like `--raw`.
 - **Did-you-mean**: a misspelled key earns a `did you mean "…"?` hint — `set`
   suggests the nearest schema key (or `keys.<provider>` for a `key.x` dotted
   path), while `get`/`unset` name the closest key actually present in the

@@ -209,6 +209,7 @@ _tau() {
                                     # flags so the merged result is previewed.
                                     _arguments \
                                         '--json[emit the stable JSON object (schema-pinned)]' \
+                                        '--show-origin[attribute each key to its source layer (cli/env/file+line/provider/default)]' \
                                         $global_opts
                                     ;;
                             esac

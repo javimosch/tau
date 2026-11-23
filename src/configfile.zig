@@ -27,6 +27,19 @@ pub const FileConfig = struct {
     goal_max_continues: ?u32 = null,
 };
 
+/// Bit `i` = FileConfig field index `i` — Config.file_set records which
+/// members the loaded file actually supplied so `tau config show
+/// --show-origin` can attribute a file layer (and look the member's line up).
+pub fn fieldBit(comptime name: []const u8) u32 {
+    return comptime blk: {
+        const fields = @typeInfo(FileConfig).@"struct".fields;
+        for (fields, 0..) |f, i| {
+            if (std.mem.eql(u8, f.name, name)) break :blk @as(u32, 1) << @intCast(i);
+        }
+        @compileError("not a FileConfig field: " ++ name);
+    };
+}
+
 /// One deprecated config-key spelling and the canonical key that replaced it.
 /// Config-key renames follow the deprecation policy in docs/stability.md:
 /// during the overlap window the old spelling still loads (the canonical key
@@ -307,32 +320,80 @@ pub fn load(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map)
     }
 
 
-    if (fc.provider) |v| cfg.provider = v;
+    if (fc.provider) |v| {
+        cfg.provider = v;
+        cfg.file_set |= fieldBit("provider");
+    }
     if (fc.model) |v| {
         cfg.model = v;
         cfg.model_set = true;
+        cfg.file_set |= fieldBit("model");
     }
-    if (fc.api_key) |v| cfg.config_api_key = v;
+    if (fc.api_key) |v| {
+        cfg.config_api_key = v;
+        cfg.file_set |= fieldBit("api_key");
+    }
     if (fc.mode) |v| {
-        if (std.mem.eql(u8, v, "text")) cfg.mode = .text else if (std.mem.eql(u8, v, "json")) cfg.mode = .json;
+        if (std.mem.eql(u8, v, "text")) {
+            cfg.mode = .text;
+            cfg.file_set |= fieldBit("mode");
+        } else if (std.mem.eql(u8, v, "json")) {
+            cfg.mode = .json;
+            cfg.file_set |= fieldBit("mode");
+        }
     }
-    if (fc.stream) |v| cfg.stream = v;
-    if (fc.thinking) |v| cfg.thinking = v;
-    if (fc.debug) |v| cfg.debug = v;
-    if (fc.temperature) |v| cfg.temperature = v;
-    if (fc.max_tokens) |v| cfg.max_tokens = v;
-    if (fc.timeout_ms) |v| cfg.timeout_ms = v;
+    if (fc.stream) |v| {
+        cfg.stream = v;
+        cfg.file_set |= fieldBit("stream");
+    }
+    if (fc.thinking) |v| {
+        cfg.thinking = v;
+        cfg.file_set |= fieldBit("thinking");
+    }
+    if (fc.debug) |v| {
+        cfg.debug = v;
+        cfg.file_set |= fieldBit("debug");
+    }
+    if (fc.temperature) |v| {
+        cfg.temperature = v;
+        cfg.file_set |= fieldBit("temperature");
+    }
+    if (fc.max_tokens) |v| {
+        cfg.max_tokens = v;
+        cfg.file_set |= fieldBit("max_tokens");
+    }
+    if (fc.timeout_ms) |v| {
+        cfg.timeout_ms = v;
+        cfg.file_set |= fieldBit("timeout_ms");
+    }
     if (fc.context_window) |v| {
         cfg.context_window = v;
         cfg.context_window_set = true;
+        cfg.file_set |= fieldBit("context_window");
     }
-    if (fc.auto_compact) |v| cfg.auto_compact = v;
-    if (fc.compact_threshold) |v| cfg.compact_threshold = v;
-    if (fc.compact_keep_recent_tokens) |v| cfg.compact_keep_recent_tokens = v;
-    if (fc.goal_max_iterations) |v| cfg.goal_max_iterations = v;
-    if (fc.goal_max_continues) |v| cfg.goal_max_continues = v;
+    if (fc.auto_compact) |v| {
+        cfg.auto_compact = v;
+        cfg.file_set |= fieldBit("auto_compact");
+    }
+    if (fc.compact_threshold) |v| {
+        cfg.compact_threshold = v;
+        cfg.file_set |= fieldBit("compact_threshold");
+    }
+    if (fc.compact_keep_recent_tokens) |v| {
+        cfg.compact_keep_recent_tokens = v;
+        cfg.file_set |= fieldBit("compact_keep_recent_tokens");
+    }
+    if (fc.goal_max_iterations) |v| {
+        cfg.goal_max_iterations = v;
+        cfg.file_set |= fieldBit("goal_max_iterations");
+    }
+    if (fc.goal_max_continues) |v| {
+        cfg.goal_max_continues = v;
+        cfg.file_set |= fieldBit("goal_max_continues");
+    }
     if (fc.keys) |keys_val| {
         if (keys_val == .object) {
+            cfg.file_set |= fieldBit("keys");
             var km = std.StringHashMap([]const u8).init(arena);
             var it = keys_val.object.iterator();
             while (it.next()) |entry| {

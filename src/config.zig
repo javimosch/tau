@@ -330,11 +330,25 @@ pub const Config = struct {
     edit_path: ?[]const u8 = null,
     /// `tau config get --raw` — print secret values unredacted.
     config_raw: bool = false,
-    /// `tau config get --show-origin` — annotate the value's origin: which
-    /// file and line it came from, which env var supplies it, or the
-    /// built-in default/provider-table source when the key is unset.
+    /// `tau config get|show --show-origin` — annotate each value's origin:
+    /// which file and line it came from, which env var or CLI flag supplies
+    /// it, or the built-in default/provider-table source when unset.
     /// Rejected on `set`/`unset` (they write, they don't report origin).
     config_show_origin: bool = false,
+    /// `tau config show --show-origin` provenance scratch — the flag
+    /// spellings argv parsing consumed (in argv order) that map to a
+    /// `config show` member. The LAST spelling mapping to a key wins
+    /// attribution ("--stream --no-stream" reports --no-stream).
+    cli_flags: []const CliFlag = &.{},
+    /// Bitmask over FileConfig field indexes — the members the loaded file
+    /// actually supplied (set inside configfile.load's apply blocks; values
+    /// that don't coerce — a non-text|json mode, a non-object keys — stay
+    /// unmarked so they don't read as file-sourced).
+    file_set: u32 = 0,
+    /// The spelling that supplied the provider ("--provider" or the
+    /// `--model provider/id` shorthand) — resolveProviderAndModel records it
+    /// because the flag list alone can't see the shorthand split.
+    provider_flag: ?[]const u8 = null,
     /// `tau config set|unset --dry-run` — preview the exact write the real
     /// run would perform (unified diff + `.bak` backup path) without
     /// touching the file. Rejected on `get` (it never writes).
@@ -368,6 +382,10 @@ pub const Config = struct {
     /// can assert sanitization ran before filing for real.
     bug_dry_run: bool = false,
 };
+
+/// One CLI flag spelling that feeds a `config show` member — the spelling as
+/// typed (for `--show-origin`'s "flag" report) and the output key it maps to.
+pub const CliFlag = struct { flag: []const u8, key: []const u8 };
 
 /// Where the resolved API key came from. Surfaced by `tau doctor` and
 /// `tau config show` so the

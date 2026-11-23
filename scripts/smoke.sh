@@ -966,6 +966,42 @@ test_group_config_show() {
   # TAU_ENDPOINT override is attributed.
   out=$(HOME="$empty_home" TAU_ENDPOINT="http://localhost:1/v1/chat/completions" "$BIN" config show)
   contains "config show attributes TAU_ENDPOINT" "$out" '"endpoint_source":"env:TAU_ENDPOINT"'
+
+  # --show-origin adds a per-key "origins" map: cli flag spelling, env var,
+  # file member + line, provider default, compiled default.
+  local origin_home; origin_home="$(mktemp -d)"; register_temp_dir "$origin_home"
+  mkdir -p "$origin_home/.config/tau"
+  printf '{\n  "provider": "deepseek",\n  "mode": "text",\n  "timeout_ms": 9000,\n  "keys": { "deepseek": "sk-file-deep00" }\n}\n' > "$origin_home/.config/tau/config.json"
+
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY -u TAU_API_KEY HOME="$origin_home" "$BIN" config show --show-origin --no-stream --mode json)
+  contains "show-origin emits origins member" "$out" '"origins":{'
+  contains "show-origin provider file source+line" "$out" '"provider":{"source":"file","file":"'"$origin_home"'/.config/tau/config.json","line":2}'
+  contains "show-origin api_key keys member line" "$out" '"api_key":{"source":"file","file":"'"$origin_home"'/.config/tau/config.json","line":5}'
+  contains "show-origin cli flag spelling" "$out" '"stream":{"source":"cli","flag":"--no-stream"}'
+  contains "show-origin cli mode spelling" "$out" '"mode":{"source":"cli","flag":"--mode"}'
+  contains "show-origin model provider layer" "$out" '"model":{"source":"provider","provider":"deepseek"}'
+  contains "show-origin keys member lines" "$out" '"members":{"deepseek":{"source":"file","line":5}}'
+  contains "show-origin compiled default" "$out" '"role":{"source":"default"}'
+  if printf '%s' "$out" | grep -q 'sk-file-deep00'; then
+    ok "show-origin does NOT leak file key" 1 0
+  else
+    ok "show-origin keeps file key redacted" 0 0
+  fi
+
+  out=$(HOME="$empty_home" "$BIN" config show --show-origin --model openai/gpt-mini)
+  contains "show-origin p/id shorthand flags provider" "$out" '"provider":{"source":"cli","flag":"--model"}'
+  contains "show-origin shorthand flags model" "$out" '"model":{"source":"cli","flag":"--model"}'
+
+  out=$(env -u XIAOMI_API_KEY -u PIZIG_API_KEY -u OPENAI_API_KEY -u DEEPSEEK_API_KEY -u OPENCODE_API_KEY TAU_API_KEY=sk-origin-5566 HOME="$empty_home" "$BIN" config show --show-origin)
+  contains "show-origin env layer names var" "$out" '"api_key":{"source":"env","var":"TAU_API_KEY"}'
+  if printf '%s' "$out" | grep -q 'sk-origin-5566'; then
+    ok "show-origin does NOT leak env key" 1 0
+  else
+    ok "show-origin keeps env key redacted" 0 0
+  fi
+
+  "$BIN" config show --show-origin stray >/dev/null 2>&1; ok "show-origin stray -> invalid_argument" "$?" 80
+  "$BIN" --show-origin "hi" >/dev/null 2>&1;               ok "show-origin outside config -> exit 80" "$?" 80
 }
 
 # Group: `tau config validate` — offline config-file validation for
@@ -5587,6 +5623,18 @@ test_group_cli_schemas() {
   ok "cli-schemas: config show --json --mode text -> exit 80" "$rc" 80
   "$BIN" --json "prompt" >/dev/null 2>&1; rc=$?
   ok "cli-schemas: bare --json is not a global flag -> exit 80" "$rc" 80
+
+  # --show-origin appends the schema-declared origins member — the pinned
+  # shape must keep validating with it present.
+  out=$("${scrub[@]}" HOME="$mock_home" "$BIN" config show --json --show-origin --no-stream); rc=$?
+  ok "cli-schemas: config show --show-origin exit 0" "$rc" 0
+  contains "cli-schemas: show-origin emits origins" "$out" '"origins":{'
+  contains "cli-schemas: origins reports cli layer" "$out" '"stream":{"source":"cli","flag":"--no-stream"}'
+  if printf '%s' "$out" | python3 "$check" --schema "$show_schema" - >/dev/null 2>&1; then
+    ok "cli-schemas: config show --show-origin validates" 0 0
+  else
+    ok "cli-schemas: config show --show-origin validates" 1 0
+  fi
 
   # ── tau config validate --json ─────────────────────────────────────────
   out=$("${scrub[@]}" HOME="$mock_home" "$BIN" config validate --json "$mock_home/.config/tau/config.json"); rc=$?

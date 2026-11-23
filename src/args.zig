@@ -167,6 +167,50 @@ fn argHint(arena: std.mem.Allocator, a: []const u8, words: []const []const u8) !
     return suggest.hint(arena, a, pool);
 }
 
+/// Flags that feed a `tau config show` member — the spelling → output key
+/// map `config show --show-origin` attributes "cli" origins with. Recorded
+/// in argv order; the last spelling mapping to a key wins (a trailing
+/// `--no-stream` reports `--no-stream`). provider/model/endpoint/
+/// context_window interplay is resolved in resolveProviderAndModel — the
+/// `--model provider/id` shorthand and the provider-change model reset are
+/// invisible to this table.
+const cli_show_flags = [_]cfgmod.CliFlag{
+    .{ .flag = "--provider", .key = "provider" },
+    .{ .flag = "--model", .key = "model" },
+    .{ .flag = "--api-key", .key = "api_key" },
+    .{ .flag = "--mode", .key = "mode" },
+    .{ .flag = "--json", .key = "mode" },
+    .{ .flag = "--role", .key = "role" },
+    .{ .flag = "--session", .key = "session" },
+    .{ .flag = "--stream", .key = "stream" },
+    .{ .flag = "--no-stream", .key = "stream" },
+    .{ .flag = "--no-tools", .key = "no_tools" },
+    .{ .flag = "-nt", .key = "no_tools" },
+    .{ .flag = "--tools", .key = "tools_allow" },
+    .{ .flag = "-t", .key = "tools_allow" },
+    .{ .flag = "--exclude-tools", .key = "tools_deny" },
+    .{ .flag = "-xt", .key = "tools_deny" },
+    .{ .flag = "--thinking", .key = "thinking" },
+    .{ .flag = "--debug", .key = "debug" },
+    .{ .flag = "--dry-run", .key = "dry_run" },
+    .{ .flag = "--temperature", .key = "temperature" },
+    .{ .flag = "--max-tokens", .key = "max_tokens" },
+    .{ .flag = "--timeout-ms", .key = "timeout_ms" },
+    .{ .flag = "--max-iterations", .key = "max_iterations" },
+    .{ .flag = "--context-window", .key = "context_window" },
+    .{ .flag = "--no-compact", .key = "auto_compact" },
+    .{ .flag = "--compact-threshold", .key = "compact_threshold" },
+    .{ .flag = "--compact-keep-recent", .key = "compact_keep_recent_tokens" },
+    .{ .flag = "--goal-max-iterations", .key = "goal_max_iterations" },
+};
+
+fn cliShowFlagKey(flag: []const u8) ?[]const u8 {
+    for (cli_show_flags) |cf| {
+        if (eq(cf.flag, flag)) return cf.key;
+    }
+    return null;
+}
+
 /// Resolve `cfg.provider`/`endpoint`/`model` and `context_window` from CLI
 /// overrides and the provider table. Supports `--model provider/id` shorthand.
 /// Returns `null` on success, or the unknown provider name if the requested
@@ -192,6 +236,9 @@ fn resolveProviderAndModel(
     const prov_name = po orelse cfg.provider;
     const p = cfgmod.findProvider(prov_name) orelse return prov_name;
     cfg.provider = p.name;
+    // `config show --show-origin` attribution: --provider wins over the
+    // --model p/id shorthand as the spelling that supplied the provider.
+    if (po != null) cfg.provider_flag = if (provider_opt != null) "--provider" else "--model";
     cfg.endpoint = p.endpoint;
     if (env.get("TAU_ENDPOINT")) |ep| {
         if (ep.len > 0) cfg.endpoint = try arena.dupe(u8, ep);
@@ -1046,7 +1093,7 @@ pub fn parse(
                 return errResult(arena, "--raw only applies to config get", .{});
             }
             if (ecfg.config_show_origin and !eq(argv[1], "get")) {
-                return errResult(arena, "--show-origin only applies to config get", .{});
+                return errResult(arena, "--show-origin only applies to config get and config show", .{});
             }
             if (ecfg.config_dry_run and eq(argv[1], "get")) {
                 return errResult(arena, "--dry-run only applies to config set and unset", .{});
@@ -1094,10 +1141,16 @@ pub fn parse(
     // Tracks an explicit `--mode text` so `config show --json` can reject the
     // contradictory pair in either order (the chat path ignores it).
     var saw_text_mode = false;
+    // `config show --show-origin` scratch: the cli_show_flags spellings this
+    // argv actually carried, in order. Flag VALUES never reach the loop head
+    // (val() consumes argv[i+1]), so only spellings land here.
+    var cli_seen: std.ArrayList(cfgmod.CliFlag) = .empty;
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
         const a = argv[i];
+
+        if (cliShowFlagKey(a)) |k| try cli_seen.append(arena, .{ .flag = a, .key = k });
 
         if (eq(a, "-h") or eq(a, "--help")) {
             help_requested = true;
@@ -1238,6 +1291,16 @@ pub fn parse(
             cfg.mode = .json;
             continue;
         }
+        if (eq(a, "--show-origin")) {
+            // `tau config show --show-origin` — annotates the merged output
+            // with an "origins" member attributing each key to the layer
+            // that supplied it (cli flag, env var, file line, provider,
+            // default). `config get` parses its own copy of the flag; on any
+            // other command it's an unknown option.
+            if (!config_show) return errResult(arena, "unknown option: {s}{s}", .{ a, try argHint(arena, a, &.{}) });
+            cfg.config_show_origin = true;
+            continue;
+        }
         if (eq(a, "--tools") or eq(a, "-t")) {
             cfg.tools_allow = try splitCsv(arena, val(argv, &i) orelse return missing(arena, a));
             continue;
@@ -1289,6 +1352,8 @@ pub fn parse(
 
     // Resolve provider / model / endpoint and context window. Supports
     // `--model provider/id` shorthand and `TAU_ENDPOINT` overrides.
+    cfg.cli_flags = cli_seen.items;
+
     if (try resolveProviderAndModel(&cfg, base, provider_opt, model_opt, ctx_window_opt, env, arena)) |bad| {
         return unknownProviderErr(arena, bad);
     }
@@ -2378,7 +2443,7 @@ test "parse: config set|unset accept --dry-run; config get rejects it" {
     try std.testing.expect(!bare.config.config_dry_run);
 }
 
-test "parse: config get accepts --show-origin; set/unset reject it" {
+test "parse: config get|show accept --show-origin; set/unset reject it" {
     var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer ar.deinit();
     const a = ar.allocator();
@@ -2387,6 +2452,18 @@ test "parse: config get accepts --show-origin; set/unset reject it" {
     try std.testing.expectEqual(Action.config, g.action);
     try std.testing.expectEqualStrings("get", g.config.config_sub.?);
     try std.testing.expect(g.config.config_show_origin);
+
+    // `config show` accepts it too — the origins member annotates the
+    // merged view. Outside config show/get it's an unknown option.
+    const sh = try parseArgv(a, &.{ "tau", "config", "show", "--show-origin" }, .{});
+    try std.testing.expectEqual(Action.config, sh.action);
+    try std.testing.expect(sh.config.config_show_origin);
+    try std.testing.expect(sh.config.config_sub == null);
+    const shj = try parseArgv(a, &.{ "tau", "config", "show", "--json", "--show-origin", "--provider", "openai" }, .{});
+    try std.testing.expect(shj.config.config_show_origin);
+    try std.testing.expect(shj.config.cli_json);
+    const bad = try parseArgv(a, &.{ "tau", "--show-origin", "hi" }, .{});
+    try std.testing.expectEqual(Action.err, bad.action);
 
     // Composes with --raw, --mode, and the path positional.
     const m = try parseArgv(a, &.{ "tau", "config", "get", "keys.openai", "f.json", "--raw", "--show-origin", "--mode", "text" }, .{});
@@ -2398,7 +2475,7 @@ test "parse: config get accepts --show-origin; set/unset reject it" {
     // Write subcommands don't report origins — same scoping as --raw.
     const s = try parseArgv(a, &.{ "tau", "config", "set", "k", "v", "--show-origin" }, .{});
     try std.testing.expectEqual(Action.err, s.action);
-    try std.testing.expectEqualStrings("--show-origin only applies to config get", s.err_msg.?);
+    try std.testing.expectEqualStrings("--show-origin only applies to config get and config show", s.err_msg.?);
     const u = try parseArgv(a, &.{ "tau", "config", "unset", "k", "--show-origin" }, .{});
     try std.testing.expectEqual(Action.err, u.action);
 

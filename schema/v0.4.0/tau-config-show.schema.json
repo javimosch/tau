@@ -61,7 +61,24 @@
     "compact_threshold": { "type": ["number", "null"], "description": "Fraction of context_window that triggers compaction; null when non-finite." },
     "compact_keep_recent_tokens": { "type": "integer", "minimum": 0 },
     "goal_max_iterations": { "type": "integer", "minimum": 0 },
-    "goal_max_continues": { "type": "integer", "minimum": 0 }
+    "goal_max_continues": { "type": "integer", "minimum": 0 },
+    "origins": {
+      "type": "object",
+      "description": "Present only with --show-origin: per-key provenance of the merged values — which layer supplied each key (\"cli\" flag spelling, \"env\" var name, \"file\" member + 1-based line, \"provider\" registry default, or \"default\" compiled fallback). The file path is reported once in config_file.path; file entries repeat it for self-containment.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["source"],
+        "properties": {
+          "source": { "type": "string", "enum": ["cli", "env", "file", "provider", "default"] },
+          "flag": { "type": "string", "description": "The flag spelling as typed, for cli origins." },
+          "var": { "type": "string", "description": "The env var name, for env origins." },
+          "file": { "type": "string", "description": "Config file path, for file origins." },
+          "line": { "type": "integer", "description": "The member's 1-based line in the file; absent when the file can't be re-read." },
+          "provider": { "type": "string", "description": "Provider-registry name, for provider origins." },
+          "members": { "type": "object", "description": "keys only: per-provider entry origins (file + line each)." }
+        }
+      }
+    }
   },
   "examples": [
     {

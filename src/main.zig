@@ -265,6 +265,10 @@ const help_text =
     \\                              (config file + env + CLI flags merged; API keys redacted)
     \\      --json                    Explicit opt-in to the stable JSON form
     \\                              (schema/tau-config-show.schema.json)
+    \\      --show-origin             Add an "origins" member attributing each
+    \\                              key to the layer that supplied it:
+    \\                              CLI flag, env var, file path + line,
+    \\                              provider default, or compiled default
     \\  tau config validate [path]    Validate a config file — JSON report on stdout,
     \\                              exit 1 with every problem listed (CI/pre-commit)
     \\      --json                    Explicit opt-in to the stable JSON report
@@ -277,6 +281,7 @@ const help_text =
     \\      --show-origin              Report where the value came from:
     \\                                 file path + line, env var, provider
     \\                                 default, or the compiled default
+    \\                                 (also on `config show`)
     \\  tau config unset <key> [path] Remove a key from the config file
     \\      --dry-run                  Preview the exact diff + backup path;
     \\                                 change nothing
@@ -567,7 +572,7 @@ const guide_commands = [_]GuideItem{
     .{ .a = "tau version [--verbose] [--check] [--json]", .b = "print the version; --verbose adds build metadata, --check runs a non-blocking update check against the latest release (opt out: TAU_NO_UPDATE_CHECK=1), --json emits the stable {\"name\",\"version\"} object (schema/tau-version.schema.json)." },
     .{ .a = "tau upgrade [--yes] [--dir <path>] [--dry-run] [--verify-signature]", .b = "self-update in place via the release's verified install.sh; shows the release notes since your version before the TTY prompt/install and in the report's changelog field, --yes/TAU_YES=1 approves non-interactively (POSIX only)." },
     .{ .a = "tau models", .b = "list providers + default models (JSON)." },
-    .{ .a = "tau config show [--flags] [--json]", .b = "print the resolved effective config (file+env+flags merged; keys redacted). --json pins the stable JSON form (schema/tau-config-show.schema.json)." },
+    .{ .a = "tau config show [--flags] [--json] [--show-origin]", .b = "print the resolved effective config (file+env+flags merged; keys redacted). --json pins the stable JSON form (schema/tau-config-show.schema.json); --show-origin adds an origins map (cli/env/file+line/provider/default per key)." },
     .{ .a = "tau config validate [path] [--json]", .b = "validate a config file offline; exit 1 + JSON error report on failure (CI/pre-commit). --json pins the stable report (schema/tau-config-validate.schema.json)." },
     .{ .a = "tau config set <key> <value> [path] [--dry-run]", .b = "schema-checked edit to the config FILE (<field> or keys.<provider>); creates the file if missing; --dry-run previews the exact diff + .bak backup path." },
     .{ .a = "tau config get <key> [path] [--raw] [--show-origin]", .b = "print a config file value; secrets are redacted unless --raw. --show-origin names the source layer (file path + line, env var, provider, default)." },
@@ -664,7 +669,7 @@ fn appendJsonIntOrNull(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), v: ?u3
 /// full merge — config file → env vars → CLI flags — exactly as a run would see
 /// it. Secrets are never printed: `api_key.value` is masked via redactApiKey and
 /// `api_key.source` reports which precedence level supplied the key.
-fn formatEffectiveConfig(alloc: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) ![]u8 {
+fn formatEffectiveConfig(alloc: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map, origins: ?[]const u8) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
     const b = &buf;
@@ -791,15 +796,24 @@ fn formatEffectiveConfig(alloc: std.mem.Allocator, cfg: Config, env: *std.proces
         try b.appendSlice(A, s);
     }
     {
-        const s = try std.fmt.allocPrint(A, ",\"goal_max_iterations\":{d},\"goal_max_continues\":{d}}}\n", .{ cfg.goal_max_iterations, cfg.goal_max_continues });
+        const s = try std.fmt.allocPrint(A, ",\"goal_max_iterations\":{d},\"goal_max_continues\":{d}", .{ cfg.goal_max_iterations, cfg.goal_max_continues });
         defer A.free(s);
         try b.appendSlice(A, s);
     }
+    // `config show --show-origin` — the per-key provenance map lands last so
+    // the base object's members keep their pinned order/positions.
+    if (origins) |o| {
+        try b.appendSlice(A, ",\"origins\":");
+        try b.appendSlice(A, o);
+    }
+    try b.appendSlice(A, "}\n");
     return b.toOwnedSlice(A);
 }
 
-fn printEffectiveConfig(arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) void {
-    const s = formatEffectiveConfig(arena, cfg, env) catch return;
+fn printEffectiveConfig(io: std.Io, arena: std.mem.Allocator, cfg: Config, env: *std.process.Environ.Map) void {
+    const cedit = @import("configedit.zig");
+    const origins = cedit.formatShowOrigins(io, arena, cfg, env) catch null;
+    const s = formatEffectiveConfig(arena, cfg, env, origins) catch return;
     writeOut(s);
 }
 
@@ -1256,7 +1270,7 @@ pub fn main(init: std.process.Init) !void {
                     },
                 }
             }
-            printEffectiveConfig(arena, parsed.config, init.environ_map);
+            printEffectiveConfig(io, arena, parsed.config, init.environ_map);
             return;
         },
         .fleet => {
@@ -1543,7 +1557,7 @@ test "formatEffectiveConfig emits merged values with the key redacted" {
         .session = "work",
         .role = .author,
     };
-    const out = try formatEffectiveConfig(a, cfg, &env);
+    const out = try formatEffectiveConfig(a, cfg, &env, null);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "\"provider\":\"openai\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"model\":\"gpt-x\"") != null);
@@ -1569,7 +1583,7 @@ test "formatEffectiveConfig reports env key source and endpoint override" {
         .provider = "openai",
         .endpoint = "http://localhost:8080/v1/chat/completions",
     };
-    const out = try formatEffectiveConfig(a, cfg, &env);
+    const out = try formatEffectiveConfig(a, cfg, &env, null);
     try std.testing.expect(std.mem.indexOf(u8, out, "sk-env-9999") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"source\":\"env OPENAI_API_KEY\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"endpoint_source\":\"env:TAU_ENDPOINT\"") != null);
@@ -1582,7 +1596,7 @@ test "formatEffectiveConfig reports set:false and provider endpoint without over
     var env = std.process.Environ.Map.init(a);
 
     const cfg = Config{};
-    const out = try formatEffectiveConfig(a, cfg, &env);
+    const out = try formatEffectiveConfig(a, cfg, &env, null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"api_key\":{\"set\":false,\"value\":null,\"source\":null}") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"endpoint_source\":\"provider\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"exists\":false") != null);
@@ -1598,7 +1612,7 @@ test "formatEffectiveConfig redacts each per-provider keys entry and sorts them"
     try km.put("xiaomi", "xiaomi-key-bbbb");
     try km.put("deepseek", "deepseek-key-aaaa");
     const cfg = Config{ .provider = "openai", .keys = km };
-    const out = try formatEffectiveConfig(a, cfg, &env);
+    const out = try formatEffectiveConfig(a, cfg, &env, null);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "deepseek-key-aaaa") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "xiaomi-key-bbbb") == null);
@@ -1619,7 +1633,7 @@ test "formatEffectiveConfig reports config file path and warning" {
         .config_path = "/home/tester/.config/tau/config.json",
         .config_warning = "config file has invalid JSON and was ignored",
     };
-    const out = try formatEffectiveConfig(a, cfg, &env);
+    const out = try formatEffectiveConfig(a, cfg, &env, null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"path\":\"/home/tester/.config/tau/config.json\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"exists\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"warning\":\"config file has invalid JSON and was ignored\"") != null);
@@ -1632,9 +1646,23 @@ test "formatEffectiveConfig emits null for non-finite floats (valid JSON)" {
     var env = std.process.Environ.Map.init(a);
 
     const cfg = Config{ .temperature = std.math.nan(f32) };
-    const out = try formatEffectiveConfig(a, cfg, &env);
+    const out = try formatEffectiveConfig(a, cfg, &env, null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"temperature\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "nan") == null);
+}
+
+test "formatEffectiveConfig appends the origins member when supplied" {
+    var ar = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    var env = std.process.Environ.Map.init(a);
+
+    const cfg = Config{};
+    const out = try formatEffectiveConfig(a, cfg, &env, "{\"mode\":{\"source\":\"default\"}}");
+    try std.testing.expect(std.mem.indexOf(u8, out, ",\"origins\":{\"mode\":{\"source\":\"default\"}}") != null);
+    // No origins member without the flag's payload.
+    const plain = try formatEffectiveConfig(a, cfg, &env, null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "origins") == null);
 }
 
 test "ExitCode numeric values are pinned to the documented contract" {

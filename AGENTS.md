@@ -274,6 +274,7 @@ tau bug --dry-run                    # Preview the envelope + redactions; change
 tau config show                          # Resolved config (file+env+flags), keys redacted
 tau config show --provider openai        # Preview flag overrides without running
 tau config show --json                   # Pin the stable JSON form for scripts
+tau config show --show-origin            # + "origins": cli|env|file+line|provider|default per key
 # → {"config_file":{...},"provider":"openai","api_key":{"set":true,"value":"***wxyz","source":"env OPENAI_API_KEY"},...}
 # api_key.source ∈ --api-key | config keys[<p>] | env <VAR> | config api_key | env TAU_API_KEY | builtin
 # Stable shape: schema/tau-config-show.schema.json (CI-validated output).

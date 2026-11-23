@@ -162,6 +162,9 @@ _tau_complete() {
                         COMPREPLY=($(compgen -W "--mode --raw --show-origin" -- "$cur"))
                     fi
                     ;;
+                show)
+                    COMPREPLY=($(compgen -W "--mode --json --show-origin" -- "$cur"))
+                    ;;
                 "")
                     COMPREPLY=($(compgen -W "show validate set get unset edit schema --mode --raw --json" -- "$cur"))
                     ;;
