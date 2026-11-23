@@ -38,6 +38,7 @@ remediation to the single named check.
 - **Symptom:** the `config_file` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** ~/.config/tau/config.json doesn't parse (fail), or names an unregistered provider (warn) — a missing file is ok, config is optional
 - **Fix:** fix the JSON with `tau config edit` or pinpoint it with `tau config validate` (path:line:col plus the offending source line with a caret); `tau doctor --fix` moves a broken config to config.json.bak and writes a starter
+- **Related:** `doctor.config_deprecated_keys`, `doctor.config_permissions`, `doctor.plaintext_secrets`, `doctor.provider_resolution`
 - **Explain:** `tau explain doctor.config_file`
 
 ### `config_deprecated_keys`
@@ -45,6 +46,7 @@ remediation to the single named check.
 - **Symptom:** the `config_deprecated_keys` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the config file still uses a deprecated or renamed key spelling (e.g. compact_keep_recent) — old spellings still load with a warn envelope during the deprecation window but are scheduled for removal (skipped when there is no config file or it doesn't parse)
 - **Fix:** run `tau doctor --fix` to rewrite the deprecated spellings in place — `tau config validate` prints the exact line/column and the canonical key name
+- **Related:** `doctor.config_file`, `doctor.config_permissions`
 - **Explain:** `tau explain doctor.config_deprecated_keys`
 
 ### `config_permissions`
@@ -52,6 +54,7 @@ remediation to the single named check.
 - **Symptom:** the `config_permissions` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the config dir or config.json grants group/other read access (POSIX only — the file can hold API keys)
 - **Fix:** run `tau doctor --fix` (chmod 0700 on ~/.config/tau, 0600 on config.json) or chmod them yourself
+- **Related:** `doctor.config_file`, `doctor.plaintext_secrets`, `doctor.client_permissions`
 - **Explain:** `tau explain doctor.config_permissions`
 
 ### `plaintext_secrets`
@@ -59,6 +62,7 @@ remediation to the single named check.
 - **Symptom:** the `plaintext_secrets` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** credentials sit on disk as plaintext — api_key/keys.* values in the config file, or `env` blocks inside client settings files (warn only; reports key names and counts, never values)
 - **Fix:** move keys to environment variables — `tau config unset api_key` or `tau config unset keys.<provider>` — the provider env var still resolves; not auto-fixable
+- **Related:** `doctor.config_permissions`, `doctor.client_permissions`, `doctor.api_key`
 - **Explain:** `tau explain doctor.plaintext_secrets`
 
 ### `shell_completions`
@@ -66,6 +70,7 @@ remediation to the single named check.
 - **Symptom:** the `shell_completions` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** completion scripts are missing or stale for the detected shells
 - **Fix:** run `tau doctor --fix` or `tau setup --yes` to (re)install them
+- **Related:** `doctor.update_available`, `doctor.client_wiring`
 - **Explain:** `tau explain doctor.shell_completions`
 
 ### `provider_resolution`
@@ -73,6 +78,7 @@ remediation to the single named check.
 - **Symptom:** the `provider_resolution` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the configured or --provider provider isn't registered
 - **Fix:** pick a registered provider — `tau models` lists them; `tau config set provider <name>` persists it
+- **Related:** `doctor.config_file`, `doctor.api_key`, `doctor.endpoint_reachable`
 - **Explain:** `tau explain doctor.provider_resolution`
 
 ### `api_key`
@@ -80,6 +86,7 @@ remediation to the single named check.
 - **Symptom:** the `api_key` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** no API key resolves at any level of the precedence chain
 - **Fix:** pass --api-key, set the provider env var or TAU_API_KEY, or add api_key/keys.<provider> to config.json — `tau init` scaffolds a starter
+- **Related:** `doctor.provider_resolution`, `doctor.auth_probe`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.api_key`
 
 ### `curl`
@@ -87,6 +94,7 @@ remediation to the single named check.
 - **Symptom:** the `curl` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** curl is missing or `curl --version` fails — every LLM request goes through curl
 - **Fix:** install curl via your package manager and re-run `tau doctor`
+- **Related:** `doctor.endpoint_reachable`, `doctor.auth_probe`, `doctor.update_available`
 - **Explain:** `tau explain doctor.curl`
 
 ### `proxy_env`
@@ -94,6 +102,7 @@ remediation to the single named check.
 - **Symptom:** the `proxy_env` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** a *_proxy/*_PROXY variable looks wrong for the resolved endpoint — unparseable URL, credentials embedded in the URL (always redacted in output), HTTP_PROXY alone for an HTTPS endpoint (silent no-op), or NO_PROXY covering the endpoint host (warn only; runs under --offline)
 - **Fix:** export HTTPS_PROXY for https:// endpoints, drop credentials from the proxy URL, and make sure NO_PROXY doesn't cover the provider host — see "Behind a corporate proxy" below
+- **Related:** `doctor.tls_ca`, `doctor.endpoint_reachable`, `doctor.curl`
 - **Explain:** `tau explain doctor.proxy_env`
 
 ### `tls_ca`
@@ -101,6 +110,7 @@ remediation to the single named check.
 - **Symptom:** the `tls_ca` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** CURL_CA_BUNDLE/SSL_CERT_FILE points at a missing or non-file path, or an SSL_CERT_DIR entry is missing (fail — every HTTPS request would error); a configured proxy with no custom CA bundle warns — the corporate TLS-intercept case (runs under --offline)
 - **Fix:** set CURL_CA_BUNDLE (or SSL_CERT_FILE/SSL_CERT_DIR) to your organization's PEM bundle, or fix/remove the missing path
+- **Related:** `doctor.proxy_env`, `doctor.endpoint_reachable`, `doctor.curl`
 - **Explain:** `tau explain doctor.tls_ca`
 
 ### `endpoint_reachable`
@@ -108,6 +118,7 @@ remediation to the single named check.
 - **Symptom:** the `endpoint_reachable` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the provider endpoint doesn't answer within the probe timeout (skipped under --offline or without curl)
 - **Fix:** check the network, DNS, and the proxy_env/tls_ca rows — TAU_ENDPOINT overrides the endpoint
+- **Related:** `doctor.proxy_env`, `doctor.tls_ca`, `doctor.curl`, `doctor.auth_probe`
 - **Explain:** `tau explain doctor.endpoint_reachable`
 
 ### `auth_probe`
@@ -115,6 +126,7 @@ remediation to the single named check.
 - **Symptom:** the `auth_probe` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** a one-token authenticated completion fails — the resolved key is rejected (--deep only; skipped under --offline, without curl, or with no key resolved)
 - **Fix:** re-issue or rotate the key — the check names which source it resolved from (env var, config, or TAU_API_KEY)
+- **Related:** `doctor.api_key`, `doctor.endpoint_reachable`, `doctor.curl`
 - **Explain:** `tau explain doctor.auth_probe`
 
 ### `client_wiring`
@@ -122,6 +134,7 @@ remediation to the single named check.
 - **Symptom:** the `client_wiring` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** placeholder row — HOME is unset or no editor config dir was detected, so no per-client rows ran
 - **Fix:** install the editor you want wired, then run `tau setup --client <name>`
+- **Related:** `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_wiring`
 
 ### `client_permissions`
@@ -129,6 +142,7 @@ remediation to the single named check.
 - **Symptom:** the `client_permissions` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** a detected client settings file (or the mcacp bridge config) grants group/other access — `env` blocks inside it can hold API keys (POSIX only)
 - **Fix:** run `tau doctor --fix` (chmod 0600 on every detected client settings file and mcacp.json) or chmod them yourself
+- **Related:** `doctor.client_wiring`, `doctor.plaintext_secrets`, `doctor.config_permissions`
 - **Explain:** `tau explain doctor.client_permissions`
 
 ### `provider_probes`
@@ -136,6 +150,7 @@ remediation to the single named check.
 - **Symptom:** the `provider_probes` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** placeholder row for the opt-in sweep — skipped unless --probe is passed
 - **Fix:** run `tau doctor --probe` to live-verify connectivity and credentials for every registered provider
+- **Related:** `doctor.endpoint_reachable`, `doctor.auth_probe`, `doctor.curl`
 - **Explain:** `tau explain doctor.provider_probes`
 
 ### `update_available`
@@ -143,6 +158,7 @@ remediation to the single named check.
 - **Symptom:** the `update_available` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** a newer release exists upstream (warn only; skipped under --offline, TAU_NO_UPDATE_CHECK=1, or without curl)
 - **Fix:** run `tau upgrade` — TAU_NO_UPDATE_CHECK=1 silences the row
+- **Related:** `doctor.curl`, `doctor.shell_completions`
 - **Explain:** `tau explain doctor.update_available`
 
 ### `selftest`
@@ -150,6 +166,7 @@ remediation to the single named check.
 - **Symptom:** the `selftest` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the credential-free end-to-end run against a loopback stub provider fails (--selftest only) — the installed binary can't complete a session
 - **Fix:** re-run `tau doctor --selftest --debug` and attach the redacted log to `tau bug`
+- **Related:** `doctor.curl`, `doctor.provider_resolution`
 - **Explain:** `tau explain doctor.selftest`
 
 ### `client_zed`
@@ -157,6 +174,7 @@ remediation to the single named check.
 - **Symptom:** the `client_zed` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client zed` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/zed.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_zed`
 
 ### `client_nvim`
@@ -164,6 +182,7 @@ remediation to the single named check.
 - **Symptom:** the `client_nvim` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client nvim` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/nvim.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_nvim`
 
 ### `client_emacs`
@@ -171,6 +190,7 @@ remediation to the single named check.
 - **Symptom:** the `client_emacs` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client emacs` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/emacs.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_emacs`
 
 ### `client_vscode`
@@ -178,6 +198,7 @@ remediation to the single named check.
 - **Symptom:** the `client_vscode` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client vscode` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/vscode.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_vscode`
 
 ### `client_cursor`
@@ -185,6 +206,7 @@ remediation to the single named check.
 - **Symptom:** the `client_cursor` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client cursor` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/cursor.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_cursor`
 
 ### `client_jetbrains`
@@ -192,6 +214,7 @@ remediation to the single named check.
 - **Symptom:** the `client_jetbrains` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client jetbrains` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/jetbrains.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_jetbrains`
 
 ### `client_windsurf`
@@ -199,6 +222,7 @@ remediation to the single named check.
 - **Symptom:** the `client_windsurf` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client windsurf` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/windsurf.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_windsurf`
 
 ### `client_gemini`
@@ -206,6 +230,7 @@ remediation to the single named check.
 - **Symptom:** the `client_gemini` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client gemini` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/gemini-cli.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_gemini`
 
 ### `client_claude_desktop`
@@ -213,6 +238,7 @@ remediation to the single named check.
 - **Symptom:** the `client_claude_desktop` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client claude-desktop` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/claude-desktop.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_claude_desktop`
 
 ### `client_opencode`
@@ -220,6 +246,7 @@ remediation to the single named check.
 - **Symptom:** the `client_opencode` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client opencode` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/opencode.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_opencode`
 
 ### `client_cline`
@@ -227,6 +254,7 @@ remediation to the single named check.
 - **Symptom:** the `client_cline` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client cline` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/cline.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_cline`
 
 ### `client_goose`
@@ -234,6 +262,7 @@ remediation to the single named check.
 - **Symptom:** the `client_goose` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client goose` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/goose.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_goose`
 
 ### `client_continue`
@@ -241,6 +270,7 @@ remediation to the single named check.
 - **Symptom:** the `client_continue` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client continue` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/continue.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_continue`
 
 ### `client_roo_code`
@@ -248,6 +278,7 @@ remediation to the single named check.
 - **Symptom:** the `client_roo_code` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client roo-code` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/roo-code.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_roo_code`
 
 ### `client_kilo_code`
@@ -255,6 +286,7 @@ remediation to the single named check.
 - **Symptom:** the `client_kilo_code` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client kilo-code` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/kilo-code.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_kilo_code`
 
 ### `client_amazonq`
@@ -262,6 +294,7 @@ remediation to the single named check.
 - **Symptom:** the `client_amazonq` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client amazonq` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/amazonq.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_amazonq`
 
 ### `client_codex`
@@ -269,6 +302,7 @@ remediation to the single named check.
 - **Symptom:** the `client_codex` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** tau isn't wired into that client's settings, or the wiring is stale — a dead `command` path or wrong `args` counts as stale; the row is absent entirely when the client isn't installed
 - **Fix:** run `tau setup --client codex` to wire or refresh it — `tau doctor --fix` auto-fixes the bridge/ACP clients and writes a paste-ready snippet for the manual ones; guide: docs/clients/codex.md
+- **Related:** `doctor.client_wiring`, `doctor.client_permissions`, `doctor.plaintext_secrets`
 - **Explain:** `tau explain doctor.client_codex`
 
 ### `probe_xiaomi`
@@ -276,6 +310,7 @@ remediation to the single named check.
 - **Symptom:** the `probe_xiaomi` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` connectivity check against that provider's endpoint failed or timed out
 - **Fix:** verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models`
+- **Related:** `doctor.probe_xiaomi_auth`, `doctor.endpoint_reachable`, `doctor.curl`
 - **Explain:** `tau explain doctor.probe_xiaomi`
 
 ### `probe_xiaomi_auth`
@@ -283,6 +318,7 @@ remediation to the single named check.
 - **Symptom:** the `probe_xiaomi_auth` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion
 - **Fix:** re-issue or rotate the key — it resolves from the provider's env var, keys.xiaomi in config.json, TAU_API_KEY, or --api-key
+- **Related:** `doctor.probe_xiaomi`, `doctor.auth_probe`, `doctor.api_key`
 - **Explain:** `tau explain doctor.probe_xiaomi_auth`
 
 ### `probe_openai`
@@ -290,6 +326,7 @@ remediation to the single named check.
 - **Symptom:** the `probe_openai` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` connectivity check against that provider's endpoint failed or timed out
 - **Fix:** verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models`
+- **Related:** `doctor.probe_openai_auth`, `doctor.endpoint_reachable`, `doctor.curl`
 - **Explain:** `tau explain doctor.probe_openai`
 
 ### `probe_openai_auth`
@@ -297,6 +334,7 @@ remediation to the single named check.
 - **Symptom:** the `probe_openai_auth` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion
 - **Fix:** re-issue or rotate the key — it resolves from the provider's env var, keys.openai in config.json, TAU_API_KEY, or --api-key
+- **Related:** `doctor.probe_openai`, `doctor.auth_probe`, `doctor.api_key`
 - **Explain:** `tau explain doctor.probe_openai_auth`
 
 ### `probe_deepseek`
@@ -304,6 +342,7 @@ remediation to the single named check.
 - **Symptom:** the `probe_deepseek` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` connectivity check against that provider's endpoint failed or timed out
 - **Fix:** verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models`
+- **Related:** `doctor.probe_deepseek_auth`, `doctor.endpoint_reachable`, `doctor.curl`
 - **Explain:** `tau explain doctor.probe_deepseek`
 
 ### `probe_deepseek_auth`
@@ -311,6 +350,7 @@ remediation to the single named check.
 - **Symptom:** the `probe_deepseek_auth` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion
 - **Fix:** re-issue or rotate the key — it resolves from the provider's env var, keys.deepseek in config.json, TAU_API_KEY, or --api-key
+- **Related:** `doctor.probe_deepseek`, `doctor.auth_probe`, `doctor.api_key`
 - **Explain:** `tau explain doctor.probe_deepseek_auth`
 
 ### `probe_opencode-go`
@@ -318,6 +358,7 @@ remediation to the single named check.
 - **Symptom:** the `probe_opencode-go` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` connectivity check against that provider's endpoint failed or timed out
 - **Fix:** verify network reachability — DNS, firewall, and the proxy_env/tls_ca rows; the endpoint is listed by `tau models`
+- **Related:** `doctor.probe_opencode-go_auth`, `doctor.endpoint_reachable`, `doctor.curl`
 - **Explain:** `tau explain doctor.probe_opencode-go`
 
 ### `probe_opencode-go_auth`
@@ -325,4 +366,5 @@ remediation to the single named check.
 - **Symptom:** the `probe_opencode-go_auth` row reports a non-`ok` status (`warn` or `fail`) in the `tau doctor` report — one `check_event` line under `--json`.
 - **Cause:** the `--probe` credential check failed — the key resolved for that provider was rejected by a one-token authenticated completion
 - **Fix:** re-issue or rotate the key — it resolves from the provider's env var, keys.opencode-go in config.json, TAU_API_KEY, or --api-key
+- **Related:** `doctor.probe_opencode-go`, `doctor.auth_probe`, `doctor.api_key`
 - **Explain:** `tau explain doctor.probe_opencode-go_auth`

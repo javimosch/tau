@@ -6243,6 +6243,7 @@ test_group_explain() {
   contains "explain: check entry carries id" "$d1_out" '"check":"tls_ca"'
   contains "explain: check entry carries fails_when" "$d1_out" '"fails_when":"CURL_CA_BUNDLE/SSL_CERT_FILE'
   contains "explain: check entry carries remediation" "$d1_out" '"remediation":"set CURL_CA_BUNDLE'
+  contains "explain: check entry carries related checks" "$d1_out" '"related":["doctor.proxy_env","doctor.endpoint_reachable","doctor.curl"]'
   contains "explain: check entry anchors doctor section" "$d1_out" 'troubleshooting.md#setup--config-problems--tau-doctor'
 
   capture d2 "$BIN" explain tls_ca
@@ -6271,6 +6272,14 @@ test_group_explain() {
   contains "explain: --human prints check id" "$d6_out" 'doctor check  tls_ca'
   contains "explain: --human prints fails when" "$d6_out" 'fails when: CURL_CA_BUNDLE'
   contains "explain: --human prints fix" "$d6_out" 'fix:'
+  contains "explain: --human prints related" "$d6_out" 'related:    doctor.proxy_env, doctor.endpoint_reachable, doctor.curl'
+
+  # Related ids are themselves resolvable `tau explain` queries — the first
+  # link out of the tls_ca entry round-trips to its own check row.
+  capture d10 "$BIN" explain doctor.endpoint_reachable
+  ok "explain: related check exits 0" "$d10_rc" 0
+  contains "explain: related link resolves" "$d10_out" '"check":"endpoint_reachable"'
+  contains "explain: related entry links back" "$d10_out" '"doctor.tls_ca"'
 
   # The no-query catalog carries the third slice.
   contains "explain: catalog lists doctor checks" "$r3_out" '"doctor_checks":['

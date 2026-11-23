@@ -2,6 +2,7 @@ explain topics matching "proxy_env" (each resolves via `tau explain <name>`):
 
 doctor checks:
   doctor.proxy_env
+  doctor.tls_ca
   doctor.endpoint_reachable
   doctor.probe_xiaomi
   doctor.probe_openai
