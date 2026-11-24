@@ -14,10 +14,11 @@
 #   4. Rebuild the completion cache:
 #        rm -f ~/.zcompdump && compinit
 
-# Dynamic config-key candidates: the binary computes them at completion
-# time — `config-set` lists every key `tau config set` accepts;
-# `config-get`/`config-unset` list the keys present in the config file.
-_tau_config_keys() {
+# Dynamic candidates: the binary computes them at completion time —
+# `config-set` lists every key `tau config set` accepts;
+# `config-get`/`config-unset` list the keys present in the config file;
+# `doctor-check` lists every check id `tau doctor --check|--fix` accepts.
+_tau_candidates() {
     local -a keys
     keys=(${(f)"$(command tau completions candidates "$1" 2>/dev/null)"})
     (( ${#keys[@]} )) && compadd -a keys
@@ -174,7 +175,7 @@ _tau() {
                                     ;;
                                 set)
                                     _arguments \
-                                        '1: :_tau_config_keys config-set' \
+                                        '1: :_tau_candidates config-set' \
                                         '2:value:' \
                                         '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
@@ -182,14 +183,14 @@ _tau() {
                                     ;;
                                 get)
                                     _arguments \
-                                        '1: :_tau_config_keys config-get' \
+                                        '1: :_tau_candidates config-get' \
                                         '--raw[print secret values unredacted]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
                                     ;;
                                 unset)
                                     _arguments \
-                                        '1: :_tau_config_keys config-unset' \
+                                        '1: :_tau_candidates config-unset' \
                                         '--dry-run[preview the exact diff + .bak backup path]' \
                                         '--mode=[output format]:mode:(text json)' \
                                         '*:config file:_files -g "*.json"'
@@ -245,7 +246,7 @@ _tau() {
                 completions)
                     _arguments \
                         '1: :(install candidates)' \
-                        '2:group:(config-set config-get config-unset)' \
+                        '2:group:(config-set config-get config-unset doctor-check)' \
                         '--shell=[completions shell]:shell:(bash zsh fish pwsh all)' \
                         '--dry-run[preview the install; change nothing]' \
                         '--json[emit the stable schema-checked result object]'
@@ -257,8 +258,8 @@ _tau() {
                         '--deep[run an authenticated probe (spends ~1 token)]' \
                         '--probe[live-verify connectivity and credentials for every provider]' \
                         '--selftest[credential-free end-to-end session against a loopback stub]' \
-                        '--fix[remediate fixable checks (prompts per fix)]' \
-                        '--check=[rerun one named check — the post-fix verify loop]:check id:' \
+                        '--fix[remediate fixable checks — optional check-id scope]:check id:_tau_candidates doctor-check' \
+                        '--check[rerun one named check — the post-fix verify loop]:check id:_tau_candidates doctor-check' \
                         '--yes[apply --fix remediations without prompting]' \
                         '--json[stream NDJSON check/fix events + done:true verdict]' \
                         '--report[Markdown diagnostics bundle for bug reports]' \

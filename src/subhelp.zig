@@ -409,7 +409,8 @@ const completions_help =
     \\                   this at completion time: config-set lists
     \\                   every key `tau config set` accepts;
     \\                   config-get|config-unset list the keys present
-    \\                   in the config file
+    \\                   in the config file; doctor-check lists the
+    \\                   check ids `tau doctor --check|--fix` accept
     \\
     \\Options:
     \\      --shell <name>  Shell to install for:

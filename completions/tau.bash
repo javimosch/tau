@@ -59,6 +59,14 @@ _tau_complete() {
         --dir)
             declare -f _filedir &>/dev/null && _filedir -d
             return ;;
+        --check|--fix)
+            # `tau doctor --check|--fix <check-id>` — check ids come from the
+            # binary (dynamic): the doctorcatalog registry, so the list can
+            # never drift from the ids the flags resolve.
+            if [[ "$subcommand" == "doctor" ]]; then
+                COMPREPLY=($(compgen -W "$(command tau completions candidates doctor-check 2>/dev/null)" -- "$cur"))
+            fi
+            return ;;
         --schema)
             if [[ "$cur" == @* ]]; then
                 local path="${cur#@}"
@@ -197,7 +205,7 @@ _tau_complete() {
                 fi
             done
             if [[ "$cmpl_sub" == "candidates" ]]; then
-                COMPREPLY=($(compgen -W "config-set config-get config-unset" -- "$cur"))
+                COMPREPLY=($(compgen -W "config-set config-get config-unset doctor-check" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "install candidates --shell --dry-run --json" -- "$cur"))
             fi

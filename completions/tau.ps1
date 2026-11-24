@@ -30,7 +30,7 @@ $TauArgumentCompleter = {
     $bugFlags    = @('--title', '--body', '--labels', '--open', '--out', '--no-report', '--attach-report',
                      '--dry-run', '--offline', '--deep', '--shell', '--provider', '--model', '--api-key', '--json')
     $completionsArgs = @('install', 'candidates', '--shell', '--dry-run', '--json')
-    $candidateGroups = @('config-set', 'config-get', 'config-unset')
+    $candidateGroups = @('config-set', 'config-get', 'config-unset', 'doctor-check')
     $versionFlags = @('--verbose', '--check', '--json', '--mode')
     $upgradeFlags = @('--yes', '-y', '--dir', '--dry-run', '--verify-signature', '--json')
     # Codes mirror src/errors.zig; config keys mirror docs/config.md;
@@ -278,6 +278,17 @@ $TauArgumentCompleter = {
         '--load-agents-md' { return & $completeFile $wordToComplete }
         '--dir'            { return & $completeFile $wordToComplete }
         '--out'            { return & $completeFile $wordToComplete }
+        { $_ -in '--check', '--fix' } {
+            # `tau doctor --check|--fix <check-id>` — check ids come from the
+            # binary (dynamic): the doctorcatalog registry, so the list can
+            # never drift from the ids the flags resolve. `version --check`
+            # is a bare flag — nothing to offer outside `doctor`.
+            if ($context -contains 'doctor') {
+                $ids = @(& tau completions candidates doctor-check 2>$null)
+                return & $emit $ids 'ParameterValue'
+            }
+            return
+        }
         '--schema' {
             if ($currentWord.StartsWith('@')) { return & $atFiles $wordToComplete }
             return
