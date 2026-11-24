@@ -7,7 +7,9 @@
 # Options:
 #   --version X.Y.Z   install a specific release (default: latest)
 #   --dir DIR         install into DIR (default: ~/.local/bin)
-#   --dry-run         print the resolved platform/URL/plan and exit 0
+#   --dry-run         print the resolved plan — install dir, PATH edit, and
+#                     checksum/signature verification steps — without writing
+#                     anything, and exit 0
 #   -h, --help        show this help
 #
 # Environment overrides:
@@ -57,7 +59,9 @@ install.sh — install a prebuilt tau binary (no Zig toolchain required).
 Options:
   --version X.Y.Z   install a specific release (default: latest)
   --dir DIR         install into DIR (default: ~/.local/bin)
-  --dry-run         print the resolved platform/URL/plan and exit 0
+  --dry-run         print the resolved plan — install dir, PATH edit, and
+                    checksum/signature verification steps — without writing
+                    anything, and exit 0
   -h, --help        show this help
 
 Environment overrides:
@@ -133,7 +137,41 @@ echo "install.sh: platform=$PLATFORM release=$RELEASE_DESC dest=$DEST"
 echo "install.sh: url=$ASSET_URL"
 
 if [ "$DRY_RUN" = "1" ]; then
-  echo "install.sh: dry-run — would download, verify, and install 'tau' into $DEST"
+  echo "install.sh: dry-run — nothing will be downloaded or written; resolved plan:"
+  echo "install.sh:   install dir : $DEST (created if missing)"
+  echo "install.sh:   binary      : $DEST/tau"
+  echo "install.sh:   download    : $ASSET_URL"
+  if [ "${TAU_SKIP_CHECKSUM:-0}" = "1" ]; then
+    echo "install.sh:   checksum    : SKIPPED — TAU_SKIP_CHECKSUM=1 (not recommended; the install would proceed unverified)"
+  else
+    echo "install.sh:   checksum    : fetch $SUMS_URL and verify $ASSET against its entry (fail-closed)"
+    if command -v sha256sum >/dev/null 2>&1; then
+      echo "install.sh:     tool        : sha256sum -c (found on PATH)"
+    elif command -v shasum >/dev/null 2>&1; then
+      echo "install.sh:     tool        : shasum -a 256 -c (found on PATH)"
+    else
+      echo "install.sh:     tool        : none — no sha256sum/shasum on PATH, the install would abort"
+    fi
+  fi
+  if [ "${TAU_VERIFY_SIGSTORE:-0}" = "1" ]; then
+    echo "install.sh:   signature   : fetch $ASSET_URL.sigstore.json and verify via cosign verify-blob (fail-closed)"
+    if command -v cosign >/dev/null 2>&1; then
+      echo "install.sh:     cosign      : found on PATH"
+    else
+      echo "install.sh:     cosign      : NOT on PATH — the install would abort"
+    fi
+  else
+    echo "install.sh:   signature   : skipped — set TAU_VERIFY_SIGSTORE=1 for keyless cosign verification"
+  fi
+  echo "install.sh:   extract     : tar -xzf $ASSET"
+  echo "install.sh:   install     : install -m 0755 <tmpdir>/tau $DEST/tau"
+  case ":$PATH:" in
+    *":$DEST:"*)
+      echo "install.sh:   PATH        : $DEST is already on PATH — no edit needed" ;;
+    *)
+      echo "install.sh:   PATH        : $DEST is not on PATH — after installing you would need:"
+      echo "install.sh:                   export PATH=\"$DEST:\$PATH\"" ;;
+  esac
   exit 0
 fi
 
