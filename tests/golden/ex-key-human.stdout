@@ -1,4 +1,6 @@
 config key  stream (boolean)
   constraints: —
+  default:     `true`
+  overrides:   `--stream` / `--no-stream` > config `stream` > default
   description: Stream responses token-by-token (SSE).
-  docs:  https://github.com/javimosch/tau/blob/master/docs/config.md
+  docs:        https://github.com/javimosch/tau/blob/master/docs/config.md

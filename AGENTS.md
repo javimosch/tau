@@ -321,7 +321,8 @@ tau config edit ./ci.json              # Explicit path
 tau explain                       # List the error + config-key + doctor-check + env-var + client + topic + subcommand catalog (JSON)
 tau explain 106                   # Error entry by exit code: cause + hint + docs
 tau explain AuthFailed            # Same, by wire `type` tag
-tau explain timeout_ms            # Config key: type + constraints + description
+tau explain timeout_ms            # Config key: type + constraints + default + env/CLI override chain + description
+tau explain config.provider       # Same, the canonical prefixed spelling
 tau explain keys.openai           # Same, a dotted keys.<provider> member path
 tau explain doctor.tls_ca         # Doctor check: fails-when + remediation
 tau explain TAU_ENDPOINT          # Env var: consumers + summary (from docs/env.md)

@@ -23,7 +23,8 @@
 //!     addressed by `subcommand.<name>` or a bare subcommand name.
 //!
 //! Error entries render as {code,type,recoverable,cause,hint,docs}; key
-//! entries as {key,type,constraints,description,docs}; check entries as
+//! entries as {key,type,constraints,default,overrides,description,docs};
+//! check entries as
 //! {check,fails_when,remediation,docs}; env entries as
 //! {env,section,consumers,summary,docs}; client entries as
 //! {client,transport,wiring,prereqs,setup,config_dir,settings_path,
@@ -506,7 +507,8 @@ fn allTermsHit(hay: []const u8, terms: []const []const u8) bool {
 /// --list renders, filtered to the entries whose searchable text matches
 /// every whitespace-separated term (case-insensitive). Searched text: an
 /// error's code + type + cause + hint, a config key's name + type +
-/// constraints + description, a check's id + fails_when + remediation, an
+/// constraints + default + overrides + description, a check's id +
+/// fails_when + remediation, an
 /// env var's name + consumers + summary, a client's name + transport +
 /// wiring + prereqs + verify + doctor check (plus `--client` alias
 /// resolution — `roo` and `amazon-q` reach their clients by name), a
@@ -527,7 +529,7 @@ pub fn searchCatalog(a: std.mem.Allocator, query: []const u8) !TopicLists {
             if (allTermsHit(hay, terms)) try errs.append(a, s);
         }
         for (all_keys) |ks| {
-            const hay = try searchHaystack(a, &.{ ks.name, ks.type_name, ks.constraints, ks.desc });
+            const hay = try searchHaystack(a, &.{ ks.name, ks.type_name, ks.constraints, ks.default, ks.overrides, ks.desc });
             if (allTermsHit(hay, terms)) try keys.append(a, ks);
         }
         for (doctorcat.check_catalog) |cs| {

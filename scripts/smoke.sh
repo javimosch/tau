@@ -6184,16 +6184,21 @@ test_group_explain() {
   contains "explain: key entry carries key name" "$k1_out" '"key":"timeout_ms"'
   contains "explain: key entry carries type" "$k1_out" '"type":"integer"'
   contains "explain: key entry carries constraints" "$k1_out" '"constraints":"`>= 0`"'
+  contains "explain: key entry carries default" "$k1_out" '"default":"`120000`"'
+  contains "explain: key entry carries override chain" "$k1_out" '"overrides":"`--timeout-ms` > config `timeout_ms` > default"'
   contains "explain: key entry links config.md" "$k1_out" '"docs":"https://github.com/javimosch/tau/blob/master/docs/config.md"'
 
   capture k2 "$BIN" explain provider
   ok "explain: enum'd key exits 0" "$k2_rc" 0
   contains "explain: enum key lists provider choices" "$k2_out" 'one of `xiaomi` | `openai`'
+  contains "explain: enum key names the flag override" "$k2_out" '`--provider`'
+  contains "explain: enum key notes TAU_ENDPOINT scope" "$k2_out" '`TAU_ENDPOINT` overrides the endpoint URL only'
 
   capture k3 "$BIN" explain keys.openai
   ok "explain: dotted member path exits 0" "$k3_rc" 0
   contains "explain: dotted entry names the member path" "$k3_out" '"key":"keys.openai"'
   contains "explain: dotted entry is a non-empty string" "$k3_out" '"constraints":"non-empty"'
+  contains "explain: dotted entry spells the key chain" "$k3_out" '`--api-key` > `keys.openai` > provider env var (`OPENAI_API_KEY`)'
 
   # The `config.` prefix is the namespaced spelling — same convention as
   # `doctor.<id>` — so parse-failure hints can cite `tau explain config.<key>`.
@@ -6207,6 +6212,8 @@ test_group_explain() {
   capture k3b "$BIN" explain --human stream
   ok "explain: --human key exits 0" "$k3b_rc" 0
   contains "explain: --human prints key+type" "$k3b_out" 'config key  stream (boolean)'
+  contains "explain: --human prints default" "$k3b_out" 'default:     `true`'
+  contains "explain: --human prints overrides" "$k3b_out" 'overrides:   `--stream` / `--no-stream` > config `stream` > default'
   contains "explain: --human prints description" "$k3b_out" 'description: Stream responses token-by-token'
 
   # Error catalog wins on the shared namespace — `timeout` stays the error.
