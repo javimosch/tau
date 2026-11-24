@@ -7583,6 +7583,29 @@ test_group_release() {
   out=$(TAU_BASE_URL=file:///tmp/staged TAU_OS=darwin TAU_ARCH=arm64 "$inst" --dry-run --version 2.0.0 2>&1)
   contains "TAU_BASE_URL composes with --version" "$out" "file:///tmp/staged/download/v2.0.0/tau-macos-aarch64.tar.gz"
 
+  # ── dry-run plan detail (task #515) — install dir, PATH edit, verification steps ──
+  local drdest="$SMOKE_TEMP/install-dr-dest"
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 TAU_INSTALL_DIR="$drdest" "$inst" --dry-run 2>&1)
+  contains "dry-run names the resolved install dir" "$out" "install dir : $drdest"
+  contains "dry-run names the target binary" "$out" "binary      : $drdest/tau"
+  contains "dry-run shows the checksum manifest URL" "$out" "latest/download/SHA256SUMS.txt"
+  contains "dry-run names the checksum step fail-closed" "$out" "checksum    : fetch"
+  contains "dry-run resolves a checksum tool" "$out" "tool        : "
+  contains "dry-run notes signature is opt-in" "$out" "signature   : skipped"
+  contains "dry-run previews the PATH edit" "$out" "export PATH=\"$drdest:\$PATH\""
+  contains "dry-run PATH line says not on PATH" "$out" "is not on PATH"
+  [ ! -e "$drdest" ]; ok "dry-run created no install dir" "$?" 0
+
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 TAU_INSTALL_DIR=/usr/bin "$inst" --dry-run 2>&1)
+  contains "dry-run detects dest already on PATH" "$out" "/usr/bin is already on PATH"
+
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 TAU_SKIP_CHECKSUM=1 "$inst" --dry-run 2>&1)
+  contains "dry-run marks checksum skipped" "$out" "checksum    : SKIPPED"
+
+  out=$(TAU_OS=linux TAU_ARCH=x86_64 TAU_VERIFY_SIGSTORE=1 "$inst" --dry-run 2>&1)
+  contains "dry-run shows the sigstore bundle URL" "$out" "tau-linux-x86_64.tar.gz.sigstore.json"
+  contains "dry-run names the cosign step" "$out" "cosign verify-blob"
+
   # ── error paths ──
   TAU_OS=plan9 TAU_ARCH=x "$inst" --dry-run >/dev/null 2>&1
   ok "dry-run rejects unsupported OS" "$?" 1
@@ -7607,6 +7630,16 @@ test_group_release() {
     out=$(pwsh -NoProfile -File "$ps1" --dry-run 2>&1)
     contains "install.ps1 dry-run targets the windows zip" "$out" "tau-windows-x86_64.zip"
     contains "install.ps1 dry-run default hits latest" "$out" "releases/latest/download/"
+
+    out=$(TAU_INSTALL_DIR='C:\tau-test' pwsh -NoProfile -File "$ps1" --dry-run 2>&1)
+    contains "install.ps1 dry-run names the resolved install dir" "$out" "install dir : C:\tau-test"
+    contains "install.ps1 dry-run names the target binary" "$out" 'binary      : C:\tau-test\tau.exe'
+    contains "install.ps1 dry-run shows the checksum manifest URL" "$out" "latest/download/SHA256SUMS.txt"
+    contains "install.ps1 dry-run names Get-FileHash" "$out" "Get-FileHash"
+    contains "install.ps1 dry-run previews the PATH edit" "$out" "SetEnvironmentVariable('Path'"
+
+    out=$(TAU_SKIP_CHECKSUM=1 pwsh -NoProfile -File "$ps1" --dry-run 2>&1)
+    contains "install.ps1 dry-run marks checksum skipped" "$out" "checksum    : SKIPPED"
 
     out=$(pwsh -NoProfile -File "$ps1" --dry-run --version 1.2.3 2>&1)
     contains "install.ps1 dry-run --version pins tag URL" "$out" "releases/download/v1.2.3/tau-windows-x86_64.zip"

@@ -181,6 +181,9 @@ checks validate against it ([docs/acp.md](acp.md),
   manifest, no checksum tool, or a checksum mismatch means no install.
   Asset naming (`tau-<os>-<arch>.tar.gz`) keeps the version out of the
   filename so `latest/download/` URLs are permanent.
+- `install.sh --dry-run` / `install.ps1 -DryRun` are read-only: they
+  print the resolved install dir, the PATH edit that would be needed,
+  and the checksum/signature verification steps — and write nothing.
 - `tau upgrade` reuses the same verified installer path (env contract:
   `TAU_BASE_URL`, `TAU_INSTALL_DIR`, `TAU_INSTALL_URL`,
   `TAU_SKIP_CHECKSUM`, `TAU_VERIFY_SIGSTORE` flow through to it) and

@@ -6,7 +6,8 @@
 # Options (both -name and --name forms are accepted, values via space, =, or :):
 #   -Version X.Y.Z    install a specific release (default: latest)
 #   -Dir DIR          install into DIR (default: $env:LOCALAPPDATA\Programs\tau)
-#   -DryRun           print the resolved platform/URL/plan and exit 0
+#   -DryRun           print the resolved plan — install dir, PATH edit, and
+#                     checksum verification steps — without writing anything
 #   -Help             show this help
 #
 # Environment overrides:
@@ -45,7 +46,8 @@ install.ps1 — install a prebuilt tau binary on Windows (no Zig toolchain requi
 Options (both -name and --name forms are accepted):
   -Version X.Y.Z    install a specific release (default: latest)
   -Dir DIR          install into DIR (default: $env:LOCALAPPDATA\Programs\tau)
-  -DryRun           print the resolved platform/URL/plan and exit 0
+  -DryRun           print the resolved plan — install dir, PATH edit, and
+                    checksum verification steps — without writing anything
   -Help             show this help
 
 Environment overrides:
@@ -131,7 +133,25 @@ Write-Host "install.ps1: platform=$Platform release=$ReleaseDesc dest=$Dest"
 Write-Host "install.ps1: url=$AssetUrl"
 
 if ($DryRun) {
-    Write-Host "install.ps1: dry-run — would download, verify, and install 'tau.exe' into $Dest"
+    Write-Host "install.ps1: dry-run — nothing will be downloaded or written; resolved plan:"
+    Write-Host "install.ps1:   install dir : $Dest (created if missing)"
+    Write-Host "install.ps1:   binary      : $Dest\tau.exe"
+    Write-Host "install.ps1:   download    : $AssetUrl"
+    if ($env:TAU_SKIP_CHECKSUM -eq '1') {
+        Write-Host "install.ps1:   checksum    : SKIPPED — TAU_SKIP_CHECKSUM=1 (not recommended; the install would proceed unverified)"
+    } else {
+        Write-Host "install.ps1:   checksum    : fetch $SumsUrl and verify $Asset against its entry (Get-FileHash -Algorithm SHA256; fail-closed)"
+    }
+    Write-Host "install.ps1:   extract     : Expand-Archive $Asset; copy tau.exe -> $Dest\tau.exe"
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $onPath = $false
+    if ($userPath) { $onPath = ($userPath -split ';') -contains $Dest }
+    if ($onPath) {
+        Write-Host "install.ps1:   PATH        : $Dest is already on your user PATH — no edit needed"
+    } else {
+        Write-Host "install.ps1:   PATH        : $Dest is not on your user PATH — after installing you would need:"
+        Write-Host "install.ps1:     [Environment]::SetEnvironmentVariable('Path', `"$Dest;`" + [Environment]::GetEnvironmentVariable('Path','User'), 'User')"
+    }
     return
 }
 
