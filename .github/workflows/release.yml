@@ -8,13 +8,18 @@ name: release
 # Assets: tau-<os>-<arch>.tar.gz for linux/macos × x86_64/aarch64 and
 # tau-windows-x86_64.zip (Windows convention is .zip, not .tar.gz), plus a
 # SHA256SUMS.txt manifest. install.sh / install.ps1 consume exactly these names.
+# The packages job additionally turns the linux tarballs into distro packages —
+# tau_<ver>_<amd64|arm64>.deb and tau-<ver>-1.<x86_64|aarch64>.rpm — so
+# Debian/Fedora-family users can `apt install` / `dnf install` them.
 #
-# Jobs: build → smoke / smoke-windows / smoke-action → release → homebrew /
-# winget / scoop. The smoke jobs install every artifact through install.sh (or
-# install.ps1 on a native Windows runner) on the matching OS/arch runner
-# (against a local stand-in for the releases URL via TAU_BASE_URL) and verify
-# `tau --version`/`--help` run, so a broken binary can never reach the
-# published release.
+# Jobs: build → smoke / smoke-windows / smoke-action + packages → smoke-deb /
+# smoke-rpm → release → homebrew / winget / scoop. The smoke jobs install
+# every artifact through install.sh (or install.ps1 on a native Windows
+# runner) on the matching OS/arch runner (against a local stand-in for the
+# releases URL via TAU_BASE_URL) and verify `tau --version`/`--help` run; the
+# smoke-deb / smoke-rpm jobs install the built packages through apt / dnf on
+# matching-arch runners (dnf inside a Fedora container) so a broken binary or
+# malformed package can never reach the published release.
 #
 # Integrity: the build job emits a .sha256 next to each archive; the smoke
 # jobs verify it before staging; the release job re-checks SHA256SUMS.txt
@@ -295,9 +300,153 @@ jobs:
           tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
           tau --help | grep 'Usage:'
 
+  packages:
+    # Repackages the two linux release tarballs into native distro packages:
+    # tau_<ver>_<amd64|arm64>.deb (apt/dpkg) and
+    # tau-<ver>-1.<x86_64|aarch64>.rpm (dnf/rpm). The builders are dependency-
+    # free (scripts/build-deb.sh uses ar+tar, scripts/build-rpm.py is pure
+    # Python stdlib) so no dpkg/rpmbuild toolchain is needed. Each package
+    # gets a per-asset .sha256 like the tarballs, and the smoke-deb /
+    # smoke-rpm jobs gate the release on real apt/dnf installs.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-x86_64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-aarch64
+          path: dist
+
+      - name: Verify artifact checksums
+        run: (cd dist && sha256sum -c *.sha256)
+
+      - name: Resolve package version
+        # Tag builds name packages after the tag; workflow_dispatch dry runs
+        # fall back to src/version.zig so the step still produces assets.
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="$(sed -n 's/.*version = "\([^"]*\)".*/\1/p' src/version.zig | head -n1)"
+          fi
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          echo "packaging version $v"
+
+      - name: Build .deb and .rpm packages
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.v }}"
+          mkdir -p stage/amd64 stage/arm64
+          tar -xzf dist/tau-linux-x86_64.tar.gz -C stage/amd64
+          tar -xzf dist/tau-linux-aarch64.tar.gz -C stage/arm64
+          scripts/build-deb.sh --binary stage/amd64/tau --version "$v" --arch amd64 --output "dist/tau_${v}_amd64.deb"
+          scripts/build-deb.sh --binary stage/arm64/tau --version "$v" --arch arm64 --output "dist/tau_${v}_arm64.deb"
+          python3 scripts/build-rpm.py --binary stage/amd64/tau --version "$v" --arch x86_64 --output "dist/tau-${v}-1.x86_64.rpm"
+          python3 scripts/build-rpm.py --binary stage/arm64/tau --version "$v" --arch aarch64 --output "dist/tau-${v}-1.aarch64.rpm"
+          python3 scripts/build-rpm.py --verify "dist/tau-${v}-1.x86_64.rpm"
+          python3 scripts/build-rpm.py --verify "dist/tau-${v}-1.aarch64.rpm"
+          (cd dist && for p in *.deb *.rpm; do sha256sum "$p" > "$p.sha256"; done)
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-packages
+          path: |
+            dist/*.deb
+            dist/*.deb.sha256
+            dist/*.rpm
+            dist/*.rpm.sha256
+          retention-days: 30
+
+  smoke-deb:
+    # Installs the built .deb through apt on a matching-arch Debian-family
+    # runner and verifies tau runs — the real consumer path for `apt install
+    # ./tau_<ver>_<arch>.deb` (dpkg -i is the same payload, one dependency
+    # layer thinner).
+    needs: [build, packages]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    debarch: amd64 }
+          - { os: ubuntu-24.04-arm, debarch: arm64 }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-packages
+          path: dist
+
+      - name: Verify package checksum
+        run: (cd dist && sha256sum -c "tau_"*"_${{ matrix.debarch }}.deb.sha256")
+
+      - name: Install via apt
+        run: |
+          pkg="$(ls dist/tau_*_${{ matrix.debarch }}.deb)"
+          sudo apt-get install -y "./$pkg"
+
+      - name: Verify the installed binary
+        run: |
+          tau --version
+          tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
+          tau --help > /dev/null
+          tau --help | grep 'Usage:'
+          dpkg -l tau | grep '^ii'
+
+      - name: Remove the package
+        run: |
+          sudo apt-get remove -y tau
+          ! command -v tau >/dev/null 2>&1
+
+  smoke-rpm:
+    # Installs the built .rpm through dnf inside a Fedora container on a
+    # matching-arch runner — GitHub has no RPM-family hosted image, so the
+    # fedora container stands in for dnf-based distros. Verifies tau runs and
+    # the package metadata rpm exposes is sane.
+    needs: [build, packages]
+    runs-on: ${{ matrix.os }}
+    container: fedora:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    rpmarch: x86_64 }
+          - { os: ubuntu-24.04-arm, rpmarch: aarch64 }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-packages
+          path: dist
+
+      - name: Verify package checksum
+        run: (cd dist && sha256sum -c "tau-"*".${{ matrix.rpmarch }}.rpm.sha256")
+
+      - name: Install via dnf
+        run: dnf install -y ./dist/tau-*.${{ matrix.rpmarch }}.rpm
+
+      - name: Verify the installed binary
+        run: |
+          tau --version
+          tau --version | grep -E '^tau [0-9]+\.[0-9]+\.[0-9]+$'
+          tau --help > /dev/null
+          tau --help | grep 'Usage:'
+          rpm -q tau
+
+      - name: Remove the package
+        run: |
+          dnf remove -y tau
+          ! command -v tau >/dev/null 2>&1
+
   release:
     if: github.ref_type == 'tag'
-    needs: [build, smoke, smoke-windows, smoke-action]
+    needs: [build, smoke, smoke-windows, smoke-action, smoke-deb, smoke-rpm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -327,8 +476,9 @@ jobs:
 
       - name: Generate checksums
         # Clean filenames (no ./ prefix) so install.sh's / install.ps1's
-        # per-asset grep matches.
-        run: (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS.txt)
+        # per-asset grep matches. The .deb/.rpm packages ride along in the
+        # same manifest so manual downloads verify the same way.
+        run: (cd dist && sha256sum *.tar.gz *.zip *.deb *.rpm > SHA256SUMS.txt)
 
       - name: Verify published checksums
         # Self-check the manifest the release ships — a malformed SHA256SUMS.txt
@@ -344,13 +494,20 @@ jobs:
           case "$TAG" in *-*) set -- --prerelease ;; esac
           cat > /tmp/release-notes.md <<'EOF'
           Prebuilt binaries for Linux and macOS (x86_64 and aarch64) and
-          Windows (x86_64).
+          Windows (x86_64), plus .deb (Debian/Ubuntu) and .rpm
+          (Fedora/RHEL-family) packages for the linux targets.
 
           ## Install
 
               brew install javimosch/tap/tau        # Homebrew (macOS/Linux)
 
               curl -fsSL https://raw.githubusercontent.com/javimosch/tau/master/install.sh | sh
+
+              # Debian/Ubuntu (download tau_<ver>_<amd64|arm64>.deb first):
+              sudo apt install ./tau_<ver>_amd64.deb
+
+              # Fedora/RHEL-family (download tau-<ver>-1.<x86_64|aarch64>.rpm first):
+              sudo dnf install ./tau-<ver>-1.x86_64.rpm
 
               # Windows (PowerShell):
               irm https://raw.githubusercontent.com/javimosch/tau/master/install.ps1 | iex
@@ -366,7 +523,7 @@ jobs:
             --title "tau $TAG" \
             --notes-file /tmp/release-notes.md \
             "$@" \
-            dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt
+            dist/*.tar.gz dist/*.zip dist/*.deb dist/*.rpm dist/SHA256SUMS.txt
 
   homebrew:
     # Publishes Formula/tau.rb to the javimosch/homebrew-tap repository so

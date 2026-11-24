@@ -547,8 +547,10 @@ tau upgrade --verify-signature   # Also verify the asset's cosign/Sigstore bundl
 | `src/term.zig` | Portable stdout/stderr + color policy (`colorEnabled`/`colorPolicy`/`sgrWrap` — NO_COLOR/CLICOLOR/CLICOLOR_FORCE/TERM=dumb/TTY) | Terminal output changes, styling new surfaces |
 | `install.sh` | curl-able installer for prebuilt releases | Installer/flag/env changes |
 | `action.yml` | `setup-tau` composite GitHub Action (wraps `install.sh`) | Action inputs/outputs |
-| `.github/workflows/release.yml` | Tag-triggered release build + smoke + publish + Homebrew tap update | Release process changes |
+| `.github/workflows/release.yml` | Tag-triggered release build + smoke + packages (.deb/.rpm) + smoke-deb/smoke-rpm + publish + Homebrew tap update | Release process changes |
 | `scripts/generate-homebrew-formula.sh` | Renders `Formula/tau.rb` from a version + `SHA256SUMS.txt` | Formula field/asset changes |
+| `scripts/build-deb.sh` | Builds `tau_<ver>_<amd64|arm64>.deb` from a binary (pure sh + ar + tar, deterministic) | .deb payload/metadata changes |
+| `scripts/build-rpm.py` | Builds `tau-<ver>-1.<x86_64|aarch64>.rpm` from a binary (pure Python stdlib; `--verify` re-parses) | .rpm payload/metadata changes |
 
 #### Validation Commands
 
