@@ -11,6 +11,9 @@
 //!   config-unset  —   ($HOME/.config/tau/config.json): each top-level
 //!                   member plus keys.<member> for entries inside `keys`.
 //!                   Missing/unreadable/invalid file -> no candidates.
+//!   doctor-check  — every check id `tau doctor --check <id>` and
+//!                   `tau doctor --fix <id>` resolve: the static report rows
+//!                   plus client_<name> and probe_<provider>[/_auth].
 //!
 //! Deliberately a plain line list, not a --json contract surface: output is
 //! consumed by compgen/compadd/fish -a/CompletionResult inside completion
@@ -20,12 +23,13 @@ const std = @import("std");
 const cfgmod = @import("config.zig");
 const configfile = @import("configfile.zig");
 const configedit = @import("configedit.zig");
+const doctorcatalog = @import("doctorcatalog.zig");
 const term = @import("term.zig");
 
 const file_fields = @typeInfo(configfile.FileConfig).@"struct".fields;
 
 /// The candidate groups `tau completions candidates` accepts.
-pub const groups = [_][]const u8{ "config-set", "config-get", "config-unset" };
+pub const groups = [_][]const u8{ "config-set", "config-get", "config-unset", "doctor-check" };
 
 pub fn isGroup(name: []const u8) bool {
     for (groups) |g| {
@@ -51,6 +55,8 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.Map, 
         try setKeys(arena)
     else if (std.mem.eql(u8, group, "config-get") or std.mem.eql(u8, group, "config-unset"))
         try fileKeys(io, arena, env)
+    else if (std.mem.eql(u8, group, "doctor-check"))
+        try checkIds(arena)
     else
         &.{};
     for (keys) |k| {
@@ -94,6 +100,19 @@ pub fn fileKeys(io: std.Io, arena: std.mem.Allocator, env: *std.process.Environ.
     return keys.items;
 }
 
+/// `doctor --check|--fix <id>` candidates — the bare check ids from the
+/// doctorcatalog registry (static rows, then client_<name>, then
+/// probe_<provider> and probe_<provider>_auth). The catalog is the same pool
+/// `--check` resolves through findCheck and `--fix` resolves through the
+/// emitted row names, so the candidates can't drift from accepted spellings.
+/// The `doctor.` prefix is offered neither here nor required — both flags
+/// take the bare id.
+pub fn checkIds(arena: std.mem.Allocator) ![][]const u8 {
+    const ids = try arena.alloc([]const u8, doctorcatalog.check_catalog.len);
+    for (doctorcatalog.check_catalog, 0..) |cs, i| ids[i] = cs.name;
+    return ids;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -135,7 +154,7 @@ fn hasKey(keys: []const []const u8, name: []const u8) bool {
     return false;
 }
 
-test "isGroup + groupNames cover exactly the config groups" {
+test "isGroup + groupNames cover exactly the registered groups" {
     var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_inst.deinit();
     const arena = arena_inst.allocator();
@@ -143,9 +162,11 @@ test "isGroup + groupNames cover exactly the config groups" {
     try testing.expect(isGroup("config-set"));
     try testing.expect(isGroup("config-get"));
     try testing.expect(isGroup("config-unset"));
+    try testing.expect(isGroup("doctor-check"));
     try testing.expect(!isGroup("config"));
+    try testing.expect(!isGroup("doctor"));
     try testing.expect(!isGroup("bogus"));
-    try testing.expectEqualStrings("config-set | config-get | config-unset", try groupNames(arena));
+    try testing.expectEqualStrings("config-set | config-get | config-unset | doctor-check", try groupNames(arena));
 }
 
 test "setKeys: every FileConfig field plus keys.<provider>, no $schema" {
@@ -223,4 +244,20 @@ test "fileKeys: keys member that is not an object contributes no dotted names" {
     try testing.expectEqual(@as(usize, 2), keys.len);
     try testing.expectEqualStrings("keys", keys[0]);
     try testing.expectEqualStrings("mode", keys[1]);
+}
+
+test "checkIds: every doctorcatalog entry as a bare id, each resolvable" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const ids = try checkIds(arena);
+    try testing.expectEqual(doctorcatalog.check_catalog.len, ids.len);
+    for (doctorcatalog.check_catalog, 0..) |cs, i| {
+        try testing.expectEqualStrings(cs.name, ids[i]);
+        // Every offered id resolves the way `--check` resolves it.
+        try testing.expect(doctorcatalog.findCheck(ids[i]) != null);
+        // The `doctor.` prefix is an explain spelling, not a check id.
+        try testing.expect(!std.mem.startsWith(u8, ids[i], "doctor."));
+    }
 }

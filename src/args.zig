@@ -2166,7 +2166,7 @@ test "parse: completions candidates validates its group" {
 
     // Each config group lands on completions_group; the subcommand selector
     // is "candidates".
-    for ([_][]const u8{ "config-set", "config-get", "config-unset" }) |g| {
+    for ([_][]const u8{ "config-set", "config-get", "config-unset", "doctor-check" }) |g| {
         const p = try parseArgv(a, &.{ "tau", "completions", "candidates", g }, .{});
         try std.testing.expectEqual(Action.completions, p.action);
         try std.testing.expectEqualStrings("candidates", p.config.completions_sub.?);

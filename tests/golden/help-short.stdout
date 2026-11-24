@@ -100,7 +100,8 @@ Setup:
                               per line) for the shell scripts:
                               config-set lists every settable key;
                               config-get|config-unset list the keys
-                              present in the config file
+                              present in the config file; doctor-check
+                              lists every `tau doctor` check id
 
 Goal mode (in the prompt):
   /goal <objective>            Work autonomously until the objective is audited-complete

@@ -7587,10 +7587,27 @@ test_group_completions() {
     ok "config-get emits nothing without a config file" 1 0
   fi
 
+  # doctor-check lists the bare check ids `tau doctor --check|--fix`
+  # resolve — static rows plus the dynamic client_*/probe_* families, all
+  # sourced from the same doctorcatalog registry the flags consult.
+  capture dchk "$BIN" completions candidates doctor-check
+  ok "candidates doctor-check exits 0" "$dchk_rc" 0
+  contains "doctor-check lists a static check id" "$dchk_out" "config_file"
+  contains "doctor-check lists a client check id" "$dchk_out" "client_zed"
+  contains "doctor-check lists a probe check id" "$dchk_out" "probe_openai"
+  contains "doctor-check lists a probe auth id" "$dchk_out" "probe_openai_auth"
+  lacks "doctor-check omits the doctor. explain prefix" "$dchk_out" "doctor."
+  # Every emitted id is a real --check scope: the provider_probes
+  # placeholder row is deterministic offline (always a skip row), so a
+  # scoped rerun proves candidates and resolver never drifted apart.
+  capture dscoped "$BIN" doctor --offline --check provider_probes
+  ok "doctor --check accepts a catalog id" "$dscoped_rc" 0
+  contains "scoped report carries only the named check" "$dscoped_out" '"name":"provider_probes"'
+
   # Missing/invalid group and trailing args are invalid-argument envelopes.
   capture cmiss "$BIN" completions candidates
   ok "candidates with no group exits 80" "$cmiss_rc" 80
-  contains "no-group error names the groups" "$cmiss_err" "config-set | config-get | config-unset"
+  contains "no-group error names the groups" "$cmiss_err" "config-set | config-get | config-unset | doctor-check"
   capture cbad "$BIN" completions candidates bogus
   ok "candidates bogus group exits 80" "$cbad_rc" 80
   capture cextra "$BIN" completions candidates config-set extra
