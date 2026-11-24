@@ -74,7 +74,8 @@ offline from the CLI: `tau explain <code|type|key|…>` prints one entry's cause
 hint, and docs link (JSON by default — `--json` pins the schema-checked
 form, `--human` renders prose), and bare `tau explain` lists the whole
 catalog. A config key works the same way: `tau explain timeout_ms` prints
-the key's type, constraints, and description from the generated
+the key's type, constraints, built-in default, env/CLI override chain, and
+description from the generated
 [config.md](config.md) table, and `tau explain keys.openai` resolves a
 dotted `keys.<provider>` member path. A `tau doctor` check id resolves too:
 `tau explain doctor.tls_ca` prints when that check fails and the

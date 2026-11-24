@@ -75,8 +75,9 @@ authfaild` prints `did you mean "tau explain AuthFailed"?`.
 
 Config keys resolve the same way from the generated
 [docs/config.md](config.md) table — `tau explain timeout_ms` or
-`tau explain keys.openai` prints the key's type, constraints, and
-description, and bare `tau explain` lists them under `config_keys`.
+`tau explain keys.openai` prints the key's type, constraints,
+built-in default, env/CLI override chain, and description, and bare
+`tau explain` lists them under `config_keys`.
 `tau doctor` check ids resolve from the generated check table in
 [docs/troubleshooting.md](troubleshooting.md) (`doctor.<check>` or a
 bare id), `TAU_*` environment variables resolve from the

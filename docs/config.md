@@ -73,7 +73,9 @@ environment variables, CLI-flag equivalents, and precedence rules — see
 - `tau config validate [file]` — reports unknown keys, wrong types, and
   out-of-range values against this schema (defaults to the real config).
 - `tau explain <key>` — prints one row of this table as JSON (key, type,
-  constraints, description); `tau explain keys.<provider>` resolves a
+  constraints, default, overrides, description) where `default` is the
+  built-in fallback and `overrides` spells out the env/CLI precedence
+  chain above; `tau explain keys.<provider>` resolves a
   dotted member path, the `config.<key>` spelling (e.g.
   `config.provider`) is the namespaced form, bare `tau explain` lists
   every key under `config_keys`, and `tau explain --list` indexes them

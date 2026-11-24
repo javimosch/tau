@@ -258,16 +258,96 @@ pub fn schemaHint(arena: std.mem.Allocator) ![]u8 {
 // ---------------------------------------------------------------------------
 
 /// One row of the `tau explain <key>` catalog — mirrors a line of the
-/// generated docs/config.md table (Key | Type | Constraints | Description).
-/// `constraints` is the same cell text docs/config.md renders (`|`
-/// separators unescaped); `docs` links back to the reference.
+/// generated docs/config.md table (Key | Type | Constraints | Description)
+/// plus the resolution model the table can't show: `default` is the built-in
+/// fallback (rendered like the constraints cell — backticked literals), and
+/// `overrides` is the `>`-separated env/CLI precedence chain that replaces
+/// it (highest source first). `constraints` is the same cell text
+/// docs/config.md renders (`|` separators unescaped); `docs` links back to
+/// the reference.
 pub const KeySpec = struct {
     name: []const u8,
     type_name: []const u8,
     constraints: []const u8,
+    default: []const u8,
+    overrides: []const u8,
     desc: []const u8,
     docs: []const u8 = config_doc_url,
 };
+
+/// Comptime-evaluated defaults view — the same Config main() layers the
+/// config file and argv onto, so a `default` cell rendered from it cannot
+/// drift from what tau actually runs with.
+const defaults = cfgmod.Config{};
+
+/// Every provider env var in table order (xiaomi's alternates included) —
+/// the middle tier of the api_key resolution chain. Derived from the
+/// provider table so a renamed env key can't leave a stale cell behind.
+const provider_env_join = blk: {
+    var joined: []const u8 = "";
+    var n: usize = 0;
+    for (cfgmod.providers) |p| {
+        for (p.env_keys) |ek| {
+            if (n != 0) joined = joined ++ " | ";
+            joined = joined ++ "`" ++ ek ++ "`";
+            n += 1;
+        }
+    }
+    break :blk joined;
+};
+
+/// The `default` cell for one FileConfig field — comptime-derived from
+/// `defaults` wherever the field maps 1:1 so the number/wording tracks the
+/// real built-in. Missing arms are a compile error, matching fieldMeta.
+fn defaultCell(comptime name: []const u8) []const u8 {
+    const eql = std.mem.eql;
+    if (comptime eql(u8, name, "provider")) return std.fmt.comptimePrint("`{s}` (first provider-table entry)", .{defaults.provider});
+    if (comptime eql(u8, name, "model")) return std.fmt.comptimePrint("provider default (`{s}` for `{s}`)", .{ cfgmod.providers[0].default_model, cfgmod.providers[0].name });
+    if (comptime eql(u8, name, "api_key")) return "none";
+    if (comptime eql(u8, name, "keys")) return "none";
+    if (comptime eql(u8, name, "mode")) return std.fmt.comptimePrint("`{s}`", .{@tagName(defaults.mode)});
+    if (comptime eql(u8, name, "stream")) return std.fmt.comptimePrint("`{}`", .{defaults.stream});
+    if (comptime eql(u8, name, "thinking")) return std.fmt.comptimePrint("`{}`", .{defaults.thinking});
+    if (comptime eql(u8, name, "debug")) return std.fmt.comptimePrint("`{}`", .{defaults.debug});
+    if (comptime eql(u8, name, "temperature")) return std.fmt.comptimePrint("`{d}`", .{defaults.temperature});
+    if (comptime eql(u8, name, "max_tokens")) return "uncapped";
+    if (comptime eql(u8, name, "timeout_ms")) return std.fmt.comptimePrint("`{d}`", .{defaults.timeout_ms});
+    if (comptime eql(u8, name, "context_window")) return std.fmt.comptimePrint("provider window (`{d}` for `{s}`)", .{ cfgmod.providers[0].context_window, cfgmod.providers[0].name });
+    if (comptime eql(u8, name, "auto_compact")) return std.fmt.comptimePrint("`{}`", .{defaults.auto_compact});
+    if (comptime eql(u8, name, "compact_threshold")) return std.fmt.comptimePrint("`{d}`", .{defaults.compact_threshold});
+    if (comptime eql(u8, name, "compact_keep_recent_tokens")) return std.fmt.comptimePrint("`{d}`", .{defaults.compact_keep_recent_tokens});
+    if (comptime eql(u8, name, "goal_max_iterations")) return std.fmt.comptimePrint("`{d}`", .{defaults.goal_max_iterations});
+    if (comptime eql(u8, name, "goal_max_continues")) return std.fmt.comptimePrint("`{d}`", .{defaults.goal_max_continues});
+    @compileError("defaultCell: no default text for FileConfig field '" ++ name ++ "'");
+}
+
+/// The `overrides` cell for one FileConfig field — the env/CLI precedence
+/// chain docs/config.md summarizes as "CLI flags > environment > config
+/// file > in-code defaults", spelled out per key. Backticked `--flags` are
+/// pinned against args.zig and `ENV_VAR` names against envvars.zig/the
+/// provider table by the tests below, so a renamed override source breaks
+/// the build. Missing arms are a compile error, matching fieldMeta.
+fn overridesCell(comptime name: []const u8) []const u8 {
+    const eql = std.mem.eql;
+    if (comptime eql(u8, name, "provider")) return "`--provider` (or `provider/` in `--model`) > config `provider` > default; `TAU_ENDPOINT` overrides the endpoint URL only";
+    if (comptime eql(u8, name, "model")) return "`--model` (or `provider/id` shorthand) > config `model` > provider default";
+    if (comptime eql(u8, name, "api_key")) return std.fmt.comptimePrint("`--api-key` > `keys.<provider>` > provider env var ({s}) > config `api_key` > `TAU_API_KEY`", .{provider_env_join});
+    if (comptime eql(u8, name, "keys")) return "config file only — each `keys.<provider>` member outranks that provider's env var, the global `api_key`, and `TAU_API_KEY`; no CLI flag";
+    if (comptime eql(u8, name, "mode")) return "`--mode` / `--json` > config `mode` > default";
+    if (comptime eql(u8, name, "stream")) return "`--stream` / `--no-stream` > config `stream` > default";
+    if (comptime eql(u8, name, "thinking")) return "`--thinking` > config `thinking` > default";
+    if (comptime eql(u8, name, "debug")) return "`--debug` > config `debug` > default; `TAU_DEBUG_LOG` overrides the log-file destination";
+    if (comptime eql(u8, name, "temperature")) return "`--temperature` > config `temperature` > default";
+    if (comptime eql(u8, name, "max_tokens")) return "`--max-tokens` > config `max_tokens` > default";
+    if (comptime eql(u8, name, "timeout_ms")) return "`--timeout-ms` > config `timeout_ms` > default";
+    if (comptime eql(u8, name, "context_window")) return "`--context-window` > config `context_window` > provider window";
+    if (comptime eql(u8, name, "auto_compact")) return "`--no-compact` > config `auto_compact` > default";
+    if (comptime eql(u8, name, "compact_threshold")) return "`--compact-threshold` > config `compact_threshold` > default";
+    if (comptime eql(u8, name, "compact_keep_recent_tokens")) return "`--compact-keep-recent` > config `compact_keep_recent_tokens` > default";
+    if (comptime eql(u8, name, "goal_max_iterations")) return "`--goal-max-iterations` > config `goal_max_iterations` > default";
+    if (comptime eql(u8, name, "goal_max_continues")) return "config `goal_max_continues` > default (no CLI flag or env var)";
+    @compileError("overridesCell: no precedence chain for FileConfig field '" ++ name ++ "'");
+}
 
 /// Live provider names as a comptime string set — the enum source for both
 /// `provider` and `keys.<member>` cells.
@@ -353,6 +433,8 @@ pub const key_specs = blk: {
         .name = "$schema",
         .type_name = "string",
         .constraints = "—",
+        .default = "none",
+        .overrides = "none — written by `tau init`, accepted but ignored by the loader",
         .desc = "Editor hint pointing at this schema. Written by `tau init`; accepted but ignored by the loader.",
     };
     for (file_fields, 0..) |f, i| {
@@ -361,6 +443,8 @@ pub const key_specs = blk: {
             .name = f.name,
             .type_name = kindName(fieldKind(f.type)),
             .constraints = constraintCell(f, meta),
+            .default = defaultCell(f.name),
+            .overrides = overridesCell(f.name),
             .desc = meta.desc,
         };
     }
@@ -373,10 +457,23 @@ pub const key_specs = blk: {
 pub const key_member_specs = blk: {
     var ks: [cfgmod.providers.len]KeySpec = undefined;
     for (cfgmod.providers, 0..) |p, i| {
+        const env_join = blk2: {
+            var j: []const u8 = "";
+            for (p.env_keys, 0..) |ek, n| {
+                if (n != 0) j = j ++ " | ";
+                j = j ++ "`" ++ ek ++ "`";
+            }
+            break :blk2 j;
+        };
         ks[i] = .{
             .name = "keys." ++ p.name,
             .type_name = "string",
             .constraints = "non-empty",
+            .default = "none",
+            .overrides = if (p.env_keys.len > 0)
+                std.fmt.comptimePrint("`--api-key` > `keys.{s}` > provider env var ({s}) > config `api_key` > `TAU_API_KEY`", .{ p.name, env_join })
+            else
+                std.fmt.comptimePrint("`--api-key` > `keys.{s}` > config `api_key` > `TAU_API_KEY` (the `{s}` provider declares no env var)", .{ p.name, p.name }),
             .desc = "API key for the `" ++ p.name ++ "` provider — a keys[] entry outranks that provider's env var and the global api_key.",
         };
     }
@@ -432,7 +529,7 @@ pub fn findKey(query: []const u8) ?KeySpec {
 
 /// Serialize one config-key entry for `tau explain` (no trailing newline —
 /// the caller owns framing, like errors.zig's formatEntryJson):
-/// {"key":"K","type":"T","constraints":"C","description":"D","docs":"U"}
+/// {"key":"K","type":"T","constraints":"C","default":"D","overrides":"O","description":"D","docs":"U"}
 /// Caller owns the returned slice.
 pub fn formatKeyJson(a: std.mem.Allocator, ks: KeySpec) ![]u8 {
     const ke = try json.escapeAlloc(a, ks.name);
@@ -441,17 +538,21 @@ pub fn formatKeyJson(a: std.mem.Allocator, ks: KeySpec) ![]u8 {
     defer a.free(te);
     const ce = try json.escapeAlloc(a, ks.constraints);
     defer a.free(ce);
-    const de = try json.escapeAlloc(a, ks.desc);
+    const de = try json.escapeAlloc(a, ks.default);
     defer a.free(de);
+    const oe = try json.escapeAlloc(a, ks.overrides);
+    defer a.free(oe);
+    const se = try json.escapeAlloc(a, ks.desc);
+    defer a.free(se);
     const ue = try json.escapeAlloc(a, ks.docs);
     defer a.free(ue);
-    return std.fmt.allocPrint(a, "{{\"key\":\"{s}\",\"type\":\"{s}\",\"constraints\":\"{s}\",\"description\":\"{s}\",\"docs\":\"{s}\"}}", .{ ke, te, ce, de, ue });
+    return std.fmt.allocPrint(a, "{{\"key\":\"{s}\",\"type\":\"{s}\",\"constraints\":\"{s}\",\"default\":\"{s}\",\"overrides\":\"{s}\",\"description\":\"{s}\",\"docs\":\"{s}\"}}", .{ ke, te, ce, de, oe, se, ue });
 }
 
 /// Human-readable `tau explain --human <key>` rendering — drawn from the
 /// same KeySpec so the prose and JSON forms can never drift apart.
 pub fn formatKeyHuman(a: std.mem.Allocator, ks: KeySpec) ![]u8 {
-    return std.fmt.allocPrint(a, "config key  {s} ({s})\n  constraints: {s}\n  description: {s}\n  docs:  {s}\n", .{ ks.name, ks.type_name, ks.constraints, ks.desc, ks.docs });
+    return std.fmt.allocPrint(a, "config key  {s} ({s})\n  constraints: {s}\n  default:     {s}\n  overrides:   {s}\n  description: {s}\n  docs:        {s}\n", .{ ks.name, ks.type_name, ks.constraints, ks.default, ks.overrides, ks.desc, ks.docs });
 }
 
 // ---------------------------------------------------------------------------
@@ -685,9 +786,95 @@ test "explain: formatKeyJson emits the config-key entry shape" {
     const got = try formatKeyJson(gpa, ks);
     defer gpa.free(got);
     try testing.expectEqualStrings(
-        "{\"key\":\"timeout_ms\",\"type\":\"integer\",\"constraints\":\"`>= 0`\",\"description\":\"HTTP request timeout in milliseconds.\",\"docs\":\"" ++ config_doc_url ++ "\"}",
+        "{\"key\":\"timeout_ms\",\"type\":\"integer\",\"constraints\":\"`>= 0`\",\"default\":\"`120000`\",\"overrides\":\"`--timeout-ms` > config `timeout_ms` > default\",\"description\":\"HTTP request timeout in milliseconds.\",\"docs\":\"" ++ config_doc_url ++ "\"}",
         got,
     );
+}
+
+test "explain: every key entry carries a default and an override chain" {
+    for (key_specs ++ key_member_specs ++ deprecated_key_specs) |ks| {
+        try testing.expect(ks.default.len > 0);
+        try testing.expect(ks.overrides.len > 0);
+    }
+}
+
+test "explain: default cells track the real Config defaults" {
+    // Derived-from-Config pins — if a built-in default changes without a
+    // matching cell update these strings go stale (compile-time derivation
+    // covers the value; the cell text is what's checked here).
+    try testing.expectEqualStrings("`120000`", findKey("timeout_ms").?.default);
+    try testing.expectEqualStrings("`0.7`", findKey("temperature").?.default);
+    try testing.expectEqualStrings("`0.5`", findKey("compact_threshold").?.default);
+    try testing.expectEqualStrings("`20000`", findKey("compact_keep_recent_tokens").?.default);
+    try testing.expectEqualStrings("`50`", findKey("goal_max_iterations").?.default);
+    try testing.expectEqualStrings("`500`", findKey("goal_max_continues").?.default);
+    try testing.expectEqualStrings("`true`", findKey("stream").?.default);
+    try testing.expectEqualStrings("`false`", findKey("debug").?.default);
+    try testing.expectEqualStrings("`json`", findKey("mode").?.default);
+    try testing.expectEqualStrings("uncapped", findKey("max_tokens").?.default);
+    try testing.expect(std.mem.indexOf(u8, findKey("model").?.default, cfgmod.providers[0].default_model) != null);
+    try testing.expect(std.mem.indexOf(u8, findKey("provider").?.default, cfgmod.providers[0].name) != null);
+    try testing.expect(std.mem.indexOf(u8, findKey("context_window").?.default, "provider window") != null);
+    // The deprecated spelling inherits the canonical key's cells.
+    try testing.expectEqualStrings(findKey("compact_keep_recent_tokens").?.default, findKey("compact_keep_recent").?.default);
+}
+
+/// Extract each backticked token from a cell — the flag/env spellings the
+/// pin tests below check against their sources.
+fn backticked(a: std.mem.Allocator, cell: []const u8) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var rest = cell;
+    while (std.mem.indexOfScalar(u8, rest, '`')) |s| {
+        const after = rest[s + 1 ..];
+        const e = std.mem.indexOfScalar(u8, after, '`') orelse break;
+        try out.append(a, after[0..e]);
+        rest = after[e + 1 ..];
+    }
+    return out.toOwnedSlice(a);
+}
+
+test "explain: override cells only cite real CLI flags" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const args_src = @embedFile("args.zig");
+    for (key_specs ++ key_member_specs) |ks| {
+        for (try backticked(a, ks.overrides)) |tok| {
+            if (!std.mem.startsWith(u8, tok, "--")) continue;
+            // args.zig parses each flag via eq(a, "--flag")/eq(argv[j], ...)
+            // string literals — a renamed flag leaves a stale chain behind.
+            const needle = try std.fmt.allocPrint(a, "\"{s}\"", .{tok});
+            if (std.mem.indexOf(u8, args_src, needle) == null) {
+                std.debug.print("overrides cell for '{s}' cites '{s}' — not a flag literal in args.zig\n", .{ ks.name, tok });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+}
+
+test "explain: override cells only cite recognized env vars" {
+    var ar = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ar.deinit();
+    const a = ar.allocator();
+    const env_src = @embedFile("envvars.zig");
+    for (key_specs ++ key_member_specs) |ks| {
+        for (try backticked(a, ks.overrides)) |tok| {
+            const is_env = std.mem.startsWith(u8, tok, "TAU_") or std.mem.endsWith(u8, tok, "_API_KEY");
+            if (!is_env) continue;
+            // Provider env keys live in the provider table; TAU_* names in
+            // envvars.specs — either source satisfies the pin.
+            var known = std.mem.indexOf(u8, env_src, tok) != null;
+            for (cfgmod.providers) |p| {
+                for (p.env_keys) |ek| {
+                    if (std.mem.eql(u8, tok, ek)) known = true;
+                }
+            }
+            if (!known) {
+                std.debug.print("overrides cell for '{s}' cites env var '{s}' — not in envvars.zig or any provider's env_keys\n", .{ ks.name, tok });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
 }
 
 test "explain: formatKeyJson escapes and links config.md" {
