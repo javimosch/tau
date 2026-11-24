@@ -180,7 +180,10 @@ checks validate against it ([docs/acp.md](acp.md),
 - `install.sh` / `install.ps1` fail closed: no `SHA256SUMS.txt`
   manifest, no checksum tool, or a checksum mismatch means no install.
   Asset naming (`tau-<os>-<arch>.tar.gz`) keeps the version out of the
-  filename so `latest/download/` URLs are permanent.
+  filename so `latest/download/` URLs are permanent. The distro packages
+  are the deliberate exception — `tau_<ver>_<arch>.deb` /
+  `tau-<ver>-1.<arch>.rpm` embed the version because package managers
+  require it; nothing fetches them via `latest/download/`.
 - `tau upgrade` reuses the same verified installer path (env contract:
   `TAU_BASE_URL`, `TAU_INSTALL_DIR`, `TAU_INSTALL_URL`,
   `TAU_SKIP_CHECKSUM`, `TAU_VERIFY_SIGSTORE` flow through to it) and

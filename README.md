@@ -61,6 +61,21 @@ version tags — and before publish, each archive is smoke-tested on its
 matching OS/arch runner by installing it through `install.sh`/`install.ps1`
 and running `tau --version`/`--help`.
 
+**Distro packages (Debian/Ubuntu and Fedora/RHEL-family):** each release also
+ships `tau_<ver>_<amd64|arm64>.deb` and `tau-<ver>-1.<x86_64|aarch64>.rpm`
+alongside the tarballs — the same verified `tau` binary installed to
+`/usr/bin` through your native package manager:
+
+```bash
+sudo apt install ./tau_<ver>_amd64.deb        # Debian/Ubuntu
+sudo dnf install ./tau-<ver>-1.x86_64.rpm     # Fedora/RHEL-family
+```
+
+Verify the package against `SHA256SUMS.txt` first, same as the tarballs.
+Before publish, the packages job installs each package through `apt`/`dnf` on
+a matching-arch runner (dnf inside a Fedora container) so a malformed package
+can never reach the release.
+
 **Updating:** `tau upgrade` checks the latest release, shows the release
 notes since your version before changing anything (a `[y/N]` prompt on a
 terminal, `--yes` for scripts), then re-runs this same verified installer

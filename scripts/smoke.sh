@@ -7644,7 +7644,7 @@ test_group_release() {
     # ── smoke job drift guards ──
     contains "workflow has a smoke job" "$(cat "$wf")" "  smoke:"
     contains "smoke job needs build" "$(cat "$wf")" "needs: build"
-    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-windows, smoke-action]"
+    contains "smoke gates the release" "$(cat "$wf")" "needs: [build, smoke, smoke-windows, smoke-action, smoke-deb, smoke-rpm]"
     contains "smoke covers linux-x86_64" "$(cat "$wf")" "artifact: linux-x86_64"
     contains "smoke covers linux-aarch64" "$(cat "$wf")" "artifact: linux-aarch64"
     contains "smoke covers macos-x86_64" "$(cat "$wf")" "artifact: macos-x86_64"
@@ -7657,8 +7657,26 @@ test_group_release() {
     # ── windows target + smoke-windows job drift guards (task #182) ──
     contains "workflow builds windows-x86_64" "$(cat "$wf")" "x86_64-windows-gnu"
     contains "workflow packages tau.exe as zip" "$(cat "$wf")" "zig-out/bin/tau.exe"
-    contains "workflow checksums cover zips" "$(cat "$wf")" "sha256sum *.tar.gz *.zip"
+    contains "workflow checksums cover zips" "$(cat "$wf")" "sha256sum *.tar.gz *.zip *.deb *.rpm"
     contains "release job publishes zips" "$(cat "$wf")" "dist/*.zip"
+    contains "release job publishes packages" "$(cat "$wf")" "dist/*.deb dist/*.rpm"
+
+    # ── linux distro packages: packages + smoke-deb/smoke-rpm jobs (task #512) ──
+    contains "workflow has a packages job" "$(cat "$wf")" "  packages:"
+    contains "packages job needs build" "$(cat "$wf")" "needs: build"
+    contains "packages job runs the deb builder" "$(cat "$wf")" "build-deb.sh"
+    contains "packages job runs the rpm builder" "$(cat "$wf")" "build-rpm.py"
+    contains "packages job emits per-asset checksums" "$(cat "$wf")" '.deb.sha256'
+    contains "workflow has a smoke-deb job" "$(cat "$wf")" "  smoke-deb:"
+    contains "smoke-deb needs packages" "$(cat "$wf")" "needs: [build, packages]"
+    contains "smoke-deb installs via apt" "$(cat "$wf")" "apt-get install -y"
+    contains "smoke-deb covers arm64" "$(cat "$wf")" "debarch: arm64"
+    contains "workflow has a smoke-rpm job" "$(cat "$wf")" "  smoke-rpm:"
+    contains "smoke-rpm runs in a fedora container" "$(cat "$wf")" "container: fedora"
+    contains "smoke-rpm installs via dnf" "$(cat "$wf")" "dnf install -y"
+    contains "smoke-rpm covers aarch64" "$(cat "$wf")" "rpmarch: aarch64"
+    contains "release notes mention apt install" "$(cat "$wf")" "apt install ./tau_"
+    contains "release notes mention dnf install" "$(cat "$wf")" "dnf install ./tau-"
     contains "release notes mention install.ps1" "$(cat "$wf")" "install.ps1 | iex"
     contains "workflow has a smoke-windows job" "$(cat "$wf")" "  smoke-windows:"
     contains "smoke-windows runs on windows-latest" "$(cat "$wf")" "runs-on: windows-latest"
@@ -7993,6 +8011,98 @@ test_group_release() {
   else
     note "release: skipping install.ps1 e2e (pwsh or python3 unavailable)"
   fi
+
+  # ── linux package builders (task #512) ──
+  note "release: .deb/.rpm package builders"
+
+  local debgen="$ROOT/scripts/build-deb.sh"
+  [ -f "$debgen" ];  ok "deb builder exists" "$?" 0
+  [ -x "$debgen" ];  ok "deb builder is executable" "$?" 0
+  sh -n "$debgen" 2>/dev/null;   ok "deb builder passes sh -n syntax check" "$?" 0
+  bash -n "$debgen" 2>/dev/null; ok "deb builder passes bash -n syntax check" "$?" 0
+
+  local rpmgen="$ROOT/scripts/build-rpm.py"
+  [ -f "$rpmgen" ];  ok "rpm builder exists" "$?" 0
+  [ -x "$rpmgen" ];  ok "rpm builder is executable" "$?" 0
+  python3 -m py_compile "$rpmgen" 2>/dev/null; ok "rpm builder compiles" "$?" 0
+
+  out=$("$debgen" --help 2>&1); rc=$?
+  ok "deb builder --help exit" "$rc" 0
+  contains "deb builder --help shows usage" "$out" "--binary"
+
+  out=$(python3 "$rpmgen" --help 2>&1); rc=$?
+  ok "rpm builder --help exit" "$rc" 0
+  contains "rpm builder --help shows usage" "$out" "--binary"
+
+  # functional: package a stub binary, then verify structure end-to-end.
+  local pdir
+  pdir="$(mktemp -d)"
+  printf '#!/bin/sh\necho tau stub\n' > "$pdir/tau"
+  chmod +x "$pdir/tau"
+
+  "$debgen" --binary "$pdir/tau" --version 1.2.3 --arch amd64 \
+    --output "$pdir/tau_1.2.3_amd64.deb" >/dev/null 2>&1; rc=$?
+  ok "deb builder produces a package" "$rc" 0
+  [ -f "$pdir/tau_1.2.3_amd64.deb" ]; ok "deb file exists" "$?" 0
+
+  if command -v ar >/dev/null 2>&1; then
+    out=$(ar t "$pdir/tau_1.2.3_amd64.deb" 2>&1 | tr '\n' ' ')
+    contains "deb holds debian-binary" "$out" "debian-binary"
+    contains "deb holds control.tar.gz" "$out" "control.tar.gz"
+    contains "deb holds data.tar.gz" "$out" "data.tar.gz"
+  fi
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    out=$(dpkg-deb -I "$pdir/tau_1.2.3_amd64.deb" 2>&1)
+    contains "deb metadata names tau" "$out" "Package: tau"
+    contains "deb metadata carries version" "$out" "Version: 1.2.3"
+    contains "deb metadata carries arch" "$out" "Architecture: amd64"
+    dpkg-deb -x "$pdir/tau_1.2.3_amd64.deb" "$pdir/ext" 2>/dev/null; rc=$?
+    ok "deb payload extracts" "$rc" 0
+    cmp -s "$pdir/ext/usr/bin/tau" "$pdir/tau"; ok "deb payload is byte-identical" "$?" 0
+  else
+    note "release: skipping dpkg-deb structural checks (dpkg-deb unavailable)"
+  fi
+  "$debgen" --binary "$pdir/tau" --version 1.2.3 --arch amd64 \
+    --output "$pdir/again.deb" >/dev/null 2>&1
+  cmp -s "$pdir/tau_1.2.3_amd64.deb" "$pdir/again.deb"
+  ok "deb output is deterministic" "$?" 0
+  "$debgen" --binary "$pdir/tau" --version 1.2.3 --arch sparc \
+    --output "$pdir/bad.deb" >/dev/null 2>&1
+  ok "deb builder rejects unsupported arch" "$?" 1
+  "$debgen" --binary "$pdir/missing" --version 1.2.3 --arch amd64 \
+    --output "$pdir/bad.deb" >/dev/null 2>&1
+  ok "deb builder rejects missing binary" "$?" 1
+  "$debgen" --binary "$pdir/tau" --version notaversion --arch amd64 \
+    --output "$pdir/bad.deb" >/dev/null 2>&1
+  ok "deb builder rejects malformed version" "$?" 1
+
+  python3 "$rpmgen" --binary "$pdir/tau" --version 1.2.3 --arch x86_64 \
+    --output "$pdir/tau-1.2.3-1.x86_64.rpm" >/dev/null 2>&1; rc=$?
+  ok "rpm builder produces a package" "$rc" 0
+  [ -f "$pdir/tau-1.2.3-1.x86_64.rpm" ]; ok "rpm file exists" "$?" 0
+
+  out=$(python3 "$rpmgen" --verify "$pdir/tau-1.2.3-1.x86_64.rpm" 2>&1); rc=$?
+  ok "rpm builder --verify passes" "$rc" 0
+  contains "rpm verify names the package" "$out" "tau-1.2.3-1.x86_64"
+
+  python3 "$rpmgen" --binary "$pdir/tau" --version 1.2.3 --arch x86_64 \
+    --output "$pdir/ragain.rpm" >/dev/null 2>&1
+  cmp -s "$pdir/tau-1.2.3-1.x86_64.rpm" "$pdir/ragain.rpm"
+  ok "rpm output is deterministic" "$?" 0
+
+  # a corrupted rpm must fail --verify
+  printf 'XX' | dd of="$pdir/tau-1.2.3-1.x86_64.rpm" bs=1 seek=120 conv=notrunc 2>/dev/null
+  python3 "$rpmgen" --verify "$pdir/tau-1.2.3-1.x86_64.rpm" >/dev/null 2>&1
+  ok "rpm --verify rejects a corrupted package" "$?" 1
+
+  python3 "$rpmgen" --binary "$pdir/tau" --version 1.2.3 --arch riscv64 \
+    --output "$pdir/bad.rpm" >/dev/null 2>&1
+  ok "rpm builder rejects unsupported arch" "$?" 1
+  python3 "$rpmgen" --binary "$pdir/tau" --version notaversion --arch x86_64 \
+    --output "$pdir/bad.rpm" >/dev/null 2>&1
+  ok "rpm builder rejects malformed version" "$?" 1
+
+  rm -rf "$pdir"
 }
 
 # Group: first-run e2e — clean-environment install → setup → selftest contract.
